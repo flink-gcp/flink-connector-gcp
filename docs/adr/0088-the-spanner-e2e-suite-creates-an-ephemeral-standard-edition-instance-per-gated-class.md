@@ -44,10 +44,12 @@ uses it and deletes it. What is Spanner's own:
   extra DDL for a PostgreSQL-dialect database, where the emulator applies it, so the harness issues
   `updateDatabaseDdl` separately for that dialect and keeps the one-call form for GoogleSQL, which
   is the dialect the emulator tests share.
-- **Leak control is [ADR-0044]'s, unchanged**: `flink-it-<epochSeconds>-<runId>`, a sweep of
-  anything older than two hours at the start of each class, and a threshold far above the E2E
-  workflow's ceiling so the sweep cannot reach a live run. That ceiling moved from 40 to 60 minutes
-  when this suite joined and must stay under two hours.
+- **Leak control follows [ADR-0044]**: `flink-it-<epochSeconds>-<runId>`, a sweep of anything older
+  than two hours at the start of each class, and the integration-test fork's default 90-minute
+  ceiling kept below that threshold. The age-gated sweep therefore cannot reach an instance its
+  owning fork is still using. CI has a separate whole-job ceiling. [ADR-0119]'s post-E2E and
+  explicitly requested manual `--all` paths deliberately drop the age comparison and retain the
+  documented local-run collision.
 - **The scheduled sweep became one script over both services.** `scripts/sweep-bigtable-e2e.sh` is now
   `scripts/sweep-e2e.sh`, sweeping Bigtable and Spanner independently and reporting the worst
   status. Not tidiness: `just` stops at its first failing line, so a recipe line per service would
@@ -141,3 +143,4 @@ explicitly, and `test_a_listing_that_fails_is_not_an_empty_sweep` is what caught
 [ADR-0044]: 0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md
 [ADR-0076]: 0076-two-spanner-statuses-are-routed-and-a-request-failure-never-is.md
 [ADR-0085]: 0085-the-spanner-batch-source-splits-by-server-planned-partition.md
+[ADR-0119]: 0119-a-scheduled-source-derived-sweep-returns-billed-e2e-fixtures-to-their-idle-state.md

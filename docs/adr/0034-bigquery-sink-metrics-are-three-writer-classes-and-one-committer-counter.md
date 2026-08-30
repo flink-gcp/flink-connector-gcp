@@ -14,12 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0034: BigQuery sink metrics are three writer classes and one committer counter
+# ADR-0034: BigQuery sink metrics are three writer classes and aggregate committer metrics
 
 - Status: Accepted
 - Date: 2026-08-03; copy hierarchy wording revised by [#598] (2026-08-13); retry-volume
-  wording corrected by [#1051] (2026-08-23)
-- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77], [#598], [#1051]
+  wording corrected by [#1051] (2026-08-23); commit concurrency metrics added by [#1129]
+  (2026-08-29)
+- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77], [#598], [#1051], [#1129]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Metrics, § Committer
   metrics
@@ -28,7 +29,7 @@ limitations under the License.
 
 `DefaultStreamWriterMetrics`, `BufferedStreamWriterMetrics` (both `sink.storage.writer`) and
 `FileLoadsWriterMetrics` (`sink.fileloads.writer`) over the shared `base.metrics` helpers, plus
-one committer counter.
+aggregate FILE_LOADS committer metrics.
 Three classes rather than one conditionally-registering class keep each write method's metrics
 aligned with the operations it reports.
 After [#76], the buffered path may have dynamic destinations but deliberately retains aggregate
@@ -79,9 +80,20 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
   metric is registered once per committer. It is the whole job's rate (`prepared.global()` means
   one committer subtask). The framework's own committer metrics are **documented, not built**,
   under the names a reporter sees.
-- Coverage is one `*MetricsTest` per writer, asserting **by registered name** through
-  `TestSinkWriterMetricGroup`; the buffered and FILE_LOADS ones ride their behavioural tests'
-  fakes, while the default-stream one carries its own.
+- **Destination commit concurrency is reported without destination labels** ([#1129]).
+  `queuedCommitDestinations` and `activeCommitDestinations` are live gauges for the current phase's
+  destination actions in a non-empty attempt.
+  The coordinator clears both when the attempt ends.
+  Each worker update carries its attempt generation, so a worker that starts or finishes after an
+  abandoned drain cannot change that ended attempt's gauges or a later attempt's live state.
+  `currentCommitDurationMillis` is zero while idle, and `lastCommitDurationMillis` retains the
+  elapsed time of the most recently completed or failed non-empty attempt.
+  The gauges are registered once per committer and use atomic state because worker threads update
+  them while reporters may sample them.
+  No gauge names a table, so a dynamic-destination job cannot grow this metric set.
+- Coverage is one `*MetricsTest` per writer, `FileLoadsCommitterMetricsTest` for committer metric
+  registration, duration and late-worker semantics, and the destination-executor test for live
+  queue and active counts, asserting **by registered name** through the matching test metric group.
 
 [#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
 [#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
@@ -90,3 +102,4 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
 [#77]: https://github.com/flink-gcp/flink-connector-gcp/issues/77
 [#598]: https://github.com/flink-gcp/flink-connector-gcp/issues/598
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
+[#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129

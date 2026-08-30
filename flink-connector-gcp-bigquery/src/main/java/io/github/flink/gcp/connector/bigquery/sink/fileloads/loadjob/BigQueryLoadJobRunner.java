@@ -50,6 +50,8 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 /**
@@ -72,7 +74,9 @@ import java.util.stream.Collectors;
  * runner's lifetime.
  *
  * <p>Completion is polled with capped exponential backoff and effectively no attempt bound: batch
- * load jobs may legitimately run long, and overall timeouts are the Flink job's to enforce.
+ * load jobs may legitimately run long, and overall timeouts are the Flink job's to enforce. Workers
+ * keep separate REST clients and location caches, but share a thread-safe submitted-job registry so
+ * the global wait phase can run on a different worker from the submission phase.
  */
 @Internal
 public final class BigQueryLoadJobRunner implements LoadJobRunner {
@@ -85,7 +89,16 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     private final RetrySchedule pollSchedule;
     @Nullable private final String location;
     @Nullable private final String serviceAccountKeyFile;
-    private final Map<String, Job> activeJobs = new HashMap<>();
+
+    /** Thread-safe submitted-job state shared by every worker of one committer. */
+    public static final class SharedJobs {
+        private final ConcurrentMap<String, Job> jobs = new ConcurrentHashMap<>();
+
+        /** Creates an empty submitted-job registry. */
+        public SharedJobs() {}
+    }
+
+    private final SharedJobs sharedJobs;
     private final Map<DatasetId, String> datasetLocations = new HashMap<>();
     private BigQuery client;
 
@@ -105,24 +118,50 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             @Nullable String location,
             RetrySchedule pollSchedule,
             @Nullable String serviceAccountKeyFile) {
+        this(location, pollSchedule, serviceAccountKeyFile, new SharedJobs());
+    }
+
+    private BigQueryLoadJobRunner(
+            @Nullable String location,
+            RetrySchedule pollSchedule,
+            @Nullable String serviceAccountKeyFile,
+            SharedJobs sharedJobs) {
         this.location = location;
         this.pollSchedule = pollSchedule;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.sharedJobs = sharedJobs;
     }
 
-    /** Returns the configured key-file path, or {@code null} for ADC. */
+    /** Returns the injected REST client, or {@code null} before a lazily configured one is used. */
     @VisibleForTesting
     @Nullable
-    public String getServiceAccountKeyFile() {
-        return serviceAccountKeyFile;
+    public BigQuery getClient() {
+        return client;
     }
 
-    @VisibleForTesting
-    BigQueryLoadJobRunner(BigQuery client, @Nullable String location, RetrySchedule pollSchedule) {
+    /**
+     * Creates a runner over an already configured REST client.
+     *
+     * @param client the BigQuery REST client
+     * @param location the BigQuery location jobs run in, or {@code null} to derive it per dataset
+     * @param pollSchedule how completion polling backs off
+     */
+    public BigQueryLoadJobRunner(
+            BigQuery client, @Nullable String location, RetrySchedule pollSchedule) {
+        this(client, location, pollSchedule, new SharedJobs());
+    }
+
+    /** Creates a runner over a configured client and a committer-wide submitted-job registry. */
+    public BigQueryLoadJobRunner(
+            BigQuery client,
+            @Nullable String location,
+            RetrySchedule pollSchedule,
+            SharedJobs sharedJobs) {
         this.client = client;
         this.location = location;
         this.pollSchedule = pollSchedule;
         this.serviceAccountKeyFile = null;
+        this.sharedJobs = sharedJobs;
     }
 
     @Override
@@ -196,35 +235,50 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
 
     @Override
     public void awaitJob(String jobId) throws IOException {
-        Job job = activeJobs.remove(jobId);
+        Job job = sharedJobs.jobs.get(jobId);
         Preconditions.checkState(job != null, "Job %s was never submitted", jobId);
-        int attempt = 1;
-        while (!isDone(job)) {
-            Retries.sleep(
-                    pollSchedule.backoffMs(attempt++),
-                    "Interrupted while waiting for BigQuery job " + jobId);
-            // Deliberately not Job#reload(): the same request, minus its
-            // throw-if-the-job-carries-an-error behaviour, which routed a load that failed while
-            // being polled past the message composed below (ADR-0018). Do not simplify it back.
-            Job reloaded = getJob(job.getJobId(), "polling for completion");
-            if (reloaded == null) {
-                throw new IOException(
-                        "BigQuery job " + job.getJobId().getJob() + " disappeared while polling.");
+        boolean preserveForInterruptedDrain = false;
+        try {
+            int attempt = 1;
+            while (!isDone(job)) {
+                Retries.sleep(
+                        pollSchedule.backoffMs(attempt++),
+                        "Interrupted while waiting for BigQuery job " + jobId);
+                // Deliberately not Job#reload(): the same request, minus its
+                // throw-if-the-job-carries-an-error behaviour, which routed a load that failed
+                // while being polled past the message composed below (ADR-0018). Do not simplify
+                // it back.
+                Job reloaded = getJob(job.getJobId(), "polling for completion");
+                if (reloaded == null) {
+                    throw new IOException(
+                            "BigQuery job "
+                                    + job.getJobId().getJob()
+                                    + " disappeared while polling.");
+                }
+                job = reloaded;
             }
-            job = reloaded;
+            JobStatus status = job.getStatus();
+            if (status.getError() != null) {
+                throw new IOException(
+                        "BigQuery job "
+                                + job.getJobId().getJob()
+                                + " failed: "
+                                + status.getError()
+                                + (status.getExecutionErrors() != null
+                                        ? " (execution errors: " + status.getExecutionErrors() + ")"
+                                        : ""));
+            }
+            LOG.info("BigQuery job {} completed", job.getJobId().getJob());
+        } catch (IOException failure) {
+            // The orchestrator drains a worker-only interrupt serially. Keep the submitted handle
+            // so that drain can resume polling instead of treating the job as never submitted.
+            preserveForInterruptedDrain = Thread.currentThread().isInterrupted();
+            throw failure;
+        } finally {
+            if (!preserveForInterruptedDrain) {
+                sharedJobs.jobs.remove(jobId);
+            }
         }
-        JobStatus status = job.getStatus();
-        if (status.getError() != null) {
-            throw new IOException(
-                    "BigQuery job "
-                            + job.getJobId().getJob()
-                            + " failed: "
-                            + status.getError()
-                            + (status.getExecutionErrors() != null
-                                    ? " (execution errors: " + status.getExecutionErrors() + ")"
-                                    : ""));
-        }
-        LOG.info("BigQuery job {} completed", job.getJobId().getJob());
     }
 
     @Override
@@ -257,7 +311,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                     lastError = probePastFailedJob(jobName, baseJobId, submittedStatus, probe);
                     continue;
                 }
-                activeJobs.put(baseJobId, submitted);
+                sharedJobs.jobs.put(baseJobId, submitted);
                 LOG.info("Submitted BigQuery job {}: {}", jobName, what);
                 return;
             }
@@ -266,7 +320,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                 lastError = probePastFailedJob(jobName, baseJobId, status, probe);
                 continue;
             }
-            activeJobs.put(baseJobId, existing);
+            sharedJobs.jobs.put(baseJobId, existing);
             LOG.info(
                     "Re-attached to BigQuery job {} from a previous attempt (state {})",
                     jobName,

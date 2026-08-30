@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -35,8 +36,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * The live-table half of one {@code FILE_LOADS} commit: reconciles each destination table and
@@ -45,7 +44,8 @@ import java.util.Map;
  * <p>The {@code FILE_LOADS} counterpart of {@code StorageWriteSchemaReconciler}, which the two
  * Storage Write API writers share. {@code SchemaUnifier} is the common policy across all three;
  * loads need their own reconciler because a load job has to be handed the reconciled schema, which
- * means memoizing it per destination and varying it by write disposition ({@code docs/adr/0022}).
+ * means returning it for the destination plan and varying it by write disposition ({@code
+ * docs/adr/0022}).
  *
  * <p><b>Every load consults the live table first</b> ({@code docs/adr/0021}). A missing table is
  * created through the {@link TableAdmin} with the configured partitioning and clustering, and —
@@ -55,16 +55,13 @@ import java.util.Map;
  * be rejected at submission for exactly that case, and whether a run fits one partition must not
  * decide whether its records load.
  *
- * <p><b>The memo is per commit, and that is a property of how this object is built rather than of
- * anything it does.</b> {@link LoadJobOrchestrator} constructs one of these in its own constructor,
- * and {@code FileLoadsCommitter} constructs one orchestrator per commit — so one commit reconciles
- * each destination once, however many temporary-table loads that destination needs. It is
- * deliberately <em>not</em> a constructor parameter: injecting it is what would let a caller share
- * one instance, and one memo outliving its commit would skip a reconciliation the next commit
- * needs.
+ * <p>{@link LoadJobOrchestrator} constructs one for each destination in the commit's reconciliation
+ * phase and stores the returned schema in that destination's plan. One commit therefore reconciles
+ * each destination once, however many temporary-table loads that destination needs.
  *
- * <p>Single-threaded, like the orchestrator that owns it: BigQuery runs each wave concurrently
- * server-side, so nothing here is called from more than one thread.
+ * <p>Each instance is thread-confined. Distinct destinations reconcile concurrently, but calls to
+ * the user-provided serialization schema and table-create-options provider are serialized through a
+ * commit-scoped lock because those callback APIs do not require thread safety.
  */
 @Internal
 final class FileLoadsSchemaReconciler {
@@ -74,31 +71,24 @@ final class FileLoadsSchemaReconciler {
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;
     private final TableAdmin tableAdmin;
+    private final Object userCallbackLock;
     private final RetrySchedule schemaReconcileSchedule;
 
-    /** Per-commit memo of {@link #ensureFinalTable}; see {@link #finalTableSchema}. */
-    private final Map<TableDestination, Schema> finalTableSchemas = new HashMap<>();
-
     FileLoadsSchemaReconciler(
-            BigQuerySinkConfig<?> config, FileLoadsOptions options, TableAdmin tableAdmin) {
+            BigQuerySinkConfig<?> config,
+            FileLoadsOptions options,
+            TableAdmin tableAdmin,
+            Object userCallbackLock) {
         this.config = config;
         this.options = options;
         this.tableAdmin = tableAdmin;
+        this.userCallbackLock = userCallbackLock;
         this.schemaReconcileSchedule = options.toSchemaReconcileSchedule();
     }
 
-    /**
-     * Memoizing wrapper around {@link #ensureFinalTable}: the reconciliation and its create/update
-     * side effects run once per destination per commit, however many temporary-table loads the
-     * destination requires.
-     */
+    /** Reconciles one destination and returns the schema stored in its commit plan. */
     Schema finalTableSchema(TableDestination destination) throws IOException {
-        Schema schema = finalTableSchemas.get(destination);
-        if (schema == null) {
-            schema = ensureFinalTable(destination);
-            finalTableSchemas.put(destination, schema);
-        }
-        return schema;
+        return ensureFinalTable(destination);
     }
 
     /**
@@ -116,7 +106,10 @@ final class FileLoadsSchemaReconciler {
      * races.
      */
     private Schema ensureFinalTable(TableDestination destination) throws IOException {
-        TableSchema desired = config.getTableSchema(destination);
+        TableSchema desired;
+        synchronized (userCallbackLock) {
+            desired = config.getTableSchema(destination);
+        }
         TableSchemaSnapshot snapshot = tableAdmin.getSchema(destination);
         if (snapshot == null) {
             if (config.getCreateDisposition() == CreateDisposition.CREATE_NEVER) {
@@ -125,10 +118,11 @@ final class FileLoadsSchemaReconciler {
                                 + destination
                                 + " does not exist and createDisposition is CREATE_NEVER.");
             }
-            tableAdmin.create(
-                    destination,
-                    desired,
-                    config.getTableCreateOptionsProvider().optionsFor(destination));
+            TableCreateOptions createOptions;
+            synchronized (userCallbackLock) {
+                createOptions = config.getTableCreateOptionsProvider().optionsFor(destination);
+            }
+            tableAdmin.create(destination, desired, createOptions);
             // Creation swallows a lost race (HTTP 409 = someone else created it first), so the
             // table's actual schema may be a concurrent creator's rather than the desired one —
             // re-read and reconcile against what is really there instead of trusting the

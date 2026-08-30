@@ -163,7 +163,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         // its own deadline and kept a paid instance alive (#951 ran for over 40 minutes this
         // way). Two other ceilings now cover that too — the class @Timeout runs in a separate
         // thread, and surefire kills the fork at it.fork.timeout.seconds — and this one still
-        // earns its place: it fires in five minutes rather than ten or forty-five, and it says
+        // earns its place: it fires in five minutes rather than ten or ninety, and it says
         // which invariant broke instead of reporting a generic timeout.
         // Cancelling the job is what ends the wait — CollectResultFetcher.close() cancels through
         // the job client, and the fetch loop leaves by its terminated-job branch. That branch can

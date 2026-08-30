@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0021: Every FILE_LOADS load reconciles against the live table first
 
 - Status: Accepted
-- Date: 2026-07-27; overflow wording revised by [#72] (2026-08-13)
-- Issues: [#72], [#142]
+- Date: 2026-07-27; overflow wording revised by [#72] (2026-08-13); destination-task ownership
+  revised by [#1129] (2026-08-29)
+- Issues: [#72], [#142], [#1129]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Schema evolution
 
@@ -34,13 +35,14 @@ never a problem.
 ## Decision
 
 `ensureFinalTable` is the shared entry point for **every** load — direct and temp-table alike —
-memoized once per destination per commit (`finalTableSchema`). Both live on `FileLoadsSchemaReconciler`,
-which owns the memo and nothing else; `LoadJobOrchestrator` builds one in its own constructor and
-`FileLoadsCommitter` builds one orchestrator per commit, so the memo is per-commit by construction
-and an overflow's partition loads reconcile once. That chain is the guarantee — the reconciler is
-deliberately not a constructor parameter, because injecting it is what would let one memo outlive
-its commit, and `FileLoadsCommitterTest.eachCommitReconcilesTheDestinationAgain` is the only test
-that would notice.
+through `FileLoadsSchemaReconciler.finalTableSchema`.
+`LoadJobOrchestrator` builds one reconciler for each destination in the commit's bounded
+reconciliation phase and stores the returned schema in that destination's commit plan.
+The later commit-wide job phases retain each destination's load and copy-level order, so an
+overflow's partition loads still reconcile once while distinct tables may reconcile concurrently.
+That reconciliation phase and plan ownership are the guarantee: every commit builds a fresh plan,
+and no later phase asks the reconciler to read the table again.
+`FileLoadsCommitterTest.eachCommitReconcilesTheDestinationAgain` holds the lifetime boundary.
 
 Consequences that are decisions, not accidents:
 
@@ -69,3 +71,4 @@ Both measured rows are pinned against real BigQuery by
 
 [#142]: https://github.com/flink-gcp/flink-connector-gcp/issues/142
 [#72]: https://github.com/flink-gcp/flink-connector-gcp/issues/72
+[#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129

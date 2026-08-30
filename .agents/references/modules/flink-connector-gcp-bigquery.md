@@ -162,9 +162,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Ordinary dispositions finish with one copy per destination.
   `WRITE_TRUNCATE_DATA` instead builds one aggregate temp table with `WRITE_TRUNCATE` and finishes
   with a deterministic terminal query, because copy jobs do not support the data-only disposition.
-  The whole plan is validated before side effects, and each independent load/copy level runs in
-  waves of at most 50,000 jobs; interactive terminal queries use waves of at most 1,000
-  (`docs/adr/0018`). The polling attempt cap stays
+  The whole plan is validated before side effects.
+  The single committer then runs at most `maxConcurrentDestinations` destination actions at once,
+  with one thread-confined BigQuery client per worker.
+  Each job wave is submitted across all destinations before it is awaited.
+  Every copy level is fully awaited before the next level is submitted.
+  Commit-wide wave sizes bound pending jobs at 50,000 and interactive terminal queries at 1,000;
+  destination concurrency must never multiply those limits (`docs/adr/0018`).
+  An ordinary destination action failure stops new dispatch, drains every job already submitted in
+  its wave, orders the primary and suppressed failures by the plan, and starts no cleanup.
+  A JVM-fatal failure aborts the current worker action immediately; the coordinator interrupts its
+  peers, drains them for at most 30 seconds and then propagates the fatal failure so an unbounded
+  peer cannot hide it from Flink.
+  Cleanup interruption propagates — after the bounded worker drain when cleanup is concurrent;
+  staged objects remain, although temporary-table cleanup may already be partial.
+  The polling attempt cap stays
   `Integer.MAX_VALUE` — do not expose it.
   **`awaitJob` re-fetches
   through `BigQuery#getJob`, never `Job#reload()`**: the convenience throws `BigQueryException`
@@ -512,3 +524,5 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `numRecordsSend` counts at first hand-off to the client; error-class counters count every
   task-thread-classified failed append, nothing from a gRPC callback thread; gauges' backing
   collections are cleared in `close()`; `loadJobsSubmitted` counts load jobs only.
+  FILE_LOADS commit concurrency adds only aggregate queued, active, current-duration and
+  last-duration gauges; never add destination labels to them.

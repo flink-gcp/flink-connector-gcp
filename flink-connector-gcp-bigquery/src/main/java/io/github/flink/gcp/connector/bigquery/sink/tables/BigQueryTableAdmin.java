@@ -149,6 +149,13 @@ public class BigQueryTableAdmin implements TableAdmin {
         return serviceAccountKeyFile;
     }
 
+    /** Returns the injected REST client, or {@code null} before a lazily configured one is used. */
+    @VisibleForTesting
+    @Nullable
+    public BigQuery getClient() {
+        return client;
+    }
+
     /**
      * Creates an admin using the given client.
      *

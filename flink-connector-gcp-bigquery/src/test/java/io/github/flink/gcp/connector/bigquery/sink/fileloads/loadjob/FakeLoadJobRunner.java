@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /** Recording {@link LoadJobRunner} fake with scriptable await failures. */
 public final class FakeLoadJobRunner implements LoadJobRunner {
@@ -36,7 +37,9 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
     public final List<String> awaited = new ArrayList<>();
     public final List<TableDestination> deletedTables = new ArrayList<>();
     public final Set<String> failOnAwait = new HashSet<>();
+    public final Map<String, Throwable> failOnAwaitWith = new LinkedHashMap<>();
     public boolean failAllAwaits;
+    public long awaitDelayMillis;
 
     @Override
     public void submitLoad(String jobId, LoadJobSpec spec) {
@@ -60,6 +63,22 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
     public void awaitJob(String jobId) throws IOException {
         events.add("await:" + jobId);
         awaited.add(jobId);
+        try {
+            TimeUnit.MILLISECONDS.sleep(awaitDelayMillis);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted during scripted job delay", failure);
+        }
+        Throwable scripted = failOnAwaitWith.get(jobId);
+        if (scripted instanceof IOException) {
+            throw (IOException) scripted;
+        }
+        if (scripted instanceof RuntimeException) {
+            throw (RuntimeException) scripted;
+        }
+        if (scripted instanceof Error) {
+            throw (Error) scripted;
+        }
         if (failAllAwaits || failOnAwait.contains(jobId)) {
             throw new IOException("Job " + jobId + " failed (scripted)");
         }

@@ -194,3 +194,13 @@ named here only because the sink harness is shared and therefore lives in
 src/main/java. Fallback is a metric-recording MetricGroup of this repository's
 own, which would reimplement Flink's identifier composition — the very thing the
 name-based assertions rest on."""
+
+[unannotated."org.apache.flink.util.concurrent.ExecutorThreadFactory"]
+reason = """
+The BigQuery FILE_LOADS destination pool performs critical commit work. Its
+Future normally surfaces failures, but a bounded interrupt drain can leave an
+interrupt-ignoring daemon worker running after the coordinator returns. Flink's
+factory installs FatalExitExceptionHandler so a later JVM-fatal failure stops
+the process instead of remaining trapped in that abandoned Future. If this
+factory moves, the fallback is Flink's replacement critical-thread factory or
+setting its fatal-exit handler on this repository's small named daemon factory."""
