@@ -46,11 +46,12 @@ recovery re-reads, and where the emulator differs from the service — is in the
 [Spanner connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/spanner/).
 
 A complete runnable job is in
-[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/spanner/); writing to
-several tables from one stream, deletes, dropping refused mutations, reading a key range and
-emulator-backed local runs are worked through in
-[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/spanner/). Every option the
-sink and the source take, with its default, is in the
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/spanner/).
+DataStream multi-table writes, deletes, refusal handling and bounded reads; Table scans, upserts
+and lookup joins; Change Streams modes and materialization; and emulator-backed local runs are
+worked through in
+[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/spanner/).
+Every option the sink and the source take, with its default, is in the
 [configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/spanner/).
 The SQL DDL, type mapping, primary-key behavior, and Table API options are in the
 [Spanner SQL connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/spanner/).

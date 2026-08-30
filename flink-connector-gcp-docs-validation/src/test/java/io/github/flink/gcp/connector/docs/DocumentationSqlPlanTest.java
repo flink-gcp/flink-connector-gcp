@@ -273,11 +273,17 @@ public class DocumentationSqlPlanTest {
                 scenario(
                         "Spanner lookup join", snippet("flink/SpannerExamples.sql", "lookup-join")),
                 scenario(
+                        "Spanner bounded table source",
+                        snippet("flink/SpannerExamples.sql", "bounded-table-source")),
+                scenario(
                         "Spanner batch upsert",
                         snippet("flink/SpannerExamples.sql", "batch-upsert")),
                 scenario(
-                        "Spanner change stream source",
-                        snippet("flink/SpannerExamples.sql", "change-stream-source")),
+                        "Spanner full change stream source",
+                        snippet("flink/SpannerExamples.sql", "change-stream-full")),
+                scenario(
+                        "Spanner change stream materialization",
+                        snippet("flink/SpannerExamples.sql", "change-stream-materialization")),
                 scenario("Bigtable quickstart", snippet("flink/BigtableQuickstart.sql", "sink")),
                 scenario("Pub/Sub sink quickstart", snippet("flink/PubSubQuickstart.sql", "sink")),
                 scenario(

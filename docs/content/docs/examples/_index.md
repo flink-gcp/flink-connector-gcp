@@ -55,7 +55,7 @@ the endpoint caveat.
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | DataStream subscription and topic creation, dynamic topics, Table source startup and ordering, readable and writable message metadata, and the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Dynamic queues; App Engine, Cloud Run function and external API tasks; Pub/Sub events enriched from Bigtable; JSON, CSV, raw and Avro bodies; the emulator |
 | [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Bounded and filtered DataStream reads; multi-cell and dynamic-table writes, skipping and dropping records; Table scans, upsert and insert-only sinks, writable timestamps, and lookup joins; Pub/Sub attribute enrichment into Cloud Tasks; envelope CDC and a selected-cell BigQuery analytics replica; application profiles and the emulator |
-| [Spanner]({{< relref "docs/examples/spanner" >}}) | SQL lookup joins and upsert writes; several tables, deletes, skipping and dropping records, batch tuning, key-range and fixed-timestamp reads, Data Boost, Change Streams metadata and filtering, and the emulator |
+| [Spanner]({{< relref "docs/examples/spanner" >}}) | DataStream key-range, fixed-timestamp and Data Boost reads; multi-table routing, deletes, skipping, refusal handling and batching; bounded Table scans, upsert writes and lookup joins; full and keyed Change Streams with observable Spanner-to-Spanner materialization; and the emulator |
 
 Two things cut across most of them, and are stated once here rather than five times.
 

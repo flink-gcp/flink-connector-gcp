@@ -44,6 +44,25 @@ LEFT JOIN accounts FOR SYSTEM_TIME AS OF e.proc_time AS a
   ON e.account = a.account AND e.region = a.region;
 -- end::lookup-join[]
 
+-- tag::bounded-table-source[]
+CREATE TABLE inventory (
+  sku STRING,
+  quantity BIGINT,
+  updated_at TIMESTAMP_LTZ(9),
+  PRIMARY KEY (sku) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'inventory'
+);
+
+SELECT sku, quantity
+FROM inventory
+WHERE quantity > 0;
+-- end::bounded-table-source[]
+
 -- tag::batch-upsert[]
 SET 'execution.runtime-mode' = 'batch';
 
@@ -77,29 +96,82 @@ FROM status_events
 GROUP BY region, account;
 -- end::batch-upsert[]
 
--- tag::change-stream-source[]
+-- tag::change-stream-full[]
+CREATE TABLE full_order_changes (
+  order_id BIGINT,
+  customer STRING,
+  status STRING,
+  source_commit_timestamp TIMESTAMP_LTZ(9)
+    METADATA FROM 'commit-timestamp' VIRTUAL,
+  server_transaction_id STRING METADATA FROM 'server-transaction-id' VIRTUAL,
+  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
+  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
+  source_table STRING METADATA FROM 'table' VIRTUAL,
+  mod_type STRING METADATA FROM 'mod-type' VIRTUAL
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'source_orders',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.name' = 'source_order_changes',
+  'scan.change-stream.changelog-mode' = 'full',
+  'scan.startup.mode' = 'latest'
+);
+
+SELECT source_commit_timestamp, server_transaction_id, record_sequence,
+       mod_number, source_table, mod_type, order_id, customer, status
+FROM full_order_changes;
+-- end::change-stream-full[]
+
+-- tag::change-stream-materialization[]
 CREATE TABLE order_changes (
   order_id BIGINT,
+  customer STRING,
   status STRING,
-  commit_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
-  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
+  source_commit_timestamp TIMESTAMP_LTZ(9)
+    METADATA FROM 'commit-timestamp' VIRTUAL,
   server_transaction_id STRING METADATA FROM 'server-transaction-id' VIRTUAL,
+  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
   mod_number INT METADATA FROM 'mod-number' VIRTUAL,
-  records_in_transaction BIGINT
-    METADATA FROM 'number-of-records-in-transaction' VIRTUAL,
+  source_table STRING METADATA FROM 'table' VIRTUAL,
+  mod_type STRING METADATA FROM 'mod-type' VIRTUAL,
   PRIMARY KEY (order_id) NOT ENFORCED
 ) WITH (
   'connector' = 'spanner',
   'project' = 'my-project',
   'instance' = 'my-instance',
   'database' = 'orders-db',
-  'table' = 'orders',
+  'table' = 'source_orders',
   'scan.mode' = 'change-stream',
-  'scan.change-stream.name' = 'order_changes',
-  'scan.change-stream.changelog-mode' = 'upsert'
+  'scan.change-stream.name' = 'source_order_changes',
+  'scan.change-stream.changelog-mode' = 'upsert',
+  'scan.startup.mode' = 'latest'
 );
 
-SELECT server_transaction_id, record_sequence, mod_number,
-       records_in_transaction, order_id, status
+CREATE TABLE order_replica (
+  order_id BIGINT,
+  customer STRING,
+  status STRING,
+  source_commit_timestamp TIMESTAMP_LTZ(9),
+  server_transaction_id STRING,
+  record_sequence STRING,
+  mod_number BIGINT,
+  source_table STRING,
+  mod_type STRING,
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'order_replica'
+);
+
+INSERT INTO order_replica
+SELECT order_id, customer, status, source_commit_timestamp,
+       server_transaction_id, record_sequence, CAST(mod_number AS BIGINT),
+       source_table, mod_type
 FROM order_changes;
--- end::change-stream-source[]
+-- end::change-stream-materialization[]

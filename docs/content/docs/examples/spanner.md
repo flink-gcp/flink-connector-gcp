@@ -22,116 +22,17 @@ limitations under the License.
 
 # Spanner examples
 
-Worked cases beyond the [quickstart]({{< relref "docs/quickstart/spanner" >}}). What each option
-means is on the [Spanner options]({{< relref "docs/reference/spanner" >}}) page; why the sink
-behaves as it does is on the
-[Spanner connector]({{< relref "docs/connectors/datastream/spanner" >}}) page.
+Worked cases beyond the [quickstart]({{< relref "docs/quickstart/spanner" >}}) follow the shared source-to-sink order.
+The [Spanner options]({{< relref "docs/reference/spanner" >}}) page lists every option, while the
+[Spanner connector]({{< relref "docs/connectors/datastream/spanner" >}}) page explains the runtime
+contracts behind them.
 
-## Joining a composite-key lookup table
+## DataStream source
 
-A processing-time temporal join turns each facts row into a Spanner point read.
-Create and seed the physical table in the quickstart's `orders-db` database first:
+The quickstart owns the basic [bounded DataStream read]({{< relref "docs/quickstart/spanner" >}}#read-the-table-back-into-flink).
+The cases below change its read shape, snapshot, compute placement, or row handling.
 
-{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="accounts-table-and-row" >}}
-
-The one-row data generator below derives the demo region `region-1` from account `1`, so it
-deterministically produces the seeded key. Real event tables normally carry both key columns as
-physical fields.
-
-{{< sql-snippet file="flink/SpannerExamples.sql" tag="lookup-join" >}}
-
-The equality condition must cover every declared primary-key column.
-The join predicates may appear in either order, but the connector encodes the lookup key in the `PRIMARY KEY (region, account)` declaration order.
-That declaration order must match the physical Spanner table's primary-key order, or the point read addresses a different key.
-
-## Writing upserts with SQL
-
-A declared primary key makes the Spanner sink use `insertOrUpdate` for inserts and updates.
-This bounded aggregation emits one final row for each composite key:
-
-Create its physical destination in `orders-db` first:
-
-{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="account-status-table" >}}
-
-{{< sql-snippet file="flink/SpannerExamples.sql" tag="batch-upsert" >}}
-
-Without the Flink `PRIMARY KEY` declaration, the connector accepts only insert-only input and uses Spanner `insert` instead.
-The declaration is a planner contract; it does not create or verify the physical key.
-
-## Writing to several tables from one sink
-
-The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#spanner-tables) explains why Spanner takes its table from each mutation instead of using the resolver-based pattern.
-The mutation names its table, so routing by record needs no option — just a serializer that decides.
-
-{{< java-snippet file="SpannerExamplesSeveralTables.java" tag="spanner-examples-several-tables" >}}
-
-At start-up, the sink reads index-aware cell weights for the database's visible tables, so both pre-existing tables in this example are weighed correctly against the batch limit.
-A table created after the writer opens, or hidden from the writer's database role, is counted without its index entries.
-Both tables must already exist because the sink does not create them.
-
-## Deleting rows
-
-A delete is a mutation like any other, so a stream of keys is a stream of deletes.
-
-{{< java-snippet file="SpannerExamplesDeletingRows.java" tag="spanner-examples-deleting-rows" >}}
-
-Deletes are idempotent, so a replayed record is harmless. A delete over a key *range* is also
-possible — note that the sink counts it as a single row against `maxBatchCells`, because nothing on
-the client side can know how many rows a range matches.
-
-## Skipping records
-
-Returning `null` skips the record: it is written nowhere, is not a failure, and is counted by
-`recordsSkipped`.
-
-{{< java-snippet file="SpannerExamplesSkippingRecords.java" tag="spanner-examples-skipping-records" >}}
-
-## Dropping refused mutations instead of failing the job
-
-By default the first refused mutation fails the job. `failedMutationHandler` changes that.
-
-{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-dropping-refused-mutations" >}}
-
-**Read what actually reaches this handler before relying on it.** By default only `ALREADY_EXISTS`
-and `INVALID_ARGUMENT` do — a `NOT NULL` violation, an over-long value, a foreign key or a `CHECK`
-constraint all fail the job instead. That default is deliberate, and it is also an option:
-
-{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-constraint-violation-policy" >}}
-
-which sends constraint violations to the same handler, so the handler above then decides. Choose it
-when your stream genuinely carries occasional records the schema will not accept; leave it alone
-when a refusal would mean your column mapping is wrong. The
-[table on the connector page]({{< relref "docs/connectors/datastream/spanner" >}}#what-does-not-reach-the-failure-handler-and-why)
-lists every case, and says why the default is what it is.
-
-A handler taking the connector's own type can inspect the mutation itself as well as its table and error message.
-This example logs the table and service-provided error text without capturing a non-serializable logger in the handler:
-
-{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-custom-failure-handler" >}}
-
-Treat that error text as potentially sensitive because the service may include rejected identifiers or values in it; omit or sanitize it when the log is not an approved destination for record data.
-
-## Tuning the batch
-
-The defaults are Apache Beam's, and they sit far under every limit a batch write request has to stay
-within. Lower them for latency; raise them only knowing what `maxBatchCells` counts. Each has a
-ceiling, refused at submission rather than on a task manager — see the
-[configuration reference]({{< relref "docs/reference/spanner" >}}#batch-limits) for what each
-ceiling is and what it rests on. They are also ANDed — a batch flushes on whichever binds first — so
-raising one alone often changes nothing; `maxBatchCells` and `maxBatchBytes` are the pair to reach
-for. Setting `maxBatchMutations` above `maxBatchCells` writes a warning to the log of wherever the
-job's `main` runs, because the cell cap is then reached first and the mutation cap can never take
-effect.
-`batchWriteTimeout` separately bounds a complete write attempt so that a stalled response stream
-cannot hold the task thread indefinitely.
-
-{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-batch-options" >}}
-
-`maxBatchCells` counts index entries, not columns: a row of five columns in a table with three
-indexes covering them costs far more than five. Watch `bufferedCells` beside `bufferedBytes` to see
-which limit is the one actually firing.
-
-## Reading a key range instead of a query
+### Reading a key range instead of a query
 
 A table read takes a key set and a column list, and is the cheapest shape when the rows wanted are
 a contiguous range of the primary key. There is no SQL to be root-partitionable, so nothing about
@@ -142,7 +43,7 @@ the read can be refused for being undistributable.
 `SpannerReadOperation.readUsingIndex("Orders", "OrdersByCustomer", keys, columns)` reads the same
 way through a secondary index, with the key set interpreted in the *index's* key space.
 
-## Reading a large table without disturbing serving traffic
+### Reading a large table without disturbing serving traffic
 
 Data Boost serves the read from compute that is not the instance's. The caller needs
 `spanner.databases.useDataBoost` on the database, the read is billed separately, and its
@@ -150,7 +51,7 @@ concurrency has a quota of its own.
 
 {{< java-snippet file="SpannerExamplesDataBoost.java" tag="spanner-examples-data-boost" >}}
 
-## Reading at a fixed timestamp
+### Reading at a fixed timestamp
 
 Reading two tables at the same timestamp makes their contents consistent with each other, which a
 job joining them usually wants.
@@ -162,7 +63,7 @@ to a week — or the data behind it is gone. `TimestampBound.ofExactStaleness(..
 accepted form; `ofMaxStaleness` and `ofMinReadTimestamp` are rejected, because Spanner allows them
 only on a single-use transaction.
 
-## Skipping rows on the way in
+### Skipping rows on the way in
 
 Emitting nothing from a source deserializer skips the row.
 `recordsSkipped` counts each such input row once.
@@ -173,18 +74,169 @@ A row you could not read is a different thing: throw, and the job fails rather t
 Collector calls must be synchronous, must emit non-null records, and must not continue after
 `deserialize` returns.
 
-## Grouping SQL changes by transaction and mod
+## DataStream sink
 
-Readable metadata keeps Spanner's transaction and record identity beside the relational changelog row.
-The names match Debezium's Spanner source vocabulary where it exposes the same Spanner fields, which makes an existing Debezium pipeline's grouping model reusable.
+The quickstart owns the basic [DataStream write]({{< relref "docs/quickstart/spanner" >}}#write-a-stream-into-a-spanner-table).
+The cases below change mutation routing, mutation shape, refusal handling, or batching.
 
-{{< sql-snippet file="flink/SpannerExamples.sql" tag="change-stream-source" >}}
+### Writing to several tables from one sink
 
-`mod_number` starts at zero for each original data-change record.
-In `full` mode, the before and after rows for one update deliberately carry the same value.
-Use `TIMESTAMP_LTZ(3)` plus `WATERMARK FOR commit_timestamp AS SOURCE_WATERMARK()` when event-time operations matter more than retaining nanoseconds.
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#spanner-tables) explains why Spanner takes its table from each mutation instead of using the resolver-based pattern.
+The mutation names its table, so routing by record needs no option, only a serializer that decides.
 
-## Filtering Change Streams records
+{{< java-snippet file="SpannerExamplesSeveralTables.java" tag="spanner-examples-several-tables" >}}
+
+At start-up, the sink reads index-aware cell weights for the database's visible tables, so both pre-existing tables in this example are weighed correctly against the batch limit.
+A table created after the writer opens, or hidden from the writer's database role, is counted without its index entries.
+Both tables must already exist because the sink does not create them.
+
+### Deleting rows
+
+A delete is a mutation like any other, so a stream of keys is a stream of deletes.
+
+{{< java-snippet file="SpannerExamplesDeletingRows.java" tag="spanner-examples-deleting-rows" >}}
+
+Deletes are idempotent, so replaying a record is harmless.
+A delete over a key *range* is also possible, but the sink counts it as one row against `maxBatchCells` because the client cannot know how many rows the range matches.
+
+### Skipping records
+
+Returning `null` skips the record: it is written nowhere, is not a failure, and increments
+`recordsSkipped`.
+
+{{< java-snippet file="SpannerExamplesSkippingRecords.java" tag="spanner-examples-skipping-records" >}}
+
+### Dropping refused mutations instead of failing the job
+
+By default the first refused mutation fails the job.
+`failedMutationHandler` changes that decision.
+
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-dropping-refused-mutations" >}}
+
+**Read what reaches this handler before relying on it.**
+By default only `ALREADY_EXISTS` and `INVALID_ARGUMENT` do; a `NOT NULL` violation, an over-long value, a foreign key, or a `CHECK` constraint fails the job instead.
+The constraint-violation policy can route those schema refusals to the same handler:
+
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-constraint-violation-policy" >}}
+
+Choose that policy when the stream genuinely carries occasional records the schema will not accept.
+Keep the fail-job default when a refusal would mean the column mapping is wrong.
+The [error table]({{< relref "docs/connectors/datastream/spanner" >}}#what-does-not-reach-the-failure-handler-and-why) lists every case and the reason for its route.
+
+A handler using the connector's failure type can inspect the mutation, table, and error message.
+This example logs the table and service-provided text without capturing a non-serializable logger:
+
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-custom-failure-handler" >}}
+
+Treat that text as potentially sensitive because the service may include rejected identifiers or values.
+Omit or sanitize it when the log is not an approved destination for record data.
+
+### Tuning the batch
+
+The defaults are Apache Beam's and sit far below the request limits.
+Lower them for latency, and raise them only after checking what `maxBatchCells` counts.
+The [configuration reference]({{< relref "docs/reference/spanner" >}}#batch-limits) records each ceiling and its evidence.
+The limits are combined, so a batch flushes when the first one binds and raising one limit alone often changes nothing.
+Setting `maxBatchMutations` above `maxBatchCells` writes a warning where the job's `main` runs because the cell cap must bind first.
+`batchWriteTimeout` separately bounds one complete write attempt so a stalled response stream cannot hold the task thread indefinitely.
+
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-batch-options" >}}
+
+`maxBatchCells` counts every written table cell plus the secondary-index entries that the write changes.
+Read `bufferedCells` beside `bufferedBytes` to identify the limit that is firing.
+
+## Table source
+
+### Reading a bounded table with SQL
+
+The default Table source reads one bounded snapshot through the same partitioned source as the DataStream API.
+Create and seed the physical table in the quickstart's `orders-db` database first:
+
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="inventory-table-and-row" >}}
+
+The Flink DDL defaults to `scan.mode = 'bounded'`, so no Change Stream options are needed:
+
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="bounded-table-source" >}}
+
+Projection is pushed into the Spanner column list.
+The non-key `quantity` predicate remains with Flink because bounded scan pushdown is limited to consecutive primary-key columns.
+
+## Table sink
+
+### Writing upserts with SQL
+
+A declared primary key makes the Spanner sink use `insertOrUpdate` for inserts and updates.
+This bounded aggregation emits one final row for each composite key.
+Create its physical destination in `orders-db` first:
+
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="account-status-table" >}}
+
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="batch-upsert" >}}
+
+Without the Flink `PRIMARY KEY` declaration, the connector accepts only insert-only input and uses Spanner `insert`.
+The declaration is a planner contract; it does not create or verify the physical key.
+
+## Lookup joins
+
+### Joining a composite-key lookup table
+
+A processing-time temporal join turns each facts row into a Spanner point read.
+Create and seed the physical table in the quickstart's `orders-db` database first:
+
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="accounts-table-and-row" >}}
+
+The one-row data generator derives `region-1` from account `1`, so it deterministically produces the seeded key.
+Real event tables normally carry both key columns as physical fields.
+
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="lookup-join" >}}
+
+The equality condition must cover every declared primary-key column.
+The join predicates may appear in either order, but the connector encodes the lookup key in the `PRIMARY KEY (region, account)` declaration order.
+That order must match the physical Spanner primary key, or the point read addresses a different key.
+
+## Change Streams
+
+### Comparing changelog modes and materializing changes
+
+The Table source offers two changelog shapes over the same physical Change Stream.
+Create the watched table, a stream that captures old and new values, and a separate materialization table first:
+
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="orders-change-stream-and-replica" >}}
+
+| Mode | Required capture | Flink primary key | Row kinds | Delete row |
+|---|---|---|---|---|
+| `full` | `NEW_ROW_AND_OLD_VALUES` | Optional | `INSERT`, `UPDATE_BEFORE`, `UPDATE_AFTER`, `DELETE` | Complete old row |
+| `upsert` | `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` | Required and equal to the record key | `INSERT`, `UPDATE_AFTER`, `DELETE` | Key only |
+
+Both modes expose the same readable commit, transaction, sequence, mod, table, and modification-type metadata.
+`mod_number` starts at zero for each original data-change record, and the before and after rows of one full-mode update share it.
+Both DDLs start at `latest`, so a fresh job waits for changes committed after it starts.
+
+The `full` DDL needs no primary key because it reconstructs complete retract rows:
+
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="change-stream-full" >}}
+
+The sink's advertised upsert changelog excludes `UPDATE_BEFORE`, and the planner does not send those rows to it.
+Use `upsert` when the source should feed a keyed Spanner sink:
+
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="change-stream-materialization" >}}
+
+After starting either job, wait until `changeStreamQueriesStarted` is non-zero for at least one
+source reader subtask, then insert a watched row from another session:
+
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="order-change-after-source-starts" >}}
+
+The Change Streams DDL and sink DDL remain separate because `scan.mode = 'change-stream'` makes a table source-only.
+The source metadata columns are virtual, while the replica stores their selected values in ordinary physical columns for observability.
+The query widens the Flink `INT` mod number to `BIGINT`, the lossless mapping for a physical Spanner `INT64` column.
+A key-only delete still works because the sink constructs a delete mutation from the primary key and does not write non-key fields.
+
+This is a replica-shaped materialization pattern, not a strict replica guarantee.
+The sink is at-least-once, and `BatchWrite` does not guarantee the application order of successive writes to one key, so the destination is not guaranteed to retain the latest source value.
+
+Use `TIMESTAMP_LTZ(3)` plus `WATERMARK FOR source_commit_timestamp AS SOURCE_WATERMARK()` when event-time operations matter more than retaining nanoseconds.
+
+### Filtering Change Streams records
 
 Table and column filters run after the connector decodes Spanner's record and before the user deserializer runs.
 Each Java regular expression matches a complete table name or `table.column` identifier.
@@ -198,7 +250,9 @@ Set `skipMessagesWithoutChange(true)` only when downstream processing does not n
 These filters do not change the Change Stream query or prevent excluded values from entering the source process.
 Restrict the Change Stream's DDL watch definition when exclusion must happen inside Spanner.
 
-## Running against the emulator
+## Local development
+
+### Running against the emulator
 
 ```sh
 docker run -p 9010:9010 -p 9020:9020 gcr.io/cloud-spanner-emulator/emulator:1.5.56
