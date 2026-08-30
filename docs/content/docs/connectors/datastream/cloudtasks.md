@@ -22,6 +22,14 @@ limitations under the License.
 
 # Cloud Tasks Connector
 
+Start with the [Quickstart]({{< relref "docs/quickstart/cloudtasks" >}}) for the basic dispatch job,
+or use the [Cloud Tasks examples]({{< relref "docs/examples/cloudtasks" >}}) for dynamic queues,
+Table sink requests, cross-connector pipelines, and local development.
+The [Table connector]({{< relref "docs/connectors/table/cloudtasks" >}}) owns DDL, formats,
+writable metadata, and planner restrictions.
+
+## Overview and setup
+
 Cloud Tasks sink for Apache Flink, provided by the `flink-connector-gcp-cloudtasks` module.
 
 The sink ships in [#24]({{< param BookRepo >}}/issues/24), and App Engine targets join it in
@@ -30,7 +38,7 @@ Its emulator integration tests are [#25]({{< param BookRepo >}}/issues/25).
 This page doubles as the design record: it explains what the connector does and why each decision
 was taken, so the reasoning is settled once rather than re-argued per pull request.
 
-## What this connector is for
+### What this connector is for
 
 Cloud Tasks is best understood as **an HTTP request dispatch queue that executes later while
 respecting a rate limit**. A task is not data at rest; it is a request to call an endpoint, held by
@@ -43,15 +51,14 @@ and Cloud Tasks paces the delivery, retries failures with backoff, and can sched
 days ahead. Doing the same inside Flink means writing a stateful throttle; doing it with a plain
 HTTP sink means not doing it at all.
 
-**The pacing lives on the queue, not in this sink.** `maxDispatchesPerSecond`,
-`maxConcurrentDispatches` and the retry policy are queue configuration, applied by whoever creates
-the queue. The sink writes tasks; the queue decides how fast they execute. This is the opposite of
-the usual connector experience, where throughput knobs sit in the sink's own options, and it is
-worth internalising before reading the rest of this page.
+**The pacing lives on the queue, not in this sink.** The sink writes tasks; the queue decides how
+fast they execute and when a failed dispatch retries.
+The [queue and sink-concurrency section](#queues-rate-limits-and-sink-concurrency) separates those
+service settings from the writer options.
 
 {{< java-snippet file="CloudTasksConnectorOverview.java" tag="cloud-tasks-connector-overview" >}}
 
-## API notes
+### API notes
 
 - `CloudTasksSerializationSchema.serialize` returns a full `Task`, so every per-record field of a
   task — HTTP URL or App Engine relative URI/routing, method, headers, body, schedule time,
@@ -112,7 +119,7 @@ on that task.
 The first authenticates the Flink writer to the Cloud Tasks API; the second is a token that Cloud
 Tasks attaches when it later calls the task's HTTP target.
 
-## Credential file deployment
+### Credential file deployment
 
 > **Authentication recommendation.** Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).
 > Prefer keyless application-default credentials from an attached service account or Workload Identity over a service-account key file.
@@ -133,12 +140,15 @@ Tasks attaches when it later calls the task's HTTP target.
 > Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
 > Prefer an application/per-job cluster with Workload Identity when jobs require separate identities.
 
-## Targets
+## DataStream sink
+
+### Targets
 
 Cloud Tasks stores the request target as a `oneof`, and the serialization API exposes both arms:
 an external `HttpRequest` and an `AppEngineHttpRequest`.
 The two target schemas cannot produce both on one task because each constructs its own protobuf
 field directly.
+The next two sibling sections keep both target arms visible in the page outline.
 
 ### App Engine targets
 
@@ -216,7 +226,7 @@ all. A preflight check would mean pulling in the v2beta3 client or calling REST 
 therefore documents the interaction rather than guarding it, and the cost of guarding it later is
 recorded here so it is not rediscovered as "just one extra call".
 
-## Task naming and deduplication
+### Task naming and deduplication
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
 for the Table and DataStream API comparison.
@@ -284,6 +294,67 @@ console from its business key. Passing a caller-chosen name through unhashed —
 would allow deduplication against tasks created by another system — is deferred until someone needs
 it.
 
+## Queues, rate limits and sink concurrency
+
+This queue and runtime behavior applies to both DataStream and Table jobs.
+
+`maxDispatchesPerSecond`, `maxConcurrentDispatches` and the dispatch retry policy are queue
+configuration, applied by whoever creates the queue.
+The sink options do not change how quickly Cloud Tasks delivers requests or retries a failed
+handler invocation.
+
+**This sink does not use a batch create, and creation costs one RPC per record.** `BufferTask` is a
+GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does, but only on the
+**v2beta3** surface — long-running, explicitly non-atomic, 100 tasks maximum — while this
+connector targets v2. It was evaluated against a real queue and declined in
+[#937]({{< param BookRepo >}}/issues/937)
+([ADR-0129]({{< param BookRepo >}}/blob/main/docs/adr/0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md)
+holds the measurements): batching was no faster than the sink's existing concurrent creates, and
+a batch containing already-existing named tasks is rejected wholesale with a single
+`ALREADY_EXISTS` — no per-task report, its non-duplicate half still silently created — which no
+sink reporting per-task outcomes can reconcile. The Java client also
+configures no method with gax batching — there is no `BatchingSettings` in `CloudTasksSettings` or
+`CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
+are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.
+
+What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on outstanding
+creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
+completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
+write at the cap yielding until completions bring the count down.
+Create throughput is then bounded by sink parallelism × min(the in-flight cap, `channelPoolSize`
+× ~100) concurrent creates, against a per-RPC latency that naming increases. The transport term is
+the one the [#937]({{< param BookRepo >}}/issues/937) measurement surfaced: a single gRPC channel
+carries ~100 concurrent streams, so once the cap sits at or above ~100, a subtask at the default
+single channel tops out around ~210 creates/s however much higher the cap is raised. [#1015]({{< param BookRepo >}}/issues/1015) routed that ceiling
+into the `channelPoolSize` knob under [Tuning](#tuning), whose default keeps the single channel.
+
+What the sink does **not** provide is pacing. Two numbers bound the queue instead:
+
+- **500 dispatches per second per queue** — a hard limit; `maxDispatchesPerSecond` cannot exceed it.
+- **~1000 TPS per queue, creates plus dispatches** — Google "doesn't recommend" more, "as it will
+  produce higher delivery latency than normal". Ramping past 500 TPS should follow the documented
+  500/50/5 rule: increase by no more than 50% every 5 minutes.
+
+Neither is a limit this connector can raise, and neither matters to the pipeline this connector
+exists for — one that is throttling *down* to a third-party limit never approaches them.
+A DataStream pipeline that needs more aggregate throughput can shard across queues with
+`destinationResolver`.
+A Table sink has one fixed queue, so a Table job must route rows explicitly to separately declared
+sink tables to shard across queues.
+
+**Queues are not created by the sink.** Unlike Pub/Sub topics and BigQuery tables, there is no
+`CreateDisposition` here, for two reasons. An auto-created queue would carry Cloud Tasks' default
+rate limits, silently discarding the pacing that is the entire reason to use the service — the sink
+would be helpfully creating exactly the wrong thing. And queue creation is a one-way door: a deleted
+queue name cannot be reused for 3 days, so a mistake is expensive to undo. The queue is a piece of
+infrastructure the pipeline points at, like a Kafka topic with a retention policy.
+
+Two queue states to be aware of, because neither produces an error at the sink: a **paused** queue
+"will stop delivering tasks from it, but more tasks can still be added to it", and a **disabled**
+queue behaves the same way. A pipeline writing to either sees a healthy sink while the backlog
+grows. `DISABLED` is the rarer of the two — a queue cannot be disabled directly, only by uploading
+a `queue.yaml`/`queue.xml` that omits it.
+
 ## Delivery guarantees and state
 
 See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
@@ -296,7 +367,8 @@ waiting out a retry backoff. A successful checkpoint therefore means Cloud Tasks
 accepted every record up to the barrier, other than those the serializer skipped by returning
 `null` — the service returns `OK` only once the task "has been successfully written to Cloud Tasks
 storage" — and the writer keeps nothing in Flink state, so discarding operator state can never lose
-buffered records. This is the same model the Pub/Sub and BigQuery sinks use, and the reasoning against `AsyncSinkBase` recorded there applies unchanged.
+buffered records. This is the same model the Pub/Sub and BigQuery sinks use, and the reasoning against
+`AsyncSinkBase` recorded there applies unchanged.
 
 That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
 `sendToDeadLetterQueue(...)` a successful checkpoint means every record up to the barrier was
@@ -339,94 +411,6 @@ records Cloud Tasks has not accepted yet, so they have to bound memory the same 
 do — and a `write()` at the cap with everything parked waits out the earliest backoff rather than
 spinning. And parked creates are **dropped when the writer closes**: they are not covered by a
 completed checkpoint, so the restart replays their records.
-
-### Tuning
-
-`CloudTasksWriterOptions` (nested-options pattern, every knob defaulted, set through
-`writerOptions(...)`) is the whole surface, and every knob with its default is in the
-[configuration reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtaskswriteroptions).
-There are deliberately no rate knobs among them — that is the queue's job.
-
-`channelPoolSize` is the one transport knob, and it is not a rate knob either: it sizes how much
-of the in-flight cap the transport can actually carry. The client's default transport opens a
-single gRPC channel, and one HTTP/2 channel carries ~100 concurrent streams, so at the default one
-subtask runs about 100 concurrent creates no matter how high `maxInFlightTasks` is set — measured
-in [#937]({{< param BookRepo >}}/issues/937) as ~210 creates/s per subtask at the default against
-1,271/s with an 8-channel pool. Throughput is concurrency divided by a per-RPC latency that itself
-grows with load — queueing took the measured p50 from ~50 ms at low concurrency to ~280 ms at
-100-way — which is why eight channels bought ~6× rather than 8×; expect the pool to scale
-sub-linearly. The default deliberately stays at the client's single channel
-([ADR-0134]({{< param BookRepo >}}/blob/main/docs/adr/0134-the-cloud-tasks-channel-pool-is-an-explicit-knob-defaulting-to-the-clients-single-channel.md)):
-a pool sized from the cap would have silently pushed jobs toward the queue's [recommended
-~1,000 TPS ceiling](#queues-rate-limits-and-sink-concurrency), which that 8-channel figure already
-exceeds. Raising it is therefore a deliberate act — size the pool at about one channel per 100
-concurrent creates you actually want, and mind the 500/50/5 ramp rule below. Beside
-`emulatorEndpoint` the knob is rejected at `build()`: the emulator always uses one plaintext
-channel, so a configured pool would otherwise be silently ignored.
-
-One shape in that table needs the reasoning that used to sit in its own row. `NOT_FOUND` has a
-**separate, short budget** because a queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may
-return `NOT_FOUND`" meanwhile, so it is not proof of a misconfigured queue — but a mistyped queue
-name must not burn the full retry budget on every record before failing. A queue taking minutes to
-re-activate outlives that budget by design: recovering from it is the job's restart strategy, not
-the writer's.
-
-Both backoffs carry ±25% jitter, so parallel subtasks backing off against the same queue at the
-same instant do not retry in lockstep. The ratio is not exposed: the jitter is mean-preserving —
-the backoff is multiplied by a factor in `[0.75, 1.25]`, so the expected delay is the configured
-one — which is why even the short `NOT_FOUND` budget carries it.
-
-## Queues, rate limits and sink concurrency
-
-**This sink does not use a batch create, and creation costs one RPC per record.** `BufferTask` is a
-GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does, but only on the
-**v2beta3** surface — long-running, explicitly non-atomic, 100 tasks maximum — while this
-connector targets v2. It was evaluated against a real queue and declined in
-[#937]({{< param BookRepo >}}/issues/937)
-([ADR-0129]({{< param BookRepo >}}/blob/main/docs/adr/0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md)
-holds the measurements): batching was no faster than the sink's existing concurrent creates, and
-a batch containing already-existing named tasks is rejected wholesale with a single
-`ALREADY_EXISTS` — no per-task report, its non-duplicate half still silently created — which no
-sink reporting per-task outcomes can reconcile. The Java client also
-configures no method with gax batching — there is no `BatchingSettings` in `CloudTasksSettings` or
-`CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
-are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.
-
-What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on outstanding
-creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
-completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
-write at the cap yielding until completions bring the count down.
-Create throughput is then bounded by sink parallelism × min(the in-flight cap, `channelPoolSize`
-× ~100) concurrent creates, against a per-RPC latency that naming increases. The transport term is
-the one the [#937]({{< param BookRepo >}}/issues/937) measurement surfaced: a single gRPC channel
-carries ~100 concurrent streams, so once the cap sits at or above ~100, a subtask at the default
-single channel tops out around ~210 creates/s however much higher the cap is raised. [#1015]({{< param BookRepo >}}/issues/1015) routed that ceiling
-into the `channelPoolSize` knob under [Tuning](#tuning), whose default keeps the single channel.
-
-What the sink does **not** provide is pacing. Two numbers bound the queue instead:
-
-- **500 dispatches per second per queue** — a hard limit; `maxDispatchesPerSecond` cannot exceed it.
-- **~1000 TPS per queue, creates plus dispatches** — Google "doesn't recommend" more, "as it will
-  produce higher delivery latency than normal". Ramping past 500 TPS should follow the documented
-  500/50/5 rule: increase by no more than 50% every 5 minutes.
-
-Neither is a limit this connector can raise, and neither matters to the pipeline this connector
-exists for — one that is throttling *down* to a third-party limit never approaches them. A pipeline
-that does need more aggregate throughput shards across queues, which is what `destinationResolver`
-is for.
-
-**Queues are not created by the sink.** Unlike Pub/Sub topics and BigQuery tables, there is no
-`CreateDisposition` here, for two reasons. An auto-created queue would carry Cloud Tasks' default
-rate limits, silently discarding the pacing that is the entire reason to use the service — the sink
-would be helpfully creating exactly the wrong thing. And queue creation is a one-way door: a deleted
-queue name cannot be reused for 3 days, so a mistake is expensive to undo. The queue is a piece of
-infrastructure the pipeline points at, like a Kafka topic with a retention policy.
-
-Two queue states to be aware of, because neither produces an error at the sink: a **paused** queue
-"will stop delivering tasks from it, but more tasks can still be added to it", and a **disabled**
-queue behaves the same way. A pipeline writing to either sees a healthy sink while the backlog
-grows. `DISABLED` is the rarer of the two — a queue cannot be disabled directly, only by uploading
-a `queue.yaml`/`queue.xml` that omits it.
 
 ## Error handling
 
@@ -632,19 +616,41 @@ so the interval this writer could measure would describe its own retry budget ra
 service's response time. There is no committer either (the sink is single-phase), so Flink's
 committer metrics do not apply.
 
-## Scope
+## Tuning
 
-| | Current |
-|---|---|
-| Targets | HTTP and App Engine; fixed and per-record request routing |
-| Authorization | HTTP: OIDC and OAuth tokens; App Engine: internal dispatch identity |
-| Destinations | Fixed queue or per-record resolver |
-| Deduplication | Opt-in named tasks, id hashed by the sink |
-| Queue management | None — the queue must exist and be configured |
-| Pacing | None in the sink; owned by the queue |
-| Delivery | At-least-once, flush on checkpoint, stateless writer |
-| Failure policy | Job failure by default; pluggable per-task handler ([#207]({{< param BookRepo >}}/issues/207)) |
-| Table API / SQL | HTTP implemented in [#605]({{< param BookRepo >}}/issues/605); App Engine implemented in [#634]({{< param BookRepo >}}/issues/634) |
+`CloudTasksWriterOptions` (nested-options pattern, every knob defaulted, set through
+`writerOptions(...)`) is the whole surface, and every knob with its default is in the
+[configuration reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtaskswriteroptions).
+There are deliberately no rate knobs among them — that is the queue's job.
+
+`channelPoolSize` is the one transport knob, and it is not a rate knob either: it sizes how much
+of the in-flight cap the transport can actually carry. The client's default transport opens a
+single gRPC channel, and one HTTP/2 channel carries ~100 concurrent streams, so at the default one
+subtask runs about 100 concurrent creates no matter how high `maxInFlightTasks` is set — measured
+in [#937]({{< param BookRepo >}}/issues/937) as ~210 creates/s per subtask at the default against
+1,271/s with an 8-channel pool. Throughput is concurrency divided by a per-RPC latency that itself
+grows with load — queueing took the measured p50 from ~50 ms at low concurrency to ~280 ms at
+100-way — which is why eight channels bought ~6× rather than 8×; expect the pool to scale
+sub-linearly. The default deliberately stays at the client's single channel
+([ADR-0134]({{< param BookRepo >}}/blob/main/docs/adr/0134-the-cloud-tasks-channel-pool-is-an-explicit-knob-defaulting-to-the-clients-single-channel.md)):
+a pool sized from the cap would have silently pushed jobs toward the queue's [recommended
+~1,000 TPS ceiling](#queues-rate-limits-and-sink-concurrency), which that 8-channel figure already
+exceeds. Raising it is therefore a deliberate act — size the pool at about one channel per 100
+concurrent creates you actually want, and mind the 500/50/5 ramp rule above. Beside
+`emulatorEndpoint` the knob is rejected at `build()`: the emulator always uses one plaintext
+channel, so a configured pool would otherwise be silently ignored.
+
+The retry-status table in [Delivery guarantees and state](#delivery-guarantees-and-state) gives
+`NOT_FOUND` a **separate, short budget** because a queue idle for 30 days takes "a few minutes to re-activate" and
+"some method calls may return `NOT_FOUND`" meanwhile, so it is not proof of a misconfigured queue —
+but a mistyped queue name must not burn the full retry budget on every record before failing. A
+queue taking minutes to re-activate outlives that budget by design: recovering from it is the job's
+restart strategy, not the writer's.
+
+Both backoffs carry ±25% jitter, so parallel subtasks backing off against the same queue at the
+same instant do not retry in lockstep. The ratio is not exposed: the jitter is mean-preserving —
+the backoff is multiplied by a factor in `[0.75, 1.25]`, so the expected delay is the configured
+one — which is why even the short `NOT_FOUND` budget carries it.
 
 ## Testing
 
@@ -732,6 +738,20 @@ What remains uncovered by the emulator and this App Engine suite:
 - It enforces no task-size limit, so a test of the limits above would assert the emulator's
   leniency rather than the service's behaviour. Scheduling semantics (`scheduleTime` and
   `dispatchDeadline`, which a custom serialization schema may set) are likewise left to real GCP.
+
+## Scope
+
+| | Current |
+|---|---|
+| Targets | HTTP and App Engine; fixed and per-record request routing |
+| Authorization | HTTP: OIDC and OAuth tokens; App Engine: internal dispatch identity |
+| Destinations | Fixed queue or per-record resolver |
+| Deduplication | Opt-in named tasks, id hashed by the sink |
+| Queue management | None — the queue must exist and be configured |
+| Pacing | None in the sink; owned by the queue |
+| Delivery | At-least-once, flush on checkpoint, stateless writer |
+| Failure policy | Job failure by default; pluggable per-task handler ([#207]({{< param BookRepo >}}/issues/207)) |
+| Table API / SQL | HTTP implemented in [#605]({{< param BookRepo >}}/issues/605); App Engine implemented in [#634]({{< param BookRepo >}}/issues/634) |
 
 ## Provenance and attribution
 
