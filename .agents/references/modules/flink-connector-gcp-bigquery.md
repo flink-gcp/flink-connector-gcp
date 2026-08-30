@@ -237,6 +237,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `maxOpenDestinations` is per writer subtask and finishes the least recently used file before a
   new one opens; `destinationIdleTimeout` finishes inactive files on processing-time callbacks;
   every checkpoint finishes and clears the remainder.
+  Checkpoint and end-of-input finalization is serial by default and may be bounded from 1 through 8
+  with `maxConcurrentCheckpointFinalizations`; it drains every submitted close before returning on
+  success, ordinary failure, or interruption, and reports results and ordinary failures in input
+  order on the task thread.
+  A JVM-fatal worker failure wakes the task thread, cancels its peers, and remains primary.
+  Finalization does not parallelize appends, size rolls, capacity evictions, or idle closes
+  (`docs/adr/0146`).
   `maxPendingFiles` separately bounds the finished and open file metadata retained until the next
   commit; reaching it fails before another file opens, and `pendingFiles` reports the current
   count.

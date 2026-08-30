@@ -106,6 +106,7 @@ public final class FileLoadsWriter<T>
     private final long maxStagingFileBytes;
     private final int maxOpenDestinations;
     private final int maxPendingFiles;
+    private final int maxConcurrentCheckpointFinalizations;
     private final long destinationIdleTimeoutMillis;
     private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
@@ -158,6 +159,8 @@ public final class FileLoadsWriter<T>
         this.maxStagingFileBytes = options.getMaxStagingFileBytes();
         this.maxOpenDestinations = options.getMaxOpenDestinations();
         this.maxPendingFiles = options.getMaxPendingFiles();
+        this.maxConcurrentCheckpointFinalizations =
+                options.getMaxConcurrentCheckpointFinalizations();
         this.destinationIdleTimeoutMillis = options.getDestinationIdleTimeout().toMillis();
         this.maxSerializedRowBytes = options.getMaxSerializedRowBytes();
         this.stagingFormat = options.getStagingFormat();
@@ -327,11 +330,23 @@ public final class FileLoadsWriter<T>
     @Override
     public Collection<FileLoadsCommittable> prepareCommit() throws IOException {
         int activeDestinations = destinations.size();
-        Iterator<DestinationState> iterator = destinations.values().iterator();
-        while (iterator.hasNext()) {
-            DestinationState state = iterator.next();
-            finishFile(state);
-            iterator.remove();
+        if (activeDestinations < 2 || maxConcurrentCheckpointFinalizations == 1) {
+            Iterator<DestinationState> iterator = destinations.values().iterator();
+            while (iterator.hasNext()) {
+                finishFile(iterator.next());
+                iterator.remove();
+            }
+        } else {
+            List<StagedFileWriter> files = new ArrayList<>(activeDestinations);
+            for (DestinationState state : destinations.values()) {
+                files.add(state.file);
+            }
+            // The finalizer owns this snapshot from here. Detach it before starting workers because
+            // a JVM-fatal failure may return after cancelling a peer that ignores interruption;
+            // close() must not concurrently abort a file while that peer is still inside finish().
+            destinations.clear();
+            StagedFileFinalizer.finish(
+                    files, maxConcurrentCheckpointFinalizations, this::recordFinishedFile);
         }
         List<FileLoadsCommittable> committables = new ArrayList<>(finishedFiles);
         finishedFiles.clear();
@@ -367,6 +382,13 @@ public final class FileLoadsWriter<T>
     private void finishFile(DestinationState state) throws IOException {
         FileLoadsCommittable committable = state.file.finish();
         state.file = null;
+        recordFinishedFile(committable);
+    }
+
+    /**
+     * Records a finalization result on the task thread, preserving metric and committable order.
+     */
+    private void recordFinishedFile(FileLoadsCommittable committable) {
         finishedFiles.add(committable);
         metrics.fileFinished(committable.getByteCount());
     }

@@ -125,6 +125,11 @@ public final class FileLoadsOptions implements Serializable {
     /** Default for {@link Builder#maxPendingFiles(int)}. */
     public static final int DEFAULT_MAX_PENDING_FILES = 10_000;
 
+    /** Default for {@link Builder#maxConcurrentCheckpointFinalizations(int)}: serial close. */
+    public static final int DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS = 1;
+
+    private static final int MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS = 8;
+
     /** Default for {@link Builder#maxConcurrentDestinations(int)}. */
     public static final int DEFAULT_MAX_CONCURRENT_DESTINATIONS = 8;
 
@@ -156,6 +161,7 @@ public final class FileLoadsOptions implements Serializable {
     private final long maxStagingFileBytes;
     private final int maxOpenDestinations;
     private final int maxPendingFiles;
+    private final int maxConcurrentCheckpointFinalizations;
     private final int maxConcurrentDestinations;
     @Nullable private final Duration destinationIdleTimeout;
     private final long maxSerializedRowBytes;
@@ -181,6 +187,7 @@ public final class FileLoadsOptions implements Serializable {
         this.maxStagingFileBytes = builder.maxStagingFileBytes;
         this.maxOpenDestinations = builder.maxOpenDestinations;
         this.maxPendingFiles = builder.maxPendingFiles;
+        this.maxConcurrentCheckpointFinalizations = builder.maxConcurrentCheckpointFinalizations;
         this.maxConcurrentDestinations = builder.maxConcurrentDestinations;
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.maxSerializedRowBytes = builder.maxSerializedRowBytes;
@@ -241,6 +248,13 @@ public final class FileLoadsOptions implements Serializable {
     /** Returns the maximum staging files retained for the next commit by each writer subtask. */
     public int getMaxPendingFiles() {
         return maxPendingFiles == 0 ? DEFAULT_MAX_PENDING_FILES : maxPendingFiles;
+    }
+
+    /** Returns how many open files each writer may finalize concurrently at a checkpoint. */
+    public int getMaxConcurrentCheckpointFinalizations() {
+        return maxConcurrentCheckpointFinalizations == 0
+                ? DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS
+                : maxConcurrentCheckpointFinalizations;
     }
 
     /** Returns the maximum destination actions this committer executes concurrently. */
@@ -346,6 +360,8 @@ public final class FileLoadsOptions implements Serializable {
                 && maxStagingFileBytes == that.maxStagingFileBytes
                 && getMaxOpenDestinations() == that.getMaxOpenDestinations()
                 && getMaxPendingFiles() == that.getMaxPendingFiles()
+                && getMaxConcurrentCheckpointFinalizations()
+                        == that.getMaxConcurrentCheckpointFinalizations()
                 && getMaxConcurrentDestinations() == that.getMaxConcurrentDestinations()
                 && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
                 && getMaxSerializedRowBytes() == that.getMaxSerializedRowBytes()
@@ -369,6 +385,7 @@ public final class FileLoadsOptions implements Serializable {
                 maxStagingFileBytes,
                 getMaxOpenDestinations(),
                 getMaxPendingFiles(),
+                getMaxConcurrentCheckpointFinalizations(),
                 getMaxConcurrentDestinations(),
                 getDestinationIdleTimeout(),
                 getMaxSerializedRowBytes(),
@@ -398,6 +415,8 @@ public final class FileLoadsOptions implements Serializable {
                 + getMaxOpenDestinations()
                 + ", maxPendingFiles="
                 + getMaxPendingFiles()
+                + ", maxConcurrentCheckpointFinalizations="
+                + getMaxConcurrentCheckpointFinalizations()
                 + ", maxConcurrentDestinations="
                 + getMaxConcurrentDestinations()
                 + ", destinationIdleTimeout="
@@ -434,6 +453,8 @@ public final class FileLoadsOptions implements Serializable {
         private long maxStagingFileBytes = DEFAULT_MAX_STAGING_FILE_BYTES;
         private int maxOpenDestinations = DEFAULT_MAX_OPEN_DESTINATIONS;
         private int maxPendingFiles = DEFAULT_MAX_PENDING_FILES;
+        private int maxConcurrentCheckpointFinalizations =
+                DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS;
         private int maxConcurrentDestinations = DEFAULT_MAX_CONCURRENT_DESTINATIONS;
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private long maxSerializedRowBytes = DEFAULT_MAX_SERIALIZED_ROW_BYTES;
@@ -579,6 +600,37 @@ public final class FileLoadsOptions implements Serializable {
             Preconditions.checkArgument(
                     maxPendingFiles > 0, "maxPendingFiles must be positive: %s", maxPendingFiles);
             this.maxPendingFiles = maxPendingFiles;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of open staging files this writer subtask finalizes concurrently
+         * when a checkpoint or end of input calls {@code prepareCommit()}. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS}. Values above 8 are
+         * rejected: eight was the smallest measured bound to improve both 10- and 50-destination 5
+         * MiB workloads by at least 25%, while a 16-way large-file arm did not complete.
+         *
+         * <p>This option does not parallelize appends, size-based rolls, capacity evictions, or
+         * idle closes. Each worker closes one independent Cloud Storage upload, adding a thread and
+         * a concurrent finalization request but no queued row buffer. It is useful when several
+         * destinations reach one writer and sink parallelism cannot be raised; one open file has
+         * nothing to parallelize.
+         *
+         * @param maxConcurrentCheckpointFinalizations the per-writer bound, from 1 through 8
+         * @return this builder
+         */
+        public Builder maxConcurrentCheckpointFinalizations(
+                int maxConcurrentCheckpointFinalizations) {
+            Preconditions.checkArgument(
+                    maxConcurrentCheckpointFinalizations > 0,
+                    "maxConcurrentCheckpointFinalizations must be positive: %s",
+                    maxConcurrentCheckpointFinalizations);
+            Preconditions.checkArgument(
+                    maxConcurrentCheckpointFinalizations <= MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS,
+                    "maxConcurrentCheckpointFinalizations must be at most %s: %s",
+                    MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS,
+                    maxConcurrentCheckpointFinalizations);
+            this.maxConcurrentCheckpointFinalizations = maxConcurrentCheckpointFinalizations;
             return this;
         }
 

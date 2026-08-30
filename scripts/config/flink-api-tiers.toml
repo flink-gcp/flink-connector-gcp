@@ -82,10 +82,12 @@ changes; not worth avoiding until then."""
 [internal."org.apache.flink.util.ExceptionUtils"]
 reason = """
 findThrowable in every writer's error classification (cause-chain walks in
-AppendErrorClassifier, PubSubWriter, CloudTasksErrorClassifier), plus firstOrSuppressed
-and rethrowException in base.lifecycle (Closers and BoundedShutdown), which is what lets a close
-failure keep its own type. Small, stable-in-practice utility; inlining the
-helpers is the fallback."""
+AppendErrorClassifier, PubSubWriter, CloudTasksErrorClassifier),
+firstOrSuppressed and rethrowException in base.lifecycle, and fatal-error
+classification in bounded cleanup and concurrent workers. These helpers keep
+failure types and JVM-fatal priority intact across drains and closes. The
+fallback is inlining the small cause walk, suppression, rethrow, and fatal-type
+checks."""
 
 [internal."org.apache.flink.metrics.ThreadSafeSimpleCounter"]
 reason = """
@@ -197,10 +199,15 @@ name-based assertions rest on."""
 
 [unannotated."org.apache.flink.util.concurrent.ExecutorThreadFactory"]
 reason = """
-The BigQuery FILE_LOADS destination pool performs critical commit work. Its
-Future normally surfaces failures, but a bounded interrupt drain can leave an
-interrupt-ignoring daemon worker running after the coordinator returns. Flink's
-factory installs FatalExitExceptionHandler so a later JVM-fatal failure stops
-the process instead of remaining trapped in that abandoned Future. If this
-factory moves, the fallback is Flink's replacement critical-thread factory or
-setting its fatal-exit handler on this repository's small named daemon factory."""
+The BigQuery FILE_LOADS destination and checkpoint-finalization pools perform
+critical commit preparation or commit work. The finalization pool normally
+drains every submitted Future but cancels peers after a JVM-fatal worker
+failure; the destination pool's bounded interrupt drain can also leave an
+interrupt-ignoring daemon worker running after the coordinator returns.
+Flink's factory gives both pools consistently named daemon workers, so an
+interrupt-ignoring worker cannot by itself keep the JVM alive during process
+termination. It also installs FatalExitExceptionHandler, preserving the
+repository's critical-worker policy for failures that escape outside a
+FutureTask. If this factory moves, the fallback is Flink's replacement critical
+daemon-thread factory or this repository's small named daemon factory with the
+fatal-exit handler installed."""

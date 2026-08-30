@@ -640,8 +640,9 @@ default, and required by the write method rather than by the connector — and l
 | `sink.file-loads.schema-reconcile.max-attempts` | Integer | `schemaReconcileMaxAttempts(...)` |
 | `sink.file-loads.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` |
 
-A Table API sink has one fixed destination, so it does not expose the DataStream API's
-`maxConcurrentDestinations(...)` control: one destination always uses the committer's inline path.
+A Table API sink has one fixed destination, so it exposes neither the DataStream API's
+`maxConcurrentDestinations(...)` nor `maxConcurrentCheckpointFinalizations(...)` control: one
+destination has no committer or writer-finalization work to distribute.
 
 ## Type mapping
 
