@@ -22,12 +22,705 @@ limitations under the License.
 
 # Cloud Pub/Sub Connector
 
-Cloud Pub/Sub sink and source for Apache Flink, with dynamic per-record topic destinations on the
-sink and multi-subscription consumption on the source, provided by the
+Cloud Pub/Sub source and sink for Apache Flink, with multi-subscription consumption on the source
+and dynamic per-record topic destinations on the sink, provided by the
 `flink-connector-gcp-pubsub` module.
 
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md).
+
+## Credential file deployment
+
+> **Authentication recommendation.** Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).
+> Prefer keyless application-default credentials from an attached service account or Workload Identity over a service-account key file.
+> Use `serviceAccountKeyFile(path)` only when the job must select an explicit service account that the process environment cannot provide.
+>
+> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may load it.
+> A sink needs the path on every eligible TaskManager; a source also needs it on the JobManager.
+> This path is inside the container, not a path that merely exists on the Kubernetes node.
+> Do not store credential material in a `ConfigMap`, SQL DDL or a connector option.
+> Mount the Secret directory rather than one file through `subPath` when in-place rotation is expected, because Kubernetes does not update a Secret mounted with `subPath`.
+>
+> On a session cluster, the same path must remain readable by every eligible JobManager and TaskManager process, including replacement or newly allocated TaskManagers.
+> Each writer, reader or enumerator reads the file once when that runtime component starts.
+> Replacing or rotating the mounted file does not hot-reload credentials.
+> Wait until a normally projected Secret has updated in every eligible pod before restarting the affected job; with a `subPath` mount, recreate the affected pods or cluster first.
+> Replace the key in every workload that uses it and validate those workloads before disabling the replaced key.
+> Monitor them after disabling it, then delete it after confirming that they still work, following Google's [service-account key rotation guidance](https://cloud.google.com/iam/docs/key-rotation#process).
+>
+> Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
+> Prefer an application/per-job cluster with Workload Identity when jobs require separate identities.
+
+## Source
+
+{{< java-snippet file="PubSubConnectorSource.java" tag="pubsub-connector-source" >}}
+
+API notes:
+
+- `PubSubDeserializationSchema.deserialize` receives the full `PubsubMessage` — payload,
+  attributes, ordering key, message id and publish time are all available — and writes to a
+  `Collector`, so one message may produce any number of records. Emitting none drops the message
+  (it is still acknowledged). `payload(...)` wraps a plain Flink `DeserializationSchema` for
+  payload-only messages.
+  Every collected record must be non-null and emitted synchronously during that call; do not retain
+  the collector or use it from another thread.
+- The Pub/Sub publish time becomes the record's event timestamp.
+- `serviceAccountKeyFile(path)` authenticates the subscription admin and every subscriber with the
+  service-account JSON key at `path`.
+  The file is read on the JobManager for subscription administration and on each TaskManager that
+  creates a reader, so the same path must be readable in every eligible process.
+  See [Credential file deployment](#credential-file-deployment) for the Kubernetes, session-cluster and rotation requirements.
+  When the setter is absent, application-default credentials remain in effect, including
+  `GOOGLE_APPLICATION_CREDENTIALS`.
+  Service-account keys are long-lived secrets, so prefer an attached service account or Workload
+  Identity where the deployment supports one.
+  The setter accepts a file path only, not raw or Base64-encoded JSON, access tokens, or custom
+  credential-provider classes.
+  A read or parse failure reports neither the path nor credential material.
+  It is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
+- `emulatorEndpoint(host:port)` points the source at a Pub/Sub emulator over a plaintext channel
+  with no credentials, so it must only ever be used against an emulator — never against production
+  Pub/Sub. Unlike the vendored upstream, the source deliberately does **not** honor the
+  `PUBSUB_EMULATOR_HOST` environment variable: a stray value on a task manager would silently
+  redirect a production job. As on the sink, the endpoint is parsed by the setter, so a malformed
+  `host:port` is rejected by that call ([#235]({{< param BookRepo >}}/issues/235)).
+
+### Subscriber options
+
+`subscriberOptions(PubSubSubscriberOptions)` tunes the SDK subscribers and the reader. Every knob
+left unset keeps the SDK's (or the source's) current default — `PubSubSubscriberOptions.defaults()`
+is equivalent to not setting options at all. Every knob and its default is in the
+[configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions); this
+section is why they are what they are.
+
+**Flow control bounds in-flight messages only while the client is extending their leases.**
+Because the source acknowledges only on checkpoint completion, everything received since the last
+completed checkpoint counts against these limits, and the client stops pulling once they are
+reached.
+After `maxAckExtensionPeriod` passes for a message the job has not emitted, however, the client
+releases its permit while the connector still holds it.
+**What decides whether that accumulates is how fast the split is being drained**, and the break-even is
+`flowControlMaxOutstandingElementCount / (maxAckExtensionPeriod − one lease extension)` — about
+**0.28 messages a second at the defaults**, since an acknowledgement only ever covers a message the
+job already consumed, leaving expiry as the only source of permits that does not track the drain.
+The subtracted term is the client library's *own* extension length, which starts at ten seconds and
+adapts to how long messages are taking; it is not the subscription's `ackDeadlineSeconds`, and it
+is why the rate is an order rather than a constant.
+Any job making real progress stays above it.
+The two cases that do not are a split paused by watermark alignment and a downstream that has
+stopped consuming altogether.
+Both share the reader-wide hard `subscriberBufferMaxMessages` / `subscriberBufferMaxBytes` budget
+([#1138]({{< param BookRepo >}}/issues/1138)).
+A paused group is also governed by the per-split `pausedSplitBufferMaxMessages` /
+`pausedSplitBufferMaxBytes` policy described under [Watermark alignment](#watermark-alignment).
+
+The hard budget is aggregate across every subscriber assigned to one source reader.
+The delivery that would cross either limit is NACKed before it enters the acknowledgement tracker
+or subscriber deque, and every subscriber in that reader is asked to stop asynchronously.
+When every assigned split is paused by watermark alignment, the reader parks those subscribers and
+opens fresh ones on resume.
+Otherwise the callback sends a source event directly to the coordinator, which fails the job even
+when downstream backpressure has stopped both `pollNext()` and `fetch()`.
+Stopping the subscribers makes the NACK a bounded response instead of a live redelivery loop.
+
+Once a split is in either state, **most of what it is handed stops being new data**. A lapsed lease
+is redelivered, and the copy is buffered *beside* the one the reader is still holding, so the buffer
+fills with duplicates and the same record is emitted twice into a running pipeline — within
+at-least-once, but not at a restart. Measured against the service at 215 and 338 such redeliveries
+out of 369 and 462 deliveries over 90 s.
+
+`maxRecordsPerFetch` only caps how much a single fetch drains from one split; it is not a complete
+memory bound.
+Records already handed to Flink's fetcher queues sit outside the subscriber-buffer budget.
+Their count is controlled jointly by `maxRecordsPerFetch`, the assigned-split count and Flink's
+`source.reader.element.queue.capacity`, and is reported separately by the fetcher-buffer metrics.
+
+**The subscriber shutdown mode is fixed at `NACK_IMMEDIATELY`** and deliberately not a knob. The
+SDK's `WAIT_FOR_PROCESSING` default waits for acknowledgements that only arrive at checkpoint
+completion — which never happens during shutdown — so it would stall every close. Only
+`shutdownTimeout` is configurable, and it bounds a reader's whole close rather than each split's:
+the reader nacks every split's messages and asks every client to stop before it waits on any, so
+the waits overlap however many splits it owns. Keep it under Flink's `source.reader.close.timeout`
+(30 s by default). Whether the value is right for a deployment is what
+[`subscriberShutdownsAbandoned`](#metrics) answers.
+
+**`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
+rejects it, for the reason given under [Message ordering](#message-ordering): callback
+serialization is per streaming-pull connection, so a second connection breaks per-key order.
+
+#### Tuning
+
+The connector's reader-wide hard defaults are 10000 subscriber-buffer messages and 64 MiB of
+serialized message data, whichever would be crossed first.
+They are aggregate per source reader rather than multiplied by its assigned splits, and the default
+message cap is regression-tested with 4 KiB messages in a 256 MiB JVM.
+Raise either only when ordinary delivery bursts reach it and the TaskManager has room for the
+corresponding retained data.
+Lower them when a smaller failure domain matters more than absorbing bursts.
+
+The complete message-count envelope for one reader is:
+
+```text
+subscriberBufferMaxMessages
+  + (source.reader.element.queue.capacity + 2) × maxRecordsPerFetch × assigned splits
+```
+
+The serialized-byte side is `subscriberBufferMaxBytes` plus the fetcher-side batches, whose actual
+bytes are reported by `fetcherBufferedBytes` rather than bounded by the connector.
+
+Google does not publish recommended flow-control values — the
+[flow control documentation](https://cloud.google.com/pubsub/docs/flow-control) says to size the
+limits "according to the throughput capacity of your client machines", and the defaults exist as a
+safety mechanism against out-of-memory on small subscribers rather than as a throughput setting.
+This connector therefore leaves every SDK knob at its SDK default and gives you the levers instead.
+Where Google *is* specific:
+
+- **One streaming-pull connection carries about 10 MB/s.** Raise `parallelPullCount` only if one
+  split needs more than that, or for resilience — a single stream is a single point of failure, and
+  the `subscription/open_streaming_pulls` metric shows how many are open. Note it multiplies the
+  parallelism you already have: this source opens one subscriber per split, and
+  `splitCount = max(|subscriptions|, parallelism)` under `NONE`, so total streams are
+  `splitCount × parallelPullCount`.
+- **Lower the flow-control limits if you see duplicate or expired deliveries** — that is Google's
+  documented remedy for a subscriber holding more than it can acknowledge in time.
+
+The connector-specific sizing rule is that **acknowledgement waits for a checkpoint**, so
+outstanding messages accumulate for a whole checkpoint interval:
+
+```text
+flowControlMaxOutstandingElementCount ≳ peak messages/s × checkpoint interval
+```
+
+Below that, the client stops pulling before each checkpoint completes and throughput is capped by
+the checkpoint interval rather than by Pub/Sub.
+Above it, SDK flow control no longer constrains normal in-flight retention before the connector's
+hard budget.
+Raising the limits also raises what a failure replays and what a reader holds in memory, so the
+byte limit should stay within the TaskManager's memory budget. `maxAckExtensionPeriod` is the other
+half: it must exceed the checkpoint interval by a comfortable margin (see
+[Delivery guarantees](#delivery-guarantees)).
+
+### Startup check
+
+Before it assigns a single split, the enumerator describes every configured subscription and refuses
+to start on one the source cannot consume:
+
+- **`orderingMode(PER_KEY)` against a subscription without message ordering.** The setting is fixed
+  at creation, and Pub/Sub only preserves ordering-key order on ordering-enabled subscriptions —
+  without this check the job would run and quietly deliver unordered messages.
+- **Exactly-once delivery.** Its acknowledgement ids are invalidated on redelivery and expire with
+  the acknowledgement deadline, while this source holds them for a whole checkpoint interval.
+- **`deserializationFailurePolicy(NACK)` on a subscription with no dead-letter policy** (see
+  [Deserialization failures](#deserialization-failures)).
+
+Nothing is verified and then acted on in one pass: every subscription is resolved and checked before
+any of them is sought, so a rejection cannot leave an earlier subscription already rewound.
+
+The check runs asynchronously, so it never blocks the coordinator thread; readers that register while
+it is in flight wait for it to finish. That fence is also what keeps a subscriber from attaching to a
+subscription mid-seek. These are start-time snapshots, not invariants: flipping a subscription's
+settings under a running job is not noticed.
+
+The job manager's credentials need `pubsub.subscriptions.get` on every configured subscription for
+the startup check.
+Every non-default start position also makes the job manager seek by timestamp, which needs
+`pubsub.subscriptions.consume`.
+Auto-creation on the job manager additionally needs `pubsub.subscriptions.create` on the containing
+project and `pubsub.topics.attachSubscription` on the requested topic.
+Each task manager reader needs `pubsub.subscriptions.consume` to pull, acknowledge and modify
+acknowledgement deadlines.
+`roles/pubsub.viewer` plus `roles/pubsub.subscriber` cover an existing subscription;
+`roles/pubsub.editor` covers the full create and consume path.
+
+### Subscription auto-creation
+
+Passing creation settings alongside a subscription is what authorises creating it; a subscription
+added without them must already exist, and the job fails at startup naming the option if it does not.
+There is no separate disposition enum because there is no meaningful "create with defaults": a
+subscription without a topic is not a subscription, and only you know which topic to bind.
+
+{{< java-snippet file="PubSubConnectorSubscriptionAutoCreation.java" tag="pubsub-connector-subscription-auto-creation" >}}
+
+**Settings are per subscription because they carry the topic binding.** One options object shared by
+several subscriptions would bind them all to the same topic, and Pub/Sub delivers a complete copy of
+a topic's stream to every subscription of it — so the source would emit each message once per
+subscription, with nothing anywhere reporting an error.
+
+Knobs: `topic` (required), `ackDeadline`, `enableMessageOrdering`, `messageRetention`,
+`retainAckedMessages`, `expirationTtl` / `neverExpire`, `deadLetterPolicy` and `filter`. Every one
+but the topic is optional, and unset leaves Pub/Sub's own default. `enableExactlyOnceDelivery` is
+deliberately absent — the startup check rejects it, so offering it would only let you create a
+subscription the source then refuses. The builder likewise rejects, at graph construction, creation
+settings that the check would reject once used: ordering left off under `orderingMode(PER_KEY)`, and
+no dead-letter policy under `deserializationFailurePolicy(NACK)`. Message ordering is fixed at
+creation. A dead-letter policy can be added to an existing subscription, but creation settings that
+omit it would leave a newly created subscription unusable by that source.
+
+Creation is idempotent: `ALREADY_EXISTS` counts as success, so two jobs racing to create the same
+subscription need no coordination. It is **not** an update — an existing subscription keeps its own
+settings, and these are neither applied to it nor compared against it. Existing subscriptions cost
+one `GetSubscription` each at startup and nothing after.
+
+Caveat: by default, a newly created subscription has no backlog from before its creation. A topic
+with topic-level message retention is the exception: `earliestRetained()` or a retained
+`fromTimestamp(...)` can seek the new subscription back to messages published before it existed.
+
+### Start position
+
+`startPosition(...)` decides where the source begins:
+
+| Position | Behavior |
+|---|---|
+| `continueFromSubscription()` (default) | Starts wherever the subscription already is. The only position that issues no seek |
+| `earliestRetained()` | Replays the whole retained backlog |
+| `latest()` | Discards the existing backlog, starting from messages published after the job starts |
+| `fromTimestamp(Instant)` | Marks everything published before the instant acknowledged, everything after unacknowledged |
+
+How far back a backwards position reaches is a property of the subscription, not of this setting:
+already-acknowledged messages are replayable only if the subscription has `retainAckedMessages` or
+its topic retains messages. Against a subscription with neither, a backwards seek recovers only what
+was never acknowledged — the startup check warns when it sees that combination. Pub/Sub also applies
+a seek asynchronously; deliveries already in flight can take up to a minute to reflect it.
+
+**A seek rewrites state shared by every consumer of the subscription, including other jobs.** Any
+non-default start position wants a subscription the job owns.
+
+**The seek runs once, at the first start of a job, and never on a restore** — the enumerator records
+that it ran in its checkpointed state, so a failover resumes instead of rewinding. Two consequences
+worth planning around:
+
+- **A redeploy without a savepoint seeks again**, because the state that remembered it is gone. So
+  does a job that crash-loops before its first checkpoint completes.
+- **`latest()` is the one position that is not reproducible.** It resolves against the clock at the
+  moment the seek runs, so a failover before any split is assigned resolves it again, to a later
+  instant, discarding whatever was published in between. Nothing already emitted is affected — the
+  enumerator assigns no split until the check completes — but use `fromTimestamp(...)` when the
+  boundary has to be exact.
+
+### Why streaming pull rather than synchronous pull
+
+The source consumes through the client library's high-level `Subscriber`, which uses
+StreamingPull. The Apache `flink-connector-gcp-pubsub` instead drives `SubscriberGrpc`'s blocking
+stub and issues unary `Pull` calls — a deliberate choice made during its review
+([FLINK-9311](https://github.com/apache/flink/pull/6594)), where an earlier `Subscriber`-based
+implementation was replaced. The reasons given were that `sourceContext.collect()` blocking under
+backpressure naturally stops the pull loop, that users then need not tune flow-control parameters,
+and that dropping the intermediate queue lowers both memory footprint and latency.
+
+Two of those reasons are specific to the `SourceFunction` model that connector is built on, where
+`run()` is a pull loop and an asynchronous client has to be bridged into it with a hand-built queue
+and lock coordination. Under FLIP-27 that bridge is the framework's job: `SplitReader.fetch()` is
+already a pull loop, and `SourceReaderBase` already owns the element queue and the backpressure
+between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
+user can get wrong — does apply here, and is why the subscriber's flow-control settings are exposed
+rather than hidden. The connector also enforces its own reader-wide hard budget when flow control
+stops covering retention, whether every split is paused by [Watermark
+alignment](#watermark-alignment) or the downstream has stopped consuming altogether. The
+[Metrics](#metrics) distinguish that subscriber retention from records already handed to Flink's
+fetcher queues.
+
+Two things decided it the other way:
+
+- **Lease extension.** Unary `Pull` hands back acknowledgement ids and nothing else; the Apache
+  connector never calls `ModifyAckDeadline`, so every message must be acknowledged within the
+  subscription's acknowledgement deadline (600 s at most) and its documentation accordingly
+  requires a checkpoint interval well below that deadline. The client library extends leases
+  automatically, up to an hour by default, which suits a source that acknowledges on checkpoint
+  completion far better.
+- **Ordering.** Per-ordering-key sequential dispatch exists only in the high-level client. Building
+  `PER_KEY` on unary pull would mean reimplementing it.
+
+The trade-off is real in the other direction too: StreamingPull costs more CPU in gRPC, and the
+review thread above measured the synchronous design as checkpoint-frequency bound (3,000 msg/s at a
+1 s checkpoint interval, 20,000 msg/s at 50 ms).
+
+### Subscriptions, splits and parallelism
+
+A split is one streaming-pull connection to one subscription, and carries no progress state —
+Pub/Sub has no offset to resume from. The split universe is a pure function of the subscription
+list, the ordering mode and the source parallelism:
+
+```text
+splitCount = (orderingMode == PER_KEY) ? |subscriptions| : max(|subscriptions|, parallelism)
+split i    -> subscription[i % |subscriptions|],  owner(i) -> i % parallelism
+```
+
+Every subscription is therefore consumed by someone, and under `NONE` no subtask sits idle. Because
+the assignment is deterministic, a returned split needs no bookkeeping (the restarted subtask is
+handed exactly the same splits again) and a restore recomputes the plan from the current
+parallelism — so changing parallelism across a restore is safe.
+
+#### Watermark alignment
+
+`WatermarkStrategy.withWatermarkAlignment(...)` works, and pauses splits the way it does for any
+other source: a **split** whose watermark runs beyond the aligned group's by more than the drift
+limit stops being consumed until the rest catch up. Splits, not subscriptions — under the default
+`OrderingMode.NONE` a subscription has `max(|subscriptions|, parallelism) / |subscriptions|` of them,
+and Pub/Sub balances its stream across whichever are still pulling, so that subscription only stops
+being consumed once all of its splits are paused. Alignment is therefore most predictable when
+subscriptions are at least as many as the parallelism, and exact under `PER_KEY`, where the mapping
+is one split per subscription. Nothing is paused at all if
+`pipeline.watermark-alignment.allow-unaligned-source-splits` is `true`: Flink then aligns whole
+subtasks and never asks a source to pause a split.
+
+A streaming-pull connection cannot itself be paused, so a paused split is simply not drained.
+
+**Flow control bounds a pause only for `maxAckExtensionPeriod`, and the connector bounds it after
+that.** The client library's flow control holds the pause at first — it stops pulling once its
+outstanding limit fills — but its lease-extension budget is measured from when a message was
+*received*, not from when the job emits it. Once `maxAckExtensionPeriod` (1 h by default) passes for
+a buffered message, the client library stops extending its lease, Pub/Sub redelivers it, and the
+client **releases that message's flow-control permit** — while the connector is still holding the
+message. Permits therefore free up in a wave, pulling resumes, and the buffer grows again by about
+a whole flow-control window each time. The emulator measurement behind
+[#357]({{< param BookRepo >}}/issues/357) saw two such waves and then stopped; the service
+measurement behind [#377]({{< param BookRepo >}}/issues/377) kept going, so the two-wave ceiling was
+an emulator artifact and there is no ceiling in the mechanism either. The wave lands one *lease
+extension* before the period elapses, not after it, because the client drops a message it can no
+longer extend past the next one — and that extension is the client's own adaptive value, which
+starts at ten seconds, not the subscription's acknowledgement deadline.
+
+**Two bounds can park a paused subscriber, and a fresh one opens when the split resumes.**
+The reader-wide [`subscriberBufferMaxMessages` and
+`subscriberBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions) budget
+is enforced synchronously in the callback and is exact across all assigned splits.
+When it fills while every assigned split is paused, the callback stops every subscriber and the
+reader parks the paused group.
+The per-split [`pausedSplitBufferMaxMessages` and
+`pausedSplitBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions) policy
+is evaluated from `fetch()` and may park one split earlier.
+Either dimension crossing is enough — which one binds depends on message size.
+The per-split limits default to
+**twice** the flow-control limit they shadow: one lease-expiry wave is worth a whole window, so the
+lapse crosses that bound and ordinary skew does not. (A healthy buffer can sit a little above the
+flow-control limit — a message larger than the byte limit is admitted anyway, a dead-letter
+subscription's delivery-attempt attribute is added after the client reserves, and a redelivery is
+held beside the copy it supersedes — so a bound at the limit itself would park healthy splits.)
+
+Stopping the client hands every lease back, so **nothing is lost**: Pub/Sub redelivers what was
+buffered and the split consumes it after the resume. It is not free of duplication, and the
+duplication is the point to plan for. The nack covers what the split had *emitted* since the last
+completed checkpoint as well as what it was holding, so those records are emitted a second time on
+resume — within the at-least-once contract, but on a running job rather than at a restart. Each
+nacked message also spends one attempt against a dead-letter policy's `maxDeliveryAttempts`;
+`messagesNacked` is where that shows up. Under `orderingMode(PER_KEY)` nothing else pulls those
+messages meanwhile, and a key is replayed in order rather than reordered.
+
+"At once" is the intent rather than a guarantee: if the client does not terminate within
+`shutdownTimeout` the reader gives up on it with a `WARN`, and its messages then wait out their
+acknowledgement deadline instead. A park is a teardown like any other here, so it increments
+[`subscriberShutdownsAbandoned`](#metrics) when it does.
+
+The per-split bound is evaluated once per fetch, so it caps what a split holds between checks rather
+than what its buffer can momentarily reach.
+A burst delivered between two fetches can overshoot it, bounded in turn by what the client library
+delivers at once (measured at 104 and 121 buffered against a bound of 60 over two runs, one wave of a
+50-message window each time).
+The reader-wide hard bound does not overshoot: the crossing delivery is rejected before retention.
+
+**An indefinite pause is still a problem, just no longer a memory one.** An aligned group holds its
+slowest member's watermark, so a subscription that goes quiet holds every other split paused forever
+unless the strategy carries `withIdleness(...)` — and a split that stays parked consumes nothing
+while its subscription's backlog grows, until Pub/Sub's message retention begins dropping it.
+`parkedSplits` is the signature to alert on, but one nonzero sample does not by itself prove an
+indefinite pause. The per-split bound normally takes about one `maxAckExtensionPeriod` of continuous
+pause to reach, while the reader-wide hard bound can park every split immediately when a finite
+pause crosses its message or byte cap. Alert on a sustained parked value or repeated `splitsParked`
+increments alongside subscription backlog, then distinguish an alignment problem from a limit that
+is too small for ordinary bursts. For the former, add `withIdleness(...)`, bring the slow member
+forward, or widen the drift limit. For the latter, raising the bound holds more memory for splits
+nobody is consuming, so do it only for a pause you know is bounded and have the heap for.
+`splitsParked` counts the parks themselves, which is what a park and its resume falling between two
+scrapes would otherwise hide.
+
+**A paused split is still watched.** If its subscriber fails permanently while paused, the job
+fails, exactly as it would for a split that was being consumed
+([#348]({{< param BookRepo >}}/issues/348)) — worth stating because the opposite is the natural
+reading of "not drained".
+
+That guarantee stops at the park, and deliberately: **a parked split has no client**, so a
+subscription deleted or its access revoked *during* the pause goes unnoticed until the split
+resumes, where reopening its subscriber fails the job instead. A failure recorded before the park is
+still reported. The alternative is the unbounded buffer this replaces — detection that costs a
+TaskManager.
+
+Only a *permanent* failure fails a paused split's job: the client library reports one just for a
+status it will not retry, so a `PERMISSION_DENIED` or a deleted subscription, never a blip. Note what that means for a
+subscription being decommissioned deliberately — deleting it, or revoking the job's access to it,
+fails the job, and a restart then fails in the startup check rather than recovering. Removing a
+subscription from a running pipeline means removing it from `subscriptions(...)` and redeploying.
+
+**How promptly the job fails is Flink's to decide, not the connector's.** The reader reports the
+failure the next time its fetch loop runs, but a source operator only turns that into a job failure
+when the mailbox next polls it — and an operator whose *subtask* is being held back by alignment
+(`WAITING_FOR_ALIGNMENT`) does not poll at all, waiting on the alignment future instead of the
+reader's. So on a job where this subtask is ahead of its aligned group, the failure is recorded
+immediately and surfaced when the group catches up and the subtask is released. It is a delay rather
+than a loss — the subtask emits nothing further, so it does not hold the group's minimum back — and
+it is not specific to this connector: it is how a fetcher-thread error reaches the job for any
+FLIP-27 source under alignment.
+
+Downstream backpressure produces the same shape from the other end, and the measurement behind
+[#377]({{< param BookRepo >}}/issues/377) is worth stating because the natural reading is worse than
+the truth. Flink's fetcher holds the batch it could not hand over and does not call `fetch()` again
+until the element queue has room, so a *stalled* downstream stops the fetch loop entirely, and with
+it every check the reader makes there.
+But a downstream that is merely slow frees a queue slot for
+every batch it takes, and each slot lets exactly one more `fetch()` run — so the checks are delayed
+by one drain interval, not skipped.
+Where both the loop and mailbox stop, the hard subscriber-buffer budget remains active on the SDK
+callback threads.
+It stops intake and reports through the source coordinator rather than recording a fetcher failure
+that would still need `pollNext()`.
+The subscriber- and fetcher-buffer gauge pairs remain readable by the metric reporter throughout.
+
+### Message ordering
+
+**The default, `OrderingMode.NONE`, makes no ordering guarantee and is tuned for throughput.** The
+split plan gives every subtask at least one split — opening several subscriber clients on the same
+subscription when parallelism exceeds the subscription count — and Pub/Sub balances messages across
+them. Nothing constrains how many subtasks share a subscription, and no message waits on another.
+
+`orderingMode(OrderingMode.PER_KEY)` preserves per-ordering-key delivery order. It requires
+subscriptions created with `enableMessageOrdering`, and it constrains the source in two ways: each
+subscription is assigned to exactly one subtask, and its subscriber uses a single streaming-pull
+connection.
+
+Both constraints are load-bearing. A subscription consumed by two subtasks is two subscriber
+clients, and Pub/Sub's per-key client affinity shifts on reconnect or rebalance. Within one client,
+each streaming-pull connection has its **own** message dispatcher, and per-key callback
+serialization is per dispatcher — so a second connection would let two messages of one key be
+delivered concurrently.
+
+What the source guarantees is **in-order emission per ordering key per subscription**. Preserving
+that across the rest of the job requires partitioning by the ordering key, for example
+`keyBy(orderingKey)`; a rebalancing shuffle discards it.
+
+#### The cost of ordering
+
+Ordering is off by default because it is expensive, and **most of the cost is Pub/Sub's rather than
+this connector's**. Google's [ordering
+documentation](https://cloud.google.com/pubsub/docs/ordering) states it directly:
+
+- *"Compared with unordered delivery, ordered delivery decreases publish availability and increases
+  end-to-end message delivery latency."*
+- Publish throughput is capped at **1 MB/s per ordering key** (a topic can still reach multiple
+  GB/s across many keys).
+- For pull subscriptions, *"only one batch of messages can be outstanding for an ordering key at a
+  time"* — so a key's next batch waits for the current one to be acknowledged.
+- *"Unacknowledged messages for a given ordering key can potentially delay delivery of messages for
+  other ordering keys"*, so the cost is not confined to the busy key.
+- A redelivery re-delivers every subsequent message for that key, acknowledged or not.
+
+Google's mitigation is to *"use the most granular keys that you can"* — throughput per key is
+bounded, throughput across keys is not.
+
+On top of that, this source adds two costs of its own:
+
+- **Parallelism is effectively capped at the subscription count.** Surplus subtasks receive no
+  splits, are told there are no more, and finish — so they do not hold the watermark back, but they
+  do no work either.
+- **Acknowledgement waits for a checkpoint.** Combined with one-batch-outstanding, per-key
+  throughput is bounded by roughly one batch per checkpoint interval. Ordered jobs therefore want
+  short checkpoint intervals — and because unacknowledged messages for one key can delay *other*
+  keys, a long interval slows the whole subscription rather than only its hottest key.
+
+Acknowledgement is *not* what gates ordered **dispatch**, though: the client library runs the next
+callback for a key once the previous callback **returns**, and this source's callback only appends
+to an in-memory buffer. Deferring acknowledgement costs throughput at the service, not a stall in
+the client.
+
+### Delivery guarantees
+
+The source is **at-least-once**, and holds no message data in Flink state — delivery state lives on
+the Pub/Sub server. A received message passes through four states: *pending* (received, not yet
+emitted), *staged* (emitted downstream), *bound to a checkpoint* (that checkpoint is being taken),
+and *acknowledged* (that checkpoint completed). Only the last step tells Pub/Sub the message is
+done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers it.
+Acknowledging sweeps every checkpoint at or below the completed id, so an aborted checkpoint or a
+lost completion notification is healed by the next successful one. Because checkpoints carry no
+message data, a restore needs no retained checkpoint.
+
+**Checkpointing must be enabled** in streaming jobs: without it `notifyCheckpointComplete` never
+fires, nothing is ever acknowledged, and the source stalls once the client library's flow control
+fills. The reader enforces this itself — if no checkpoint has been taken within
+`firstCheckpointTimeout` (10 min by default) while messages wait to be acknowledged, it fails the
+job with a message naming `execution.checkpointing.interval`. It has to observe the outcome rather
+than read the configuration: a reader is handed the *TaskManager* configuration, while
+`env.enableCheckpointing(...)` writes into the *job* configuration, so the interval is usually
+invisible from inside the source and its absence proves nothing. The check runs from the fetch
+loop, not the record path, because the stalled state is precisely the state with no records — once
+flow control fills the client stops delivering and nothing would poll again. The budget is measured
+from the reader's first split assignment, not from when the reader is created: a reader that has
+been given no subscription yet has nothing to checkpoint, so counting that time against it would
+report a missing checkpoint on a job that is checkpointing normally. Raise
+`firstCheckpointTimeout(...)` for a job that legitimately checkpoints less often, or set it to
+`Duration.ZERO` to switch the detector off.
+
+The budget is spent only once, and only against a job's *first* checkpoint. The reader reports every
+checkpoint barrier — one that carries no data, or that reaches a reader owning no subscription,
+counts just as much — so a job that checkpoints at all retires the detector on its first barrier and
+is never measured again. Combined with the outstanding-message condition, that leaves two ways to
+see this failure: checkpointing really is off, or the first checkpoint takes longer than the budget
+while messages are already in flight.
+
+The checkpoint interval must also stay well under the client library's maximum
+acknowledgement-deadline extension (`maxAckExtensionPeriod`, 1 hour by default), or leases expire
+and everything is redelivered. The source warns when twice the interval exceeds that budget — but
+only when the interval happens to be set at cluster level, for the same visibility reason.
+
+**Nack.** Messages that are pending, staged, or bound to an incomplete checkpoint are **nacked when
+the reader closes**, so Pub/Sub redelivers them immediately instead of after the acknowledgement
+deadline expires — this is what makes failover recover quickly. A reader close is not the only
+occasion: parking a paused split whose buffer outgrew its bound nacks the same three states, on a
+running job with no failure and no restart, so those records are redelivered and emitted again when
+the split resumes (see [Watermark alignment](#watermark-alignment)). The SDK subscriber is additionally
+configured with `NACK_IMMEDIATELY` shutdown, which releases messages the client buffered but never
+handed to the source; the SDK's `WAIT_FOR_PROCESSING` default would instead wait for
+acknowledgements that only arrive at checkpoint completion. Acknowledgement state is scoped per
+split, so a split that goes away releases only its own messages. A redelivery arriving before its
+predecessor was settled nacks the superseded handle, which is what releases that delivery's
+flow-control permit inside the client library.
+
+### Deserialization failures
+
+`deserializationFailurePolicy(...)` decides what happens to a message the schema cannot convert:
+
+| Policy | Behavior |
+|---|---|
+| `FAIL` (default) | Fails the job. The message stays unacknowledged, so it is redelivered — a permanently bad message fails the job again after every restart until it is removed or the schema is fixed |
+| `DROP` | Discards the message, acknowledging it immediately so it is not redelivered. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
+| `NACK` | Returns the message for redelivery and carries on, leaving it to the subscription's dead-letter policy. Counted in `messagesNacked`, logged at the same decreasing rate |
+
+Whichever is chosen, the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops
+data**, and a schema that collected records before failing keeps those under both `DROP` and `NACK` —
+the emitted prefix has already reached the output and cannot be recalled, so a `NACK`ed message is
+both partially emitted and redelivered in full.
+
+**`NACK` requires a dead-letter policy on every subscription**, which the startup check enforces:
+nacking does not fail the job, so without one a message the schema can never convert is redelivered
+forever, invisibly. Note that Pub/Sub dead-letters on **delivery count, not cause** — a redelivery
+after an unrelated job restart raises the same counter — so set the subscription's delivery-attempt
+limit high enough that ordinary failovers do not dead-letter healthy messages. Pub/Sub also needs its
+own service account granted publish on the dead-letter topic and subscribe on the subscription;
+without those grants it silently keeps redelivering.
+
+For anything richer than these three, deserialize permissively instead: the schema receives the whole
+`PubsubMessage` and writes to a `Collector`, so it can emit a bad-record variant rather than throwing
+(and emit nothing to drop). Splitting that downstream with a side output puts the dead-letter write
+inside the pipeline, where it is checkpointed and rescalable — which a handler doing its own I/O on
+the task thread would not be. A source-side failure-handler SPI was considered and rejected for that
+reason; cross-connector dead-lettering is [#37]({{< param BookRepo >}}/issues/37).
+
+**Nack on emission failure.** If the failure comes from the output rather than from the schema, the
+message is fine and the job is about to fail anyway, so it is nacked at once for immediate
+redelivery instead of waiting out its acknowledgement deadline. Only *inline* downstream failures
+are visible: `SourceOutput.collect` runs the chained operators synchronously, so their exceptions
+propagate back into the source — but a failure past a shuffle boundary happens on another task and
+cannot be seen. Those messages are covered by the nack the reader performs when it closes.
+
+### Metrics
+
+Registered on the reader and enumerator metric groups:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `messagesReceived` | counter | messages handed over by the client library |
+| `messagesAcked` | counter | acknowledgements **requested** (see below) |
+| `messagesNacked` | counter | messages returned for redelivery |
+| `messagesDropped` | counter | messages discarded by `DROP` |
+| `recordsSkipped` | counter | messages whose deserializer returned successfully without emitting output |
+| `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
+| `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
+| `bufferedMessages` | gauge | messages this subtask's subscribers hold that the fetch loop has not taken yet — see below |
+| `bufferedBytes` | gauge | the same in bytes; either dimension can be the one that fills a TaskManager first |
+| `fetcherBufferedMessages` | gauge | messages removed from subscriber buffers but not yet taken from Flink's fetcher batches by the source reader |
+| `fetcherBufferedBytes` | gauge | the same fetcher-side retention in serialized bytes |
+| `parkedSplits` | gauge | paused splits whose subscriber has been stopped, awaiting a resume |
+| `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
+| `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
+| `subscriberFailuresUnreported` | counter | failures a subscriber's teardown was the only report of, so no job failure is coming for them. Process-wide in the same sense as the row above |
+| `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
+| `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
+
+**`messagesAcked` counts acknowledgements requested, not confirmed.** On an ordinary subscription
+the client library sends them asynchronously and does not retry a failure — it logs a warning and
+stops. No data is lost (the lease expires and Pub/Sub redelivers, which is the at-least-once
+contract), but a *persistent* failure such as a revoked permission becomes a silent reprocessing
+loop that this counter will not show. Two ways to see it: set
+`awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the server's
+confirmation and fail the job on timeout, or watch Cloud Monitoring's
+`subscription/oldest_unacked_message_age`, which grows monotonically when acknowledgements stop
+landing.
+
+`awaitAckConfirmation` costs latency — the wait happens on the task thread at checkpoint completion
+— and **the timeout is the only detector**: on a subscription without exactly-once delivery the
+acknowledgement future completes with `SUCCESSFUL` on success and never completes at all on
+failure, so there is no error to observe, only the absence of a confirmation.
+
+**`bufferedMessages` and `bufferedBytes` are the messages still in subscriber deques**, summed over
+the subtask's splits.
+The callback-side hard budget applies to exactly this aggregate.
+`pendingAcks` cannot stand in for it because that gauge also counts emitted messages waiting for a
+checkpoint.
+
+They are read by the metric reporter's own thread, which matters here: the fetch loop that
+evaluates the paused-split bound stops running altogether when the downstream stops consuming
+([#377]({{< param BookRepo >}}/issues/377)), and these gauges do not.
+
+**`fetcherBufferedMessages` and `fetcherBufferedBytes` cover the separate Flink-owned side** after
+messages leave those deques and before the source reader takes them from a fetcher batch.
+That includes Flink's element queue, the fetch the reader is working through and the batch the
+fetcher cannot hand over.
+The count envelope is `(source.reader.element.queue.capacity + 2)` × `maxRecordsPerFetch` × assigned
+splits messages — measured at 3999 with a capacity of 2, a 1000-message fetch and one split.
+This footprint has no connector byte cap because Flink owns the queues; lower
+`maxRecordsPerFetch`, lower the runtime queue capacity or assign fewer splits per reader when the
+fetcher gauges show that it is too large.
+
+`pendingRecordsGauge` is deliberately **not** set. Pub/Sub exposes no backlog through the data
+plane, and a wrong lag number is worse than none.
+
+**The two subscriber-teardown counters report a whole JVM, not the subtask reading them.** Both are
+process-wide totals held for the lifetime of the class loader, for the same reason the sink's
+[`publisherShutdownsAbandoned`](#sink-metrics) is: a count written during a reader's `close()` is
+never scraped, the metric group being unregistered in the same instant. Everything that counter's
+notes say about scope, about how the deployment decides it, and about aggregating across TaskManagers
+holds for these two, with their own names substituted in the PromQL. A reader therefore reports what
+*every* subscriber in its class loader left behind, this attempt's and earlier attempts' alike —
+which is the point, since a teardown giving up is a thing to see across restarts.
+
+One class of increment does not need that scope, and it does not change the answer: parking a paused
+split tears its subscriber down while the job keeps running, so those increments would be scraped
+from an ordinary per-subtask counter too. A metric name has one storage, and the increments that
+would otherwise be invisible are the ones that decide which.
+
+**`subscriberShutdownsAbandoned` counts subscriber teardowns, not reader closes.** A reader owns one
+subscriber per split, so one close can increment it several times; and parking a paused split closes
+that split's subscriber on its own, so a park whose wait expires counts too, with no reader closing at
+all. Read a rising value as `shutdownTimeout` being too low for this deployment — the alternative is
+noticing that failovers have become slow — and keep the raise under Flink's
+`source.reader.close.timeout`.
+
+**`subscriberFailuresUnreported` is the one to alert on, because it is the only report there is.** It
+counts a failure that reached a teardown having never been handed to the reader: raised by the
+teardown itself, or arriving after the last fetch. Either way no job failure is coming for it, so
+without this counter the sole trace is a `WARN`. Nothing is lost — the split's messages were nacked
+before the wait — but the shutdown is what returns them to Pub/Sub, so redelivery may wait out their
+acknowledgement deadline instead of being immediate.
+
+The clearest case is a park. The job is not shutting down at all: a paused split's subscriber is torn
+down, the failure it raises on the way out is absorbed by design (a park closes, and `close()`
+absorbs), and a fresh subscriber opens on resume. So the pipeline runs on, healthy by every other
+measure, having swallowed a failure — and this counter is the only thing that says it happened.
+
+**The teardown's other two outcomes are counted by nothing, deliberately.** A client repeating at
+teardown a failure the reader already has accompanies a job failure already under way over that very
+failure, and a release that follows a *failed start* accompanies the `IOException` that fails the job
+there. Both would be series whose every increment coincides with a louder report; both still log,
+and [Testing](#testing) has the four messages side by side.
+
+## Sink
 
 {{< java-snippet file="PubSubConnectorOverview.java" tag="pubsub-connector-overview" >}}
 
@@ -80,29 +773,7 @@ API notes:
   surfacing as a connection failure on a task manager
   ([#235]({{< param BookRepo >}}/issues/235)).
 
-## Credential file deployment
-
-> **Authentication recommendation.** Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).
-> Prefer keyless application-default credentials from an attached service account or Workload Identity over a service-account key file.
-> Use `serviceAccountKeyFile(path)` only when the job must select an explicit service account that the process environment cannot provide.
->
-> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may load it.
-> A sink needs the path on every eligible TaskManager; a source also needs it on the JobManager.
-> This path is inside the container, not a path that merely exists on the Kubernetes node.
-> Do not store credential material in a `ConfigMap`, SQL DDL or a connector option.
-> Mount the Secret directory rather than one file through `subPath` when in-place rotation is expected, because Kubernetes does not update a Secret mounted with `subPath`.
->
-> On a session cluster, the same path must remain readable by every eligible JobManager and TaskManager process, including replacement or newly allocated TaskManagers.
-> Each writer, reader or enumerator reads the file once when that runtime component starts.
-> Replacing or rotating the mounted file does not hot-reload credentials.
-> Wait until a normally projected Secret has updated in every eligible pod before restarting the affected job; with a `subPath` mount, recreate the affected pods or cluster first.
-> Replace the key in every workload that uses it and validate those workloads before disabling the replaced key.
-> Monitor them after disabling it, then delete it after confirming that they still work, following Google's [service-account key rotation guidance](https://cloud.google.com/iam/docs/key-rotation#process).
->
-> Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
-> Prefer an application/per-job cluster with Workload Identity when jobs require separate identities.
-
-## Publisher options
+### Publisher options
 
 `publisherOptions(PubSubPublisherOptions)` tunes the SDK publishers and the writer. Every knob
 left unset keeps the SDK's (or the sink's) current default — `PubSubPublisherOptions.defaults()`
@@ -136,78 +807,7 @@ batch can never fill under the writer cap, so batches leave only on the delay th
 `flush()`). That is latency, not deadlock — the delay alarm always fires — but keep the batch
 threshold below the in-flight cap.
 
-## Delivery guarantees and state
-
-See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
-cross-connector comparison.
-
-The sink is **at-least-once** and the writer is **stateless by design**: records are published
-asynchronously through `google-cloud-pubsub` `Publisher` instances (which batch by element
-count, bytes and delay), and on **every checkpoint** Flink invokes the writer's `flush()`
-(before the barrier is emitted), which sends all messages still buffered inside the SDK
-publishers (`publishAllOutstanding`) and blocks until every in-flight publish is acknowledged.
-A successful checkpoint therefore means *all* records up to the barrier are persisted by
-Pub/Sub — other than those the serializer skipped by returning `null`, which are written nowhere
-by design — and the writer stores nothing in Flink state — **discarding operator state
-(savepoint-less redeploys, state resets) can never lose sink-buffered data**.
-
-That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
-`sendToDeadLetterQueue(...)` a successful checkpoint means every record up to the barrier was
-either persisted by Pub/Sub, skipped by the serializer, or handed to the
-[failed-message policy](#failed-message-policy), which says which failures reach it.
-
-**FLIP-171 `AsyncSinkBase` was evaluated and rejected** for this sink:
-
-- The Pub/Sub `Publisher` SDK already batches; layering `AsyncSinkWriter`'s
-  own batching/buffering on top double-buffers every record. Using AsyncSink idiomatically
-  would mean bypassing `Publisher` and driving the raw publish RPC with AsyncSink owning
-  batching, backpressure and retries — discarding exactly the SDK behavior [#20]({{< param BookRepo >}}/issues/20) exposes
-  (`BatchingSettings`/`RetrySettings` map 1:1 onto `Publisher.Builder`).
-- `AsyncSinkWriter` persists unflushed buffers into writer state instead of flushing at the
-  barrier, which silently loses those buffers whenever state is dropped. This project
-  deliberately chose flush-on-checkpoint statelessness (the BigQuery module records the same
-  decision).
-- Both models are at-least-once — Pub/Sub has no transactional publish — so rejecting AsyncSink
-  forecloses no exactly-once path.
-
-Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
-Flink never calls `flush()` mid-stream, so messages buffered in the SDK publishers are lost on
-failure. Batch execution is covered by the end-of-input flush.
-
-**Backpressure.** Unacknowledged publishes per writer subtask are capped along both dimensions
-that bound memory: their number (`maxInFlightMessages`, default 1,000) and their serialized size
-(`maxInFlightBytes`, default 64 MiB, measured as `PubsubMessage.getSerializedSize()`). Publish
-completions are re-dispatched onto the task mailbox, so every write to the writer's state happens
-on the task thread — your `DestinationResolver`, serializer and `FailureHandler` are called from
-there and need no synchronization of their own. Reads are not all on it: the metric reporter runs
-on a thread of its own, which is why the gauges below read plain counters rather than walking the
-writer's per-destination maps. A
-write at either cap yields to the mailbox until completions bring the counters back down. This is
-the mailbox model of the Apache `flink-connector-gcp-pubsub` writer (a design reference — no code
-is copied from it); that writer's infinite republish of non-fatally failed messages under
-`failOnError=false` is deliberately **not** adopted.
-
-The byte cap exists because the message count bounds no memory on its own: Pub/Sub allows 10 MiB
-per message, so 1,000 in flight is up to ~10 GiB per subtask in the pathological case, and 256 KiB
-payloads already reach 256 MiB ([#85]({{< param BookRepo >}}/issues/85)). Publish retries hold a message for up to the 600 s total
-retry timeout, so a Pub/Sub partial outage is exactly when the peak is reached.
-
-**Sizing rule:** `maxInFlightBytes` × the sink subtasks sharing a TaskManager must fit that
-TaskManager's heap budget, alongside everything else in the job. The 64 MiB default is per subtask,
-deliberately below Google's own 100 MB Java-subscriber default, which is per *client*. With the
-1,000-message cap, the byte cap binds only above ~64 KiB per message — below that the message cap
-still trips first, so small-message pipelines are unaffected by it.
-
-Two bounded ways the byte cap is exceeded, both deliberate:
-
-- Admission is checked *before* a publish, not against the message's own size, so a message larger
-  than the cap is published anyway when the writer is empty and overshoots until it completes. A
-  "does it fit" predicate would never admit such a message: yielding blocks until a mail arrives,
-  and with nothing in flight no mail can arrive, so it would hang the task rather than backpressure
-  it.
-- A repair republishes its parked batch without re-checking either cap (see below).
-
-## Publisher lifecycle
+### Publisher lifecycle
 
 Publishers are created lazily per destination topic and owned by the writer.
 One writer retains at most `maxActivePublishers` publishers (100 by default), and a successful
@@ -402,7 +1002,7 @@ the trade the default is chosen for — 600 s is what the unordered path already
 of its own accord, so an ordered sink is being given the same self-termination rather than a
 stricter one.
 
-## Topic auto-creation
+### Topic auto-creation
 
 Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that
 fail with `NOT_FOUND` are recovered reactively on the task thread: the failed messages are
@@ -503,7 +1103,79 @@ pipelines whose consumers create their own subscriptions or attach them promptly
 (`CREATE_NEVER` restores fail-fast behavior for pipelines where a missing topic signals a
 routing bug).
 
-## Error handling
+### Delivery guarantees and state
+
+See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
+cross-connector comparison.
+
+The sink is **at-least-once** and the writer is **stateless by design**: records are published
+asynchronously through `google-cloud-pubsub` `Publisher` instances (which batch by element
+count, bytes and delay), and on **every checkpoint** Flink invokes the writer's `flush()`
+(before the barrier is emitted), which sends all messages still buffered inside the SDK
+publishers (`publishAllOutstanding`) and blocks until every in-flight publish is acknowledged.
+A successful checkpoint therefore means *all* records up to the barrier are persisted by
+Pub/Sub — other than those the serializer skipped by returning `null`, which are written nowhere
+by design — and the writer stores nothing in Flink state — **discarding operator state
+(savepoint-less redeploys, state resets) can never lose sink-buffered data**.
+
+That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` a successful checkpoint means every record up to the barrier was
+either persisted by Pub/Sub, skipped by the serializer, or handed to the
+[failed-message policy](#failed-message-policy), which says which failures reach it.
+
+**FLIP-171 `AsyncSinkBase` was evaluated and rejected** for this sink:
+
+- The Pub/Sub `Publisher` SDK already batches; layering `AsyncSinkWriter`'s
+  own batching/buffering on top double-buffers every record. Using AsyncSink idiomatically
+  would mean bypassing `Publisher` and driving the raw publish RPC with AsyncSink owning
+  batching, backpressure and retries — discarding exactly the SDK behavior [#20]({{< param BookRepo >}}/issues/20) exposes
+  (`BatchingSettings`/`RetrySettings` map 1:1 onto `Publisher.Builder`).
+- `AsyncSinkWriter` persists unflushed buffers into writer state instead of flushing at the
+  barrier, which silently loses those buffers whenever state is dropped. This project
+  deliberately chose flush-on-checkpoint statelessness (the BigQuery module records the same
+  decision).
+- Both models are at-least-once — Pub/Sub has no transactional publish — so rejecting AsyncSink
+  forecloses no exactly-once path.
+
+Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
+Flink never calls `flush()` mid-stream, so messages buffered in the SDK publishers are lost on
+failure. Batch execution is covered by the end-of-input flush.
+
+**Backpressure.** Unacknowledged publishes per writer subtask are capped along both dimensions
+that bound memory: their number (`maxInFlightMessages`, default 1,000) and their serialized size
+(`maxInFlightBytes`, default 64 MiB, measured as `PubsubMessage.getSerializedSize()`). Publish
+completions are re-dispatched onto the task mailbox, so every write to the writer's state happens
+on the task thread — your `DestinationResolver`, serializer and `FailureHandler` are called from
+there and need no synchronization of their own. Reads are not all on it: the metric reporter runs
+on a thread of its own, which is why the gauges below read plain counters rather than walking the
+writer's per-destination maps. A
+write at either cap yields to the mailbox until completions bring the counters back down. This is
+the mailbox model of the Apache `flink-connector-gcp-pubsub` writer (a design reference — no code
+is copied from it); that writer's infinite republish of non-fatally failed messages under
+`failOnError=false` is deliberately **not** adopted.
+
+The byte cap exists because the message count bounds no memory on its own: Pub/Sub allows 10 MiB
+per message, so 1,000 in flight is up to ~10 GiB per subtask in the pathological case, and 256 KiB
+payloads already reach 256 MiB ([#85]({{< param BookRepo >}}/issues/85)). Publish retries hold a message for up to the 600 s total
+retry timeout, so a Pub/Sub partial outage is exactly when the peak is reached.
+
+**Sizing rule:** `maxInFlightBytes` × the sink subtasks sharing a TaskManager must fit that
+TaskManager's heap budget, alongside everything else in the job. The 64 MiB default is per subtask,
+deliberately below Google's own 100 MB Java-subscriber default, which is per *client*. With the
+1,000-message cap, the byte cap binds only above ~64 KiB per message — below that the message cap
+still trips first, so small-message pipelines are unaffected by it.
+
+Two bounded ways the byte cap is exceeded, both deliberate:
+
+- Admission is checked *before* a publish, not against the message's own size, so a message larger
+  than the cap is published anyway when the writer is empty and overshoots until it completes. A
+  "does it fit" predicate would never admit such a message: yielding blocks until a mail arrives,
+  and with nothing in flight no mail can arrive, so it would hang the task rather than backpressure
+  it.
+- A repair republishes its parked batch without re-checking either cap, as described under
+  [Topic creation settings](#topic-creation-settings).
+
+### Error handling
 
 Any terminally failed publish fails the ongoing write or checkpoint: failures captured by
 completion callbacks are rethrown on the task thread from the next `write()`/`flush()`
@@ -791,7 +1463,7 @@ Flink resolves a duplicate registration by keeping the metric registered first a
 other. Everything the sink counter's notes below say about scope, what "abandoned" means and how to
 aggregate across TaskManagers holds for this one too, with its own name substituted in the PromQL.
 
-## Sink metrics
+### Sink metrics
 
 Registered on the sink writer's metric group, one set per subtask:
 
@@ -924,673 +1596,6 @@ which emits **spans** — not meters — into an OpenTelemetry instance a Flink 
 configured. A Kafka-style passthrough of client-native metrics therefore has nothing to read. The
 connector leaves that tracing switch alone; a job that wants publish spans configures OpenTelemetry
 itself.
-
-## Source
-
-{{< java-snippet file="PubSubConnectorSource.java" tag="pubsub-connector-source" >}}
-
-API notes:
-
-- `PubSubDeserializationSchema.deserialize` receives the full `PubsubMessage` — payload,
-  attributes, ordering key, message id and publish time are all available — and writes to a
-  `Collector`, so one message may produce any number of records. Emitting none drops the message
-  (it is still acknowledged). `payload(...)` wraps a plain Flink `DeserializationSchema` for
-  payload-only messages.
-  Every collected record must be non-null and emitted synchronously during that call; do not retain
-  the collector or use it from another thread.
-- The Pub/Sub publish time becomes the record's event timestamp.
-- `serviceAccountKeyFile(path)` authenticates the subscription admin and every subscriber with the
-  service-account JSON key at `path`.
-  The file is read on the JobManager for subscription administration and on each TaskManager that
-  creates a reader, so the same path must be readable in every eligible process.
-  See [Credential file deployment](#credential-file-deployment) for the Kubernetes, session-cluster and rotation requirements.
-  When the setter is absent, application-default credentials remain in effect, including
-  `GOOGLE_APPLICATION_CREDENTIALS`.
-  Service-account keys are long-lived secrets, so prefer an attached service account or Workload
-  Identity where the deployment supports one.
-  The setter accepts a file path only, not raw or Base64-encoded JSON, access tokens, or custom
-  credential-provider classes.
-  A read or parse failure reports neither the path nor credential material.
-  It is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
-- `emulatorEndpoint(host:port)` points the source at a Pub/Sub emulator over a plaintext channel
-  with no credentials, so it must only ever be used against an emulator — never against production
-  Pub/Sub. Unlike the vendored upstream, the source deliberately does **not** honor the
-  `PUBSUB_EMULATOR_HOST` environment variable: a stray value on a task manager would silently
-  redirect a production job. As on the sink, the endpoint is parsed by the setter, so a malformed
-  `host:port` is rejected by that call ([#235]({{< param BookRepo >}}/issues/235)).
-
-### Subscriber options
-
-`subscriberOptions(PubSubSubscriberOptions)` tunes the SDK subscribers and the reader. Every knob
-left unset keeps the SDK's (or the source's) current default — `PubSubSubscriberOptions.defaults()`
-is equivalent to not setting options at all. Every knob and its default is in the
-[configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions); this
-section is why they are what they are.
-
-**Flow control bounds in-flight messages only while the client is extending their leases.**
-Because the source acknowledges only on checkpoint completion, everything received since the last
-completed checkpoint counts against these limits, and the client stops pulling once they are
-reached.
-After `maxAckExtensionPeriod` passes for a message the job has not emitted, however, the client
-releases its permit while the connector still holds it.
-**What decides whether that accumulates is how fast the split is being drained**, and the break-even is
-`flowControlMaxOutstandingElementCount / (maxAckExtensionPeriod − one lease extension)` — about
-**0.28 messages a second at the defaults**, since an acknowledgement only ever covers a message the
-job already consumed, leaving expiry as the only source of permits that does not track the drain.
-The subtracted term is the client library's *own* extension length, which starts at ten seconds and
-adapts to how long messages are taking; it is not the subscription's `ackDeadlineSeconds`, and it
-is why the rate is an order rather than a constant.
-Any job making real progress stays above it.
-The two cases that do not are a split paused by watermark alignment and a downstream that has
-stopped consuming altogether.
-Both share the reader-wide hard `subscriberBufferMaxMessages` / `subscriberBufferMaxBytes` budget
-([#1138]({{< param BookRepo >}}/issues/1138)).
-A paused group is also governed by the per-split `pausedSplitBufferMaxMessages` /
-`pausedSplitBufferMaxBytes` policy described under [Watermark alignment](#watermark-alignment).
-
-The hard budget is aggregate across every subscriber assigned to one source reader.
-The delivery that would cross either limit is NACKed before it enters the acknowledgement tracker
-or subscriber deque, and every subscriber in that reader is asked to stop asynchronously.
-When every assigned split is paused by watermark alignment, the reader parks those subscribers and
-opens fresh ones on resume.
-Otherwise the callback sends a source event directly to the coordinator, which fails the job even
-when downstream backpressure has stopped both `pollNext()` and `fetch()`.
-Stopping the subscribers makes the NACK a bounded response instead of a live redelivery loop.
-
-Once a split is in either state, **most of what it is handed stops being new data**. A lapsed lease
-is redelivered, and the copy is buffered *beside* the one the reader is still holding, so the buffer
-fills with duplicates and the same record is emitted twice into a running pipeline — within
-at-least-once, but not at a restart. Measured against the service at 215 and 338 such redeliveries
-out of 369 and 462 deliveries over 90 s.
-
-`maxRecordsPerFetch` only caps how much a single fetch drains from one split; it is not a complete
-memory bound.
-Records already handed to Flink's fetcher queues sit outside the subscriber-buffer budget.
-Their count is controlled jointly by `maxRecordsPerFetch`, the assigned-split count and Flink's
-`source.reader.element.queue.capacity`, and is reported separately by the fetcher-buffer metrics.
-
-**The subscriber shutdown mode is fixed at `NACK_IMMEDIATELY`** and deliberately not a knob. The
-SDK's `WAIT_FOR_PROCESSING` default waits for acknowledgements that only arrive at checkpoint
-completion — which never happens during shutdown — so it would stall every close. Only
-`shutdownTimeout` is configurable, and it bounds a reader's whole close rather than each split's:
-the reader nacks every split's messages and asks every client to stop before it waits on any, so
-the waits overlap however many splits it owns. Keep it under Flink's `source.reader.close.timeout`
-(30 s by default). Whether the value is right for a deployment is what
-[`subscriberShutdownsAbandoned`](#metrics) answers.
-
-**`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
-rejects it, for the reason given under [Message ordering](#message-ordering): callback
-serialization is per streaming-pull connection, so a second connection breaks per-key order.
-
-#### Tuning
-
-The connector's reader-wide hard defaults are 10000 subscriber-buffer messages and 64 MiB of
-serialized message data, whichever would be crossed first.
-They are aggregate per source reader rather than multiplied by its assigned splits, and the default
-message cap is regression-tested with 4 KiB messages in a 256 MiB JVM.
-Raise either only when ordinary delivery bursts reach it and the TaskManager has room for the
-corresponding retained data.
-Lower them when a smaller failure domain matters more than absorbing bursts.
-
-The complete message-count envelope for one reader is:
-
-```text
-subscriberBufferMaxMessages
-  + (source.reader.element.queue.capacity + 2) × maxRecordsPerFetch × assigned splits
-```
-
-The serialized-byte side is `subscriberBufferMaxBytes` plus the fetcher-side batches, whose actual
-bytes are reported by `fetcherBufferedBytes` rather than bounded by the connector.
-
-Google does not publish recommended flow-control values — the
-[flow control documentation](https://cloud.google.com/pubsub/docs/flow-control) says to size the
-limits "according to the throughput capacity of your client machines", and the defaults exist as a
-safety mechanism against out-of-memory on small subscribers rather than as a throughput setting.
-This connector therefore leaves every SDK knob at its SDK default and gives you the levers instead.
-Where Google *is* specific:
-
-- **One streaming-pull connection carries about 10 MB/s.** Raise `parallelPullCount` only if one
-  split needs more than that, or for resilience — a single stream is a single point of failure, and
-  the `subscription/open_streaming_pulls` metric shows how many are open. Note it multiplies the
-  parallelism you already have: this source opens one subscriber per split, and
-  `splitCount = max(|subscriptions|, parallelism)` under `NONE`, so total streams are
-  `splitCount × parallelPullCount`.
-- **Lower the flow-control limits if you see duplicate or expired deliveries** — that is Google's
-  documented remedy for a subscriber holding more than it can acknowledge in time.
-
-The connector-specific sizing rule is that **acknowledgement waits for a checkpoint**, so
-outstanding messages accumulate for a whole checkpoint interval:
-
-```text
-flowControlMaxOutstandingElementCount ≳ peak messages/s × checkpoint interval
-```
-
-Below that, the client stops pulling before each checkpoint completes and throughput is capped by
-the checkpoint interval rather than by Pub/Sub.
-Above it, SDK flow control no longer constrains normal in-flight retention before the connector's
-hard budget.
-Raising the limits also raises what a failure replays and what a reader holds in memory, so the
-byte limit should stay within the TaskManager's memory budget. `maxAckExtensionPeriod` is the other
-half: it must exceed the checkpoint interval by a comfortable margin (see
-[Delivery guarantees](#delivery-guarantees)).
-
-### Startup check
-
-Before it assigns a single split, the enumerator describes every configured subscription and refuses
-to start on one the source cannot consume:
-
-- **`orderingMode(PER_KEY)` against a subscription without message ordering.** The setting is fixed
-  at creation, and Pub/Sub only preserves ordering-key order on ordering-enabled subscriptions —
-  without this check the job would run and quietly deliver unordered messages.
-- **Exactly-once delivery.** Its acknowledgement ids are invalidated on redelivery and expire with
-  the acknowledgement deadline, while this source holds them for a whole checkpoint interval.
-- **`deserializationFailurePolicy(NACK)` on a subscription with no dead-letter policy** (see
-  [Deserialization failures](#deserialization-failures)).
-
-Nothing is verified and then acted on in one pass: every subscription is resolved and checked before
-any of them is sought, so a rejection cannot leave an earlier subscription already rewound.
-
-The check runs asynchronously, so it never blocks the coordinator thread; readers that register while
-it is in flight wait for it to finish. That fence is also what keeps a subscriber from attaching to a
-subscription mid-seek. These are start-time snapshots, not invariants: flipping a subscription's
-settings under a running job is not noticed.
-
-The job manager's credentials need `pubsub.subscriptions.get` on every configured subscription for
-the startup check.
-Every non-default start position also makes the job manager seek by timestamp, which needs
-`pubsub.subscriptions.consume`.
-Auto-creation on the job manager additionally needs `pubsub.subscriptions.create` on the containing
-project and `pubsub.topics.attachSubscription` on the requested topic.
-Each task manager reader needs `pubsub.subscriptions.consume` to pull, acknowledge and modify
-acknowledgement deadlines.
-`roles/pubsub.viewer` plus `roles/pubsub.subscriber` cover an existing subscription;
-`roles/pubsub.editor` covers the full create and consume path.
-
-### Subscription auto-creation
-
-Passing creation settings alongside a subscription is what authorises creating it; a subscription
-added without them must already exist, and the job fails at startup naming the option if it does not.
-There is no separate disposition enum because there is no meaningful "create with defaults": a
-subscription without a topic is not a subscription, and only you know which topic to bind.
-
-{{< java-snippet file="PubSubConnectorSubscriptionAutoCreation.java" tag="pubsub-connector-subscription-auto-creation" >}}
-
-**Settings are per subscription because they carry the topic binding.** One options object shared by
-several subscriptions would bind them all to the same topic, and Pub/Sub delivers a complete copy of
-a topic's stream to every subscription of it — so the source would emit each message once per
-subscription, with nothing anywhere reporting an error.
-
-Knobs: `topic` (required), `ackDeadline`, `enableMessageOrdering`, `messageRetention`,
-`retainAckedMessages`, `expirationTtl` / `neverExpire`, `deadLetterPolicy` and `filter`. Every one
-but the topic is optional, and unset leaves Pub/Sub's own default. `enableExactlyOnceDelivery` is
-deliberately absent — the startup check rejects it, so offering it would only let you create a
-subscription the source then refuses. The builder likewise rejects, at graph construction, creation
-settings that the check would reject once used: ordering left off under `orderingMode(PER_KEY)`, and
-no dead-letter policy under `deserializationFailurePolicy(NACK)`. Both are fixed at creation, so
-catching them here is what stops the source creating a subscription it then refuses to consume.
-
-Creation is idempotent: `ALREADY_EXISTS` counts as success, so two jobs racing to create the same
-subscription need no coordination. It is **not** an update — an existing subscription keeps its own
-settings, and these are neither applied to it nor compared against it. Existing subscriptions cost
-one `GetSubscription` each at startup and nothing after.
-
-Caveat: a subscription only retains messages published **after** it exists, so a job that
-auto-creates one starts from an empty backlog no matter what was published before.
-
-### Start position
-
-`startPosition(...)` decides where the source begins:
-
-| Position | Behavior |
-|---|---|
-| `continueFromSubscription()` (default) | Starts wherever the subscription already is. The only position that issues no seek |
-| `earliestRetained()` | Replays the whole retained backlog |
-| `latest()` | Discards the existing backlog, starting from messages published after the job starts |
-| `fromTimestamp(Instant)` | Marks everything published before the instant acknowledged, everything after unacknowledged |
-
-How far back a backwards position reaches is a property of the subscription, not of this setting:
-already-acknowledged messages are replayable only if the subscription has `retainAckedMessages` or
-its topic retains messages. Against a subscription with neither, a backwards seek recovers only what
-was never acknowledged — the startup check warns when it sees that combination. Pub/Sub also applies
-a seek asynchronously; deliveries already in flight can take up to a minute to reflect it.
-
-**A seek rewrites state shared by every consumer of the subscription, including other jobs.** Any
-non-default start position wants a subscription the job owns.
-
-**The seek runs once, at the first start of a job, and never on a restore** — the enumerator records
-that it ran in its checkpointed state, so a failover resumes instead of rewinding. Two consequences
-worth planning around:
-
-- **A redeploy without a savepoint seeks again**, because the state that remembered it is gone. So
-  does a job that crash-loops before its first checkpoint completes.
-- **`latest()` is the one position that is not reproducible.** It resolves against the clock at the
-  moment the seek runs, so a failover before any split is assigned resolves it again, to a later
-  instant, discarding whatever was published in between. Nothing already emitted is affected — the
-  enumerator assigns no split until the check completes — but use `fromTimestamp(...)` when the
-  boundary has to be exact.
-
-### Deserialization failures
-
-`deserializationFailurePolicy(...)` decides what happens to a message the schema cannot convert:
-
-| Policy | Behavior |
-|---|---|
-| `FAIL` (default) | Fails the job. The message stays unacknowledged, so it is redelivered — a permanently bad message fails the job again after every restart until it is removed or the schema is fixed |
-| `DROP` | Discards the message, acknowledging it immediately so it is not redelivered. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
-| `NACK` | Returns the message for redelivery and carries on, leaving it to the subscription's dead-letter policy. Counted in `messagesNacked`, logged at the same decreasing rate |
-
-Whichever is chosen, the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops
-data**, and a schema that collected records before failing keeps those under both `DROP` and `NACK` —
-the emitted prefix has already reached the output and cannot be recalled, so a `NACK`ed message is
-both partially emitted and redelivered in full.
-
-**`NACK` requires a dead-letter policy on every subscription**, which the startup check enforces:
-nacking does not fail the job, so without one a message the schema can never convert is redelivered
-forever, invisibly. Note that Pub/Sub dead-letters on **delivery count, not cause** — a redelivery
-after an unrelated job restart raises the same counter — so set the subscription's delivery-attempt
-limit high enough that ordinary failovers do not dead-letter healthy messages. Pub/Sub also needs its
-own service account granted publish on the dead-letter topic and subscribe on the subscription;
-without those grants it silently keeps redelivering.
-
-For anything richer than these three, deserialize permissively instead: the schema receives the whole
-`PubsubMessage` and writes to a `Collector`, so it can emit a bad-record variant rather than throwing
-(and emit nothing to drop). Splitting that downstream with a side output puts the dead-letter write
-inside the pipeline, where it is checkpointed and rescalable — which a handler doing its own I/O on
-the task thread would not be. A source-side failure-handler SPI was considered and rejected for that
-reason; cross-connector dead-lettering is [#37]({{< param BookRepo >}}/issues/37).
-
-**Nack on emission failure.** If the failure comes from the output rather than from the schema, the
-message is fine and the job is about to fail anyway, so it is nacked at once for immediate
-redelivery instead of waiting out its acknowledgement deadline. Only *inline* downstream failures
-are visible: `SourceOutput.collect` runs the chained operators synchronously, so their exceptions
-propagate back into the source — but a failure past a shuffle boundary happens on another task and
-cannot be seen. Those messages are covered by the nack the reader performs when it closes.
-
-### Metrics
-
-Registered on the reader and enumerator metric groups:
-
-| Metric | Type | Meaning |
-|---|---|---|
-| `messagesReceived` | counter | messages handed over by the client library |
-| `messagesAcked` | counter | acknowledgements **requested** (see below) |
-| `messagesNacked` | counter | messages returned for redelivery |
-| `messagesDropped` | counter | messages discarded by `DROP` |
-| `recordsSkipped` | counter | messages whose deserializer returned successfully without emitting output |
-| `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
-| `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
-| `bufferedMessages` | gauge | messages this subtask's subscribers hold that the fetch loop has not taken yet — see below |
-| `bufferedBytes` | gauge | the same in bytes; either dimension can be the one that fills a TaskManager first |
-| `fetcherBufferedMessages` | gauge | messages removed from subscriber buffers but not yet taken from Flink's fetcher batches by the source reader |
-| `fetcherBufferedBytes` | gauge | the same fetcher-side retention in serialized bytes |
-| `parkedSplits` | gauge | paused splits whose subscriber has been stopped, awaiting a resume |
-| `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
-| `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
-| `subscriberFailuresUnreported` | counter | failures a subscriber's teardown was the only report of, so no job failure is coming for them. Process-wide in the same sense as the row above |
-| `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
-| `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
-
-**`messagesAcked` counts acknowledgements requested, not confirmed.** On an ordinary subscription
-the client library sends them asynchronously and does not retry a failure — it logs a warning and
-stops. No data is lost (the lease expires and Pub/Sub redelivers, which is the at-least-once
-contract), but a *persistent* failure such as a revoked permission becomes a silent reprocessing
-loop that this counter will not show. Two ways to see it: set
-`awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the server's
-confirmation and fail the job on timeout, or watch Cloud Monitoring's
-`subscription/oldest_unacked_message_age`, which grows monotonically when acknowledgements stop
-landing.
-
-`awaitAckConfirmation` costs latency — the wait happens on the task thread at checkpoint completion
-— and **the timeout is the only detector**: on a subscription without exactly-once delivery the
-acknowledgement future completes with `SUCCESSFUL` on success and never completes at all on
-failure, so there is no error to observe, only the absence of a confirmation.
-
-**`bufferedMessages` and `bufferedBytes` are the messages still in subscriber deques**, summed over
-the subtask's splits.
-The callback-side hard budget applies to exactly this aggregate.
-`pendingAcks` cannot stand in for it because that gauge also counts emitted messages waiting for a
-checkpoint.
-
-They are read by the metric reporter's own thread, which matters here: the fetch loop that
-evaluates the paused-split bound stops running altogether when the downstream stops consuming
-([#377]({{< param BookRepo >}}/issues/377)), and these gauges do not.
-
-**`fetcherBufferedMessages` and `fetcherBufferedBytes` cover the separate Flink-owned side** after
-messages leave those deques and before the source reader takes them from a fetcher batch.
-That includes Flink's element queue, the fetch the reader is working through and the batch the
-fetcher cannot hand over.
-The count envelope is `(source.reader.element.queue.capacity + 2)` × `maxRecordsPerFetch` × assigned
-splits messages — measured at 3999 with a capacity of 2, a 1000-message fetch and one split.
-This footprint has no connector byte cap because Flink owns the queues; lower
-`maxRecordsPerFetch`, lower the runtime queue capacity or assign fewer splits per reader when the
-fetcher gauges show that it is too large.
-
-`pendingRecordsGauge` is deliberately **not** set. Pub/Sub exposes no backlog through the data
-plane, and a wrong lag number is worse than none.
-
-**The two subscriber-teardown counters report a whole JVM, not the subtask reading them.** Both are
-process-wide totals held for the lifetime of the class loader, for the same reason the sink's
-[`publisherShutdownsAbandoned`](#sink-metrics) is: a count written during a reader's `close()` is
-never scraped, the metric group being unregistered in the same instant. Everything that counter's
-notes say about scope, about how the deployment decides it, and about aggregating across TaskManagers
-holds for these two, with their own names substituted in the PromQL. A reader therefore reports what
-*every* subscriber in its class loader left behind, this attempt's and earlier attempts' alike —
-which is the point, since a teardown giving up is a thing to see across restarts.
-
-One class of increment does not need that scope, and it does not change the answer: parking a paused
-split tears its subscriber down while the job keeps running, so those increments would be scraped
-from an ordinary per-subtask counter too. A metric name has one storage, and the increments that
-would otherwise be invisible are the ones that decide which.
-
-**`subscriberShutdownsAbandoned` counts subscriber teardowns, not reader closes.** A reader owns one
-subscriber per split, so one close can increment it several times; and parking a paused split closes
-that split's subscriber on its own, so a park whose wait expires counts too, with no reader closing at
-all. Read a rising value as `shutdownTimeout` being too low for this deployment — the alternative is
-noticing that failovers have become slow — and keep the raise under Flink's
-`source.reader.close.timeout`.
-
-**`subscriberFailuresUnreported` is the one to alert on, because it is the only report there is.** It
-counts a failure that reached a teardown having never been handed to the reader: raised by the
-teardown itself, or arriving after the last fetch. Either way no job failure is coming for it, so
-without this counter the sole trace is a `WARN`. Nothing is lost — the split's messages were nacked
-before the wait — but the shutdown is what returns them to Pub/Sub, so redelivery may wait out their
-acknowledgement deadline instead of being immediate.
-
-The clearest case is a park. The job is not shutting down at all: a paused split's subscriber is torn
-down, the failure it raises on the way out is absorbed by design (a park closes, and `close()`
-absorbs), and a fresh subscriber opens on resume. So the pipeline runs on, healthy by every other
-measure, having swallowed a failure — and this counter is the only thing that says it happened.
-
-**The teardown's other two outcomes are counted by nothing, deliberately.** A client repeating at
-teardown a failure the reader already has accompanies a job failure already under way over that very
-failure, and a release that follows a *failed start* accompanies the `IOException` that fails the job
-there. Both would be series whose every increment coincides with a louder report; both still log,
-and [Testing](#testing) has the four messages side by side.
-
-### Delivery guarantees
-
-The source is **at-least-once**, and holds no message data in Flink state — delivery state lives on
-the Pub/Sub server. A received message passes through four states: *pending* (received, not yet
-emitted), *staged* (emitted downstream), *bound to a checkpoint* (that checkpoint is being taken),
-and *acknowledged* (that checkpoint completed). Only the last step tells Pub/Sub the message is
-done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers it.
-Acknowledging sweeps every checkpoint at or below the completed id, so an aborted checkpoint or a
-lost completion notification is healed by the next successful one. Because checkpoints carry no
-message data, a restore needs no retained checkpoint.
-
-**Checkpointing must be enabled** in streaming jobs: without it `notifyCheckpointComplete` never
-fires, nothing is ever acknowledged, and the source stalls once the client library's flow control
-fills. The reader enforces this itself — if no checkpoint has been taken within
-`firstCheckpointTimeout` (10 min by default) while messages wait to be acknowledged, it fails the
-job with a message naming `execution.checkpointing.interval`. It has to observe the outcome rather
-than read the configuration: a reader is handed the *TaskManager* configuration, while
-`env.enableCheckpointing(...)` writes into the *job* configuration, so the interval is usually
-invisible from inside the source and its absence proves nothing. The check runs from the fetch
-loop, not the record path, because the stalled state is precisely the state with no records — once
-flow control fills the client stops delivering and nothing would poll again. The budget is measured
-from the reader's first split assignment, not from when the reader is created: a reader that has
-been given no subscription yet has nothing to checkpoint, so counting that time against it would
-report a missing checkpoint on a job that is checkpointing normally. Raise
-`firstCheckpointTimeout(...)` for a job that legitimately checkpoints less often, or set it to
-`Duration.ZERO` to switch the detector off.
-
-The budget is spent only once, and only against a job's *first* checkpoint. The reader reports every
-checkpoint barrier — one that carries no data, or that reaches a reader owning no subscription,
-counts just as much — so a job that checkpoints at all retires the detector on its first barrier and
-is never measured again. Combined with the outstanding-message condition, that leaves two ways to
-see this failure: checkpointing really is off, or the first checkpoint takes longer than the budget
-while messages are already in flight.
-
-The checkpoint interval must also stay well under the client library's maximum
-acknowledgement-deadline extension (`maxAckExtensionPeriod`, 1 hour by default), or leases expire
-and everything is redelivered. The source warns when twice the interval exceeds that budget — but
-only when the interval happens to be set at cluster level, for the same visibility reason.
-
-**Nack.** Messages that are pending, staged, or bound to an incomplete checkpoint are **nacked when
-the reader closes**, so Pub/Sub redelivers them immediately instead of after the acknowledgement
-deadline expires — this is what makes failover recover quickly. A reader close is not the only
-occasion: parking a paused split whose buffer outgrew its bound nacks the same three states, on a
-running job with no failure and no restart, so those records are redelivered and emitted again when
-the split resumes (see [Watermark alignment](#watermark-alignment)). The SDK subscriber is additionally
-configured with `NACK_IMMEDIATELY` shutdown, which releases messages the client buffered but never
-handed to the source; the SDK's `WAIT_FOR_PROCESSING` default would instead wait for
-acknowledgements that only arrive at checkpoint completion. Acknowledgement state is scoped per
-split, so a split that goes away releases only its own messages. A redelivery arriving before its
-predecessor was settled nacks the superseded handle, which is what releases that delivery's
-flow-control permit inside the client library.
-
-### Why streaming pull rather than synchronous pull
-
-The source consumes through the client library's high-level `Subscriber`, which uses
-StreamingPull. The Apache `flink-connector-gcp-pubsub` instead drives `SubscriberGrpc`'s blocking
-stub and issues unary `Pull` calls — a deliberate choice made during its review
-([FLINK-9311](https://github.com/apache/flink/pull/6594)), where an earlier `Subscriber`-based
-implementation was replaced. The reasons given were that `sourceContext.collect()` blocking under
-backpressure naturally stops the pull loop, that users then need not tune flow-control parameters,
-and that dropping the intermediate queue lowers both memory footprint and latency.
-
-Two of those reasons are specific to the `SourceFunction` model that connector is built on, where
-`run()` is a pull loop and an asynchronous client has to be bridged into it with a hand-built queue
-and lock coordination. Under FLIP-27 that bridge is the framework's job: `SplitReader.fetch()` is
-already a pull loop, and `SourceReaderBase` already owns the element queue and the backpressure
-between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
-user can get wrong — does apply here, and is why the subscriber's flow-control settings are exposed
-rather than hidden. The connector also enforces its own reader-wide hard budget when flow control
-stops covering retention, whether every split is paused by [Watermark
-alignment](#watermark-alignment) or the downstream has stopped consuming altogether. The
-[Metrics](#metrics) distinguish that subscriber retention from records already handed to Flink's
-fetcher queues.
-
-Two things decided it the other way:
-
-- **Lease extension.** Unary `Pull` hands back acknowledgement ids and nothing else; the Apache
-  connector never calls `ModifyAckDeadline`, so every message must be acknowledged within the
-  subscription's acknowledgement deadline (600 s at most) and its documentation accordingly
-  requires a checkpoint interval well below that deadline. The client library extends leases
-  automatically, up to an hour by default, which suits a source that acknowledges on checkpoint
-  completion far better.
-- **Ordering.** Per-ordering-key sequential dispatch exists only in the high-level client. Building
-  `PER_KEY` on unary pull would mean reimplementing it.
-
-The trade-off is real in the other direction too: StreamingPull costs more CPU in gRPC, and the
-review thread above measured the synchronous design as checkpoint-frequency bound (3,000 msg/s at a
-1 s checkpoint interval, 20,000 msg/s at 50 ms).
-
-### Subscriptions, splits and parallelism
-
-A split is one streaming-pull connection to one subscription, and carries no progress state —
-Pub/Sub has no offset to resume from. The split universe is a pure function of the subscription
-list, the ordering mode and the source parallelism:
-
-```text
-splitCount = (orderingMode == PER_KEY) ? |subscriptions| : max(|subscriptions|, parallelism)
-split i    -> subscription[i % |subscriptions|],  owner(i) -> i % parallelism
-```
-
-Every subscription is therefore consumed by someone, and under `NONE` no subtask sits idle. Because
-the assignment is deterministic, a returned split needs no bookkeeping (the restarted subtask is
-handed exactly the same splits again) and a restore recomputes the plan from the current
-parallelism — so changing parallelism across a restore is safe.
-
-#### Watermark alignment
-
-`WatermarkStrategy.withWatermarkAlignment(...)` works, and pauses splits the way it does for any
-other source: a **split** whose watermark runs beyond the aligned group's by more than the drift
-limit stops being consumed until the rest catch up. Splits, not subscriptions — under the default
-`OrderingMode.NONE` a subscription has `max(|subscriptions|, parallelism) / |subscriptions|` of them,
-and Pub/Sub balances its stream across whichever are still pulling, so that subscription only stops
-being consumed once all of its splits are paused. Alignment is therefore most predictable when
-subscriptions are at least as many as the parallelism, and exact under `PER_KEY`, where the mapping
-is one split per subscription. Nothing is paused at all if
-`pipeline.watermark-alignment.allow-unaligned-source-splits` is `true`: Flink then aligns whole
-subtasks and never asks a source to pause a split.
-
-A streaming-pull connection cannot itself be paused, so a paused split is simply not drained.
-
-**Flow control bounds a pause only for `maxAckExtensionPeriod`, and the connector bounds it after
-that.** The client library's flow control holds the pause at first — it stops pulling once its
-outstanding limit fills — but its lease-extension budget is measured from when a message was
-*received*, not from when the job emits it. Once `maxAckExtensionPeriod` (1 h by default) passes for
-a buffered message, the client library stops extending its lease, Pub/Sub redelivers it, and the
-client **releases that message's flow-control permit** — while the connector is still holding the
-message. Permits therefore free up in a wave, pulling resumes, and the buffer grows again by about
-a whole flow-control window each time. The emulator measurement behind
-[#357]({{< param BookRepo >}}/issues/357) saw two such waves and then stopped; the service
-measurement behind [#377]({{< param BookRepo >}}/issues/377) kept going, so the two-wave ceiling was
-an emulator artifact and there is no ceiling in the mechanism either. The wave lands one *lease
-extension* before the period elapses, not after it, because the client drops a message it can no
-longer extend past the next one — and that extension is the client's own adaptive value, which
-starts at ten seconds, not the subscription's acknowledgement deadline.
-
-**Two bounds can park a paused subscriber, and a fresh one opens when the split resumes.**
-The reader-wide [`subscriberBufferMaxMessages` and
-`subscriberBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions) budget
-is enforced synchronously in the callback and is exact across all assigned splits.
-When it fills while every assigned split is paused, the callback stops every subscriber and the
-reader parks the paused group.
-The per-split [`pausedSplitBufferMaxMessages` and
-`pausedSplitBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions) policy
-is evaluated from `fetch()` and may park one split earlier.
-Either dimension crossing is enough — which one binds depends on message size.
-The per-split limits default to
-**twice** the flow-control limit they shadow: one lease-expiry wave is worth a whole window, so the
-lapse crosses that bound and ordinary skew does not. (A healthy buffer can sit a little above the
-flow-control limit — a message larger than the byte limit is admitted anyway, a dead-letter
-subscription's delivery-attempt attribute is added after the client reserves, and a redelivery is
-held beside the copy it supersedes — so a bound at the limit itself would park healthy splits.)
-
-Stopping the client hands every lease back, so **nothing is lost**: Pub/Sub redelivers what was
-buffered and the split consumes it after the resume. It is not free of duplication, and the
-duplication is the point to plan for. The nack covers what the split had *emitted* since the last
-completed checkpoint as well as what it was holding, so those records are emitted a second time on
-resume — within the at-least-once contract, but on a running job rather than at a restart. Each
-nacked message also spends one attempt against a dead-letter policy's `maxDeliveryAttempts`;
-`messagesNacked` is where that shows up. Under `orderingMode(PER_KEY)` nothing else pulls those
-messages meanwhile, and a key is replayed in order rather than reordered.
-
-"At once" is the intent rather than a guarantee: if the client does not terminate within
-`shutdownTimeout` the reader gives up on it with a `WARN`, and its messages then wait out their
-acknowledgement deadline instead. A park is a teardown like any other here, so it increments
-[`subscriberShutdownsAbandoned`](#metrics) when it does.
-
-The per-split bound is evaluated once per fetch, so it caps what a split holds between checks rather
-than what its buffer can momentarily reach.
-A burst delivered between two fetches can overshoot it, bounded in turn by what the client library
-delivers at once (measured at 104 and 121 buffered against a bound of 60 over two runs, one wave of a
-50-message window each time).
-The reader-wide hard bound does not overshoot: the crossing delivery is rejected before retention.
-
-**An indefinite pause is still a problem, just no longer a memory one.** An aligned group holds its
-slowest member's watermark, so a subscription that goes quiet holds every other split paused forever
-unless the strategy carries `withIdleness(...)` — and a split that stays parked consumes nothing
-while its subscription's backlog grows, until Pub/Sub's message retention begins dropping it.
-`parkedSplits` is the signature to alert on, but one nonzero sample does not by itself prove an
-indefinite pause. The per-split bound normally takes about one `maxAckExtensionPeriod` of continuous
-pause to reach, while the reader-wide hard bound can park every split immediately when a finite
-pause crosses its message or byte cap. Alert on a sustained parked value or repeated `splitsParked`
-increments alongside subscription backlog, then distinguish an alignment problem from a limit that
-is too small for ordinary bursts. For the former, add `withIdleness(...)`, bring the slow member
-forward, or widen the drift limit. For the latter, raising the bound holds more memory for splits
-nobody is consuming, so do it only for a pause you know is bounded and have the heap for.
-`splitsParked` counts the parks themselves, which is what a park and its resume falling between two
-scrapes would otherwise hide.
-
-**A paused split is still watched.** If its subscriber fails permanently while paused, the job
-fails, exactly as it would for a split that was being consumed
-([#348]({{< param BookRepo >}}/issues/348)) — worth stating because the opposite is the natural
-reading of "not drained".
-
-That guarantee stops at the park, and deliberately: **a parked split has no client**, so a
-subscription deleted or its access revoked *during* the pause goes unnoticed until the split
-resumes, where reopening its subscriber fails the job instead. A failure recorded before the park is
-still reported. The alternative is the unbounded buffer this replaces — detection that costs a
-TaskManager.
-
-Only a *permanent* failure fails a paused split's job: the client library reports one just for a
-status it will not retry, so a `PERMISSION_DENIED` or a deleted subscription, never a blip. Note what that means for a
-subscription being decommissioned deliberately — deleting it, or revoking the job's access to it,
-fails the job, and a restart then fails in the startup check rather than recovering. Removing a
-subscription from a running pipeline means removing it from `subscriptions(...)` and redeploying.
-
-**How promptly the job fails is Flink's to decide, not the connector's.** The reader reports the
-failure the next time its fetch loop runs, but a source operator only turns that into a job failure
-when the mailbox next polls it — and an operator whose *subtask* is being held back by alignment
-(`WAITING_FOR_ALIGNMENT`) does not poll at all, waiting on the alignment future instead of the
-reader's. So on a job where this subtask is ahead of its aligned group, the failure is recorded
-immediately and surfaced when the group catches up and the subtask is released. It is a delay rather
-than a loss — the subtask emits nothing further, so it does not hold the group's minimum back — and
-it is not specific to this connector: it is how a fetcher-thread error reaches the job for any
-FLIP-27 source under alignment.
-
-Downstream backpressure produces the same shape from the other end, and the measurement behind
-[#377]({{< param BookRepo >}}/issues/377) is worth stating because the natural reading is worse than
-the truth. Flink's fetcher holds the batch it could not hand over and does not call `fetch()` again
-until the element queue has room, so a *stalled* downstream stops the fetch loop entirely, and with
-it every check the reader makes there.
-But a downstream that is merely slow frees a queue slot for
-every batch it takes, and each slot lets exactly one more `fetch()` run — so the checks are delayed
-by one drain interval, not skipped.
-Where both the loop and mailbox stop, the hard subscriber-buffer budget remains active on the SDK
-callback threads.
-It stops intake and reports through the source coordinator rather than recording a fetcher failure
-that would still need `pollNext()`.
-The subscriber- and fetcher-buffer gauge pairs remain readable by the metric reporter throughout.
-
-### Message ordering
-
-**The default, `OrderingMode.NONE`, makes no ordering guarantee and is tuned for throughput.** The
-split plan gives every subtask at least one split — opening several subscriber clients on the same
-subscription when parallelism exceeds the subscription count — and Pub/Sub balances messages across
-them. Nothing constrains how many subtasks share a subscription, and no message waits on another.
-
-`orderingMode(OrderingMode.PER_KEY)` preserves per-ordering-key delivery order. It requires
-subscriptions created with `enableMessageOrdering`, and it constrains the source in two ways: each
-subscription is assigned to exactly one subtask, and its subscriber uses a single streaming-pull
-connection.
-
-Both constraints are load-bearing. A subscription consumed by two subtasks is two subscriber
-clients, and Pub/Sub's per-key client affinity shifts on reconnect or rebalance. Within one client,
-each streaming-pull connection has its **own** message dispatcher, and per-key callback
-serialization is per dispatcher — so a second connection would let two messages of one key be
-delivered concurrently.
-
-What the source guarantees is **in-order emission per ordering key per subscription**. Preserving
-that across the rest of the job requires partitioning by the ordering key, for example
-`keyBy(orderingKey)`; a rebalancing shuffle discards it.
-
-#### The cost of ordering
-
-Ordering is off by default because it is expensive, and **most of the cost is Pub/Sub's rather than
-this connector's**. Google's [ordering
-documentation](https://cloud.google.com/pubsub/docs/ordering) states it directly:
-
-- *"Compared with unordered delivery, ordered delivery decreases publish availability and increases
-  end-to-end message delivery latency."*
-- Publish throughput is capped at **1 MB/s per ordering key** (a topic can still reach multiple
-  GB/s across many keys).
-- For pull subscriptions, *"only one batch of messages can be outstanding for an ordering key at a
-  time"* — so a key's next batch waits for the current one to be acknowledged.
-- *"Unacknowledged messages for a given ordering key can potentially delay delivery of messages for
-  other ordering keys"*, so the cost is not confined to the busy key.
-- A redelivery re-delivers every subsequent message for that key, acknowledged or not.
-
-Google's mitigation is to *"use the most granular keys that you can"* — throughput per key is
-bounded, throughput across keys is not.
-
-On top of that, this source adds two costs of its own:
-
-- **Parallelism is effectively capped at the subscription count.** Surplus subtasks receive no
-  splits, are told there are no more, and finish — so they do not hold the watermark back, but they
-  do no work either.
-- **Acknowledgement waits for a checkpoint.** Combined with one-batch-outstanding, per-key
-  throughput is bounded by roughly one batch per checkpoint interval. Ordered jobs therefore want
-  short checkpoint intervals — and because unacknowledged messages for one key can delay *other*
-  keys, a long interval slows the whole subscription rather than only its hottest key.
-
-Acknowledgement is *not* what gates ordered **dispatch**, though: the client library runs the next
-callback for a key once the previous callback **returns**, and this source's callback only appends
-to an in-memory buffer. Deferring acknowledgement costs throughput at the service, not a stall in
-the client.
 
 ## Testing
 

@@ -37,12 +37,15 @@ CREATE TABLE incoming_orders (
   message_id   STRING          METADATA FROM 'message-id'   VIRTUAL,
   publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
   attrs        MAP<STRING, STRING> METADATA FROM 'attributes' VIRTUAL,
+  ordering_key STRING          METADATA FROM 'ordering-key' VIRTUAL,
+  subscription STRING          METADATA FROM 'subscription' VIRTUAL,
   WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
 ) WITH (
   'connector'    = 'pubsub',
   'project'      = 'my-project',
   'subscription' = 'orders-sub',
-  'format'       = 'json'
+  'format'       = 'json',
+  'scan.ordering-mode' = 'per-key'
 );
 
 SELECT window_start, COUNT(*)

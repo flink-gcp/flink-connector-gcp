@@ -28,8 +28,8 @@ CREATE TABLE outgoing_orders (
 
 INSERT INTO outgoing_orders
 VALUES
-  ('a-1', 10, MAP['source', 'sql'], 'customer-1'),
-  ('a-2', 20, MAP['source', 'sql'], 'customer-1');
+  ('a-1', 10, MAP['source', 'sql', 'profile-key', 'customer-1'], 'customer-1'),
+  ('a-2', 20, MAP['source', 'sql', 'profile-key', 'customer-1'], 'customer-1');
 -- end::sink[]
 
 -- tag::source[]
@@ -42,15 +42,23 @@ CREATE TABLE incoming_orders (
   publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
   attrs MAP<STRING, STRING> METADATA FROM 'attributes' VIRTUAL,
   ordering_key STRING METADATA FROM 'ordering-key' VIRTUAL,
+  subscription_name STRING METADATA FROM 'subscription' VIRTUAL,
   WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
 ) WITH (
   'connector' = 'pubsub',
   'project' = 'my-project',
   'subscription' = 'orders-sub',
   'format' = 'json',
+  'scan.startup.mode' = 'continue-from-subscription',
   'scan.ordering-mode' = 'per-key'
 );
 
-SELECT order_id, amount, attrs, ordering_key, message_id, publish_time
+SELECT order_id,
+       amount,
+       attrs['profile-key'] AS profile_key,
+       ordering_key,
+       message_id,
+       publish_time,
+       subscription_name
 FROM incoming_orders;
 -- end::source[]
