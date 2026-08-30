@@ -754,33 +754,45 @@ limitations under the License.
                         <id>integration-tests</id>
                         <configuration>
                             <reuseForks>true</reuseForks>
-                            <!-- The ceiling that actually stops a run (issue #959). A gated
-                                 class's @Timeout now runs in a separate thread and ends the
-                                 test on time, but it abandons the thread rather than killing
-                                 it, and Flink's MiniCluster holds non-daemon threads, so a
-                                 fork can still refuse to exit: #951 outlived its reported
-                                 timeout by over 40 minutes. This kills it.
+                            <!-- The ceiling that actually stops a fork (issue #959). A
+                                 SEPARATE_THREAD @Timeout abandons the test thread rather than
+                                 killing it, while the default SAME_THREAD mode cannot end work
+                                 that swallows its interrupt. Flink's MiniCluster also holds
+                                 non-daemon threads, so a fork can still refuse to exit: #951
+                                 outlived its reported timeout by over 40 minutes. This kills it.
 
                                  Because reuseForks is true above, this bounds a fork's whole
-                                 run - every class that lands in it - not one class.
+                                 lifetime - every class that lands in it - not one class.
 
                                  THE VALUE IS COUPLED, not merely generous: it must stay below
-                                 the sweep's staleness threshold (ADR-0119,
-                                 AbstractBigtableRealGcpITCase.STALE_AFTER, two hours). Below
-                                 it, a gated run cannot outlive the threshold and so cannot
-                                 have its own instance swept from under it. Raise this past
-                                 two hours and that guarantee is gone.
+                                 the age-gated sweeps' staleness thresholds (ADR-0119; the
+                                 Bigtable and Spanner STALE_AFTER values are both two hours).
+                                 Below them, a fork cannot keep one of its own Bigtable or
+                                 Spanner instances in use until that instance becomes eligible
+                                 for the sweep. Raise this past two hours and that guarantee is
+                                 gone.
 
-                                 90 minutes, not the tightest value that fits. forkCount is
-                                 2 above, so one fork carries about half of e2e's 33 gated
-                                 classes; the only measured suite is Bigtable's 7 classes at
-                                 20.6 minutes of work, which extrapolates past 45 minutes and
-                                 is why that value was rejected. Tightness buys nothing here
-                                 anyway - the per-class @Timeout already fires at 5 or 10
-                                 minutes, and this only has to catch the fork that will not
-                                 die. The two manual BigQuery schema-propagation probes declare
-                                 a three-hour @Timeout and need this raised on their command
-                                 line; their javadoc says so. -->
+                                 This guarantee is scoped to this execution. A gated ITCase
+                                 selected through default-test with -Dtest and
+                                 -Dtest.excluded.groups=, or run from an IDE, does not inherit this
+                                 fork ceiling. If that runner survives its class timeout, an
+                                 age-gated sweep can reach its instance after two hours; the
+                                 real-GCP harness javadocs record that residual.
+
+                                 90 minutes deliberately reserves most of the headroom below two
+                                 hours. Surefire fork pools are module-local, so the main e2e
+                                 Maven invocation applies this ceiling independently to each
+                                 connector, not across its combined class list. At selection time,
+                                 the only measurement was Bigtable on 2026-08-18: seven classes
+                                 took 20.6 minutes of total work across two forks. The other
+                                 module-local workloads were unmeasured, so 45 minutes was not
+                                 justified. Individual @Timeout values are not a substitute for
+                                 this ceiling, which bounds the reused fork when it will not die.
+                                 The two manual BigQuery schema-propagation probes do not use a
+                                 fixture managed by these sweeps, and their documented commands
+                                 scope the raised property to the BigQuery module and one probe
+                                 class. They declare a three-hour @Timeout and need this raised on
+                                 their command line; their javadoc says so. -->
                             <forkedProcessTimeoutInSeconds>
                                 ${it.fork.timeout.seconds}
                             </forkedProcessTimeoutInSeconds>

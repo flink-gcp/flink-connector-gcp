@@ -46,10 +46,13 @@ on:
     # run that drifts could still overlap one. That is safe: what keeps this
     # from deleting a running E2E instance is the two-hour staleness threshold,
     # never the timetable, which is also why workflow_dispatch can fire at any
-    # time of day. The coupling that would break it is raising e2e.yaml's
-    # timeout-minutes past two hours, which is why the note beside that ceiling
-    # says what depends on it. A local gated run has no such ceiling, so one
-    # left running past two hours can have its instance swept from under it.
+    # time of day. The coupling that would break it is raising the
+    # integration-test fork's default ceiling past two hours. The CI job has a
+    # separate whole-job bound, but a gated class invoked through
+    # default-test after clearing the gated exclusion, or through an IDE, does
+    # not inherit the fork ceiling and can cross the age gate. This guarantee
+    # also does not cover --all: the workflow-run path and a manual dispatch
+    # with all selected deliberately drop the comparison.
     - cron: '23 */3 * * *'
   workflow_dispatch:
     inputs:

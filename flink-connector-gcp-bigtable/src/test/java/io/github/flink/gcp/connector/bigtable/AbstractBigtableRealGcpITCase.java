@@ -74,9 +74,13 @@ import java.util.function.Function;
  *
  * <p>Deletion is best-effort, so instance names carry their creation time and {@link
  * #sweepStaleInstances} deletes anything older than {@link #STALE_AFTER} before creating this
- * class's own. That threshold is far above the E2E workflow's timeout, so the sweep cannot reach a
- * live run's instance; a local run left running for longer than it is the one case where it could,
- * and reclaiming that instance is the desired outcome anyway.
+ * class's own. The integration-test fork's default ceiling is below that threshold, so the
+ * age-gated sweep cannot reach an instance its owning fork is still using. The E2E workflow has a
+ * separate whole-job ceiling. A class selected through surefire's {@code default-test} execution
+ * after clearing the gated exclusion, or run from an IDE, does not inherit the integration-test
+ * fork ceiling and can cross the age gate. A post-E2E or explicitly requested manual {@code --all}
+ * sweep deliberately ignores age and can still collide with a concurrent local run; {@code
+ * docs/adr/0119} records both residuals.
  *
  * <p>The {@code @EnabledIfEnvironmentVariable} gate lives on every concrete class, never here:
  * {@code scripts/e2e-gated-its.sh} discovers the suite by parsing the annotation on each file and

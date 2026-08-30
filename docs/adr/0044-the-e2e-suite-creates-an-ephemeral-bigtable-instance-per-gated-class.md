@@ -38,12 +38,12 @@ tracks per class.
   because the data path needs it.
 - Leak control is a name-encoded creation time (`flink-it-<epochSeconds>-<runId>`, 28 characters
   inside Bigtable's 33) plus a sweep of anything older than two hours at the start of each
-  class; the threshold sits far above the workflow's 40-minute ceiling, so the sweep cannot
-  reach a live run. The cluster id is built from the run id rather than the instance id, which
-  at 28 characters leaves no room under a cluster id's own 30-character limit. Measured
-  2026-08-02: the two classes together, provisioning included, take about 7½ minutes.
-  ([#246]'s scheduled `sweep-e2e` bounds what a run whose teardown never executed can cost, and
-  [#959]'s fork ceiling keeps a run from outliving the staleness threshold that sweep uses.)
+  class; [#959]'s default 90-minute integration-test fork ceiling sits below that threshold, so
+  the age-gated sweep cannot reach an instance its owning fork is still using. CI has a separate
+  whole-job ceiling. The cluster id is built from the run id rather than the instance id, which at
+  28 characters leaves no room under a cluster id's own 30-character limit. Measured 2026-08-02:
+  the two classes together, provisioning included, take about 7½ minutes. ([#246]'s scheduled
+  `sweep-e2e` bounds what a run whose teardown never executed can cost.)
 - **Every deletion disables Change Streams on the instance's tables first.** Bigtable rejects an
   instance deletion with `FAILED_PRECONDITION` while any table retains change-stream data. The
   per-class teardown, its startup sweep and the scheduled sweep all apply that prerequisite, so a
