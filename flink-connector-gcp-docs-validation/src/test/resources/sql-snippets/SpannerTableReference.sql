@@ -33,7 +33,7 @@ SELECT customer, total FROM orders;
 -- end::overview[]
 
 -- tag::add-jar[]
-ADD JAR '/path/to/flink-sql-connector-gcp-spanner-0.1.0-SNAPSHOT.jar';
+ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.0.0-SNAPSHOT.jar';
 -- end::add-jar[]
 
 -- tag::named-schema[]

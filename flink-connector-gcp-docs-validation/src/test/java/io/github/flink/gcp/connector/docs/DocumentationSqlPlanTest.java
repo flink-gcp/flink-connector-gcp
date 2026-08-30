@@ -384,7 +384,7 @@ public class DocumentationSqlPlanTest {
                         command(
                                 "flink/CloudTasksTableReference.sql",
                                 "add-jar",
-                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-0.1.0-SNAPSHOT.jar';")),
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.0.0-SNAPSHOT.jar';")),
                 scenario(
                         "Cloud Tasks table reference form values",
                         snippet("flink/CloudTasksTableReference.sql", "repeated-form-values"),
@@ -475,7 +475,7 @@ public class DocumentationSqlPlanTest {
                         command(
                                 "flink/SpannerTableReference.sql",
                                 "add-jar",
-                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-0.1.0-SNAPSHOT.jar';")),
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.0.0-SNAPSHOT.jar';")),
                 scenario(
                         "Spanner table reference named schema",
                         withFollowup(

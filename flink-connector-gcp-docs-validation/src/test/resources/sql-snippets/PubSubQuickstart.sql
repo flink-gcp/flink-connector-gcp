@@ -13,7 +13,7 @@
 -- limitations under the License.
 
 -- tag::sink[]
-ADD JAR '/path/to/flink-sql-connector-gcp-pubsub-0.1.0-SNAPSHOT.jar';
+ADD JAR '/path/to/flink-sql-connector-gcp-pubsub-1.0.0-SNAPSHOT.jar';
 
 CREATE TABLE orders (
   order_id STRING,
