@@ -14,8 +14,18 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
+<!-- child.project.url.inherit.append.path: without it, Maven appends each module's
+     artifactId to the inherited <url> and <scm> URLs, and every published module POM
+     then points Central's "Project URL" / "Source Control" links at
+     github.com/flink-gcp/flink-connector-gcp/<artifactId>, which is a 404 (observed on
+     the 1.0.0 artifact pages, which are immutable; fixed from the next release).
+     These attributes are Maven 3.6.1+ syntax: an older Maven fails parsing this file
+     before any enforcer could explain why, so the floor is documented here instead of
+     enforced — the wrapper and mise both pin far newer Mavens, and repository POMs are
+     parsed leniently, so dependency consumers on old Mavens are unaffected. -->
 <project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"
-         xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+         xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         child.project.url.inherit.append.path="false">
 
     <modelVersion>4.0.0</modelVersion>
 
@@ -65,7 +75,9 @@ limitations under the License.
          reported it — `maven-release-plugin` would be the first to care, and nothing
          invokes it. They are corrected here because they end up in the published POM
          (#724), which is the same reason the URLs above moved. -->
-    <scm>
+    <scm child.scm.connection.inherit.append.path="false"
+         child.scm.developerConnection.inherit.append.path="false"
+         child.scm.url.inherit.append.path="false">
         <url>https://github.com/flink-gcp/flink-connector-gcp</url>
         <connection>scm:git:https://github.com/flink-gcp/flink-connector-gcp.git</connection>
         <developerConnection>scm:git:git@github.com:flink-gcp/flink-connector-gcp.git</developerConnection>
