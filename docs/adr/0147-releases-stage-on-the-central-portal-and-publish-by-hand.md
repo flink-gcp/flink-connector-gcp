@@ -90,10 +90,11 @@ the parent's pinned 1.4 predates all of that and is overridden.
 **The release build carries three deliberate flags.** `versions:set` from the tag keeps the tree
 at `<next>-SNAPSHOT` with no release commit (the tagged tree is what CI verified; only the
 version differs). `-DskipTests` because the staged commit already passed every CI lane and the
-staging build's job is packaging, signing and upload. `-Djapicmp.skip=true` unconditionally,
-because the release whose version equals `japicmp.referenceVersion` resolves the reference from
-the reactor itself and reads the old side's whole compile classpath as old API (ADR-0124);
-every verify lane runs the real check.
+staging build's job is packaging, signing and upload. `-Djapicmp.skip=true` unconditionally:
+every verify lane runs the real check, and for a release whose version equals
+`japicmp.referenceVersion` — the 1.0.0 case — the skip is also load-bearing, because Maven
+resolves the reference from the reactor itself and japicmp reads the old side's whole compile
+classpath as old API (ADR-0124).
 
 ## Declined alternatives
 

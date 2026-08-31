@@ -592,7 +592,9 @@ facts); the rules a session needs:
   source-backed SQL snippets — three tagged `.sql` sources; the plan test's
   `addJarExamplesNameOneReleasedVersion` holds all three to one version, because only two
   carry exact statement expectations — and a follow-up PR then bumps the working tree to the
-  next `-SNAPSHOT`
+  next `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
+  rides the CI Maven cache — measured on #728, the cache archives the whole local repository
+  including it; ADR-0124's revision records why)
 - **Releases stage on the Central Portal; a person publishes them** (ADR-0147, issue #724):
   `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
   version line on a `v[0-9]*` tag push, with `workflow_dispatch` as the validate-then-drop
@@ -610,8 +612,9 @@ facts); the rules a session needs:
   skips itself in its own POM (test-scope-only consumption; freezing its API buys users
   nothing), and the signing key is a dedicated project release key read from
   `MAVEN_GPG_KEY`/`MAVEN_GPG_PASSPHRASE` (the bc signer; the parent's gpg-plugin 1.4 pin is
-  overridden to 3.x). The release build passes `-Djapicmp.skip=true` — the reference resolves
-  from the reactor itself when the versions are equal (ADR-0124) — and `-DskipTests`, because
+  overridden to 3.x). The release build passes `-Djapicmp.skip=true` (every verify lane already runs the
+  real check; for the release whose version equals the reference, the skip was also
+  load-bearing — ADR-0124) and `-DskipTests`, because
   the staged commit already passed every CI lane
 - **The project's own API stability is annotation-tiered and japicmp-checked** (ADR-0124, issue
   #728): `@Public` — the promoted entry surface, its signature closure, and its subtypes — must
@@ -626,9 +629,11 @@ facts); the rules a session needs:
   under `<excludes combine.children="append">` in the root declaration. Each release bumps
   `japicmp.referenceVersion` to itself and wipes those excludes, and the release build whose own
   version equals the reference passes `-Djapicmp.skip=true` (Maven resolves the reference from
-  the reactor itself and japicmp reads the old compile classpath as old API). Until `1.0.0`
-  exists on Central the check passes with a logged resolution warning; the firing evidence is
-  the staged-1.0.0 rehearsal on ADR-0124
+  the reactor itself and japicmp reads the old compile classpath as old API) — the release
+  recipe skips unconditionally, which that first release needed and later releases keep only
+  because every verify lane already runs the real check. Since 2026-08-31 the reference
+  resolves from Central; the firing evidence, pre- and post-publication, is on ADR-0124 and
+  #728
 - **Which tier a surface gets is a rule, not taste** (ADR-0141, issue #783): a new or
   re-examined surface's tier is decided by ADR-0141's clauses — what can reshape its inputs or
   outputs within 1.x — at introduction time, in the adopting ADR. A vendor

@@ -130,18 +130,22 @@ jobs:
           restore-keys: hugo-${{ hashFiles('mise.toml') }}-
 
       # Generating the API reference resolves the whole libraries-bom tree, so
-      # the Maven repository is worth caching. verify.yaml gets this from
-      # actions/setup-java's `cache: maven`, which is not available here because
-      # the JDK comes from mise. ~/.m2/wrapper joins it because the wrapper is
+      # the Maven repository is worth caching. verify.yaml caches it through an
+      # explicit actions/cache pair with restore-keys and a main-only save (its
+      # comments say why setup-java's `cache: maven` was rejected there); here
+      # the JDK comes from mise anyway, so the explicit action is the only
+      # option. ~/.m2/wrapper joins it because the wrapper is
       # `distributionType=only-script`, so Maven itself is downloaded per run and
       # unpacked outside the repository directory.
       #
-      # This project's own artifacts are excluded so that they can never be
-      # restored from a previous run. Nothing here installs them today, so the
-      # bare `javadoc:aggregate` in `just docs-javadoc` resolves the modules from
-      # the reactor and only from there; the exclusion keeps that a property of
-      # the configuration rather than of the current step list, because a cached
-      # SNAPSHOT is exactly what would make that goal pass for the wrong reason.
+      # The negation line was written to keep this project's own artifacts from
+      # being restored from a previous run — but under the pinned action it is a
+      # no-op (verify.yaml's cache comment carries the measurement: the matched
+      # ~/.m2/repository is archived recursively, so a subdirectory negation
+      # removes nothing). What actually keeps the bare `javadoc:aggregate` in
+      # `just docs-javadoc` resolving modules from the reactor is that nothing
+      # here installs them; a cached SNAPSHOT is exactly what would make that
+      # goal pass for the wrong reason if an install step ever appeared.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

@@ -18,7 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-16 (measured 2026-08-16); revised by
-  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) (2026-08-23)
+  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) (2026-08-23); revised by
+  [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728) (2026-08-31: published-1.0.0
+  verification recorded, and the deferred cache decision resolved by measurement)
 - Issues: [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728),
   [#39](https://github.com/flink-gcp/flink-connector-gcp/issues/39),
   [#29](https://github.com/flink-gcp/flink-connector-gcp/issues/29),
@@ -156,8 +158,11 @@ separately on the adopting pull request.
 
 The staging build itself produced the self-resolution failure quoted in the Decision, which is
 how the release-time skip rule was found.
-Verification against the real Maven Central 1.0.0 remains open on
-[#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728) until that version exists.
+Verification against the real Maven Central 1.0.0 ran on 2026-08-31, after the release
+([#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728) carries the evidence):
+a clean full verify and a throwaway-local-repository verify both resolved the published
+reference with no warning and compared all six connector jars against it, and a deliberate
+`@Public` method rename failed the build with `METHOD_REMOVED` while compiling green.
 
 ## Alternatives declined
 
@@ -188,14 +193,20 @@ Verification against the real Maven Central 1.0.0 remains open on
   workaround as the `directory-maven-plugin` `rootDir` override), and the `japicmp-patch`
   profile. The check rides `verify`, so `just verify` and every CI lane run it with no recipe
   change.
-- Until 1.0.0 exists on Maven Central the check passes with a warning; the rehearsal above is
-  the evidence that it fires, and the last [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728)
-  checkbox re-verifies against the published artifact.
-- `ignoreNonResolvableArtifacts=true` converts *any* resolution failure into that warning, not
-  only "not published yet" — and the CI Maven cache deliberately excludes
-  `io/github/flink-gcp`, so after publication every lane re-downloads the reference jar and a
-  Central outage or 429 silently degrades the check to a pass. Closing that (a cache carve-out
-  for the immutable released version, or failing on the warning once 1.0.0 exists) is part of
-  the post-publication verification on [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728).
+- 1.0.0 is published (2026-08-31), so the pre-publication warning-and-pass state is over;
+  the [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728) re-verification
+  against the published artifact ran and passed, in CI lanes and in a throwaway local
+  repository.
+- `ignoreNonResolvableArtifacts=true` converts *any* resolution failure into a warning, not
+  only "not published yet". The cache carve-out this bullet used to defer resolved itself on
+  measurement (2026-08-31, [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728)):
+  the cache's `io/github/flink-gcp` negation never excluded anything — the pinned
+  actions/cache resolves paths without implicit descendants and hands `~/.m2/repository` to a
+  recursive tar — so the released reference the lanes download is already saved and restored
+  with the cache, and no verify lane installs anything under the group that the negation
+  would have needed to keep out. The residual exposure is a cache miss coinciding with a
+  Central outage — in the per-PR lanes and equally in `weekly.yaml`, whose setup-java
+  `cache: maven` restores the reference on an exact key hit and re-downloads on a miss;
+  accepted.
 - The parent's `fast` profile does not skip this plugin (it targets the stale
   `io.github.zentol.japicmp` fork coordinates); the working switch is `-Djapicmp.skip=true`.
