@@ -85,10 +85,11 @@ verify-flink version *extra:
 # compiler re-pin, Central Portal upload with autoPublish=false — the deployment stops
 # at VALIDATED and Publish or Drop is a click in the Portal UI; issue #724, ADR-0147).
 # Signing reads MAVEN_GPG_KEY and MAVEN_GPG_PASSPHRASE; the upload reads the `central`
-# server credentials from ~/.m2/settings.xml. -Djapicmp.skip=true is unconditional
-# because the release whose version equals japicmp.referenceVersion would otherwise
-# resolve the reference from the reactor itself and read the old side's whole compile
-# classpath as old API (ADR-0124); every verify lane already runs the real check.
+# server credentials from ~/.m2/settings.xml. -Djapicmp.skip=true is unconditional:
+# every verify lane already runs the real check, and for a release whose version
+# equals japicmp.referenceVersion (the 1.0.0 case) the skip is also load-bearing —
+# Maven would resolve the reference from the reactor itself and japicmp would read
+# the old side's whole compile classpath as old API (ADR-0124).
 # -DskipTests because the staged commit already passed every CI lane. Every release
 # stages two version lines (ADR-0147): bare X.Y.Z is the Flink 2.x line built at the
 # pom's pinned floor, and X.Y.Z-1.20 is the same coordinates compiled for the 1.x

@@ -140,11 +140,12 @@ jobs:
       # the changed dependency is fetched, everything else is restored.
       #
       # The path is docs.yaml's, for the reasons stated there: ~/.m2/wrapper joins
-      # it because the wrapper is `distributionType=only-script`, and this
-      # project's own artifacts are excluded so that a cached SNAPSHOT can never
-      # satisfy a resolution that should have come from the reactor. `just verify`
-      # runs `mvn verify`, which installs nothing, so the exclusion keeps that a
-      # property of the configuration rather than of today's step list.
+      # it because the wrapper is `distributionType=only-script`. The negation
+      # line was written to keep a cached SNAPSHOT of this project's own
+      # artifacts from satisfying a resolution that should have come from the
+      # reactor — but see the measured note below the restore step: it does not
+      # actually exclude anything. What keeps the cache clean is that
+      # `just verify` runs `mvn verify`, which installs nothing.
       #
       # Restore always, save only on the default branch. A cache written from a
       # pull request is scoped to that pull request's ref, so no other branch can
@@ -154,6 +155,17 @@ jobs:
       # which six pull-request-scoped Maven entries held 2108 MiB between them.
       # Saving only on main removes that eviction pressure; a pull request keeps
       # the restore, which is the half that saves the download.
+      # The io/github/flink-gcp negation below is a no-op for what the archive
+      # contains, measured at the pinned action's dist on 2026-08-31: paths
+      # resolve with implicitDescendants=false, ~/.m2/repository itself is the
+      # manifest entry, and tar archives it recursively — a subdirectory
+      # negation removes nothing. That is currently harmless in both
+      # directions: no verify lane installs this group (nothing writes a
+      # SNAPSHOT to exclude), and the one thing that does land there — the
+      # released japicmp reference, downloaded from Central during the run —
+      # is immutable and exactly what ADR-0124's deferred cache decision
+      # wanted kept (issue #728 records the measurement). If a lane ever
+      # gains an install step, this negation will not protect it.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: maven_cache
         with:
