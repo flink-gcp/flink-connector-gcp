@@ -60,7 +60,9 @@ class BigQueryTablePlanTest {
         String plan = table.explainSql("SELECT name FROM events WHERE id >= 7 AND name = 'alice'");
 
         assertThat(plan)
-                .contains("filter=[and(>=(id")
+                // Flink renders AND in lower case through 2.3 and in upper case on 2.4-SNAPSHOT.
+                // Which spelling it picks is not what this test is about, so both are matched.
+                .containsIgnoringCase("filter=[and(>=(id")
                 .contains("project=[id, name]")
                 .containsIgnoringCase("where=[and(>=(id")
                 .contains("=(name");
