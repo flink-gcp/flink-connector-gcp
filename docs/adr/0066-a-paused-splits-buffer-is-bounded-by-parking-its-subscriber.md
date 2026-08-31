@@ -230,7 +230,20 @@ Verified 2026-08-29 for [#1138] by `SubscriberBufferBudgetTest`,
 - **The frozen-downstream series plateaus after acknowledgement extension expires.** The emulator
   arm never calls `fetch()`, runs for twice its 20-second `maxAckExtensionPeriod`, reaches the
   75-message hard cap and remains there for sampled observations after its subscriber is stopped.
-  A drained control in the same trial stays below the cap and continues receiving.
+  The concurrently drained control deliberately keeps its hard limit out of the way, continues
+  beyond two flow-control windows, and ends below one window.
+  Four local runs of that repaired control on 2026-08-31 received and drained between 167 and 182
+  messages, recorded no NACKs and ended at zero buffered messages.
+  Those observations do not bound final-buffer timing for every possible delivery wave; all five
+  Weekly version/JDK rows are the acceptance check for that residual exposure.
+  [Weekly run 33336508126] disproved the earlier same-cap control assumption: the control's recorded
+  delivery count jumped from 117 to 289 at its 20.3-second step, with 75 callbacks retained and 97
+  rejected at the 75-message cap while the control drained 192 messages and ended empty.
+  The 250 ms sampler reported a peak of 46, so only the hard-limit event and rejection count
+  captured the transient crossing.
+  The log did not record callback message IDs, so it does not prove that all 172 callbacks were
+  distinct; it does prove that a draining control can cross a 75-message cap.
+  Average drain rate does not bound the callbacks retained during a delivery wave.
 - **The standalone subscriber-buffer probe fits in a 256 MiB heap.** A child JVM under `-Xmx256m`
   retains 10000 distinct messages with 4 KiB payloads and their pending acknowledgement handles,
   then rejects message 10001 without exhausting the heap.
@@ -320,3 +333,4 @@ Verified 2026-08-29 for [#1138] by `SubscriberBufferBudgetTest`,
 [#377]: https://github.com/flink-gcp/flink-connector-gcp/issues/377
 [#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440
 [#1138]: https://github.com/flink-gcp/flink-connector-gcp/issues/1138
+[Weekly run 33336508126]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/33336508126
