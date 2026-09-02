@@ -1064,15 +1064,17 @@ why nothing in `opentofu/` declares a Bigtable instance, only the API enablement
 
 ### Where the emulator differs from the service
 
-Measured 2026-08-02 (the missing-table row 2026-08-09), against the pinned
-`google-cloud-cli:441.0.0-emulators` image and real Bigtable in `us-central1`, for the same inputs
-on both sides. Every row is asserted from both sides, so an emulator image bump has to state what
-it changed rather than making this table quietly wrong.
+The real-Bigtable column was measured 2026-08-02 (the missing-table row 2026-08-09) in
+`us-central1`; the emulator column was re-measured 2026-09-03 when the pin moved from
+`google-cloud-cli:441.0.0-emulators` to `583.0.0-emulators`, for the same inputs on both sides.
+Every row is asserted from both sides, so an emulator image bump has to state what it changed
+rather than making this table quietly wrong. That bump moved three rows: the empty-row-key row
+below, and two in the read table further down.
 
 | Input | Real Bigtable | Emulator |
 |---|---|---|
 | Cell timestamp not a multiple of 1000 | `INVALID_ARGUMENT`, the whole request rejected: every entry of the batch routed to the handler, nothing written | `INTERNAL` ("invalid timestamp 1234"), the offending entry only — the rest of the batch is written |
-| Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty" | **Accepted.** The row it stores then breaks the client's own read state machine ("rowKey missing"), a state the service cannot reach |
+| Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty", the whole request rejected | `INTERNAL` wrapping the same wording, the offending entry only — the rest of the batch is written. Up to `441.0.0-emulators` the emulator **accepted** the write instead; it now refuses it on this path, and on single-row `MutateRow` it answers the service's own `INVALID_ARGUMENT` unwrapped. `ReadModifyWriteRow` still accepts one — see the read table |
 | Mutation naming a column family the table does not have | `NOT_FOUND`, reported for **every** entry of the batch, nothing written | `INTERNAL` ("unknown family"), the offending entry only |
 | Mutation against a table that does not exist | `NOT_FOUND`, for every entry — worded "No tables found for instance …" against an instance holding no tables | `NOT_FOUND` ("table ... not found") — the one rejection the emulator answers with the service's status, which is what lets the emulator suite drive the [auto-creation](#table-auto-creation) repair end-to-end; only the wording differs, and the sink classifies by status alone |
 
@@ -1081,15 +1083,16 @@ The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling)
 service makes droppable — the wrong lesson, learned cheaply. It is also why the emulator suite
 asserts no rejection except in the class that exists to record these differences.
 
-The read path has its own table, measured 2026-08-09 against the same pinned image (the last two
-rows 2026-08-10, [#481]({{< param BookRepo >}}/issues/481)):
+The read path has its own table, measured 2026-08-09 against `441.0.0-emulators` and re-measured
+on the emulator side 2026-09-03 against `583.0.0-emulators` (the last two rows 2026-08-10,
+[#481]({{< param BookRepo >}}/issues/481)):
 
 | Behaviour | Real Bigtable | Emulator |
 |---|---|---|
-| `SampleRowKeys` on a populated table | one boundary per tablet, so a pre-split table samples deterministically | the table's final key plus others at roughly one-in-a-hundred probability, whatever the table holds |
-| `SampleRowKeys` on an empty table | one response carrying the empty end-of-table key | no samples at all |
+| `SampleRowKeys` on a populated table | one boundary per tablet, so a pre-split table samples deterministically | the table's final key plus others at roughly one-in-a-hundred probability, whatever the table holds — and, since `583.0.0-emulators`, a trailing end-of-table marker after them. A three-row table answers `['c'@2, ''@3]` where `441.0.0-emulators` answered `['c'@2]` |
+| `SampleRowKeys` on an empty table | one response carrying the empty end-of-table key | the same one response since `583.0.0-emulators`; up to `441.0.0-emulators` it was no samples at all. The planner drops empty-key samples and treats both the same way, so nothing behind this row moved |
 | Application profile named on a request | honoured | ignored entirely |
-| Empty row key | rejected | accepted, which is why the connector's range algebra can express progress past one |
+| Empty row key, written through `ReadModifyWriteRow` | rejected, as on every write path | **still accepted**, and the row it stores breaks the client's own read state machine ("rowKey missing"), a state the service cannot reach. The mutate paths stopped accepting one at `583.0.0-emulators`, so the deviation narrowed to this path rather than closing — which is why the connector's range algebra expresses progress past an empty key |
 | Range whose start is exclusive at its own end key | `INVALID_ARGUMENT`, "start_key must be less than end_key" | answered empty, no error |
 | Filter naming a column family the table does not have | `NOT_FOUND`, the read fails | answered empty, no error |
 

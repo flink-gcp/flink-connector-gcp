@@ -33,10 +33,13 @@ the sink was actually built, and all three were:
 
 - **The emulator implements `BatchWrite` from v1.5.31** (emulator issue #172, opened against
   v1.5.17 and closed 2025-06-20). The fallback is therefore not needed, and the emulator suite
-  drives the real write path. It does mean this module cannot share the
-  `google-cloud-cli:441.0.0-emulators` image the Bigtable and Pub/Sub tests use — its bundled
-  Spanner emulator predates the RPC — so the module pins
-  `gcr.io/cloud-spanner-emulator/emulator:1.5.56` of its own.
+  drives the real write path. It did mean this module could not share the
+  `google-cloud-cli:441.0.0-emulators` image the Bigtable and Pub/Sub tests used at the time — its
+  bundled Spanner emulator predates the RPC — so the module pins
+  `gcr.io/cloud-spanner-emulator/emulator:1.5.56` of its own. That pin stands on its own terms and
+  did not move when the shared image did (2026-09-03, now `583.0.0-emulators`): the reason to hold
+  a separate image is the version *floor* the write path needs, which a bundle bump does not
+  settle either way.
 - **A batch write request Spanner refuses is refused as a whole**, so the writer's batch limits are
   correctness rather than tidiness. Which limit each one defends is narrower than the batch write
   page's "the maximum size for a batch write request is the same as the limit for a commit request"

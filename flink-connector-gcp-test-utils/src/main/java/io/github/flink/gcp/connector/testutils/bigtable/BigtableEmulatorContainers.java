@@ -33,9 +33,20 @@ import org.testcontainers.utility.DockerImageName;
 @Internal
 public final class BigtableEmulatorContainers {
 
+    /**
+     * Pinned, and kept near the newest tag rather than the oldest that still resolves: gcr.io
+     * retains roughly a year of {@code *-emulators} tags and drops the rest. That is how {@code
+     * 441.0.0-emulators} came to 404 on 2026-09-01 and took every Bigtable and Pub/Sub lane with it
+     * (issue #1196), so how new the tag is decides how long this holds. Measured 2026-09-03: the
+     * oldest surviving tag was {@code 537.0.0-emulators} and the newest {@code 583.0.0-emulators}.
+     *
+     * <p>A bump has to run this module's deviation suites and say what moved — the 2026-09-01
+     * rotation moved three measured rows. {@code PubSubEmulatorContainers} pins the same image
+     * separately and has to move with it.
+     */
     private static final DockerImageName IMAGE =
             DockerImageName.parse(
-                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators");
+                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:583.0.0-emulators");
 
     private BigtableEmulatorContainers() {}
 

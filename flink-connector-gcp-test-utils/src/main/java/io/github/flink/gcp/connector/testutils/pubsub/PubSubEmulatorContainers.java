@@ -24,13 +24,18 @@ import org.testcontainers.utility.DockerImageName;
 /**
  * The Pub/Sub emulator image shared by every harness that starts the emulator, so they cannot drift
  * apart.
+ *
+ * <p>The sibling of {@code testutils.bigtable.BigtableEmulatorContainers}, which pins the same
+ * gcloud CLI image in a constant of its own — emulator fixtures are deliberately not unified (issue
+ * #27) — and which carries the reason the tag is where it is. A bump meant to move every emulator
+ * edits both classes.
  */
 @Internal
 public final class PubSubEmulatorContainers {
 
     private static final DockerImageName IMAGE =
             DockerImageName.parse(
-                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators");
+                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:583.0.0-emulators");
 
     private PubSubEmulatorContainers() {}
 

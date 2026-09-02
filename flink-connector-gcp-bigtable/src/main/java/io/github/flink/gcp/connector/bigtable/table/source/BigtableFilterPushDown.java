@@ -171,9 +171,12 @@ final class BigtableFilterPushDown {
         for (int i = 1; i < children.size(); i++) {
             Optional<ByteString> literal = literal(schema.getRowKeyType(), children.get(i));
             if (!literal.isPresent() || literal.get().isEmpty()) {
-                // The SDK cannot express an empty-key bound. Real Bigtable rejects an empty row
-                // key, but the emulator accepts one, so dropping it from an otherwise pushable IN
-                // list would change the result there.
+                // The SDK cannot express an empty-key bound, normalising it to unbounded, so an
+                // empty literal cannot be pushed. Dropping it from an otherwise pushable IN list
+                // is not the alternative: that would narrow the scan against a key the list still
+                // names. Leaving the whole predicate residual is always correct and costs only the
+                // pushdown. The branch is reached by an SQL literal '' whatever any server would
+                // store, so this is an SDK fact and not an emulator one.
                 return Optional.empty();
             }
             ranges.add(equalityRange(schema.getRowKeyType(), literal.get()));

@@ -109,10 +109,10 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
     /**
      * End to end through the writer's repair path: a fully-populated {@link TopicCreateOptions}
      * reaches the created topic and reads back field for field. The emulator (google-cloud-cli
-     * 441.0.0) stores all four knobs verbatim — what it cannot show is their <em>effect</em>
-     * (actual CMEK encryption, residency enforcement, retention-driven replay), and it validates
-     * nothing (the KMS key here does not exist); those semantics belong to the real-GCP suite
-     * (issue #82).
+     * 583.0.0, and 441.0.0 before the pin moved on 2026-09-03; both answer the same here) stores
+     * all four knobs verbatim — what it cannot show is their <em>effect</em> (actual CMEK
+     * encryption, residency enforcement, retention-driven replay), and it validates nothing (the
+     * KMS key here does not exist); those semantics belong to the real-GCP suite (issue #82).
      */
     @Test
     void theRepairCreatesTheTopicWithTheConfiguredSettings() throws Exception {

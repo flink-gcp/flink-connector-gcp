@@ -263,9 +263,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `appProfileId` reaches the wire, and only the gated suite can make it — the emulator ignores
   profiles.
 - **Split planning is never an emulator test**: the emulator models no tablets (final key plus
-  ~1-in-100 randoms; *no samples at all* for an empty table, measured 2026-08-09 against the pinned
-  image). The gated table is **pre-split**; the failover ITCase scripts both seams, because one
-  split cannot show a reassignment.
+  ~1-in-100 randoms). Since `583.0.0-emulators` every response also *trails* an end-of-table
+  marker, so a three-row table answers `['c'@2, ''@3]` and an empty one `['']`, where
+  `441.0.0-emulators` answered `['c'@2]` and nothing; the planner drops empty-key samples, so no
+  plan moved. Measured 2026-08-09 and 2026-09-03. The gated table is **pre-split**; the failover
+  ITCase scripts both seams, because one split cannot show a reassignment.
 
 ## Change Streams source (`docs/adr/0094`, `0097`)
 
@@ -576,7 +578,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (unvalidated when a projection drops the key) and its complement excludes it from a `<>` scan
   that must fail on it. The converter validates the row key under `reject` even when the
   projection dropped it (ADR-0136). An empty string or binary literal remains
-  residual because the SDK cannot bound the empty key that the emulator accepts. `CHAR`, `BINARY`,
+  residual because the SDK normalises an empty bound to unbounded, so pushing one down would widen
+  the scan rather than narrow it — an SDK fact, not an emulator one. `CHAR`, `BINARY`,
   `BOOLEAN`, `DECIMAL` and floating point remain residual. Configured prefixes and configured
   ranges remain a union, then intersect with exact SQL ranges. Positive family or qualifier predicates become
   necessary existence filters but also remain residual: never push raw values across codec nulls,
@@ -625,8 +628,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - What real Bigtable answers each rejection with is measured, not inferred; client-side
   `Mutation` limits never reach the wire and arrive as serialization failures.
 - `BigtableEmulatorDeviationITCase` asserts what the *emulator* does (INTERNAL instead of
-  `INVALID_ARGUMENT`/`NOT_FOUND`; accepts an empty row key) so an image bump has to declare a
-  change — the emulator-is-not-an-authority rule enforced, not breached.
+  `INVALID_ARGUMENT`/`NOT_FOUND`, per offending entry rather than per request) so an image bump has
+  to declare a change — the emulator-is-not-an-authority rule enforced, not breached. It works: the
+  2026-09-03 bump to `583.0.0-emulators` failed here because the emulator stopped accepting an
+  empty row key **on the mutate paths** — `ReadModifyWriteRow` still accepts one, which is why that
+  half moved to `BigtableEmulatorReadDeviationITCase` rather than being deleted (#1196). Treat a
+  failure in either class as a measurement to record, never as a test to relax, and check whether
+  the deviation moved before concluding it closed.
 - `StubWriterInitContext` cannot drive this writer; emulator tests inject through
   `createWriter(batcher, mailbox, metricGroup)`, and the MiniCluster job tests cover the
   production path.

@@ -56,10 +56,9 @@ import java.util.List;
  *   <li>An {@code UPDATE_BEFORE} row, which the declared upsert changelog mode means the planner
  *       never sends. Treating it as a delete — which is what falling through to the {@code else}
  *       branch would do — would erase the row an update is about to rewrite.
- *   <li>An absent or empty row key. Bigtable has no such row, and the emulator's acceptance of one
- *       is a measured deviation rather than a licence; failing here is what keeps the two agreeing.
- *       Flink's HBase connector drops the record instead, which leaves an incomplete table under a
- *       green job.
+ *   <li>An absent or empty row key. Bigtable has no such row, so failing here is what keeps the job
+ *       honest about what it wrote. Flink's HBase connector drops the record instead, which leaves
+ *       an incomplete table under a green job.
  *   <li>A row whose every column family is null, which would produce an entry carrying no mutation
  *       at all. The service answers that with an {@code INVALID_ARGUMENT} naming neither the row
  *       nor the reason, so it is refused here where both can be said. A partial column list in an

@@ -45,8 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests for {@link BigtableTableAdmin} against the emulator, whose table admin surface
  * — creation, family readback with garbage-collection rules intact, {@code ALREADY_EXISTS} on a
  * repeated creation and on an existing family's re-addition — was measured to behave like the
- * service's for what this class exercises (2026-08-08, against {@code
- * google-cloud-cli:441.0.0-emulators}; {@link BigtableEmulatorContainers} pins the image). The
+ * service's for what this class exercises (2026-08-08 against {@code
+ * google-cloud-cli:441.0.0-emulators}, unchanged when re-measured 2026-09-03 against {@code
+ * google-cloud-cli:583.0.0-emulators}; {@link BigtableEmulatorContainers} pins the image). The
  * emulator stays a convenience, not an authority: the gated real-GCP suite owns the service-side
  * verdicts.
  *

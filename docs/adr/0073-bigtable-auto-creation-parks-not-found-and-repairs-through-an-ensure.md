@@ -31,7 +31,9 @@ policies, so a table created bare rejects every mutation, and the GC policy is e
 decides whether an at-least-once sink's replayed duplicates accumulate forever.
 
 Measured before the design was committed (2026-08-08, `google-cloud-cli:441.0.0-emulators`,
-`google-cloud-bigtable` 2.80.0):
+`google-cloud-bigtable` 2.80.0), and re-measured unchanged against
+`google-cloud-cli:583.0.0-emulators` on 2026-09-03 when that pin moved ([#1196] rotated the old tag
+out of the registry):
 
 - **A missing table answers `NOT_FOUND`** ("table … not found"), fanned request-level over every
   entry — on the emulator, which is what lets the emulator suite drive the repair end to end,
@@ -207,3 +209,4 @@ same way.
 [#414]: https://github.com/flink-gcp/flink-connector-gcp/issues/414
 [#432]: https://github.com/flink-gcp/flink-connector-gcp/issues/432
 [#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948
+[#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196

@@ -286,7 +286,7 @@ its complement excludes that key from a `<>` scan that must fail on it — so th
 on the decoded value, where the policy throws, at the cost of the pushdown.
 Their encodings do not preserve signed SQL order.
 An empty `VARCHAR` or `VARBINARY` literal remains with Flink: the SDK cannot express an empty-key
-range, and although the service rejects empty row keys, the emulator accepts them.
+range, normalising an empty bound to unbounded, which would widen the scan rather than narrow it.
 Fixed-width character and binary values may require SQL padding, a nonzero byte decodes as boolean
 true, decimal encodings carry their own scale, and floating point has signed-zero and `NaN`
 semantics.
