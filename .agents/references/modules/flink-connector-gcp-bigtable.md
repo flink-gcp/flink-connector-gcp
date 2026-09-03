@@ -46,6 +46,47 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   state-independence definition and AIP-194, never the plausibility of what a code names. The
   routing condition takes both halves, reading the chain differently (`docs/adr/0042`).
 
+## Single-row request runtime (`docs/adr/0148`)
+
+- `CheckAndMutateRow` and `ReadModifyWriteRow` run on their own runtime under `sink.singlerow`,
+  the module's second write family. **Only the new family is layered**: the mechanical move of
+  `sink.writer` into a `MutateRows` family layer is deferred to its own change so it does not
+  race every Lane B pull request of milestone v1.1.0; do not fold it into a functional change.
+  `BigtableClientReaper` sits at the module root because both client factories take permits
+  from it (`docs/adr/0145`).
+- A `RowRequest<R>` builds the SDK request only inside `start(client, destination)`, from the
+  destination the resolver produced — that is what reconciles per-record destinations with SDK
+  request builders that carry their own table id. No SDK `Row`, `RowCell` or request builder
+  reaches a public surface: `ReadModifyWriteRow` answers are transformed into `BigtableRow` on
+  the gax thread.
+- **The SDK deadline is the only timeout, retryable codes stay empty, and there is no connector
+  retry loop**: `requestTimeout` goes through `setSimpleTimeoutNoRetriesDuration` on both stub
+  settings, and `DefaultSingleRowClientFactoryTest` pins the SDK defaults (20 s, no retryable
+  codes) so a BOM bump that changes them fails the build. Do not add a retry knob.
+- Failure boundary: `INVALID_ARGUMENT` is row-level (to the `FailureHandler<FailedRequest>` on
+  the sink surface), and so is an `IllegalArgumentException`/`IllegalStateException` thrown
+  synchronously from `RowRequest.start` — the SDK's own request validation, which is
+  state-independent; any other synchronous throw is the client refusing work and fails the write.
+  `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED`, `CANCELLED` and a cancelled
+  future are *ambiguous* and fail the job with the message stating what a replay does to each
+  RPC; everything else, `NOT_FOUND` included, is fatal. No isolation pass, no auto-creation.
+  `RequestFailures` reads the chain through `BigtableErrorClassifier` so the two families
+  cannot drift.
+- The async surface (`BigtableRequestFunction<IN, R, OUT>`) has **no failure handler** — the
+  handler contract is task-thread and answers arrive on gax threads — and never waits on
+  in-flight work: at the instance cap it evicts an idle instance or fails the record naming
+  `maxActiveInstances` (the factory's wait for the evicted client's close remains). Its
+  counters are `ThreadSafeSimpleCounter`s through the base helpers' supplier overloads; the sink
+  surface keeps `SimpleCounter`. Capacity is `AsyncDataStream`'s, documented as
+  `maxInFlightRequests` until an entry point passes it; Flink's operator timeout must sit above
+  `requestTimeout`.
+- The seven runtime counters are registered with their `BigtableMetricNames` constant spelled at
+  each `counter(...)` call: `check-metric-docs` reads the registrations and cannot see through a
+  helper that takes the name as a parameter.
+- `FailedRequest.getPayloadBytes()` returns `null` until #1179/#1180 own a request model; no Table
+  API option exists for this family until #1179's write-mode value under #1177's option, and
+  `BigtableOptionParityTest` records every `BigtableRequestOptions` knob as having no key yet.
+
 ## Batch knobs, and entries versus mutations (`docs/adr/0082`)
 
 - **Every count this connector exposes counts entries; Bigtable's own limit counts mutations**, and
@@ -615,7 +656,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Credential-loading failures use the stable sanitized message and carry no cause, path or key
   material.
 - Adding another Bigtable client family requires extending the module-local credential loader's
-  scope union and adding a direct settings-injection assertion.
+  scope union and adding a direct settings-injection assertion. The single-row client factory is
+  the precedent: `DefaultSingleRowClientFactoryTest.injectsTheRuntimeCredentialProvider` asserts
+  the provider reaches its settings, and `SingleRowRequestSinks` loads the key before it opens
+  anything so a missing file fails with nothing to release.
 
 ## E2E and emulator (`docs/adr/0044`)
 

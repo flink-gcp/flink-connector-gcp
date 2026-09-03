@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.base.metrics;
 
+import org.apache.flink.metrics.SimpleCounter;
+import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.testutils.MetricListener;
 
 import org.junit.jupiter.api.Test;
@@ -71,6 +73,36 @@ class DestinationMetricsTest {
 
         assertThat(afterRebuild).isSameAs(first);
         assertThat(counter(TOPIC_A, "recordsSend")).isEqualTo(2);
+    }
+
+    @Test
+    void registersTheSuppliedCounterTypeUnderTheSameNames() {
+        DestinationMetrics metrics =
+                DestinationMetrics.of(
+                        listener.getMetricGroup(), true, ThreadSafeSimpleCounter::new);
+
+        metrics.forDestination(TOPIC_A).recordSent();
+        metrics.forDestination(TOPIC_A).sendFailed();
+
+        assertThat(listener.getCounter("destination", TOPIC_A, "recordsSend"))
+                .get()
+                .isInstanceOf(ThreadSafeSimpleCounter.class);
+        assertThat(listener.getCounter("destination", TOPIC_A, "sendErrors"))
+                .get()
+                .isInstanceOf(ThreadSafeSimpleCounter.class);
+        assertThat(counter(TOPIC_A, "recordsSend")).isEqualTo(1);
+        assertThat(counter(TOPIC_A, "sendErrors")).isEqualTo(1);
+    }
+
+    @Test
+    void theDefaultCounterIsThePlainOne() {
+        DestinationMetrics metrics = DestinationMetrics.of(listener.getMetricGroup(), true);
+
+        metrics.forDestination(TOPIC_A).recordSent();
+
+        assertThat(listener.getCounter("destination", TOPIC_A, "recordsSend"))
+                .get()
+                .isExactlyInstanceOf(SimpleCounter.class);
     }
 
     private long counter(String destination, String name) {

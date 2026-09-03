@@ -803,7 +803,9 @@ superseded by `docs/adr/0140`; the unchanged package decisions remain in force).
 - `sink.<writepath>` is one subpackage per write-path **family** (internal stages as `.writer`,
   `.committer`, … per the FileSink precedent), and **one family, with no second one in
   prospect, means no layer** (#119) — the module goes straight to `sink` + `sink.writer`. The
-  rule is a test, not a count
+  rule is a test, not a count. When the second family arrives, only the new code has to take a
+  layer at once: Bigtable's `sink.singlerow` sits beside an unlayered `sink.writer` until the
+  mechanical move lands in its own change (ADR-0148)
 - A family layer is spelled the way Google spells it in code, with no `api` suffix (#121), and
   an SPI's real implementation is named after **the SDK resource its `close()` releases**
 - Serializer input formats are subpackages of the SPI (`sink.serializer.<format>`, #125) and

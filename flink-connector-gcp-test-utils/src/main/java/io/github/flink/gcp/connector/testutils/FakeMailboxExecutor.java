@@ -22,11 +22,14 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * A queue-backed {@link MailboxExecutor} for tests: {@link #execute} enqueues mails, {@link
- * #yield()} runs the next mail (blocking until one arrives, like the real mailbox), and {@link
- * #drain()} runs every mail already enqueued.
+ * #yield()} runs the next mail (blocking until one arrives, like the real mailbox), {@link
+ * #drain()} runs every mail already enqueued, and {@link #quiesce()} makes every later {@link
+ * #execute} throw the {@link RejectedExecutionException} the real mailbox throws once the task has
+ * quiesced it, which happens before the operators close.
  */
 @Internal
 public final class FakeMailboxExecutor implements MailboxExecutor {
@@ -34,13 +37,29 @@ public final class FakeMailboxExecutor implements MailboxExecutor {
     private final LinkedBlockingDeque<ThrowingRunnable<? extends Exception>> mails =
             new LinkedBlockingDeque<>();
 
+    private volatile boolean quiesced;
+
     @Override
     public void execute(
             MailOptions options,
             ThrowingRunnable<? extends Exception> command,
             String descriptionFormat,
             Object... descriptionArgs) {
+        if (quiesced) {
+            throw new RejectedExecutionException(
+                    "The mailbox is quiesced: "
+                            + String.format(descriptionFormat, descriptionArgs));
+        }
         mails.add(command);
+    }
+
+    /**
+     * Refuses every mail from now on, as the real mailbox does after the task's {@code
+     * prepareClose()}. Mails already enqueued still run through {@link #yield()} and {@link
+     * #drain()}.
+     */
+    public void quiesce() {
+        quiesced = true;
     }
 
     @Override

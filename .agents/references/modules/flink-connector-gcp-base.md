@@ -33,9 +33,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 - `MetricValues.elapsedMillis` clamps equal or future values to zero and saturates subtraction
   overflow at `Long.MAX_VALUE`, so connector lag and health gauges share one boundary policy.
-- `ErrorClassCounters` and `DestinationMetrics` are **task-thread only** (plain counters); a
-  connector counting from a callback thread must not reuse them. Entries are never removed —
-  Flink cannot unregister a metric.
+- `ErrorClassCounters` and `DestinationMetrics` default to plain `SimpleCounter`s, valid on the
+  task thread only; a connector counting from a callback thread passes the `Supplier<Counter>`
+  overload a `ThreadSafeSimpleCounter` (the Bigtable single-row async function; ADR-0148). Entries
+  are never removed — Flink cannot unregister a metric.
 - **`numRecordsSend` counts each record once, at the first hand-off**, inside the send call
   under a first-attempt flag (`docs/adr/0037`).
 - Every connector declares its names in one `<Product>MetricNames` inventory at its module root;

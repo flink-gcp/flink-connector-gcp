@@ -52,6 +52,16 @@ public final class BigtableMetricNames {
     public static final String TABLES_CREATED = "tablesCreated";
     public static final String COLUMN_FAMILIES_ADDED = "columnFamiliesAdded";
 
+    // Registered by the single-row request runtime (SingleRowRequestMetrics) on the sink writer's
+    // group or the async function's operator group. The counts are of requests — one per record,
+    // since a single-row RPC carries exactly one row — and ACTIVE_CLIENTS, the two eviction counts
+    // and RECORDS_SKIPPED above are registered there too under their own names.
+    public static final String REQUESTS_ACCEPTED = "requestsAccepted";
+    public static final String REQUESTS_COMPLETED = "requestsCompleted";
+    public static final String REQUESTS_FAILED = "requestsFailed";
+    public static final String REQUESTS_TIMED_OUT = "requestsTimedOut";
+    public static final String IN_FLIGHT_REQUESTS = "inFlightRequests";
+
     // Registered by the scan source's reader (BigtableSourceReaderMetrics) or the Change Streams
     // reader (BigtableChangeStreamReaderMetrics), as named below.
     public static final String ROWS_READ = "rowsRead";

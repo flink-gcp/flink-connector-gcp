@@ -25,10 +25,9 @@ import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.LengthPrefixedFields;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,8 +38,6 @@ public final class BigtableChangeStreamMutationSerializer
         extends TypeSerializer<BigtableChangeStreamMutation> {
 
     private static final long serialVersionUID = 1L;
-    private static final ThreadLocal<byte[]> COPY_BUFFER =
-            ThreadLocal.withInitial(() -> new byte[4 * 1024]);
 
     private static final int SET_CELL = 1;
     private static final int DELETE_CELLS = 2;
@@ -90,12 +87,12 @@ public final class BigtableChangeStreamMutationSerializer
     public void serialize(BigtableChangeStreamMutation record, DataOutputView target)
             throws IOException {
         Preconditions.checkNotNull(record, "record must not be null");
-        writeBytes(record.getRowKey(), target);
+        LengthPrefixedFields.writeBytes(record.getRowKey(), target);
         writeMutationType(record.getType(), target);
-        writeString(record.getSourceClusterId(), target);
+        LengthPrefixedFields.writeString(record.getSourceClusterId(), target);
         writeInstant(record.getCommitTime(), target);
         target.writeInt(record.getTieBreaker());
-        writeString(record.getToken(), target);
+        LengthPrefixedFields.writeString(record.getToken(), target);
         writeInstant(record.getEstimatedLowWatermarkTime(), target);
         target.writeInt(record.getEntries().size());
         for (BigtableChangeStreamMutation.Entry entry : record.getEntries()) {
@@ -121,8 +118,8 @@ public final class BigtableChangeStreamMutationSerializer
      * dispatch on what arrived on the wire, which is not a Java type yet.
      *
      * <p>Stateless and shared, because the serializer's {@code duplicate()} returns {@code this}
-     * and task threads therefore share one instance — the same reason {@code COPY_BUFFER} is a
-     * {@link ThreadLocal}.
+     * and task threads therefore share one instance — the same reason {@link LengthPrefixedFields}
+     * keeps its copy buffer in a {@link ThreadLocal}.
      */
     private static final class EntryWriter
             implements ChangeStreamMutationDispatcher.EntryVisitor<Void, DataOutputView> {
@@ -131,10 +128,10 @@ public final class BigtableChangeStreamMutationSerializer
         public Void visit(BigtableChangeStreamMutation.SetCellEntry entry, DataOutputView target)
                 throws IOException {
             target.writeByte(SET_CELL);
-            writeString(entry.getFamilyName(), target);
-            writeBytes(entry.getQualifier(), target);
+            LengthPrefixedFields.writeString(entry.getFamilyName(), target);
+            LengthPrefixedFields.writeBytes(entry.getQualifier(), target);
             target.writeLong(entry.getTimestampMicros());
-            writeBytes(entry.getValue(), target);
+            LengthPrefixedFields.writeBytes(entry.getValue(), target);
             return null;
         }
 
@@ -143,8 +140,8 @@ public final class BigtableChangeStreamMutationSerializer
                 BigtableChangeStreamMutation.DeleteCellsEntry entry, DataOutputView target)
                 throws IOException {
             target.writeByte(DELETE_CELLS);
-            writeString(entry.getFamilyName(), target);
-            writeBytes(entry.getQualifier(), target);
+            LengthPrefixedFields.writeString(entry.getFamilyName(), target);
+            LengthPrefixedFields.writeBytes(entry.getQualifier(), target);
             writeRange(entry.getTimestampRange(), target);
             return null;
         }
@@ -154,7 +151,7 @@ public final class BigtableChangeStreamMutationSerializer
                 BigtableChangeStreamMutation.DeleteFamilyEntry entry, DataOutputView target)
                 throws IOException {
             target.writeByte(DELETE_FAMILY);
-            writeString(entry.getFamilyName(), target);
+            LengthPrefixedFields.writeString(entry.getFamilyName(), target);
             return null;
         }
 
@@ -162,7 +159,7 @@ public final class BigtableChangeStreamMutationSerializer
         public Void visit(BigtableChangeStreamMutation.AddToCellEntry entry, DataOutputView target)
                 throws IOException {
             target.writeByte(ADD_TO_CELL);
-            writeString(entry.getFamilyName(), target);
+            LengthPrefixedFields.writeString(entry.getFamilyName(), target);
             writeValue(entry.getQualifier(), target);
             writeValue(entry.getTimestamp(), target);
             writeValue(entry.getInput(), target);
@@ -174,7 +171,7 @@ public final class BigtableChangeStreamMutationSerializer
                 BigtableChangeStreamMutation.MergeToCellEntry entry, DataOutputView target)
                 throws IOException {
             target.writeByte(MERGE_TO_CELL);
-            writeString(entry.getFamilyName(), target);
+            LengthPrefixedFields.writeString(entry.getFamilyName(), target);
             writeValue(entry.getQualifier(), target);
             writeValue(entry.getTimestamp(), target);
             writeValue(entry.getInput(), target);
@@ -213,7 +210,7 @@ public final class BigtableChangeStreamMutationSerializer
         public Void visit(BigtableChangeStreamMutation.RawValue value, DataOutputView target)
                 throws IOException {
             target.writeByte(RAW_VALUE);
-            writeBytes(value.getValue(), target);
+            LengthPrefixedFields.writeBytes(value.getValue(), target);
             return null;
         }
 
@@ -263,7 +260,7 @@ public final class BigtableChangeStreamMutationSerializer
 
     @Override
     public BigtableChangeStreamMutation deserialize(DataInputView source) throws IOException {
-        ByteString rowKey = readBytes(source);
+        ByteString rowKey = LengthPrefixedFields.readBytes(source);
         int mutationType = source.readUnsignedByte();
         BigtableChangeStreamMutation.MutationType type;
         if (mutationType == 1) {
@@ -273,12 +270,12 @@ public final class BigtableChangeStreamMutationSerializer
         } else {
             throw new IOException("Unknown Bigtable Change Streams mutation type: " + mutationType);
         }
-        String sourceClusterId = readString(source);
+        String sourceClusterId = LengthPrefixedFields.readString(source);
         Instant commitTime = readInstant(source);
         int tieBreaker = source.readInt();
-        String token = readString(source);
+        String token = LengthPrefixedFields.readString(source);
         Instant estimatedLowWatermarkTime = readInstant(source);
-        int count = readCount(source, "entry");
+        int count = LengthPrefixedFields.readCount(source, "entry");
         List<BigtableChangeStreamMutation.Entry> entries = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             entries.add(readEntry(source));
@@ -297,14 +294,17 @@ public final class BigtableChangeStreamMutationSerializer
     private static BigtableChangeStreamMutation.Entry readEntry(DataInputView source)
             throws IOException {
         int tag = source.readUnsignedByte();
-        String family = readString(source);
+        String family = LengthPrefixedFields.readString(source);
         switch (tag) {
             case SET_CELL:
                 return new BigtableChangeStreamMutation.SetCellEntry(
-                        family, readBytes(source), source.readLong(), readBytes(source));
+                        family,
+                        LengthPrefixedFields.readBytes(source),
+                        source.readLong(),
+                        LengthPrefixedFields.readBytes(source));
             case DELETE_CELLS:
                 return new BigtableChangeStreamMutation.DeleteCellsEntry(
-                        family, readBytes(source), readRange(source));
+                        family, LengthPrefixedFields.readBytes(source), readRange(source));
             case DELETE_FAMILY:
                 return new BigtableChangeStreamMutation.DeleteFamilyEntry(family);
             case ADD_TO_CELL:
@@ -323,7 +323,8 @@ public final class BigtableChangeStreamMutationSerializer
         int tag = source.readUnsignedByte();
         switch (tag) {
             case RAW_VALUE:
-                return new BigtableChangeStreamMutation.RawValue(readBytes(source));
+                return new BigtableChangeStreamMutation.RawValue(
+                        LengthPrefixedFields.readBytes(source));
             case RAW_TIMESTAMP:
                 return new BigtableChangeStreamMutation.RawTimestamp(source.readLong());
             case INT64:
@@ -362,15 +363,15 @@ public final class BigtableChangeStreamMutationSerializer
 
     @Override
     public void copy(DataInputView source, DataOutputView target) throws IOException {
-        byte[] buffer = COPY_BUFFER.get();
-        copyByteArray(source, target, buffer, "byte string");
+        byte[] buffer = LengthPrefixedFields.copyBuffer();
+        LengthPrefixedFields.copyByteArray(source, target, buffer, "byte string");
         copyMutationType(source, target);
-        copyByteArray(source, target, buffer, "string");
+        LengthPrefixedFields.copyByteArray(source, target, buffer, "string");
         copyInstant(source, target);
         target.writeInt(source.readInt());
-        copyByteArray(source, target, buffer, "string");
+        LengthPrefixedFields.copyByteArray(source, target, buffer, "string");
         copyInstant(source, target);
-        int entryCount = readCount(source, "entry");
+        int entryCount = LengthPrefixedFields.readCount(source, "entry");
         target.writeInt(entryCount);
         for (int index = 0; index < entryCount; index++) {
             copyEntry(source, target, buffer);
@@ -401,15 +402,15 @@ public final class BigtableChangeStreamMutationSerializer
             throw new IOException("Unknown Bigtable Change Streams entry tag: " + tag);
         }
         target.writeByte(tag);
-        copyByteArray(source, target, buffer, "string");
+        LengthPrefixedFields.copyByteArray(source, target, buffer, "string");
         switch (tag) {
             case SET_CELL:
-                copyByteArray(source, target, buffer, "byte string");
+                LengthPrefixedFields.copyByteArray(source, target, buffer, "byte string");
                 target.writeLong(source.readLong());
-                copyByteArray(source, target, buffer, "byte string");
+                LengthPrefixedFields.copyByteArray(source, target, buffer, "byte string");
                 return;
             case DELETE_CELLS:
-                copyByteArray(source, target, buffer, "byte string");
+                LengthPrefixedFields.copyByteArray(source, target, buffer, "byte string");
                 copyBound(source, target);
                 copyBound(source, target);
                 return;
@@ -434,7 +435,7 @@ public final class BigtableChangeStreamMutationSerializer
         }
         target.writeByte(tag);
         if (tag == RAW_VALUE) {
-            copyByteArray(source, target, buffer, "byte string");
+            LengthPrefixedFields.copyByteArray(source, target, buffer, "byte string");
         } else {
             target.writeLong(source.readLong());
         }
@@ -472,64 +473,6 @@ public final class BigtableChangeStreamMutationSerializer
         return BigtableChangeStreamMutationSerializer.class.hashCode();
     }
 
-    private static void writeString(String value, DataOutputView target) throws IOException {
-        writeByteArray(value.getBytes(StandardCharsets.UTF_8), target);
-    }
-
-    private static String readString(DataInputView source) throws IOException {
-        return new String(readByteArray(source, "string"), StandardCharsets.UTF_8);
-    }
-
-    private static void writeBytes(ByteString value, DataOutputView target) throws IOException {
-        int length = value.size();
-        target.writeInt(length);
-        byte[] buffer = COPY_BUFFER.get();
-        for (ByteBuffer source : value.asReadOnlyByteBufferList()) {
-            while (source.hasRemaining()) {
-                int copied = Math.min(source.remaining(), buffer.length);
-                source.get(buffer, 0, copied);
-                target.write(buffer, 0, copied);
-            }
-        }
-    }
-
-    private static ByteString readBytes(DataInputView source) throws IOException {
-        return ByteString.copyFrom(readByteArray(source, "byte string"));
-    }
-
-    private static void writeByteArray(byte[] bytes, DataOutputView target) throws IOException {
-        target.writeInt(bytes.length);
-        target.write(bytes);
-    }
-
-    private static byte[] readByteArray(DataInputView source, String description)
-            throws IOException {
-        int length = source.readInt();
-        if (length < 0) {
-            throw new IOException("Negative " + description + " length: " + length);
-        }
-        byte[] bytes = new byte[length];
-        source.readFully(bytes);
-        return bytes;
-    }
-
-    private static void copyByteArray(
-            DataInputView source, DataOutputView target, byte[] buffer, String description)
-            throws IOException {
-        int length = source.readInt();
-        if (length < 0) {
-            throw new IOException("Negative " + description + " length: " + length);
-        }
-        target.writeInt(length);
-        int remaining = length;
-        while (remaining > 0) {
-            int copied = Math.min(remaining, buffer.length);
-            source.readFully(buffer, 0, copied);
-            target.write(buffer, 0, copied);
-            remaining -= copied;
-        }
-    }
-
     private static void writeInstant(Instant instant, DataOutputView target) throws IOException {
         target.writeLong(instant.getEpochSecond());
         target.writeInt(instant.getNano());
@@ -537,14 +480,6 @@ public final class BigtableChangeStreamMutationSerializer
 
     private static Instant readInstant(DataInputView source) throws IOException {
         return Instant.ofEpochSecond(source.readLong(), source.readInt());
-    }
-
-    private static int readCount(DataInputView source, String description) throws IOException {
-        int count = source.readInt();
-        if (count < 0) {
-            throw new IOException("Negative " + description + " count: " + count);
-        }
-        return count;
     }
 
     /** Snapshot for the connector-owned field format. */
