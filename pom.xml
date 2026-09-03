@@ -153,13 +153,30 @@ limitations under the License.
              the parent's ignoreNonResolvableArtifacts=true makes the check log a
              warning and pass. -->
         <japicmp.referenceVersion>1.0.0</japicmp.referenceVersion>
-        <google-cloud-libraries-bom.version>26.86.0</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.87.0</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
-        <avro.version>1.12.1</avro.version>
+        <avro.version>1.12.2</avro.version>
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
              if we declare it. Pinned to what avro-parent ${avro.version} pins, so the codec and
              the library it drives are the pair Avro itself tests. -->
-        <zstd-jni.version>1.5.7-4</zstd-jni.version>
+        <zstd-jni.version>1.5.7-12</zstd-jni.version>
+        <!-- Jackson's annotations, on the *test* classpath only, and deliberately not in
+             dependencyManagement: the shaded SQL bundles resolve a coherent Jackson set of their
+             own from the libraries BOM, and managing this globally would move the annotations out
+             from under the databind those bundles ship.
+
+             testcontainers reaches
+             docker-java-api, which pins jackson-annotations 2.10.3, and that sits nearer the root
+             than the annotations avro's jackson-databind brings, so Maven picks it. That was
+             harmless while avro pinned jackson-bom 2.20.0; avro 1.12.2 moved to 2.22.1, whose
+             databind touches `JsonSerializeAs` — added in annotations 2.21 — and every test that
+             reaches `org.apache.avro.SchemaBuilder` died with NoClassDefFoundError.
+
+             Pinned to what avro-parent ${avro.version} pins, the same rule as zstd-jni above, so
+             the annotations and the databind that reads them move as the pair Avro tests.
+             Declared per module rather than here, at depth 1, so it wins wherever the old one
+             arrives from. -->
+        <jackson-annotations.version>2.22</jackson-annotations.version>
         <!-- The optional Parquet staging path (#284). `provided` everywhere: a deployment that
              selects StagingFormat.PARQUET places these on its own runtime classpath, guided by the
              docs, so no user pays for a format they did not ask for. -->
@@ -213,7 +230,7 @@ limitations under the License.
              all, and versions-maven-plugin and maven-help-plugin are invoked by
              `just stage-release` through the pluginManagement entries below so their
              pins live where dependabot reads. -->
-        <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
+        <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
         <versions-maven-plugin.version>2.21.0</versions-maven-plugin.version>
         <maven-help-plugin.version>3.5.2</maven-help-plugin.version>

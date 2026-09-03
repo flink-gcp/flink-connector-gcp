@@ -686,8 +686,9 @@ facts); the rules a session needs:
   their next major has a final release: assertj's 4.x is still at `4.0.0-M1` and 4.0.0 itself is
   not on Central
 - **A version pinned to match another project's pin carries an `ignore` rule for every update type**,
-  because the only thing that should move it is the pin it follows. Three of them: `zstd-jni` follows
-  what `avro-parent ${avro.version}` pins (reason on the property in the root POM), and
+  because the only thing that should move it is the pin it follows. Four of them: `zstd-jni` and
+  `jackson-annotations` follow what `avro-parent ${avro.version}` pins (reason on each property in
+  the root POM), and
   `commons-collections4` and `hadoop-shaded-guava` follow what `hadoop-project ${hadoop.version}` pins,
   so that BigQuery's hand-assembled Parquet test classpath resolves what a deployment adding
   `hadoop-common` resolves rather than something only this build has tested (#940; the reason sits

@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-02 ([#218]; the per-*class* deviation from that issue's settled design is
   recorded here)
-- Issues: [#218], [#245], [#246], [#533], [#1196]
+- Issues: [#218], [#245], [#246], [#533], [#1196], [#1199]
 - Modules: bigtable (tests, `opentofu/`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Testing; the root
   CLAUDE.md `just e2e`/`sweep-e2e` entries
@@ -62,6 +62,20 @@ error-handling table states rather than infers. Routed (`INVALID_ARGUMENT`): a c
 that is not a multiple of 1000 ("Timestamp granularity mismatch"), and an empty row key ("Row
 keys must be non-empty"). Fatal (`NOT_FOUND`): a mutation naming a column family the table lacks
 — and the service reports it for **every** entry of the batch, the good ones included.
+
+**The granularity rejection is about a *user-specified* timestamp, and only that** — refined
+2026-09-03 against the service ([#1199]). google-cloud-bigtable 2.82.0 stopped aligning the
+writer-clock timestamp to milliseconds (`currentTimeMillis() * 1000` became a microsecond
+`Instant.now()`) and began marking those mutations `timestamp_origin = CLIENT_AUTO_GENERATED` on
+the wire. Measured through the Table sink against a real instance: such a write is **accepted**,
+and the cell is stored truncated to the table's millisecond granularity. So the sink's
+writer-clock path is unaffected by the client change, and the 2026-08-02 rejection above continues
+to describe a timestamp the *user* supplied — which is what `truncateCellTimestampToMillis`
+exists for. The distinction did not exist before the origin field did.
+
+  The sink no longer relies on that: ADR-0149 moved the writer-clock stamp into the connector, so
+  what it sends is `USER_SPECIFIED` and millisecond-aligned. The paragraph above still describes
+  what the *service* does, which is what this ADR's evidence is for.
 
 **Two conditions [#218]'s text expected to measure are unmeasurable through this connector**:
 `Mutation` enforces its own limits in the private `addMutation` every mutation-adding method
@@ -116,3 +130,4 @@ made deletion succeed; that measured recovery sequence is now the order every cl
 [#959]: https://github.com/flink-gcp/flink-connector-gcp/issues/959
 [#533]: https://github.com/flink-gcp/flink-connector-gcp/issues/533
 [#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196
+[#1199]: https://github.com/flink-gcp/flink-connector-gcp/issues/1199

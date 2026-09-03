@@ -140,8 +140,26 @@ public abstract class AbstractBigtableEmulatorITCase {
         for (String rowKey : rowKeys) {
             dataClient.mutateRow(
                     RowMutation.create(TableId.of(destination.getTable()), rowKey)
-                            .setCell(FAMILY, "q", rowKey));
+                            .setCell(FAMILY, "q", harnessTimestampMicros(), rowKey));
         }
+    }
+
+    /**
+     * A millisecond-aligned cell timestamp for the helpers that write one, seeding and {@code
+     * writeCell} alike.
+     *
+     * <p>The timestamp-less {@code setCell} overload would be the natural choice and was, until
+     * google-cloud-bigtable 2.82.0 began stamping it with a microsecond {@code Instant.now()}
+     * marked {@code CLIENT_AUTO_GENERATED}. Real Bigtable reads that marker and truncates; the
+     * emulator does not implement the field and rejects the write with {@code invalid timestamp} —
+     * measured 2026-09-03, and pinned by {@code
+     * BigtableEmulatorDeviationITCase.rejectsAClientGeneratedTimestampTheServiceTruncates}, which
+     * is what fails when the deviation closes.
+     *
+     * <p>Removal is tracked by issue #1205, which carries the condition and the upstream fix.
+     */
+    private static long harnessTimestampMicros() {
+        return System.currentTimeMillis() * 1_000L;
     }
 
     /**
@@ -154,9 +172,7 @@ public abstract class AbstractBigtableEmulatorITCase {
             String family,
             String qualifier,
             String value) {
-        dataClient.mutateRow(
-                RowMutation.create(TableId.of(destination.getTable()), rowKey)
-                        .setCell(family, qualifier, value));
+        writeCell(destination, rowKey, family, qualifier, harnessTimestampMicros(), value);
     }
 
     /** Writes one cell under an arbitrary binary row key. */
@@ -168,7 +184,7 @@ public abstract class AbstractBigtableEmulatorITCase {
             String value) {
         dataClient.mutateRow(
                 RowMutation.create(TableId.of(destination.getTable()), rowKey)
-                        .setCell(family, qualifier, value));
+                        .setCell(family, qualifier, harnessTimestampMicros(), value));
     }
 
     /** Writes one cell at an explicit version timestamp, in microseconds. */
@@ -187,6 +203,25 @@ public abstract class AbstractBigtableEmulatorITCase {
     /** Returns what the emulator answers {@code SampleRowKeys} with, for the deviation suite. */
     protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
         return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
+    }
+
+    /**
+     * Writes one cell through the client library's own writer clock, for the deviation suite alone.
+     *
+     * <p>Every other helper here stamps the timestamp explicitly, because since
+     * google-cloud-bigtable 2.82.0 this overload produces a microsecond value the emulator refuses
+     * — which is exactly what the deviation suite exists to pin, and why this stays reachable.
+     *
+     * @param destination the table to write into
+     * @param rowKey the row key
+     * @param qualifier the column qualifier
+     * @param value the cell value
+     */
+    protected static void writeCellWithTheClientsWriterClock(
+            TableDestination destination, String rowKey, String qualifier, String value) {
+        dataClient.mutateRow(
+                RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                        .setCell(FAMILY, qualifier, value));
     }
 
     /**

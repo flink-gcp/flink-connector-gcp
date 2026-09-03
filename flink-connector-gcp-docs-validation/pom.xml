@@ -162,6 +162,14 @@ limitations under the License.
             <artifactId>json</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- Coherent with the jackson-databind avro brings; see jackson-annotations.version
+                 in the root POM for why this is declared per module. -->
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>${jackson-annotations.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <profiles>
