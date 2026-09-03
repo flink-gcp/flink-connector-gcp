@@ -221,6 +221,7 @@ class RowDataSerializationSchemaTest {
 
         assertThat(entry.getMutationsList())
                 .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .hasSize(3)
                 .allSatisfy(
                         timestamp ->
                                 assertThat(timestamp)
@@ -228,6 +229,97 @@ class RowDataSerializationSchemaTest {
         assertThat(entry.getMutationsList())
                 .extracting(mutation -> mutation.getSetCell().getTimestampMicros() % 1_000L)
                 .containsOnly(0L);
+    }
+
+    /** A clock returning a value no wall clock produces, advancing once per read. */
+    private static final class FakeClock implements RowDataSerializationSchema.CellClock {
+
+        private static final long serialVersionUID = 1L;
+
+        private long next = 5_000L;
+
+        @Override
+        public long micros() {
+            long value = next;
+            next += 1_000L;
+            return value;
+        }
+    }
+
+    @Test
+    void theConnectorStampsTheWriterClockCellRatherThanTheClientLibrary() throws Exception {
+        // The only assertion that can tell the two apart. Against google-cloud-bigtable 2.81.0 the
+        // client's own timestamp-less overload produces exactly currentTimeMillis() * 1000, so a
+        // bracket-and-alignment check passes whoever stamped the cell — the value is identical by
+        // construction, which is this change's point (ADR-0149) and would otherwise be its blind
+        // spot. Feeding a clock no wall clock could produce is what pins the stamping here.
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(
+                        SCHEMA, "NULL", WITH_TIMESTAMP, true, new FakeClock());
+
+        MutateRowsRequest.Entry entry =
+                serializer.serialize(rowWithTimestamp(RowKind.INSERT, null), null).toProto();
+
+        // Per cell, not per record: the client library read its clock once per setCell, and
+        // matching that is what keeps this schema's mutation identical to the one it built before.
+        // Reading it once would collapse a row's cells onto a single timestamp, which the three
+        // distinct values here refuse.
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .containsExactly(5_000L, 6_000L, 7_000L);
+    }
+
+    @Test
+    void aRestoredSchemaStampsThroughTheProductionClock() throws Exception {
+        // The clock is transient, so a job graph written before it existed carries no value for it
+        // and a non-transient reference would restore as null — the first writer-clock record on a
+        // last-state upgrade would then fail (ADR-0125 requires the upgrade path after 1.0.0).
+        // Restoring on the production clock is also the right way round: a graph that captured a
+        // test clock must not keep it.
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(
+                        SCHEMA, "NULL", WITH_TIMESTAMP, true, new FakeClock());
+
+        RowDataSerializationSchema restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(serializer), getClass().getClassLoader());
+
+        long beforeMillis = System.currentTimeMillis();
+        MutateRowsRequest.Entry entry =
+                restored.serialize(rowWithTimestamp(RowKind.INSERT, null), null).toProto();
+        long afterMillis = System.currentTimeMillis();
+
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .hasSize(3)
+                .allSatisfy(
+                        timestamp ->
+                                assertThat(timestamp)
+                                        .isBetween(beforeMillis * 1_000L, afterMillis * 1_000L));
+    }
+
+    @Test
+    void aDdlDeclaringNoTimestampMetadataAlsoTakesTheWriterClock() throws Exception {
+        // The most common DDL, and the one the writer-clock path exists for: no timestamp column
+        // at all, rather than a declared-but-null one. It reaches the same arm, but by a different
+        // route — timestampMetadataIndex is negative here instead of the value being null.
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", NO_METADATA, false, new FakeClock());
+
+        MutateRowsRequest.Entry entry =
+                serializer
+                        .serialize(
+                                row(
+                                        RowKind.INSERT,
+                                        StringData.fromString("r1"),
+                                        GenericRowData.of(StringData.fromString("v"), 7L),
+                                        GenericRowData.of(true)),
+                                null)
+                        .toProto();
+
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .containsExactly(5_000L, 6_000L, 7_000L);
     }
 
     @Test

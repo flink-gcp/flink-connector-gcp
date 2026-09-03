@@ -575,7 +575,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   cannot use two jobs — the table layer's delete test, since `ChangelogNormalize` knows only what
   its own job has seen — asserts something order-independent instead. Writable `timestamp`
   metadata is a nullable `TIMESTAMP_LTZ(6)` applied identically to every cell a row writes and
-  ignored by a delete; absent or null metadata keeps the three-argument `setCell` writer clock.
+  ignored by a delete; absent or null metadata takes the writer clock the schema stamps itself,
+  millisecond-aligned, through the transient `CellClock` seam (ADR-0149) — not the client
+  library's. This connector stamps only mutations it builds: a DataStream serializer that builds
+  its own `RowMutationEntry` owns its timestamps and still gets the client's clock.
   The client reuses one mutation for its own retry, but Flink replay serializes again, so replay
   idempotence requires a stable explicit record timestamp. Bigtable validates millisecond
   granularity by default; `sink.cell-timestamp.truncate-to-millis=true` explicitly opts into

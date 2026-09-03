@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 
 import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -43,7 +44,10 @@ import java.util.List;
  * should: a qualifier left unwritten would keep whatever an earlier version of the row put there. A
  * whole column family that is null writes no cells at all, since there is no value to encode. When
  * the DDL selects writable {@code timestamp} metadata, its non-null value is applied to every cell
- * this row writes; a null value keeps the client library's writer-clock path.
+ * this row writes; a null value, or no metadata column at all, takes the writer clock this schema
+ * stamps itself ({@link WallClock}, ADR-0149). This connector stamps only mutations it builds: a
+ * DataStream serializer that builds its own {@code RowMutationEntry} owns its timestamps, and
+ * nothing here rewrites one a user handed over.
  *
  * <p>A delete removes the entire row, not the declared qualifiers one by one. The row key is the
  * primary key of an upsert sink, so "this key is gone" is what a {@code -D} means here; deleting
@@ -78,6 +82,16 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     private final boolean truncateCellTimestampToMillis;
 
     /**
+     * Transient and restored in {@link #readObject}, not because it holds lambdas but because it is
+     * a field added after 1.0.0. A job graph written by 1.0.0 does not carry it, and a
+     * non-transient reference would restore as {@code null} and fail the first writer-clock record
+     * on a last-state upgrade — the shape ADR-0125 requires an upgrade path for after the tag.
+     * Restoring it unconditionally also means a graph carrying a test clock comes back on the
+     * production one, which is the right way round.
+     */
+    private transient CellClock clock;
+
+    /**
      * Creates the schema from the table's DDL model.
      *
      * @param schema the parsed DDL model
@@ -93,6 +107,26 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             String nullStringLiteral,
             WritableMetadata[] metadata,
             boolean truncateCellTimestampToMillis) {
+        this(schema, nullStringLiteral, metadata, truncateCellTimestampToMillis, new WallClock());
+    }
+
+    /**
+     * The seam the tests use, so the stamped value can be one no wall clock produces.
+     *
+     * <p>Package-private and not reachable from the factory: production always takes {@link
+     * WallClock}. Without it nothing could tell this connector's stamping apart from the client
+     * library's, because against google-cloud-bigtable 2.81.0 the two produce identical values —
+     * which is this change's point and would otherwise be its blind spot.
+     *
+     * @param clock the source of the writer-clock cell timestamp
+     */
+    RowDataSerializationSchema(
+            BigtableTableSchema schema,
+            String nullStringLiteral,
+            WritableMetadata[] metadata,
+            boolean truncateCellTimestampToMillis,
+            CellClock clock) {
+        this.clock = clock;
         this.rowKeyIndex = schema.getRowKeyIndex();
         this.rowKeyName = schema.getRowKeyName();
         this.timestampMetadataIndex =
@@ -106,6 +140,56 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         this.families = new Family[declared.size()];
         for (int i = 0; i < declared.size(); i++) {
             families[i] = new Family(declared.get(i), nullStringBytes);
+        }
+    }
+
+    private void readObject(ObjectInputStream input) throws IOException, ClassNotFoundException {
+        input.defaultReadObject();
+        this.clock = new WallClock();
+    }
+
+    /**
+     * The source of the cell timestamp for a row that selected no writable {@code timestamp}.
+     *
+     * <p>A named type rather than a lambda: this schema crosses the job graph, and {@code
+     * crossesTheJobGraphWithoutItsCodecLambdas} pins that it carries no {@code SerializedLambda} —
+     * a synthetic name the compiler picks is rebound on restore, which this module has already been
+     * bitten by once.
+     */
+    interface CellClock extends Serializable {
+
+        /**
+         * Returns the timestamp to stamp one cell with.
+         *
+         * @return microseconds since the epoch, a multiple of 1000
+         */
+        long micros();
+    }
+
+    /**
+     * The production clock: the current millisecond, expressed in microseconds.
+     *
+     * <p>The client library's own writer clock would do, and did until google-cloud-bigtable 2.82.0
+     * changed {@code setCell(family, qualifier, value)} from {@code currentTimeMillis() * 1000} to
+     * a microsecond {@code Instant.now()} marked {@code CLIENT_AUTO_GENERATED}. The service reads
+     * that marker and truncates, so both spellings store the same cell — measured 2026-09-03
+     * against a real instance. Stamping it here rather than leaving it to the client keeps three
+     * things this connector would otherwise inherit from a dependency's clock: the value on the
+     * wire does not change under a client upgrade, it is the same value this connector wrote before
+     * 2.82.0, and it is expressible on every server that speaks the API.
+     *
+     * <p>The cost is the sub-millisecond part, which a Bigtable table cannot store anyway: cell
+     * granularity is milliseconds. A table created with {@code MICROS} granularity could store it,
+     * and this connector neither creates one nor offers a DDL option asking for one — writing to a
+     * pre-existing one loses precision the client's own clock would have kept (ADR-0149).
+     */
+    static final class WallClock implements CellClock {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public long micros() {
+            return System.currentTimeMillis() * 1_000L;
         }
     }
 
@@ -134,11 +218,11 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             RowData cells = element.getRow(family.index, family.qualifiers.length);
             for (int i = 0; i < family.qualifiers.length; i++) {
                 ByteString value = ByteString.copyFrom(family.encoders[i].encode(cells, i));
-                if (hasExplicitTimestamp) {
-                    entry.setCell(family.name, family.qualifiers[i], timestampMicros, value);
-                } else {
-                    entry.setCell(family.name, family.qualifiers[i], value);
-                }
+                entry.setCell(
+                        family.name,
+                        family.qualifiers[i],
+                        hasExplicitTimestamp ? timestampMicros : clock.micros(),
+                        value);
             }
             written += family.qualifiers.length;
         }
