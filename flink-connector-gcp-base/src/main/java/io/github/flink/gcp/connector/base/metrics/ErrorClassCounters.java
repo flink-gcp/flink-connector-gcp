@@ -19,13 +19,15 @@ package io.github.flink.gcp.connector.base.metrics;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.SimpleCounter;
 
 import com.google.api.gax.rpc.StatusCode;
 
 import javax.annotation.Nullable;
 
-import java.util.EnumMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Counts a sink's failures by the status code that caused them, as {@code errorClass.CODE.errors}
@@ -45,10 +47,12 @@ import java.util.Map;
  * disagree on it deliberately (Pub/Sub matches any element, Cloud Tasks takes the first
  * classifiable one).
  *
- * <p><b>Task thread only.</b> The counters are plain {@code SimpleCounter}s taken from the metric
- * group, because every sink increment site in this repository runs on the task thread. A connector
- * that ever counts from an SDK callback thread needs a thread-safe counter and must not reuse this
- * type as it stands.
+ * <p><b>The counter type is the caller's choice, and it decides which threads may count.</b> The
+ * one-argument constructor registers plain {@link SimpleCounter}s, because every sink increment
+ * site of the batching connectors runs on the task thread. A connector that counts from an SDK
+ * callback thread — the Bigtable request function completes each record on a gax thread — passes a
+ * supplier of a thread-safe counter, such as {@code ThreadSafeSimpleCounter::new}, through the
+ * two-argument constructor. The lazy registration itself is safe from any thread either way.
  */
 @Internal
 public final class ErrorClassCounters {
@@ -63,17 +67,30 @@ public final class ErrorClassCounters {
     public static final String UNCLASSIFIED = "UNCLASSIFIED";
 
     private final MetricGroup metricGroup;
-    private final Map<StatusCode.Code, Counter> byCode = new EnumMap<>(StatusCode.Code.class);
-
-    @Nullable private Counter unclassified;
+    private final Supplier<? extends Counter> counterSupplier;
+    private final Map<String, Counter> byErrorClass = new ConcurrentHashMap<>();
 
     /**
-     * Creates the counters against the group they register on.
+     * Creates task-thread-only counters against the group they register on.
      *
      * @param metricGroup the sink writer's metric group
      */
     public ErrorClassCounters(MetricGroup metricGroup) {
+        this(metricGroup, SimpleCounter::new);
+    }
+
+    /**
+     * Creates the counters against the group they register on, with the counter type the caller
+     * needs for the threads it counts from.
+     *
+     * @param metricGroup the metric group the per-code subgroups register on
+     * @param counterSupplier creates each counter before it is registered under its name; pass a
+     *     thread-safe counter when increments arrive from more than one thread
+     */
+    public ErrorClassCounters(
+            MetricGroup metricGroup, Supplier<? extends Counter> counterSupplier) {
         this.metricGroup = metricGroup;
+        this.counterSupplier = counterSupplier;
     }
 
     /**
@@ -83,17 +100,14 @@ public final class ErrorClassCounters {
      * @param code the status code the caller classified the failure by, or {@code null}
      */
     public void count(@Nullable StatusCode.Code code) {
-        if (code == null) {
-            if (unclassified == null) {
-                unclassified = counterFor(UNCLASSIFIED);
-            }
-            unclassified.inc();
-            return;
-        }
-        byCode.computeIfAbsent(code, c -> counterFor(c.name())).inc();
+        byErrorClass
+                .computeIfAbsent(code == null ? UNCLASSIFIED : code.name(), this::counterFor)
+                .inc();
     }
 
     private Counter counterFor(String errorClass) {
-        return metricGroup.addGroup(ERROR_CLASS_GROUP, errorClass).counter(ERRORS);
+        return metricGroup
+                .addGroup(ERROR_CLASS_GROUP, errorClass)
+                .counter(ERRORS, counterSupplier.get());
     }
 }

@@ -73,6 +73,7 @@ Checkpointing must be enabled in a streaming job for that durability boundary to
 | [Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}) sink | Stateless writer flushes SDK publishers and waits for publish acknowledgements | A replay is a new publish with a new service-assigned message ID | At-least-once; no publisher-side idempotent mode |
 | [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` or Table API `task-id` metadata |
 | [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A writer-clock-timestamped cell gains another version; an explicit timestamp overwrites the same version | At-least-once; selected cell writes and deletes can be idempotent |
+| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes) single-row request runtime | Sink surface: stateless writer waits for every `CheckAndMutateRow` or `ReadModifyWriteRow` request. Async surface: Flink's async operator checkpoints un-emitted inputs and replays them | A replayed conditional write re-evaluates its predicate against the state the first attempt left; a replayed read-modify-write applies its increment or append again | At-least-once; neither RPC is idempotent, and the runtime retries neither. Entry points arrive with [#1179]({{< param BookRepo >}}/issues/1179) and [#1180]({{< param BookRepo >}}/issues/1180) |
 | [Spanner]({{< relref "docs/connectors/datastream/spanner" >}}) sink | Stateless writer consumes `BatchWrite` responses before the barrier | Spanner documents no replay protection; the selected mutation operation may nevertheless be idempotent | At-least-once; `insertOrUpdate`, `replace`, `update`, and delete effects can be idempotent within their operation constraints |
 
 Follow the connector-specific delivery section for failure-handler behavior, state-loss hazards, and
@@ -92,6 +93,7 @@ implements insert-if-absent.
 | Spanner DataStream API | The serializer chooses the key and `Mutation` operation | Replaying one `insertOrUpdate`, `replace`, `update`, or delete can be idempotent within its operation constraints; `insert` can return `ALREADY_EXISTS` | At-least-once submission; replay safety belongs to each mutation, and `BatchWrite` does not preserve same-key group order |
 | Bigtable Table API | The one atomic column is always the row key; a declared `PRIMARY KEY` improves planner handling, while `sink.insert-only-input-mode` changes only the accepted changelog | The same row key is physically upserted; a stable explicit cell timestamp targets the same version, while an omitted timestamp uses the writer's wall clock and a Flink replay can create another version | At-least-once submission; no Table option provides destination-side insert-if-absent |
 | Bigtable DataStream API | The serializer chooses the `RowMutationEntry` row key, mutations, qualifiers, and cell timestamps | Repeating an explicit cell timestamp targets the same version; repeating a writer-clock-timestamped write can create another version | At-least-once submission; replay safety belongs to the mutation shape |
+| Bigtable single-row request runtime | The request names the row key; `CheckAndMutateRow` carries a predicate and a mutation per branch, `ReadModifyWriteRow` an ordered list of append and increment rules | Repeating a conditional write re-runs the predicate, so a marker it writes can make the second attempt a no-op; repeating a read-modify-write appends or increments again, with no timestamp to target | At-least-once submission, one attempt per request; a conditional write is the only shape here that can be made replay-safe, and only by what the application puts in the row |
 | Cloud Tasks Table API | The sink accepts inserts only; writable `task-id` metadata optionally selects a stable task identity | A remembered ID returns `ALREADY_EXISTS`; the existing task is neither compared nor updated | At-least-once submission; bounded effectively-once task creation when `task-id` is selected |
 | Cloud Tasks DataStream API | `taskIdExtractor(...)` optionally selects a stable task identity; otherwise Cloud Tasks assigns one | A remembered extracted ID returns `ALREADY_EXISTS`; an unnamed replay creates another task | At-least-once submission; bounded effectively-once task creation with an extractor |
 
@@ -190,6 +192,20 @@ Such a mode would require all of the following:
 It cannot protect mutations spanning rows or tables.
 It also replaces the current bulk `MutateRows` path with one conditional request per row, so
 performance is a first-order part of the support decision.
+
+The runtime behind the last of those requirements now exists: the
+[single-row request runtime]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes)
+sends `CheckAndMutateRow` and `ReadModifyWriteRow` as one request per row, with one attempt each
+and no retry, though its request API is internal until the conditional entry point of
+[#1179]({{< param BookRepo >}}/issues/1179) — where such a marker would be written — arrives. The runtime itself offers no marker mode; what it settles is
+the replay boundary underneath one. On its sink surface a completed checkpoint means every request
+up to the barrier was answered. On its async surface — a `RichAsyncFunction` under
+`AsyncDataStream` — the guarantee is Flink's: the async operator checkpoints every input whose
+result it has not yet emitted and replays those after a restore, so a completed checkpoint means
+*emitted or replayed*, never *applied*, and a replayed `ReadModifyWriteRow` applies its increment or
+append again. Both are at-least-once, and a failure that ends a request before the service answers
+(`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED`, `CANCELLED`) fails the job saying so rather than
+retrying a request the service may already have applied.
 
 ### Spanner
 

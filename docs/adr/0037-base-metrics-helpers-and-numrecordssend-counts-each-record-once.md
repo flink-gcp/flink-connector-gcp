@@ -61,9 +61,21 @@ dashboard comparing them is honest. What is given up is stated on the docs pages
 `errorClass.CODE.errors` counters instead, which is per status code and strictly more
 informative than a re-counted send.
 
+## Refinement (2026-09-03): the helpers take a counter supplier, and the single-row sink follows the rule
+
+ADR-0148 ([#1178]) gave `ErrorClassCounters` and `DestinationMetrics` a `Supplier<Counter>`
+overload, so the "task-thread only" sentence above now describes their default rather than their
+contract: the existing constructors keep `SimpleCounter`, and a connector counting from a callback
+thread passes `ThreadSafeSimpleCounter`, as the Bigtable single-row async function does. The
+single-row sink surface counts `numRecordsSend` when the client accepts a request — its first
+hand-off — and `numRecordsSendErrors` for a record routed to its failure handler, so the two
+Bigtable sink families report the same quantity under the standard names. An operator group has
+no standard pair, so the async surface registers neither.
+
 [#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
 [#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
 [#208]: https://github.com/flink-gcp/flink-connector-gcp/issues/208
 [#209]: https://github.com/flink-gcp/flink-connector-gcp/issues/209
 [#210]: https://github.com/flink-gcp/flink-connector-gcp/issues/210
 [#1056]: https://github.com/flink-gcp/flink-connector-gcp/issues/1056
+[#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178

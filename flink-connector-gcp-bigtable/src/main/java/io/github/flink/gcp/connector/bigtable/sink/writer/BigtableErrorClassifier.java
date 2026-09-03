@@ -74,9 +74,16 @@ import java.util.Set;
  *       inner call, and dropping the mutation over it would discard a record over a server-side
  *       failure. The two mistakes are mirror images.
  * </ul>
+ *
+ * <p>Public within the module, not only to this package: the single-row request family ({@code
+ * sink.singlerow.writer}) classifies its {@code CheckAndMutateRow} and {@code ReadModifyWriteRow}
+ * failures by the same two halves, and then draws its own boundary between the transient statuses —
+ * for a request-response RPC an interrupted call is ambiguous rather than merely fatal — so it
+ * reads {@link #classify(Throwable)}, {@link #carriesAny(Throwable, Set)} and {@link
+ * #statusCode(Throwable)} rather than walking the chain a second way.
  */
 @Internal
-final class BigtableErrorClassifier {
+public final class BigtableErrorClassifier {
 
     /**
      * The phrase the real service's description <em>ends with</em> when a mutation names a family
@@ -98,7 +105,7 @@ final class BigtableErrorClassifier {
     static final String MISSING_COLUMN_FAMILY_PHRASE = "Requested column family not found";
 
     /** The classes a failed mutation falls into. */
-    enum Kind {
+    public enum Kind {
         TABLE_NOT_FOUND,
         ROW_LEVEL,
         FATAL
@@ -132,7 +139,7 @@ final class BigtableErrorClassifier {
      * @param throwable the failure reported by the mutation's future
      * @return the error class
      */
-    static Kind classify(Throwable throwable) {
+    public static Kind classify(Throwable throwable) {
         if (firstMatching(throwable, EnumSet.of(StatusCode.Code.NOT_FOUND)) != null) {
             return Kind.TABLE_NOT_FOUND;
         }
@@ -200,8 +207,22 @@ final class BigtableErrorClassifier {
      * @return the outermost classifiable status, or {@code null}
      */
     @Nullable
-    static StatusCode.Code statusCode(Throwable throwable) {
+    public static StatusCode.Code statusCode(Throwable throwable) {
         return firstMatching(throwable, null);
+    }
+
+    /**
+     * Returns whether any status in the cause chain is one of {@code codes} — the same whole-chain
+     * search {@link #classify(Throwable)} runs for its transient set, exposed so the single-row
+     * request family can draw its ambiguity boundary over the chain the same way rather than by a
+     * second walk with its own reading of a status.
+     *
+     * @param throwable the failure reported by a request's future
+     * @param codes the statuses to search for
+     * @return whether the chain carries one of them
+     */
+    public static boolean carriesAny(Throwable throwable, Set<StatusCode.Code> codes) {
+        return firstMatching(throwable, codes) != null;
     }
 
     /**

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.testutils;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.Metric;
 import org.apache.flink.metrics.MetricGroup;
@@ -57,9 +58,21 @@ abstract class ListenerReadableMetricGroup extends ProxyMetricGroup<MetricGroup>
      * @throws AssertionError if nothing was registered under that name
      */
     public final long counterValue(String... identifier) {
+        return registeredCounter(identifier).getCount();
+    }
+
+    /**
+     * Returns the counter registered under {@code identifier} itself — for the assertion that cares
+     * which implementation a runtime registered, such as a thread-safe one on a surface whose
+     * counts arrive from client threads.
+     *
+     * @param identifier the name path, one element per group level
+     * @return the registered counter
+     * @throws AssertionError if nothing was registered under that name
+     */
+    public final Counter registeredCounter(String... identifier) {
         return listener.getCounter(identifier)
-                .orElseThrow(() -> new AssertionError(noMetric(identifier)))
-                .getCount();
+                .orElseThrow(() -> new AssertionError(noMetric(identifier)));
     }
 
     /**

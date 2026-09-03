@@ -46,12 +46,28 @@ import javax.annotation.Nullable;
  * resumes a broken {@code ReadChangeStream} from its last continuation token. Only a failure that
  * outlives the client's own retry budget reaches the connector, and on the Change Streams path the
  * reader turns that into a terminal failure so Flink restarts from the checkpointed token. So
- * nothing here owns a retry loop, and nothing has a retry knob to map.
+ * nothing here owns a retry loop, and nothing has a retry knob to map. The single-row request
+ * family is the one caller that touches a call's settings on top of this builder — {@code
+ * DefaultSingleRowClientFactory} pins {@code CheckAndMutateRow} and {@code ReadModifyWriteRow} to a
+ * single attempt under its configured deadline — and it leaves the retryable-code sets as the
+ * client ships them, which for those two RPCs is empty (ADR-0148).
  */
 @Internal
 public final class BigtableDataClients {
 
     private BigtableDataClients() {}
+
+    /**
+     * Returns the key under which every client pool shares one client per instance: the project and
+     * instance a destination names, in the one spelling the pools and the per-instance bookkeeping
+     * all use.
+     *
+     * @param destination the table whose instance the key names
+     * @return the instance key
+     */
+    public static String instanceKey(TableDestination destination) {
+        return destination.getProject() + "/" + destination.getInstance();
+    }
 
     /**
      * Builds the settings for a client that talks to a destination's instance.

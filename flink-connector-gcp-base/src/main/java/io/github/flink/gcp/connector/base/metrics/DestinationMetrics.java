@@ -19,11 +19,13 @@ package io.github.flink.gcp.connector.base.metrics;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.SimpleCounter;
 
 import javax.annotation.Nullable;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Optional per-destination send counters, as {@code destination.NAME.recordsSend} and {@code
@@ -46,7 +48,10 @@ import java.util.Map;
  * instance costs the writer nothing beyond two null checks. {@link Counters} is safe to cache
  * alongside the writer's own per-destination state.
  *
- * <p><b>Task thread only</b>, for the reason {@link ErrorClassCounters} records.
+ * <p><b>The counter type is the caller's choice</b>, for the reason {@link ErrorClassCounters}
+ * records: {@link #of(MetricGroup, boolean)} registers task-thread-only {@link SimpleCounter}s, and
+ * {@link #of(MetricGroup, boolean, Supplier)} takes the counter a connector counting from SDK
+ * callback threads needs. Registration itself is safe from any thread either way.
  */
 @Internal
 public final class DestinationMetrics {
@@ -65,10 +70,13 @@ public final class DestinationMetrics {
     /** {@code null} when per-destination metrics are switched off. */
     @Nullable private final MetricGroup metricGroup;
 
-    private final Map<String, Counters> byDestination = new HashMap<>();
+    private final Supplier<? extends Counter> counterSupplier;
+    private final Map<String, Counters> byDestination = new ConcurrentHashMap<>();
 
-    private DestinationMetrics(@Nullable MetricGroup metricGroup) {
+    private DestinationMetrics(
+            @Nullable MetricGroup metricGroup, Supplier<? extends Counter> counterSupplier) {
         this.metricGroup = metricGroup;
+        this.counterSupplier = counterSupplier;
     }
 
     /**
@@ -80,7 +88,23 @@ public final class DestinationMetrics {
      * @return the counters
      */
     public static DestinationMetrics of(MetricGroup metricGroup, boolean enabled) {
-        return new DestinationMetrics(enabled ? metricGroup : null);
+        return of(metricGroup, enabled, SimpleCounter::new);
+    }
+
+    /**
+     * Creates the per-destination counters with the counter type the caller needs for the threads
+     * it counts from.
+     *
+     * @param metricGroup the metric group the per-destination subgroups register on
+     * @param enabled whether the connector's {@code perDestinationMetrics} option is set; when
+     *     false, nothing is ever registered and {@link #forDestination} always returns a no-op
+     * @param counterSupplier creates each counter before it is registered under its name; pass a
+     *     thread-safe counter when increments arrive from more than one thread
+     * @return the counters
+     */
+    public static DestinationMetrics of(
+            MetricGroup metricGroup, boolean enabled, Supplier<? extends Counter> counterSupplier) {
+        return new DestinationMetrics(enabled ? metricGroup : null, counterSupplier);
     }
 
     /**
@@ -98,7 +122,9 @@ public final class DestinationMetrics {
                 destination,
                 name -> {
                     MetricGroup group = metricGroup.addGroup(DESTINATION_GROUP, name);
-                    return new Counters(group.counter(RECORDS_SEND), group.counter(SEND_ERRORS));
+                    return new Counters(
+                            group.counter(RECORDS_SEND, counterSupplier.get()),
+                            group.counter(SEND_ERRORS, counterSupplier.get()));
                 });
     }
 

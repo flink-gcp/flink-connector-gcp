@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
@@ -567,7 +568,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             instanceDestinations.get(state.instanceKey);
             return state;
         }
-        String instanceKey = instanceKey(destination);
+        String instanceKey = BigtableDataClients.instanceKey(destination);
         Set<TableDestination> destinations = instanceDestinations.get(instanceKey);
         if (destinations == null) {
             ensureInstanceCapacity();
@@ -1623,10 +1624,6 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             this.failureDescription = "Fail a Bigtable mutation of " + destination;
             this.lastAccessNanos = createdNanos;
         }
-    }
-
-    private static String instanceKey(TableDestination destination) {
-        return destination.getProject() + "/" + destination.getInstance();
     }
 
     /**

@@ -107,7 +107,9 @@ Further design decisions of the same cluster:
   The sink has no family layer ([#119]: one write family, `MutateRows`, with no sibling in
   prospect — `checkAndMutateRow` and `readModifyWriteRow` are request-response primitives), so
   `BigtableMutateRowsSink` sits beside its facade and `FailedMutation` at the `sink` root (the
-  post-[#213] placement rule).
+  post-[#213] placement rule). **Refined by ADR-0148** ([#1178], 2026-09-03): the sibling
+  arrived — exactly those two request-response primitives — and lives in its own family layer,
+  `sink.singlerow`, while `sink.writer` stays where it is until a separate mechanical move.
 
 ## Evidence
 
@@ -261,3 +263,4 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#236]: https://github.com/flink-gcp/flink-connector-gcp/issues/236
 [#400]: https://github.com/flink-gcp/flink-connector-gcp/issues/400
 [#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436
+[#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178

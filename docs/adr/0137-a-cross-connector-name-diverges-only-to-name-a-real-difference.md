@@ -631,6 +631,15 @@ verdict-B rules and the staleness fixes.
 | [#729](https://github.com/flink-gcp/flink-connector-gcp/issues/729) | `docs/content/docs/reference/_index.md` omits Spanner from the SQL connector list |
 | No action (A) | C9, C11 (BigQuery/Bigtable), O7, non-findings lists |
 
+## Refinement (2026-09-03): Bigtable has a second write family
+
+ADR-0148 ([#1178]) added the single-row request family beside Bigtable's `MutateRows` sink, so
+the two places above that describe `BigtableErrorClassifier` as classifying "its module's single
+write family" are dated. The connector prefix still names the precise thing: the new family's
+`RequestFailures` reuses `BigtableErrorClassifier`'s status walk rather than adding a second
+classifier, so one classifier serves both families and a family word would be the narrower name.
+
+[#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178
 [#782]: https://github.com/flink-gcp/flink-connector-gcp/issues/782
 [#1043]: https://github.com/flink-gcp/flink-connector-gcp/issues/1043
 [#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047

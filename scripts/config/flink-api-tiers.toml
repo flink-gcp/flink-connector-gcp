@@ -40,11 +40,14 @@
 # against them by the weekly binary_compat job, not licensed here.
 
 # The org.apache.flink sources jars that own the imported types, resolved at
-# the pom-pinned flink.version (the supported floor). Not flink-streaming-java:
-# since the 2.x restructuring the streaming.api.* types this project uses ship
-# in flink-runtime's sources jar, and flink-core-api (split out of flink-core
-# in 2.0) owns util.function.*. flink-test-utils owns MetricListener, which the
-# test-utils module's sink metric-group harness sits on — that module keeps its
+# the pom-pinned flink.version (the supported floor). Since the 2.x
+# restructuring most streaming.api.* types this project uses ship in
+# flink-runtime's sources jar, but the async-operator function types
+# (streaming.api.functions.async.*, which the Bigtable single-row request
+# runtime extends, ADR-0148) stayed in flink-streaming-java; flink-core-api
+# (split out of flink-core in 2.0) owns util.function.*. flink-test-utils owns
+# MetricListener, which the test-utils module's sink metric-group harness sits
+# on — that module keeps its
 # helpers in src/main/java so siblings can consume the plain jar at test scope,
 # which is exactly why they are audited here like any other main source.
 # flink-avro owns GenericRecordAvroTypeInfo, the one type the BigQuery source's
@@ -56,6 +59,7 @@ artifacts = [
     "flink-core-api",
     "flink-metrics-core",
     "flink-runtime",
+    "flink-streaming-java",
     "flink-connector-base",
     "flink-table-common",
     "flink-table-api-java-bridge",
@@ -92,8 +96,22 @@ checks."""
 [internal."org.apache.flink.metrics.ThreadSafeSimpleCounter"]
 reason = """
 The Pub/Sub source reader counts records outside the mailbox thread, and this
-is Flink's own thread-safe Counter. The fallback is a trivial
+is Flink's own thread-safe Counter; the Bigtable single-row request function
+completes each record on a gax thread and passes it to the base metrics
+helpers for the same reason (ADR-0148). The fallback is a trivial
 LongAdder-backed Counter implementation in this repository."""
+
+[internal."org.apache.flink.metrics.SimpleCounter"]
+reason = """
+The base module's ErrorClassCounters and DestinationMetrics take a counter
+supplier so the Bigtable single-row request function can register
+thread-safe counters (ADR-0148); their task-thread default supplies this
+type, which is exactly what the stable MetricGroup.counter(String) registers,
+and the Bigtable single-row sink writer names it for the same default. The
+stable one-argument registration cannot take the supplier's place, because
+the metric-docs checker reads each registration's name constant at the
+counter(...) call. The fallback is a trivial long-backed Counter
+implementation in this repository."""
 
 [internal."org.apache.flink.metrics.groups.UnregisteredMetricsGroup"]
 reason = """

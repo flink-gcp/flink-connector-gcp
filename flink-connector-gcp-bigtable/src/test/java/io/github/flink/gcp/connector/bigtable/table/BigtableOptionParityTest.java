@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
 import org.junit.jupiter.api.Test;
@@ -56,10 +57,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * carrying an exemption set, and each entry states why the setter has no DDL form; because the
  * assertion is a set equality against the union, an exemption that stops being true fails too.
  *
- * <p>Five surfaces: the writer options, the sink builder, the table-creation options, the bounded
- * {@code BigtableSourceBuilder}, and the {@code BigtableChangeStreamSourceBuilder}. The two source
- * builders are alternative scan modes, so their shared destination/profile/credential keys are
- * pinned explicitly rather than treated as two setters in one runtime path.
+ * <p>Six surfaces: the writer options, the sink builder, the table-creation options, the bounded
+ * {@code BigtableSourceBuilder}, the {@code BigtableChangeStreamSourceBuilder}, and the single-row
+ * request options, whose every knob is recorded as having no key yet. The two source builders are
+ * alternative scan modes, so their shared destination/profile/credential keys are pinned explicitly
+ * rather than treated as two setters in one runtime path.
  */
 class BigtableOptionParityTest {
 
@@ -121,6 +123,25 @@ class BigtableOptionParityTest {
         map.put(
                 "tableCreateOptions",
                 "takes TableCreateOptionsMapper's output, whose families come from the DDL");
+        return Collections.unmodifiableMap(map);
+    }
+
+    /**
+     * {@code BigtableRequestOptions.Builder}: every knob, and why none has a key yet. The
+     * single-row request runtime ships without a table entry point (ADR-0148); the first consuming
+     * write mode, with #1177's mode option, is what gives these keys. Listed here rather than
+     * skipped so that PR finds the gap by a failing assertion and not by a reader's memory.
+     */
+    private static final Map<String, String> REQUEST_OPTIONS_NO_DDL = requestOptionsExemptions();
+
+    private static Map<String, String> requestOptionsExemptions() {
+        String reason = "no table entry point consumes the single-row runtime yet (ADR-0148)";
+        Map<String, String> map = new LinkedHashMap<>();
+        map.put("maxInFlightRequests", reason);
+        map.put("requestTimeout", reason);
+        map.put("destinationIdleTimeout", reason);
+        map.put("maxActiveInstances", reason);
+        map.put("perDestinationMetrics", reason);
         return Collections.unmodifiableMap(map);
     }
 
@@ -321,6 +342,12 @@ class BigtableOptionParityTest {
         expected.addAll(SINK_BUILDER_NO_DDL.keySet());
 
         assertThat(publicSettersOf(BigtableSinkBuilder.class)).isEqualTo(expected);
+    }
+
+    @Test
+    void everyRequestKnobIsRecordedAsHavingNoOptionYet() {
+        assertThat(publicSettersOf(BigtableRequestOptions.Builder.class))
+                .isEqualTo(REQUEST_OPTIONS_NO_DDL.keySet());
     }
 
     @Test

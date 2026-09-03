@@ -125,6 +125,14 @@ into a configuration failure.
 In-flight entries and bytes bound mutation data, not SDK channel pools and executors, and therefore
 cannot bound the resource measured by #1133.
 
+## Refinement (2026-09-03): the reaper is shared by two client families
+
+ADR-0148 ([#1178]) moved the bounded close pool from the batcher factory to the module root as
+`BigtableClientReaper`, with its contract unchanged: a permit per open client, held while closing,
+daemon reapers bounded by `maxActiveInstances`, synchronous close when scheduling is refused. The
+single-row request family's client factory takes its permits from the same type, so the cap this
+record describes bounds that family's clients in the same way.
+
 ## Consequences
 
 Ordinary fixed-instance and many-table workloads retain their shared client without capacity churn.
@@ -138,3 +146,4 @@ describe tracked slots and removal pressure rather than operating-system resourc
 
 [#1133]: https://github.com/flink-gcp/flink-connector-gcp/issues/1133
 [ADR-0074]: 0074-the-bigtable-writer-pools-a-batcher-per-table-over-a-client-per-instance.md
+[#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178

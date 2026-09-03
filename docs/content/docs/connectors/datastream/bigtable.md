@@ -387,6 +387,10 @@ The decision and the difference from Spanner's heartbeat contract are recorded i
 
 ## Sink
 
+This section is the `MutateRows` sink: every record becomes an entry of a batched request. Bigtable's
+two request-response writes, `CheckAndMutateRow` and `ReadModifyWriteRow`, run on a second runtime
+described under [Single-row request writes](#single-row-request-writes).
+
 ### API notes
 
 The record-to-mutation step is the whole public surface beyond the builder:
@@ -581,6 +585,90 @@ retries `CreateTask` on nothing at all and therefore has to; the difference is i
 in a preference. What reaches this writer is a failure the client already gave up on, so it is
 classified and either routed or fatal — never retried again.
 
+## Single-row request writes
+
+Bigtable's two request-response write RPCs,
+[`CheckAndMutateRow`](https://cloud.google.com/bigtable/docs/writes#conditional) and
+[`ReadModifyWriteRow`](https://cloud.google.com/bigtable/docs/writes#increment-append), cannot go
+through the batcher the sink above is built on. Each is one request for one row that returns a
+value — whether the predicate matched, or the row after the atomic append or increment — and the
+value is the reason to call it. This connector runs them on a second runtime, in the
+`sink.singlerow` package beside the `MutateRows` sink rather than inside it
+([ADR-0148]({{< param BookRepo >}}/blob/main/docs/adr/0148-bigtable-single-row-requests-run-on-a-request-response-runtime-beside-the-batcher.md)).
+
+**What ships now is the runtime and its building blocks, not an entry point.** The per-operation
+sinks and functions — a serializer SPI, a builder and a result type for each RPC — arrive with
+[#1179]({{< param BookRepo >}}/issues/1179) (conditional) and
+[#1180]({{< param BookRepo >}}/issues/1180) (read-modify-write), and Flink 2.2+ SQL functions over
+them with [#1181]({{< param BookRepo >}}/issues/1181). Until then nothing on this page is
+user-callable for these RPCs; what follows is the contract those entry points are written against,
+stated now so that a job designed against it is not redesigned later.
+
+**Both RPCs are Bigtable's single-row transactions, and the instance has to allow them.** Bigtable
+permits a conditional write or a read-modify-write only through an application profile that uses
+[single-cluster routing](https://cloud.google.com/bigtable/docs/routing) and has single-row
+transactions enabled; a single-cluster instance's default profile has them, and a multi-cluster
+instance's default profile never allows them, so a job writing to a replicated instance needs a
+profile of its own; both surfaces take a profile id, as the batching sink's `appProfileId(...)`
+does. The service account needs `bigtable.tables.checkAndMutateRow` and
+`bigtable.tables.readModifyWriteRow` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)
+carries both, beside `bigtable.tables.mutateRows`); a permission denial is a fatal failure
+[below](#delivery-guarantees-and-state), not a row-level one, because every request to that table
+would fail the same way.
+
+**Two surfaces over one runtime.** A *sink* surface — a `SinkWriter` in the shape of the batching
+writer: one request per record, the answers discarded, `flush()` waiting for every outstanding
+request at each checkpoint barrier — and an *async-operator* surface, a `RichAsyncFunction` base
+for `AsyncDataStream.unorderedWait` or `orderedWait`, where each answer becomes the operator's
+output. Both resolve the table per record — the sink surface through a `DestinationResolver`, the
+function through its own `destination(IN)` step — and the request is built against that table only
+when it starts, which is what lets one request shape be routed anywhere. A record whose request comes back `null` — from the serializer on the sink surface, from
+the function's own request step on the async one — is skipped exactly as [above](#api-notes):
+written nowhere, not a failure, counted by `recordsSkipped`, and emitting nothing.
+
+**`BigtableRequestOptions`** tunes both surfaces — five knobs, all defaulted, in the
+[reference]({{< relref "docs/reference/bigtable" >}}#bigtablerequestoptions):
+`maxInFlightRequests` (100), `requestTimeout` (20 s), `destinationIdleTimeout` (1 h),
+`maxActiveInstances` (16) and `perDestinationMetrics` (`false`). It is a separate type from
+`BigtableWriterOptions` on purpose: a single-row request has no batch thresholds and no in-flight
+bytes, so sharing the type would leave most of its setters inert here.
+
+**The client's deadline is the only timeout, and there are no retries — on either side.** The client
+ships both RPCs with an empty retryable-code set and a 20 s total timeout, and this runtime keeps it
+that way: `requestTimeout` is applied to the client as one attempt's whole deadline, no connector
+loop sits around it, and there is no knob to add one. Retrying a non-idempotent RPC after an
+ambiguous failure could apply an increment twice; the client's own defaults make the same judgement,
+and a test pins them so that a client upgrade which changes them goes red rather than changing the
+semantics. This is the mirror image of the batching sink's
+[retries belong to the client](#retries-belong-to-the-client), for the same reason: the difference
+is in the RPCs, not in a preference.
+
+**Answers are connector-owned.** `CheckAndMutateRow` answers with a `boolean` — whether the
+predicate matched. `ReadModifyWriteRow` answers with the row it wrote, which the runtime hands on as
+a `BigtableRow`: the key and its cells, each a family, a qualifier, a timestamp in microseconds, a
+value and its labels, with its own Flink type information and serializer so that a job can emit it
+downstream, key on it or hold it in state. No client-library type crosses the surface — the
+client's `Row` is `@InternalExtensionOnly`, and its request builders carry a table id that the
+resolver must own — with the one exception of protobuf's `ByteString`, which is the row key and
+cell value type here as it is in the batching sink's `RowMutationEntry`.
+
+**On the async surface, capacity and the outer timeout are Flink's.** The operator's capacity — the
+number handed to `AsyncDataStream` — is that surface's in-flight bound, while `maxInFlightRequests`
+bounds the sink surface; until the entry points hand the one to the other, set the capacity to the
+same number. Flink's operator timeout should sit *above* `requestTimeout`, so that the client's
+deadline — with its Bigtable-named message and its ambiguity verdict — is what a slow request fails
+on. When the operator timeout fires first, the function cancels the request and fails the record
+with a message naming both timeouts; a cancelled request is as ambiguous as a timed-out one.
+
+**The instance cap is met differently by the two surfaces.** One client per (project, instance),
+shared by that instance's tables, as [above](#per-record-destinations). At `maxActiveInstances` the
+sink surface drains its outstanding requests and evicts the least recently used instance, as the
+batching writer does. The async surface cannot wait — `asyncInvoke` must return — so it evicts an
+instance with nothing in flight, or fails the record naming the option when every held instance is
+busy. Idle tables are swept at the end of each successful non-final `flush()` on the sink surface;
+the async surface, which has no flush, sweeps as inputs arrive, at most once per idle timeout,
+skipping a table with a request in flight.
+
 ## Delivery guarantees and state
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
@@ -623,6 +711,17 @@ wrongly produces the violation on *every* record, which is the case that puts th
 Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
 `deleteRow` replayed after later writes for the same key would delete those too. That is a property
 of the mutation, not of the sink.
+
+**Single-row requests replay too, and neither RPC is idempotent.** On the
+[sink surface](#single-row-request-writes) `flush()` waits for every outstanding request exactly as
+it waits for every mutation, so a completed checkpoint means the service answered every request up
+to the barrier — applied, or refused at the row level and routed. On the async surface the guarantee
+is Flink's own: the async operator checkpoints every input whose result it has not yet emitted and
+replays those after a restore, so a completed checkpoint there means *emitted or replayed*, never
+*applied*. Under either, a replayed `CheckAndMutateRow` re-evaluates its condition against whatever
+state the first attempt left, and a replayed `ReadModifyWriteRow` applies its increment or append
+**again** — there is no cell timestamp to make it a no-op. That is the at-least-once cost of these
+two RPCs, and the failure that fails a job on an [ambiguous answer](#error-handling) states it.
 
 ## Error handling
 
@@ -714,6 +813,26 @@ the completion that would classify and route such a failure can no longer run, a
 its only record. The mutation itself is covered by at-least-once, since a close with unsent work
 only happens on a path that is already ending the job.
 
+**A single-row request draws one more line: ambiguity.** The
+[single-row runtime](#single-row-request-writes) reads a failure through the same classifier, so the
+two families cannot drift in how they see a status, and it keeps both halves of the rule above —
+only `INVALID_ARGUMENT` is row-level, and an unstable service never produces a dead letter. What
+differs is that a request-response RPC has one attempt and no retry, so a failure that ends the call
+before the service answers leaves the service's state *unknown*:
+
+| Class | Statuses | Behavior |
+|---|---|---|
+| Row-level | `INVALID_ARGUMENT`, with no ambiguous status anywhere in the chain; or a request the client's own validation refuses before it is sent (`IllegalArgumentException` or `IllegalStateException` thrown from the call — a `CheckAndMutateRow` whose `then` and `otherwise` are both empty) | On the sink surface, routed to the configured `FailureHandler<FailedRequest>`; on the async surface, fails the job |
+| Ambiguous | `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED` or `CANCELLED` anywhere in the chain, or a cancelled request | Fails the job with a message naming the RPC and the table, saying that the service may or may not have applied it, and stating what a [replay](#delivery-guarantees-and-state) does to each RPC |
+| Fatal | Everything else: `NOT_FOUND` (the table or one of its families does not exist), `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, failures carrying no status | Fails the job. There is no isolation pass — a request has exactly one identity — and no [auto-creation repair](#table-auto-creation), which is the batching sink's feature |
+
+A deadline failure is additionally counted under [`requestsTimedOut`](#single-row-request-metrics).
+The async surface has **no failure handler**: the handler contract is task-thread, and an answer
+arrives on a client thread with no mailbox to hop back onto, so every failed request fails the job
+there. The entry points of [#1179]({{< param BookRepo >}}/issues/1179) and
+[#1180]({{< param BookRepo >}}/issues/1180) may model a row-level outcome as a value in their result
+types instead.
+
 ### Failed-mutation policy
 
 Two data-shaped failures are pluggable: a record the serializer rejects, and a row-level rejection.
@@ -737,6 +856,17 @@ failed), the row key, and — as the shared contract's payload — the **seriali
 `MutateRowsRequest.Entry.parseFrom(bytes)` rather than just learning which row it was. Delivery of
 handled elements is at-least-once for failures that recur on replay; the SPI's own page states that
 guarantee in full.
+
+The [single-row sink surface](#single-row-request-writes) takes the same SPI as
+`FailureHandler<FailedRequest>`, and the same two failures reach it: a record the serializer
+rejects and a [row-level rejection](#error-handling). `FailedRequest` carries the destination, the
+operation (`CHECK_AND_MUTATE_ROW` or `READ_MODIFY_WRITE_ROW`), the row key, the message and the
+cause — and its payload is **`null`** for now. The runtime holds a request as connector-owned
+values that become the client's builder only when the request starts, and the builder's wire form
+is reached through an `@InternalApi` conversion this connector declines to depend on for a
+dead-letter payload, so a dead-letter consumer learns which row and which RPC failed rather than the
+request's contents. The per-operation entry points own a request model of their own and settle the
+payload's encoding with it.
 
 `PubSubDeadLetterQueue`, this repository's one shipped implementation, reports what it published,
 what it still holds and how long its waits take on **this sink's** writer
@@ -837,6 +967,43 @@ counters simply restate the totals above.
 futures asynchronously, so any latency this writer could report would measure its own bookkeeping
 rather than the service's response time — a missing number beats a wrong one. There is no committer
 either (the sink is single-phase), so Flink's committer metrics do not apply.
+
+### Single-row request metrics
+
+Registered by the [single-row runtime](#single-row-request-writes) on the sink writer's group or, on
+the async surface, on the operator's group. The sink surface also moves Flink's `numRecordsSend` and
+`numRecordsSendErrors` with the meaning the table [above](#metrics) gives them — a record is sent
+when the client accepts its request, and a send error is a record routed to the handler, whether
+the serializer rejected it, the client's validation refused it or the service answered
+`INVALID_ARGUMENT` — so a dashboard built on those reads the two sink families alike, and a failure
+that fails the job is under `requestsFailed` but under neither of them, exactly as the batching
+sink's is not. An operator group has no such counters, and the async surface routes nothing.
+
+A record whose failure came before the client took a request — a destination that resolved to
+`null`, a request step that threw on the async surface, a client that refused to start the call —
+fails the write or the record without moving `requestsAccepted`, `requestsFailed` or `errorClass`:
+no request existed to count. And on the async surface a request the service answered counts as
+completed even when the function's result step then fails the record, because the service did
+answer it.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `requestsAccepted` | counter | requests the client accepted — one per record, since a single-row RPC carries one row |
+| `requestsCompleted` | counter | requests the service answered |
+| `requestsFailed` | counter | requests that did not complete — row-level, ambiguous and fatal failures alike — plus, on the sink surface, records the serializer rejected or the client's validation refused and, on the async surface, requests Flink's operator timeout ended |
+| `requestsTimedOut` | counter | those of them that ended on a deadline: the request's own (`DEADLINE_EXCEEDED`) or, on the async surface, Flink's operator timeout. Counted on top of `requestsFailed` |
+| `inFlightRequests` | gauge | requests accepted and not yet answered, against `maxInFlightRequests` on the sink surface and the operator's capacity on the async one |
+| `activeClients` | gauge | instance clients held by this subtask, against `maxActiveInstances` |
+| `capacityEvictions` | counter | instances evicted to make room under `maxActiveInstances` |
+| `idleEvictions` | counter | instances evicted after their last table went idle past `destinationIdleTimeout` |
+| `recordsSkipped` | counter | records whose request was `null` — neither sent nor failed |
+| `errorClass.CODE.errors` | counter | failed requests by status code, `CODE` being a gRPC status name or `UNCLASSIFIED`; a record the serializer rejected carries no status and is counted under none |
+| `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the standard pair per table — requests the client accepted and records routed to the handler — **only** with `perDestinationMetrics(true)` |
+
+**There is no counter of discarded answers on the sink surface**: every completed request discards
+its answer there, so the count would equal `requestsCompleted`. And `errorClass` here counts one
+attempt per request, since the client retries neither RPC — `UNAVAILABLE` under it means one failed
+call, not an outage that outlasted a backoff budget as it does in the table above.
 
 ### Source metrics
 
@@ -973,6 +1140,19 @@ of what happens at the end of them: with Flink's defaults
 0) the checkpoint can expire first, failing the job with a message that names nothing about
 Bigtable. See [#431]({{< param BookRepo >}}/issues/431).
 
+**The single-row runtime has one bound and one deadline, and they mean different things on its two
+surfaces.** `maxInFlightRequests` backpressures the sink surface exactly as the in-flight bounds
+above do — at the cap `write()` yields to the mailbox until completions bring the count down, with
+the same admission rule and the same once-a-minute stall warning, though under the default 20 s
+`requestTimeout` every stalled request fails before the warning's minute is up, so it fires only
+when the deadline has been raised past a minute — and it counts requests, since a single-row RPC
+carries one row and nothing accumulates. On the async surface the bound is the
+capacity handed to `AsyncDataStream`, so set that to the same number. `requestTimeout` is the
+client's whole deadline for one attempt, 20 s by default; a request past it is
+[ambiguous](#error-handling), and the runtime would rather report that than retry it; whatever
+value it takes, keep Flink's operator timeout above it. There is no batching to tune: every request
+is its own RPC, so throughput is the instance's, not a threshold's.
+
 ## Testing
 
 Unit tests cover the writer against a fake batcher and a fake mailbox: the skip contract, both
@@ -988,6 +1168,19 @@ report of its accumulated entry failures, so anything else propagates, and the c
 left holding a channel when it does. The batcher's operations reach the adapter as functional
 values, because the client library's `Batcher` may not be implemented by a fake — the same reason
 this connector defines its own batcher interface.
+
+The [single-row runtime](#single-row-request-writes) is tested the same way, over a fake client
+behind the same kind of seam: the client factory's tests prove that both RPCs' settings carry an
+empty retryable-code set and the configured deadline — and, separately, pin the client's own
+defaults, so a client upgrade that changes them fails the build rather than the semantics; the
+writer's tests hold that capacity is released on every terminal outcome, that a synchronous
+rejection by the client counts nothing, that a closed writer turns late completions into no-ops,
+and that `flush()` waits for every accepted request; the async function's tests hold the ambiguity
+boundary from the callback thread, that Flink's timeout cancels and counts, that a late answer after
+it is ignored, and that the counters are exact under concurrent completions. The emulator suite
+drives both RPCs through the production client-construction path and reads the rows back, and a
+MiniCluster job emits `BigtableRow` downstream through `AsyncDataStream.unorderedWait` and fails a
+never-answering request with the Bigtable-named timeout message.
 
 The source's coverage is split three ways, because no one level can carry it. **Split planning is a
 unit test**, over a pure function fed sampled boundaries directly: the emulator models no tablets,
@@ -1015,9 +1208,10 @@ checkpoints while the source is still producing, and batch with nothing but the 
 built through the public builder with no test seams. They need no credentials and run on every pull
 request.
 
-**The emulator is a convenience, not an authority.** It implements `MutateRows` and the table admin
-surface, which is enough to prove that mutations arrive and that a flush means what it says, and
-nothing there asserts a rejection the real service would produce.
+**The emulator is a convenience, not an authority.** It implements `MutateRows`, `CheckAndMutateRow`,
+`ReadModifyWriteRow` and the table admin surface, which is enough to prove that mutations and
+requests arrive and that a flush means what it says, and nothing there asserts a rejection the real
+service would produce.
 
 A **gated suite against real Cloud Bigtable** covers what the emulator cannot
 ([#218]({{< param BookRepo >}}/issues/218)). It runs weekly, and locally through `just e2e` with
@@ -1103,11 +1297,15 @@ gated suite.
 
 ## Scope
 
-Not implemented, with the reason rather than a promise:
+Not yet callable, with what stands in the way rather than a promise:
 
-- conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
-  request-response primitives rather than a write path a sink batches: each is one RPC whose result
-  the caller is expected to read, and neither participates in `MutateRows`.
+- the per-operation entry points of the [single-row request runtime](#single-row-request-writes) —
+  the conditional and read-modify-write sinks and functions, and the SQL functions over them. The
+  runtime, its options, its result type and its failure boundary ship now; the serializer SPIs,
+  builders and result wrappers that make each RPC callable arrive with
+  [#1179]({{< param BookRepo >}}/issues/1179), [#1180]({{< param BookRepo >}}/issues/1180) and
+  [#1181]({{< param BookRepo >}}/issues/1181), and a Table API write mode for them with the mode
+  option [#1177]({{< param BookRepo >}}/issues/1177) settles.
 
 ## Provenance and attribution
 

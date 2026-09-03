@@ -280,9 +280,9 @@ The source reaches it the same way:
 {{< java-snippet file="BigtableExamplesEmulatorSource.java" tag="bigtable-examples-emulator-source" >}}
 
 The project and instance ids are opaque path segments to the emulator; neither has to exist. It
-implements `MutateRows`, `ReadRows` and the table admin surface, which is enough to develop against
-— but it validates far less than the service does, so a mutation it accepts is not evidence that
-Bigtable would.
+implements `MutateRows`, `CheckAndMutateRow`, `ReadModifyWriteRow`, `ReadRows` and the table admin
+surface, which is enough to develop against — but it validates far less than the service does, so
+a mutation it accepts is not evidence that Bigtable would.
 
 One read-path difference is worth knowing while developing: the emulator models no tablets, so it
 offers almost no split boundaries and a job against it runs on **one** split whatever the
