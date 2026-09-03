@@ -458,8 +458,12 @@ digits.
 A declaration above precision 6, such as `TIMESTAMP_LTZ(9)`, is truncated to microseconds by that
 cast, independently of `sink.cell-timestamp.truncate-to-millis`.
 
-An absent metadata column or a `NULL` value keeps the existing path: the Bigtable client stamps the
-mutation from the TaskManager's wall clock when the mutation is built.
+An absent metadata column or a `NULL` value takes the writer clock: the sink stamps the cell with
+the TaskManager's current millisecond when the mutation is built.
+The value is always millisecond-aligned, so this path cannot produce the granularity rejection
+below, and sub-millisecond precision is not kept — use the metadata column when you need it.
+The sink stamps it rather than letting the client library do so, which is what it did until
+[ADR-0149]({{< param BookRepo >}}/blob/main/docs/adr/0149-the-table-sink-stamps-its-own-writer-clock-cell-timestamp.md).
 The same `RowMutationEntry` is reused by the client when it retries an RPC, so that retry rewrites
 the same cell version.
 A Flink recovery serializes the record again, however, and therefore takes a new writer-clock value.
