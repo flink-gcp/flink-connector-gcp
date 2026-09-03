@@ -41,6 +41,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * The measured differences between the Bigtable emulator and the service, for the three rejections
@@ -57,7 +59,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Measured 2026-08-02 against {@code google-cloud-cli:441.0.0-emulators}, re-measured 2026-09-03
  * against the pinned {@code google-cloud-cli:583.0.0-emulators}, both with {@code
- * google-cloud-bigtable} 2.80.0. The bump moved one row: the emulator now refuses an empty row key
+ * google-cloud-bigtable} 2.80.0, and re-measured 2026-09-03 under 2.82.0 for the row below that the
+ * client change reaches. The image bump moved one row: the emulator now refuses an empty row key
  * instead of storing it. It still answers {@code INTERNAL}, so what the sink sees is unchanged.
  *
  * <p>Each {@code finally} closes the writer plainly, which is an assertion rather than cleanup:
@@ -144,6 +147,55 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
         } finally {
             writer.close();
         }
+    }
+
+    @Test
+    void rejectsAClientGeneratedTimestampTheServiceTruncates() throws Exception {
+        // The deviation the harness works around, pinned so it cannot close unnoticed.
+        //
+        // google-cloud-bigtable 2.82.0 stamps the timestamp-less setCell overload with a
+        // microsecond Instant.now() and marks the mutation CLIENT_AUTO_GENERATED on the wire.
+        // data.proto says the server truncates such a timestamp to the table's granularity and
+        // rejects only a USER_SPECIFIED one whose precision does not match, and that is what real
+        // Bigtable does — measured 2026-09-03 through the Table sink against a live instance: the
+        // write is accepted and the cell stored at a millisecond boundary.
+        //
+        // The emulator does not implement the field, so it treats the value as user-specified and
+        // refuses it. Reported upstream as googleapis/google-cloud-go#20468 with a fix in #20469;
+        // the harness workaround and its removal are tracked by #1205. When a pinned image honours
+        // the field this test fails, which is the signal to drop the workaround.
+        TableDestination table = createTable("deviation-client-generated-timestamp");
+
+        // Retried, because the client reads a microsecond clock and roughly one reading in a
+        // thousand lands on a millisecond boundary, which the emulator accepts. A single attempt
+        // would be a 0.1% flake. Twenty consecutive aligned readings is not a coincidence worth
+        // planning for; it means either the deviation closed or the clock lost its microsecond
+        // resolution, and the failure message says so rather than blaming the emulator.
+        for (int attempt = 0; attempt < 20; attempt++) {
+            // A key per attempt, and asserted by name rather than by the table being empty. An
+            // earlier attempt that happened to be aligned was accepted and left a row behind, so
+            // "empty" holds only on the run where the first attempt is the rejected one — it would
+            // have moved the flake rather than removed it.
+            String rowKey = "r" + attempt;
+            Throwable failure =
+                    catchThrowable(
+                            () -> writeCellWithTheClientsWriterClock(table, rowKey, "q", "v"));
+            if (failure != null) {
+                assertThat(failure).hasStackTraceContaining("invalid timestamp");
+                assertThat(readRows(table))
+                        .extracting(row -> row.getKey().toStringUtf8())
+                        .doesNotContain(rowKey);
+                return;
+            }
+        }
+        fail(
+                "The emulator accepted twenty client-auto-generated timestamps, so it no longer"
+                        + " rejects what this row records. Check which before acting: it may honour"
+                        + " Mutation.timestamp_origin (drop the harnessTimestampMicros workaround and"
+                        + " close #1205), or accept every unaligned timestamp regardless of origin"
+                        + " (a different deviation, and #1205 stays open), or the client may have"
+                        + " stopped reading a microsecond clock (this test observes nothing and needs"
+                        + " rewriting).");
     }
 
     @Test

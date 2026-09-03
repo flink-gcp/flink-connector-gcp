@@ -219,6 +219,13 @@ class RowDataSerializationSchemaTest {
                 serializer.serialize(rowWithTimestamp(RowKind.INSERT, null), null).toProto();
         long afterMillis = System.currentTimeMillis();
 
+        // Inside the bracket, and millisecond-aligned. Both are now this connector's own
+        // guarantee rather than the client library's: the schema stamps the cell itself, so the
+        // alignment does not move under a client upgrade. It did move once —
+        // google-cloud-bigtable 2.81.0 stamped an aligned currentTimeMillis * 1000 and 2.82.0
+        // switched to a microsecond Instant.now() — which is what this path stopped depending on
+        // (ADR-0149). The upper bound needs no ceiling for the same reason: an aligned value
+        // cannot land above the floor of the millisecond it was read in.
         assertThat(entry.getMutationsList())
                 .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
                 .hasSize(3)
@@ -229,6 +236,14 @@ class RowDataSerializationSchemaTest {
         assertThat(entry.getMutationsList())
                 .extracting(mutation -> mutation.getSetCell().getTimestampMicros() % 1_000L)
                 .containsOnly(0L);
+        // USER_SPECIFIED, because this connector specified it. The distinction is what the
+        // service acts on: measured 2026-09-03, it truncates a CLIENT_AUTO_GENERATED timestamp to
+        // the table's granularity and rejects a USER_SPECIFIED one whose precision does not match
+        // (ADR-0044) — so stamping it here is only safe while the value is aligned, which the
+        // assertion above holds.
+        assertThat(entry.getMutationsList())
+                .extracting(Mutation::getTimestampOrigin)
+                .containsOnly(Mutation.TimestampOrigin.USER_SPECIFIED);
     }
 
     /** A clock returning a value no wall clock produces, advancing once per read. */
@@ -320,6 +335,13 @@ class RowDataSerializationSchemaTest {
         assertThat(entry.getMutationsList())
                 .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
                 .containsExactly(5_000L, 6_000L, 7_000L);
+        // The origin too, not only the value: both metadata shapes reach the same arm today, and
+        // this is what would notice if the no-metadata case — the most common DDL — were ever
+        // routed back to the client's timestamp-less overload, where it would silently become
+        // CLIENT_AUTO_GENERATED.
+        assertThat(entry.getMutationsList())
+                .extracting(Mutation::getTimestampOrigin)
+                .containsOnly(Mutation.TimestampOrigin.USER_SPECIFIED);
     }
 
     @Test
