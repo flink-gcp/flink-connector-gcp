@@ -55,16 +55,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * INTERNAL} as fatal — so an emulator test would conclude "fails the job" for a condition the
  * service makes droppable, which is exactly the wrong lesson to learn cheaply.
  *
- * <p>Measured 2026-08-02 against the pinned {@code google-cloud-cli:441.0.0-emulators} image with
- * {@code google-cloud-bigtable} 2.80.0.
+ * <p>Measured 2026-08-02 against {@code google-cloud-cli:441.0.0-emulators}, re-measured 2026-09-03
+ * against the pinned {@code google-cloud-cli:583.0.0-emulators}, both with {@code
+ * google-cloud-bigtable} 2.80.0. The bump moved one row: the emulator now refuses an empty row key
+ * instead of storing it. It still answers {@code INTERNAL}, so what the sink sees is unchanged.
  *
- * <p>Each {@code finally} closes the writer plainly, which is an assertion rather than cleanup: the
- * two cases whose mutation the emulator rejects leave a failure in the batcher's accumulated stats,
- * so a close re-reporting those fails them. That is what #238 was, and this class is where it is
- * pinned without credentials — the report is raised for a rejection whatever status it carried, so
- * the emulator's deviating {@code INTERNAL} pins it as well as the service's own statuses would.
- * (The empty-row-key case is the one the emulator accepts; nothing accumulates, and its close is
- * cleanup like any other.)
+ * <p>Each {@code finally} closes the writer plainly, which is an assertion rather than cleanup:
+ * every case here leaves a failure in the batcher's accumulated stats, so a close re-reporting
+ * those fails them. That is what #238 was, and this class is where it is pinned without credentials
+ * — the report is raised for a rejection whatever status it carried, so the emulator's deviating
+ * {@code INTERNAL} pins it as well as the service's own statuses would.
  */
 class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
 
@@ -106,10 +106,17 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
     }
 
     @Test
-    void acceptsAnEmptyRowKeyAndThenCannotReadItBack() throws Exception {
-        // Real Bigtable: INVALID_ARGUMENT, "Row keys must be non-empty". Here the write is
-        // accepted, and the row it stores breaks the client's own read state machine — so the
-        // emulator is not merely more permissive, it reaches a state the service cannot produce.
+    void answersInternalRatherThanInvalidArgumentToAnEmptyRowKey() throws Exception {
+        // Real Bigtable: INVALID_ARGUMENT for the whole request, "Row keys must be non-empty".
+        // Here: the same refusal wrapped in INTERNAL, for the offending entry alone, so the good
+        // row lands and the handler sees nothing — the shape the other two rejections already had.
+        //
+        // This row is the one the image bump changed. Under 441.0.0-emulators the emulator
+        // *accepted* an empty row key, and the row it stored broke the client's own read state
+        // machine ("rowKey missing") — a state the service cannot produce. Since
+        // 583.0.0-emulators it refuses the write, so the emulator now agrees with the service on
+        // whether the mutation is legal and deviates only on the status, which is the deviation
+        // that matters here.
         TableDestination table = createTable("deviation-empty-row-key");
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer =
@@ -117,15 +124,23 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                         table,
                         handler,
                         (element, context) ->
-                                RowMutationEntry.create("")
-                                        .setCell(FAMILY, "payload", 1_000L, "v"));
+                                GOOD.equals(element)
+                                        ? RowMutationEntry.create(element)
+                                                .setCell(FAMILY, "payload", 1_000L, "v")
+                                        : RowMutationEntry.create("")
+                                                .setCell(FAMILY, "payload", 1_000L, "v"));
 
         try {
+            writer.write(GOOD, TestContexts.NO_OP);
             writer.write("bad", TestContexts.NO_OP);
-            writer.flush(false);
 
+            assertThatThrownBy(() -> writer.flush(false))
+                    .hasStackTraceContaining("INTERNAL")
+                    .hasStackTraceContaining("Row keys must be non-empty");
             assertThat(handler.handled).isEmpty();
-            assertThatThrownBy(() -> readRows(table)).hasMessageContaining("rowKey missing");
+            assertThat(readRows(table))
+                    .extracting(row -> row.getKey().toStringUtf8())
+                    .containsExactly(GOOD);
         } finally {
             writer.close();
         }

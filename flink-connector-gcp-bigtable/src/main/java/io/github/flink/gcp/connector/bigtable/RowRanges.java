@@ -308,11 +308,11 @@ public final class RowRanges {
      * normal end-of-split state, not an error. The split reader finishes such a split without
      * opening a stream, so an inverted range is never sent to the service.
      *
-     * <p>The empty-key case is not hypothetical enough to leave out: real Bigtable rejects an empty
-     * row key, but the emulator accepts one, and {@code startOpen(EMPTY)} is silently turned into
-     * an unbounded start by the SDK — which would widen the split back to the whole table and
-     * replay it forever. Progress past the empty key is expressed as an inclusive start at its
-     * successor instead.
+     * <p>The empty-key case is not hypothetical enough to leave out: {@code startOpen(EMPTY)} is
+     * silently turned into an unbounded start by the SDK — which would widen the split back to the
+     * whole table and replay it forever. Progress past the empty key is expressed as an inclusive
+     * start at its successor instead. That is written against the SDK's normalisation rather than
+     * against what a server admits, which is what keeps it correct on both ends.
      *
      * @param range the range the split was assigned
      * @param lastEmittedKey the key of the last successfully deserialized row

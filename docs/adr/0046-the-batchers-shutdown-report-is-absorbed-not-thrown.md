@@ -59,9 +59,11 @@ absorbed report is its only record.
 - Pinned twice — `DefaultMutationBatcherFactoryTest` over the seam, with the exception built
   reflectively because gax keeps its constructor package-private, and both failure ITCases
   closing their writers plainly. Only a `finally` whose case actually provoked a rejection
-  asserts anything (the emulator *accepts* an empty row key, so that batcher accumulates
-  nothing). The log line itself is covered by `LogCapture` ([#323]), this call site being one of
-  its two motivating cases.
+  asserts anything, which up to `441.0.0-emulators` excluded the empty-row-key case — the
+  emulator *accepted* that write, so its batcher accumulated nothing. Since the 2026-09-03 bump
+  to `583.0.0-emulators` the emulator rejects it too, so every emulator case now provokes a
+  rejection and every `finally` in that class asserts. The log line itself is covered by
+  `LogCapture` ([#323]), this call site being one of its two motivating cases.
 - [#325] then measured whether the SPI contract is a property of the pattern or of gax, across
   all nine client-wrapping SPIs: neither purely — a second connector has the shape by an
   unrelated mechanism, so the absorb stays per-connector (ADR-0003). The duplicate here is the

@@ -399,9 +399,8 @@ class RowDataSerializationSchemaTest {
 
     @Test
     void anEmptyRowKeyIsRejectedRatherThanDropped() {
-        // Bigtable has no row with an empty key; the emulator's acceptance of one is a measured
-        // deviation. Flink's HBase connector drops such a record instead, which leaves an
-        // incomplete table under a green job.
+        // Bigtable has no row with an empty key. Flink's HBase connector drops such a record
+        // instead, which leaves an incomplete table under a green job.
         assertThatThrownBy(
                         () ->
                                 SERIALIZER.serialize(

@@ -23,6 +23,7 @@ import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.cloud.bigtable.data.v2.models.ReadModifyWriteRow;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
@@ -186,6 +187,18 @@ public abstract class AbstractBigtableEmulatorITCase {
     /** Returns what the emulator answers {@code SampleRowKeys} with, for the deviation suite. */
     protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
         return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
+    }
+
+    /**
+     * Appends to one cell through {@code ReadModifyWriteRow}, for the deviation suite. This is the
+     * one write path on which the emulator still accepts an empty row key, so it is the only way
+     * left to reach the state the service cannot produce.
+     */
+    protected static void appendCell(
+            TableDestination destination, String rowKey, String qualifier, String value) {
+        dataClient.readModifyWriteRow(
+                ReadModifyWriteRow.create(TableId.of(destination.getTable()), rowKey)
+                        .append(FAMILY, qualifier, value));
     }
 
     /** Reads one range directly, for the deviation suite to measure what the emulator does. */

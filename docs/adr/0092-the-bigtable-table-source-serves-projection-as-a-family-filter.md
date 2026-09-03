@@ -141,7 +141,10 @@ temporal keys.
 The latter use a prefix range because the HBase-compatible decoder ignores bytes after the declared
 width; a singleton would miss suffix-bearing keys that decode to the same SQL value.
 An empty `VARCHAR` or `VARBINARY` literal remains residual because the SDK normalises an empty
-range bound to unbounded while the emulator, unlike the service, accepts an empty row key.
+range bound to unbounded, so pushing one down would widen the scan rather than narrow it.
+When this was written the emulator compounded it by accepting an empty row key where the service
+rejects one; since the 2026-09-03 bump to `583.0.0-emulators` it rejects one too, which changes
+nothing here — the SDK's normalisation is the whole reason on its own.
 `CHAR`, `BINARY`, `BOOLEAN`, `DECIMAL`, `FLOAT` and `DOUBLE` remain residual because padding,
 noncanonical true bytes, decimal scales, signed zero or `NaN` can make more than one byte sequence
 represent the same SQL value.

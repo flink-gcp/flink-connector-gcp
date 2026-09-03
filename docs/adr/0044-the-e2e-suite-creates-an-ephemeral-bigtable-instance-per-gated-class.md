@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-02 ([#218]; the per-*class* deviation from that issue's settled design is
   recorded here)
-- Issues: [#218], [#245], [#246], [#533]
+- Issues: [#218], [#245], [#246], [#533], [#1196]
 - Modules: bigtable (tests, `opentofu/`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Testing; the root
   CLAUDE.md `just e2e`/`sweep-e2e` entries
@@ -77,9 +77,23 @@ emulator-is-not-an-authority rule but its enforcement: it records the traps so a
 to declare them. The one that matters is the **status** — the emulator answers `INTERNAL` where
 the service answers `INVALID_ARGUMENT` or `NOT_FOUND`, and `INTERNAL` is fatal to this sink, so
 an emulator-only test would conclude "fails the job" for a condition the service makes
-droppable. It also **accepts an empty row key**, storing a row that breaks the client's own read
-state machine — a state the service cannot reach. Every row of the documentation page's
-deviation table is asserted from both sides.
+droppable. Every row of the documentation page's deviation table is asserted from both sides.
+
+**The 2026-09-03 image bump to `583.0.0-emulators` ([#1196]) moved three measured rows**, and the
+deviation suites are what surfaced them — the bump could not go in quietly, because the assertions
+failed. Re-measured against the new pin on that date:
+
+- **An empty row key is refused on the mutate paths.** Under `441.0.0-emulators` the emulator
+  accepted it and stored a row that broke the client's own read state machine, a state the service
+  cannot reach. `MutateRows` now answers `INTERNAL` wrapping the service's own "Row keys must be
+  non-empty", per offending entry; single-row `MutateRow` answers `INVALID_ARGUMENT` unwrapped. So
+  the status deviation is unchanged on the path the sink uses, which is the one that matters.
+- **`ReadModifyWriteRow` still accepts one**, so the deviation narrowed rather than closed and the
+  unreachable-state measurement is still live — it moved to
+  `BigtableEmulatorReadDeviationITCase`, the only suite that can still produce it.
+- **`SampleRowKeys` now always trails an end-of-table marker.** A three-row table answers
+  `['c'@2, ''@3]` where it answered `['c'@2]`, and an empty table `['']` where it answered nothing.
+  The planner drops empty-key samples, so no plan changed.
 
 **`StubWriterInitContext` cannot drive this writer** (its metric group is a null-returning proxy
 and the writer dereferences the group in its constructor), so the emulator tests build writers
@@ -101,3 +115,4 @@ made deletion succeed; that measured recovery sequence is now the order every cl
 [#246]: https://github.com/flink-gcp/flink-connector-gcp/issues/246
 [#959]: https://github.com/flink-gcp/flink-connector-gcp/issues/959
 [#533]: https://github.com/flink-gcp/flink-connector-gcp/issues/533
+[#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196

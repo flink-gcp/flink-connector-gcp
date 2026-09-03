@@ -155,9 +155,12 @@ public class BigtableScanSplitEnumerator
     /**
      * Reports the plan, which is the only place a skewed table shows itself before the job runs.
      *
-     * <p>An empty sample list is called out by name: it is what the emulator answers for every
-     * table, and a reader of the log has to be able to tell "the service offered no boundaries"
-     * from "planning went wrong".
+     * <p>An empty sample list is called out by name, because a reader of the log has to be able to
+     * tell "the service offered no boundaries" from "planning went wrong". These are the raw
+     * samples, before the planner drops the empty-key marker. Up to {@code 441.0.0-emulators} an
+     * empty list was also what the emulator answered for every table; since {@code
+     * 583.0.0-emulators} it always sends at least the end-of-table marker, so this branch is no
+     * longer reachable against the emulator and the service is the only thing that reaches it.
      */
     private void logPlan(List<RowKeySample> samples, List<PlannedSplit> plan) {
         if (samples.isEmpty()) {

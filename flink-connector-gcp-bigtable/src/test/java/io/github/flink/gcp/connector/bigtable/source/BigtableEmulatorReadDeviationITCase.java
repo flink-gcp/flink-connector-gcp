@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * What the <em>emulator</em> does on the read path, asserted so that an image bump has to declare a
@@ -42,6 +43,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (read out of the {@code bttest} emulator's source on 2026-08-09), so a plan built against it is
  * effectively one split whatever the table holds. That is why split planning is a unit test and a
  * gated real-GCP test, and never an emulator test.
+ *
+ * <p>Since {@code 583.0.0-emulators} every {@code SampleRowKeys} response also <em>trails</em> an
+ * end-of-table marker — an empty key at the table's total offset — sent outside the row loop and so
+ * unconditional. Measured 2026-09-03: a three-row table answers {@code ['c'@2, ''@3]} where {@code
+ * 441.0.0-emulators} answered {@code ['c'@2]}, and an empty table answers {@code ['']} where it
+ * answered nothing. The planner drops empty-key samples, so no plan changed; what changed is that
+ * the last sample is now always the marker, which is why the assertions below pin the table's own
+ * last key by name rather than by position.
  */
 class BigtableEmulatorReadDeviationITCase extends AbstractBigtableEmulatorITCase {
 
@@ -56,24 +65,33 @@ class BigtableEmulatorReadDeviationITCase extends AbstractBigtableEmulatorITCase
 
         List<KeyOffset> samples = sampleRowKeys(table);
 
-        // Deliberately loose: the emulator picks its extra boundaries at random, so the only
-        // assertion that is not flaky is that it answers with something and with far less than a
-        // boundary per row. A service answer would be one boundary per tablet.
-        assertThat(samples).isNotEmpty();
-        assertThat(samples.size()).isLessThan(keys.length);
+        // Deliberately loose about the *count*: the emulator picks its extra boundaries at random,
+        // so the only non-flaky assertion is far less than a boundary per row. A service answer
+        // would be one boundary per tablet. Not loose about emptiness, though — since
+        // 583.0.0-emulators the trailing end-of-table marker makes isNotEmpty() unfailable, so the
+        // real row boundaries are what gets pinned: the table's own last key must be among them.
+        assertThat(samples).hasSizeLessThan(keys.length);
+        assertThat(samples)
+                .extracting(KeyOffset::getKey)
+                .filteredOn(key -> !key.isEmpty())
+                .contains(ByteString.copyFromUtf8(String.format("row-%03d", keys.length - 1)));
     }
 
     @Test
-    void samplingAnEmptyTableReturnsNothingAtAll() {
-        // Measured against this suite's pinned image on 2026-08-09: no samples at all, not the
-        // single end-of-table marker the emulator's own upstream source now describes. Both answers
-        // have to plan to one split covering the configured range, which is why the planner treats
-        // "no boundaries" and "only the end-of-table marker" the same way.
+    void samplingAnEmptyTableReturnsOnlyTheEndOfTableMarker() {
+        // Measured 2026-09-03 against 583.0.0-emulators: one sample, the end-of-table marker, an
+        // empty key at offset 0. Under 441.0.0-emulators it was no samples at all, so the image
+        // bump moved the emulator onto the answer its own upstream source already described. The
+        // planner was already written to treat "no boundaries" and "only the end-of-table marker"
+        // the same way — both have to plan to one split covering the configured range — which is
+        // why this change moves the measurement here and nothing behind it.
         TableDestination table = createTable("deviation-sample-empty");
 
         List<KeyOffset> samples = sampleRowKeys(table);
 
-        assertThat(samples).isEmpty();
+        assertThat(samples).hasSize(1);
+        assertThat(samples.get(0).getKey()).isEqualTo(ByteString.EMPTY);
+        assertThat(samples.get(0).getOffsetBytes()).isZero();
     }
 
     @Test
@@ -83,11 +101,42 @@ class BigtableEmulatorReadDeviationITCase extends AbstractBigtableEmulatorITCase
 
         List<KeyOffset> samples = sampleRowKeys(table);
 
-        // The emulator's one deterministic boundary. The last response is the end-of-table marker
-        // when the table is non-empty, so the last *key* answered is the table's own last key.
-        assertThat(samples).isNotEmpty();
-        assertThat(samples.get(samples.size() - 1).getKey())
-                .isIn(ByteString.copyFromUtf8("c"), ByteString.EMPTY);
+        // The emulator's one deterministic boundary. Pinned by name rather than by position: since
+        // 583.0.0-emulators the *last* response is always the end-of-table marker, so asserting on
+        // samples.get(size - 1) would be satisfied by the marker alone and could no longer observe
+        // the property this test is named for. Measured 2026-09-03: ['c'@2, ''@3].
+        //
+        // contains, not containsExactly: "a" and "b" are candidates for the random extra
+        // boundaries this class documents, so pinning the filtered list exactly would fail a
+        // correct run whenever one of them is picked. Containment is the whole deterministic
+        // property there is, and it still fails if "c" stops being sampled.
+        assertThat(samples)
+                .extracting(KeyOffset::getKey)
+                .filteredOn(key -> !key.isEmpty())
+                .contains(ByteString.copyFromUtf8("c"));
+        assertThat(samples.get(samples.size() - 1).getKey()).isEqualTo(ByteString.EMPTY);
+    }
+
+    @Test
+    void aReadModifyWriteRowStillPlantsAnEmptyKeyThatBreaksTheReadStateMachine() {
+        // The empty-key deviation narrowed with 583.0.0-emulators; it did not close. Measured
+        // 2026-09-03 against the pinned image, all three write paths:
+        //
+        //   MutateRows (what the sink uses)  rejected, INTERNAL wrapping "Row keys must be
+        //                                    non-empty" — BigtableEmulatorDeviationITCase pins it
+        //   MutateRow  (the seeding helpers) rejected, INVALID_ARGUMENT, the service's own status
+        //   ReadModifyWriteRow               ACCEPTED — this test
+        //
+        // Up to 441.0.0-emulators every one of the three accepted it. The row the last one stores
+        // still breaks the client's own read state machine, a state real Bigtable cannot reach, so
+        // this is where that measurement lives now — the write-path suite can no longer produce
+        // it. That state is what the range algebra's inclusive-successor start is written for
+        // (RowRanges#truncateStartOpen), so it stays asserted rather than merely remembered.
+        TableDestination table = createTable("deviation-rmw-empty-row-key");
+
+        appendCell(table, "", "q", "v");
+
+        assertThat(catchThrowable(() -> readRows(table))).hasMessageContaining("rowKey missing");
     }
 
     @Test
@@ -161,10 +210,10 @@ class BigtableEmulatorReadDeviationITCase extends AbstractBigtableEmulatorITCase
 
     @Test
     @Disabled(
-            "Real Bigtable rejects an empty row key. The emulator accepts one, which is why the"
-                    + " range algebra expresses progress past an empty key rather than assuming it"
-                    + " cannot occur.")
-    void rejectsAnEmptyRowKeyAsBigtableDoes() {
+            "Real Bigtable rejects an empty row key on every write path. The emulator rejects it"
+                    + " on the mutate paths only, so the deviation narrowed rather than closed and"
+                    + " this stays disabled. Enable when ReadModifyWriteRow rejects one too.")
+    void rejectsAnEmptyRowKeyOnEveryWritePathAsBigtableDoes() {
         throw new UnsupportedOperationException("Recorded for the service, not run here.");
     }
 

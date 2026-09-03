@@ -90,7 +90,9 @@ class RowRangeSplitPlannerTest {
 
     @Test
     void plansOneSplitPerRangeWhenNothingWasSampled() {
-        // What the emulator always produces, and what a small table produces on the service.
+        // What a small table produces on the service. It was also what the emulator answered for
+        // every table up to 441.0.0-emulators; since 583.0.0-emulators it always sends the
+        // end-of-table marker instead, which the sibling test below holds.
         List<PlannedSplit> planned =
                 RowRangeSplitPlanner.plan(
                         Collections.singletonList(ByteStringRange.unbounded()),
@@ -193,9 +195,9 @@ class RowRangeSplitPlannerTest {
 
     @Test
     void plansOneSplitWhenTheOnlySampleIsTheEndOfTableMarker() {
-        // The service's documented answer for a table with no boundaries to offer. The emulator
-        // this project pins answers such a table with no samples at all instead, so both shapes
-        // have to reach the same plan.
+        // The service's documented answer for a table with no boundaries to offer, and — since
+        // 583.0.0-emulators — the pinned emulator's too. Both shapes have to reach the same plan;
+        // plansOneSplitPerRangeWhenNothingWasSampled holds the other one.
         List<PlannedSplit> planned =
                 RowRangeSplitPlanner.plan(
                         Collections.singletonList(ByteStringRange.unbounded()),

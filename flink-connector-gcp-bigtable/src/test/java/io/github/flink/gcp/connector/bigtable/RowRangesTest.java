@@ -221,8 +221,8 @@ class RowRangesTest {
 
     @Test
     void truncatesPastAnEmptyRowKeyWithoutWideningTheRange() {
-        // Real Bigtable rejects an empty row key but the emulator accepts one, and the SDK turns
-        // startOpen(EMPTY) into an unbounded start — which would replay the whole range forever.
+        // The SDK turns startOpen(EMPTY) into an unbounded start — which would replay the whole
+        // range forever. That normalisation is the SDK's, so it holds whoever is on the other end.
         ByteStringRange truncated = RowRanges.truncateStartOpen(range("a", "z"), ByteString.EMPTY);
 
         assertThat(truncated.getStartBound()).isEqualTo(BoundType.CLOSED);

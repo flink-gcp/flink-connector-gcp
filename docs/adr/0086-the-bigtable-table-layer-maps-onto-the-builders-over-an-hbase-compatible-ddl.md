@@ -223,8 +223,9 @@ Measured 2026-08-10 against the pom-pinned `flink.version` 2.2.1 sources jars,
   does. It leaves a row behind made of whatever the DDL does not declare, which contradicts the
   primary key the changelog is keyed on.
 - **Dropping a record whose row key is empty**, which is also what that connector does. A silent
-  drop leaves an incomplete table under a green job, and the emulator accepts an empty key while the
-  service does not — so failing is what keeps the two agreeing.
+  drop leaves an incomplete table under a green job. When this was written the emulator also
+  accepted an empty key while the service did not, so failing was what kept the two agreeing; since
+  `583.0.0-emulators` both reject it (2026-09-03), and the first reason carries the decision alone.
 - **Allowing `create-if-needed` with no garbage-collection rule**, which the DataStream API allows.
   A rule-less family keeps every version forever, and an at-least-once upsert sink writes another
   version of the same cells on every replay.
