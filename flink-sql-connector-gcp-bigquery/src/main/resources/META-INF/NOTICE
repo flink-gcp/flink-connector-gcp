@@ -133,7 +133,7 @@ See bundled license files for details.
 This project bundles the following dependencies released into the public domain by their authors.
 See bundled license files for details.
 
-- org.json:json:20260719 (META-INF/licenses/LICENSE.json-java)
+- org.json:json:20260814 (META-INF/licenses/LICENSE.json-java)
 
 org.apache.httpcomponents:httpclient additionally redistributes mozilla/public-suffix-list.txt,
 which is licensed under the Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/) rather than
