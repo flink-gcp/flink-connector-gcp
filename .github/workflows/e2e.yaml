@@ -115,13 +115,13 @@ jobs:
 
       # The E2E class inventory uses the same locked Java parser as the
       # per-pull-request gated-tag audit.
-      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install_args: uv
 
       # Unpinned, and install-action rather than mise: see the note on the same
       # step in verify.yaml.
-      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: just
 
