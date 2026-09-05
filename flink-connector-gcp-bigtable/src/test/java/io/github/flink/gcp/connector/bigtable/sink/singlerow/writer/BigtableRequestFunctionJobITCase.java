@@ -28,10 +28,12 @@ import org.apache.flink.streaming.api.datastream.AsyncDataStream;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.util.retryable.AsyncRetryStrategies;
 import org.apache.flink.util.CloseableIterator;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.SettableApiFuture;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigtable.data.v2.models.ConditionalRowMutation;
 import com.google.cloud.bigtable.data.v2.models.ReadModifyWriteRow;
 import com.google.cloud.bigtable.data.v2.models.Row;
@@ -44,21 +46,25 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.ReadModifyWriteRowRequest.Rule;
 import org.junit.jupiter.api.Test;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * End-to-end integration tests for {@link BigtableRequestFunction} on the MiniCluster against the
- * Bigtable emulator, through the production constructor — so the credential loading, the client
- * factory and the {@code BigtableRow} type information a job serializes results with are what these
- * exercise.
+ * End-to-end integration tests for {@link BigtableRequestFunction} on the MiniCluster. The
+ * increment job runs against the Bigtable emulator through the production constructor — so the
+ * credential loading, the client factory and the {@code BigtableRow} type information a job
+ * serializes results with are what it exercises — and the two timeout jobs run over an injected
+ * client that never answers, or fails once, so the operator's timer is the only clock in them.
  *
  * <p>The streaming job checkpoints while records are still arriving, so the async operator's own
  * state — the inputs it has accepted and not yet emitted — is taken and the function's result
@@ -138,7 +144,12 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
                         "records");
         AsyncDataStream.unorderedWait(
                         records,
-                        new NeverAnsweredFunction(TableDestination.of("p", "i", "orders")),
+                        new StubbedClientFunction(
+                                TableDestination.of("p", "i", "orders"),
+                                new NeverAnsweringFactory(),
+                                BigtableRequestOptions.builder()
+                                        .requestTimeout(Duration.ofMillis(500))
+                                        .build()),
                         1,
                         TimeUnit.SECONDS,
                         10)
@@ -149,6 +160,51 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
                         "A ReadModifyWriteRow request to Bigtable table p.i.orders did not"
                                 + " complete within the async operator's timeout and was cancelled")
                 .hasStackTraceContaining("BigtableRequestOptions.requestTimeout (PT0.5S)");
+    }
+
+    @Test
+    void aTimeoutDuringARetryBackoffFailsTheJobWithTheConnectorsMessage() {
+        // Retry mode. The first attempt fails with UNAVAILABLE, the job's predicate takes it for
+        // a retry, and the operator timeout fires inside the 10 s backoff with nothing in flight:
+        // Flink hands the function the same result it gave asyncInvoke() and has no fallback of
+        // its own, so the function's completion is the only one there is. Before the repair the
+        // job *succeeded*: the leaked input stayed in the operator's retry set, and end of input
+        // gave it one forced attempt, its timer spent, which the by-then healthy client answered.
+        // The second record, 5 s later, keeps the input open past the 1 s timer. The predicate
+        // must not accept the connector's timeout message: on Flink 1.20 a failure raised from
+        // timeout() re-enters the predicate, and a broad one would run further attempts and end
+        // the job on a different message.
+        StreamExecutionEnvironment env = environment();
+        env.setParallelism(1);
+        DataStream<String> records =
+                env.fromSource(
+                        new DataGeneratorSource<>(
+                                (GeneratorFunction<Long, String>) index -> "record-" + index,
+                                2,
+                                RateLimiterStrategy.perSecond(0.2),
+                                Types.STRING),
+                        WatermarkStrategy.noWatermarks(),
+                        "records");
+        AsyncDataStream.unorderedWaitWithRetry(
+                        records,
+                        new StubbedClientFunction(
+                                TableDestination.of("p", "i", "orders"),
+                                new FailingOnceFactory(),
+                                BigtableRequestOptions.builder().build()),
+                        1,
+                        TimeUnit.SECONDS,
+                        10,
+                        new AsyncRetryStrategies.FixedDelayRetryStrategyBuilder<BigtableRow>(
+                                        3, 10_000L)
+                                .ifException(new RetryOnUnavailable())
+                                .build())
+                .sinkTo(new DiscardingSink<>());
+
+        assertThatThrownBy(() -> env.execute("bigtable-request-function-retry-timeout-it"))
+                .hasStackTraceContaining(
+                        "The async operator's timeout elapsed with no Bigtable request in flight")
+                .hasStackTraceContaining("between attempts of its retry strategy")
+                .hasStackTraceContaining("BigtableRequestOptions.requestTimeout (PT20S)");
     }
 
     private static StreamExecutionEnvironment environment() {
@@ -199,20 +255,22 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
         }
     }
 
-    /** A function over a client that never answers, so only the operator's timeout can end it. */
-    private static final class NeverAnsweredFunction
+    /**
+     * A function over an injected client factory, so a test scripts what the client answers; the
+     * request is a one-row increment either way.
+     */
+    private static final class StubbedClientFunction
             extends BigtableRequestFunction<String, BigtableRow, BigtableRow> {
 
         private static final long serialVersionUID = 1L;
 
         private final TableDestination table;
 
-        NeverAnsweredFunction(TableDestination table) {
-            super(
-                    new NeverAnsweringFactory(),
-                    BigtableRequestOptions.builder()
-                            .requestTimeout(Duration.ofMillis(500))
-                            .build());
+        StubbedClientFunction(
+                TableDestination table,
+                SingleRowClientFactory clientFactory,
+                BigtableRequestOptions options) {
+            super(clientFactory, options);
             this.table = table;
         }
 
@@ -259,5 +317,70 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
 
         @Override
         public void close() {}
+    }
+
+    /**
+     * Retries an attempt's {@code UNAVAILABLE} failure and nothing else — not the connector's
+     * timeout message, which Flink 1.20 also puts to the predicate. A class rather than a lambda:
+     * the strategy travels in the job graph, and {@link Predicate} is not serializable.
+     */
+    private static final class RetryOnUnavailable implements Predicate<Throwable>, Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public boolean test(Throwable throwable) {
+            return String.valueOf(throwable.getMessage()).contains("UNAVAILABLE");
+        }
+    }
+
+    private static final class FailingOnceFactory implements SingleRowClientFactory {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public SingleRowClient create(TableDestination destination) {
+            // The flag is the client's, so it is the client's first request that fails — a
+            // create() failure is rewrapped by the pool and takes another shape.
+            return new FailingOnceClient();
+        }
+
+        @Override
+        public void release(TableDestination destination) {}
+
+        @Override
+        public void close() {}
+    }
+
+    private static final class FailingOnceClient implements SingleRowClient {
+
+        private final AtomicBoolean failed = new AtomicBoolean();
+
+        @Override
+        public ApiFuture<Boolean> checkAndMutateRow(ConditionalRowMutation mutation) {
+            SettableApiFuture<Boolean> future = SettableApiFuture.create();
+            if (!failFirst(future)) {
+                future.set(true);
+            }
+            return future;
+        }
+
+        @Override
+        public ApiFuture<Row> readModifyWriteRow(ReadModifyWriteRow mutation) {
+            SettableApiFuture<Row> future = SettableApiFuture.create();
+            if (!failFirst(future)) {
+                future.set(Row.create(ByteString.copyFromUtf8("row"), Collections.emptyList()));
+            }
+            return future;
+        }
+
+        private boolean failFirst(SettableApiFuture<?> future) {
+            if (!failed.compareAndSet(false, true)) {
+                return false;
+            }
+            future.setException(
+                    ScriptedRowRequest.apiException(StatusCode.Code.UNAVAILABLE, "UNAVAILABLE"));
+            return true;
+        }
     }
 }

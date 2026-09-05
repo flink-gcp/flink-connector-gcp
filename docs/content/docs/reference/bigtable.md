@@ -137,7 +137,7 @@ it needs is a deadline and a count.
 | Option | Default | What it does |
 |---|---|---|
 | `maxInFlightRequests` | 100 | Caps requests the sink surface keeps outstanding — accepted by the client and not yet answered. At the cap `write()` yields to the task mailbox until completions bring the count down. The async surface does not read it: its bound is the capacity handed to `AsyncDataStream`, which should be set to the same number |
-| `requestTimeout` | 20 s | The deadline of one request, applied to the client as a single attempt's whole budget: no retries, and the timeout is the total. A request past it fails with `DEADLINE_EXCEEDED`, which the runtime treats as [ambiguous]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling) and counts under `requestsTimedOut`. On the async surface, Flink's operator timeout should be longer than this, so that the client's deadline fires first. At least 1 ms |
+| `requestTimeout` | 20 s | The deadline of one request, applied to the client as a single attempt's whole budget: no retries, and the timeout is the total. A request past it fails with `DEADLINE_EXCEEDED`, which the runtime treats as [ambiguous]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling) and counts under `requestsTimedOut`. On the async surface, Flink's operator timeout should be longer than this, so that the client's deadline fires first, and under the operator's retry mode longer than this for every attempt the strategy allows, plus the backoff. At least 1 ms |
 | `destinationIdleTimeout` | 1 h | How long a table may go without requests before the runtime drops its per-table state and its lease on the instance's client. Swept at the end of each successful non-final flush on the sink surface, and as inputs arrive — at most once per idle timeout, skipping a table with a request in flight — on the async surface; an evicted table rebuilds transparently. To never evict, set a very large duration — up to `Duration.ofNanos(Long.MAX_VALUE)` |
 | `maxActiveInstances` | 16 | Caps open-or-closing instance clients per subtask. At capacity the sink surface drains its outstanding requests and evicts the least recently used instance; the async surface, which cannot wait, evicts an instance with nothing in flight or fails the record naming this option. Many tables sharing one instance consume one slot |
 | `perDestinationMetrics` | `false` | Registers per-table `recordsSend` and `sendErrors` counters beside the runtime's totals. Off by default: Flink cannot unregister a metric, so with a resolver every table the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-metrics) |
@@ -145,7 +145,9 @@ it needs is a deadline and a count.
 **There are no retry knobs, by design.** The client ships both RPCs with an empty retryable-code
 set — they are not idempotent, and a retry of an ambiguous failure could apply an increment twice —
 and the runtime adds no loop of its own, so there is nothing to tune. `requestTimeout` is the whole
-of a request's one attempt.
+of a request's one attempt; under Flink's async retry mode, the job's own loop, each attempt is one
+such request — see the
+[async surface]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes).
 
 ## `TableCreateOptions`
 

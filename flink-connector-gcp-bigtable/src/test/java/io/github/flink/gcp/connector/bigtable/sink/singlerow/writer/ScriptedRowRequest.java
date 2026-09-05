@@ -28,6 +28,11 @@ import io.grpc.Status;
 
 import javax.annotation.Nullable;
 
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
 /**
  * A {@link RowRequest} whose answer a test decides: {@link #start} hands out one settable future,
  * and {@link #succeed}, {@link #fail(StatusCode.Code)} and {@link #fail(Throwable)} complete it.
@@ -46,6 +51,8 @@ final class ScriptedRowRequest implements RowRequest<String> {
      * Thrown by {@link #start} instead of returning the future, for the synchronous-refusal path.
      */
     @Nullable RuntimeException startFailure;
+
+    private boolean ignoresCancellation;
 
     int starts;
     @Nullable SingleRowClient startedOn;
@@ -78,7 +85,52 @@ final class ScriptedRowRequest implements RowRequest<String> {
         }
         startedOn = client;
         startedFor = destination;
-        return future;
+        return ignoresCancellation ? uncancellable(future) : future;
+    }
+
+    /**
+     * Makes {@link #start} hand out a view of the future whose {@code cancel} does nothing, to
+     * model the client's own race: an answer that wins the future's completion in the moment after
+     * the runtime settled the request and before it cancelled it reaches the callback with the
+     * handle already taken.
+     */
+    void ignoreCancellation() {
+        ignoresCancellation = true;
+    }
+
+    private static <V> ApiFuture<V> uncancellable(ApiFuture<V> delegate) {
+        return new ApiFuture<V>() {
+            @Override
+            public void addListener(Runnable listener, Executor executor) {
+                delegate.addListener(listener, executor);
+            }
+
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                return false;
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return delegate.isCancelled();
+            }
+
+            @Override
+            public boolean isDone() {
+                return delegate.isDone();
+            }
+
+            @Override
+            public V get() throws InterruptedException, ExecutionException {
+                return delegate.get();
+            }
+
+            @Override
+            public V get(long timeout, TimeUnit unit)
+                    throws InterruptedException, ExecutionException, TimeoutException {
+                return delegate.get(timeout, unit);
+            }
+        };
     }
 
     void succeed() {

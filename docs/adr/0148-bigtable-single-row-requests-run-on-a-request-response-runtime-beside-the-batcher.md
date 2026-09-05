@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0148: Bigtable single-row requests run on a request-response runtime beside the batcher
 
 - Status: Accepted
-- Date: 2026-09-03
-- Issues: [#1178], [#1174]
+- Date: 2026-09-03; refined 2026-09-05 ([#1203])
+- Issues: [#1178], [#1174], [#1203]
 - Modules: bigtable (`sink.singlerow`, `sink.singlerow.writer`, module root), base (`metrics`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Single-row request
   writes
@@ -186,6 +186,91 @@ handed — and the async surface needs a thread-safe one.
 task-thread; the built-in handlers write files and Bigtable rows and are not safe to call
 concurrently.
 
+## Refinement (2026-09-05): the operator's retry mode is the job's, and the timeout always completes
+
+[#1203], found in the bounded review pass of [#1201], is that `BigtableRequestFunction.timeout`
+returned without completing the result when its ledger held no entry for the `ResultFuture`. Under
+`unorderedWait`/`orderedWait` that path is harmless: the operator calls `timeout` only while the
+result is open, so a missing entry there means the answer completed it in the moment before the
+timer read that. Under `unorderedWaitWithRetry`/`orderedWaitWithRetry` it is not. Measured on the
+Flink 1.20.4 and 2.2.1 sources of `AsyncWaitOperator`:
+
+- One `RetryableResultHandlerDelegator` per input is handed to `asyncInvoke`, to `timeout`, and to
+  every retried `asyncInvoke`. A failure the job's predicate accepts is intercepted by the
+  delegator, which arms a backoff timer; the underlying result stays open.
+- The timeout firing inside that backoff cancels the retry, clears the delegator's awaiting flag
+  and calls `timeout(input, delegator)`. If the function does not complete the result, nothing
+  does: the timer is one-shot and the operator has no fallback. Flink's default
+  `AsyncFunction.timeout` completes exceptionally with a `TimeoutException`.
+- The result handler's `completed` compare-and-set makes a second completion a silent no-op. The
+  delegator forwards each completion as a mail and drops a repeated completion of one attempt
+  through its awaiting flag, which only a retry firing or the timeout resets; so the first
+  completion after the timeout is the one that reaches the predicate.
+- A failure raised from `timeout` re-enters the retry predicate on 1.20.4; 2.2.1 still evaluates
+  the predicate but refuses a retry once the timeout has elapsed, and forwards the failure.
+- At the end of a bounded input the operator gives every delegator still in its retry set one
+  forced attempt, cancelling only the retry timer and not the input's timeout, whether or not that
+  timeout already fired, and beside a retry of it already in flight. The leaked input therefore did
+  not hang a bounded job, as the issue first supposed: its timeout spent, it got one more request
+  the operator timeout was meant to stop, bounded by `requestTimeout` alone. A streaming job
+  leaked one queue slot per such input until restart; at capacity the operator stopped taking
+  input, and where checkpointing was on the checkpoint timeout failed the job, naming nothing
+  about Bigtable.
+
+Two decisions follow. **Retry mode is the job's retry, and the function is correct under it.** The
+runtime cannot tell an attempt from a first call and cannot refuse the mode (the delegator is a
+private operator type), and an attempt is what a replay after a restore already is: a new request
+with the at-least-once cost this record documents. The job makes that judgement by naming the
+failures its predicate accepts; the runtime still adds no loop of its own. Whether the wiring
+helper of [#1179] offers a `*WithRetry` overload is that issue's decision.
+
+**`timeout` completes the result on every path, and the ledger entry is released after the
+hand-off.** With no entry, `timeout` fails the input with a message saying that no request was in
+flight, that the operator was between attempts and that nothing was cancelled, and pointing at the
+arithmetic: the operator timeout covers every attempt and every backoff of one input. No counter
+moves, since no request ended and the attempt before was counted as what it was; counting
+`requestsTimedOut` alone would break its "on top of `requestsFailed`" reading. The answer callback
+now releases its ledger entry only after it has handed the completion to Flink, where before it
+released first. Without that reordering the repair would regress the ordinary mode: a timer firing
+between the release and the completion would find no entry and complete the result with the new
+message first, and the answer's own message (a row-level rejection, say) would be the one the
+operator's guard dropped. With it, a missing entry means nothing is in flight and nothing is
+completing. One ordering remains that the reordering alone leaves open, found in review: the
+answer's hand-off has been processed and a retry scheduled, the timeout then cancels that retry
+and finds the entry still present, because the answer thread has not yet dropped it, and would
+yield to a completion the operator has already consumed. So a timeout that loses the settlement
+completes the result itself, saying the request answered as the timeout elapsed, exactly as
+Flink's default `AsyncFunction.timeout` completes regardless of an answer in flight: whichever of
+the two completions the operator processes first stands, and its guards drop the other. An answer
+that arrives in the moment the timeout fires therefore stands only if the operator processed it
+first, the request counted as answered either way — with the one exception the bounded independent
+round named: on 1.20 a predicate that accepts the timeout's failure reopens the input for a retry,
+`doRetry` resets the awaiting flag, and an answer landing after that retry started is forwarded as
+the outcome while the retry runs. A mark on the answer with a follow-up completion after its hand-off was tried first and
+withdrawn on the independent review's findings: the mark could be set after the answer had already
+read it, leaving the result open, and on 1.20 a follow-up delayed past the answer's own mail could
+be taken as the completion of the next attempt.
+
+The in-flight counts are released before the hand-off, as they were, and only the ledger entry
+after it. Releasing both after the hand-off refused a valid input at the instance cap: Flink can
+emit the answer's result and hand the function the next input before the answering thread has
+returned, and at `maxActiveInstances` that input found the answered instance still counted busy
+(found in the independent review). `close()` is unchanged: a handle a client thread settled just
+before close still releases itself afterwards, so the in-flight gauge is not reset there.
+
+Evidence: unit tests hold the between-attempts completion after a failed and after a skipped
+attempt; that a timeout arriving while an answer or a failure is being handed off reads the
+request as answered and completes, which fails against a ledger emptied before the hand-off and
+against a silent yield; that an answered instance is idle for the next input at the cap before its
+result reaches Flink; that a retry attempt registered under the same `ResultFuture` keeps its own
+ledger entry across the earlier attempt's removal; and that an answer winning the client future's
+completion against the timeout's cancel finds the handle taken. The test double records every
+completion and reads the first, as the operator does. The MiniCluster job under
+`unorderedWaitWithRetry`, with a client that fails its first request with `UNAVAILABLE`, a 10 s
+backoff and a 1 s operator timeout, fails with the connector's message; before the repair it
+succeeded, the forced end-of-input attempt having answered. The DataStream page's async-surface
+section carries the semantics.
+
 ## Consequences
 
 The module has two write families with one layered and one not until the deferred move lands. The
@@ -200,4 +285,6 @@ own the capacity and timeout relationship until the wiring helper arrives, and a
 [#1179]: https://github.com/flink-gcp/flink-connector-gcp/issues/1179
 [#1180]: https://github.com/flink-gcp/flink-connector-gcp/issues/1180
 [#1181]: https://github.com/flink-gcp/flink-connector-gcp/issues/1181
+[#1201]: https://github.com/flink-gcp/flink-connector-gcp/pull/1201
+[#1203]: https://github.com/flink-gcp/flink-connector-gcp/issues/1203
 [#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119

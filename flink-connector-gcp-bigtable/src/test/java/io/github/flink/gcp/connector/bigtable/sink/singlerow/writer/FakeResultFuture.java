@@ -17,15 +17,16 @@
 package io.github.flink.gcp.connector.bigtable.sink.singlerow.writer;
 
 import org.apache.flink.streaming.api.functions.async.ResultFuture;
+import org.apache.flink.util.function.ThrowingRunnable;
 
 import javax.annotation.Nullable;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * A {@link ResultFuture} that records how it was completed, readable from the test thread after a
@@ -37,17 +38,26 @@ import java.util.concurrent.atomic.AtomicInteger;
  * share; the proxy refuses the third. One proxy per fake, as the operator hands one handler to both
  * {@code asyncInvoke} and {@code timeout}: the function's ledger is keyed by that identity.
  *
+ * <p>The first completion is the one that counts, as in the operator: Flink's result handler guards
+ * itself with a compare-and-set and drops every later completion silently, and its retry delegator
+ * drops a repeated completion of one attempt through its awaiting flag until a retry or the timeout
+ * resets it. So {@link #results()}, {@link #failure()} and {@link #isDone()} read the first
+ * completion, {@link #completions()} counts them all, and {@link #failures()} lists the exceptional
+ * ones in order, which is what lets a test assert what a second completion carried.
+ *
  * <p>{@link #rejectCompletions()} makes every completion throw {@link RejectedExecutionException},
  * as Flink's does once the task mailbox is quiesced or closed: the operator's result handler hands
- * the completion to the mailbox, and the executor throws to the completing thread.
+ * the completion to the mailbox, and the executor throws to the completing thread. {@link
+ * #onNextCompletion(ThrowingRunnable)} runs a hook inside the next completion, before it is
+ * recorded, to interleave a timeout with an answer's hand-off.
  */
 final class FakeResultFuture<OUT> {
 
-    private final AtomicInteger completions = new AtomicInteger();
+    private final List<Completion<OUT>> completions =
+            Collections.synchronizedList(new ArrayList<>());
     private final ResultFuture<OUT> proxy = newProxy();
     private volatile boolean rejecting;
-    @Nullable private volatile List<OUT> results;
-    @Nullable private volatile Throwable failure;
+    @Nullable private volatile ThrowingRunnable<Exception> hook;
 
     ResultFuture<OUT> asResultFuture() {
         return proxy;
@@ -62,18 +72,16 @@ final class FakeResultFuture<OUT> {
                         (proxy, method, arguments) -> {
                             switch (method.getName()) {
                                 case "complete":
-                                    rejectIfClosed();
                                     if (arguments[0] instanceof Collection) {
-                                        completions.incrementAndGet();
-                                        results = new ArrayList<>((Collection<OUT>) arguments[0]);
+                                        record(
+                                                new ArrayList<>((Collection<OUT>) arguments[0]),
+                                                null);
                                         return null;
                                     }
                                     throw new UnsupportedOperationException(
                                             "The function completes with a Collection.");
                                 case "completeExceptionally":
-                                    rejectIfClosed();
-                                    completions.incrementAndGet();
-                                    failure = (Throwable) arguments[0];
+                                    record(null, (Throwable) arguments[0]);
                                     return null;
                                 case "toString":
                                     return "FakeResultFuture";
@@ -88,33 +96,81 @@ final class FakeResultFuture<OUT> {
                         });
     }
 
+    private void record(@Nullable List<OUT> results, @Nullable Throwable failure) {
+        if (rejecting) {
+            throw new RejectedExecutionException("MailboxExecutor is shut down.");
+        }
+        ThrowingRunnable<Exception> interleaved = hook;
+        if (interleaved != null) {
+            // One-shot, and cleared before it runs: a hook that completes this result re-enters
+            // here and must not run itself again.
+            hook = null;
+            try {
+                interleaved.run();
+            } catch (Exception e) {
+                throw new IllegalStateException("The completion hook failed.", e);
+            }
+        }
+        completions.add(new Completion<>(results, failure));
+    }
+
     /** From now on, every completion throws as the mailbox of a finishing or failing task does. */
     void rejectCompletions() {
         rejecting = true;
     }
 
-    private void rejectIfClosed() {
-        if (rejecting) {
-            throw new RejectedExecutionException("MailboxExecutor is shut down.");
-        }
+    /**
+     * Runs {@code hook} inside the next completion of this result, before that completion is
+     * recorded — on the completing thread, with the function's hand-off in progress.
+     */
+    void onNextCompletion(ThrowingRunnable<Exception> hook) {
+        this.hook = hook;
     }
 
     boolean isDone() {
-        return completions.get() > 0;
+        return !completions.isEmpty();
     }
 
-    /** How many times the function completed this result; more than once is a defect. */
+    /**
+     * How many times the function completed this result, whichever completion the operator kept.
+     */
     int completions() {
-        return completions.get();
+        return completions.size();
     }
 
+    /** The results of the first completion, or {@code null} if there is none or it failed. */
     @Nullable
     List<OUT> results() {
-        return results;
+        return completions.isEmpty() ? null : completions.get(0).results;
     }
 
+    /** The failure of the first completion, or {@code null} if there is none or it succeeded. */
     @Nullable
     Throwable failure() {
-        return failure;
+        return completions.isEmpty() ? null : completions.get(0).failure;
+    }
+
+    /** Every exceptional completion, in order, including those the operator would drop. */
+    List<Throwable> failures() {
+        List<Throwable> failures = new ArrayList<>();
+        synchronized (completions) {
+            for (Completion<OUT> completion : completions) {
+                if (completion.failure != null) {
+                    failures.add(completion.failure);
+                }
+            }
+        }
+        return failures;
+    }
+
+    private static final class Completion<OUT> {
+
+        @Nullable private final List<OUT> results;
+        @Nullable private final Throwable failure;
+
+        private Completion(@Nullable List<OUT> results, @Nullable Throwable failure) {
+            this.results = results;
+            this.failure = failure;
+        }
     }
 }

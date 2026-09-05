@@ -80,6 +80,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   surface keeps `SimpleCounter`. Capacity is `AsyncDataStream`'s, documented as
   `maxInFlightRequests` until an entry point passes it; Flink's operator timeout must sit above
   `requestTimeout`.
+- **`BigtableRequestFunction.timeout` completes the result on every path** (#1203, ADR-0148's
+  refinement). The operator's retry mode (`*WithRetry`) holds an input between attempts under the
+  same `ResultFuture`, and Flink has no fallback if the function returns without completing: with
+  no ledger entry the function fails the input naming that no request was in flight, and when it
+  finds the entry settled by an answer still being handed off it completes the result itself,
+  saying the request answered as the timeout elapsed. The answer drops its ledger entry only after
+  the hand-off, so a missing entry means nothing is in flight and nothing is completing, but
+  releases the in-flight counts before it, so the next input finds an answered instance idle at
+  the cap. Do not move the ledger removal before the hand-off, do not move the count release after
+  it, do not make the settle-lost timeout yield or defer its completion to the answer, and do not
+  count a no-entry or an answered-at-timeout timeout under any request counter; the refinement
+  records the measurement or review finding behind each. Retry mode is the job's retry,
+  supported; its semantics, and the Flink 1.20/2.2 difference in what a failure raised from
+  `timeout` does, are on the DataStream page and in the refinement, not here.
 - The seven runtime counters are registered with their `BigtableMetricNames` constant spelled at
   each `counter(...)` call: `check-metric-docs` reads the registrations and cannot see through a
   helper that takes the name as a parameter.
