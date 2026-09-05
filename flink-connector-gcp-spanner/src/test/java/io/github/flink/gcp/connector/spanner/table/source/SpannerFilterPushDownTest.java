@@ -319,44 +319,34 @@ class SpannerFilterPushDownTest {
     }
 
     @Test
-    void secondaryIndexCandidatesRemainForFlinkWithoutAPlanningCostClaim() {
+    void secondaryIndexCandidatesAreReportedAndRemainForFlink() {
         ResolvedExpression score = equals(field(2), literal(5));
 
         SpannerFilterPushDown.State state =
                 SpannerFilterPushDown.translate(SCHEMA, Collections.singletonList(score), true);
 
-        assertResult(state.result(), Collections.emptyList(), Collections.singletonList(score));
+        assertResult(
+                state.result(), Collections.singletonList(score), Collections.singletonList(score));
         assertThat(state.keySet(secondaryKey()).getRanges())
                 .containsExactly(KeyRange.prefix(Key.of(5L)));
     }
 
     @Test
-    void orderedFloatAndUnsupportedOperatorsRemainForFlink() {
+    void unsupportedFloatOperatorsRemainForFlink() {
         SpannerTableSchemaConverter floatKey = schema(PHYSICAL, 3);
-        ResolvedExpression ordered =
-                call(
-                        BuiltInFunctionDefinitions.GREATER_THAN,
-                        field(3),
-                        new ValueLiteralExpression(1.0d));
         ResolvedExpression notEquals =
                 call(
                         BuiltInFunctionDefinitions.NOT_EQUALS,
                         field(3),
                         new ValueLiteralExpression(2.0d));
 
-        for (ResolvedExpression filter : Arrays.asList(ordered, notEquals)) {
-            SpannerFilterPushDown.State state =
-                    SpannerFilterPushDown.translate(
-                            floatKey, Collections.singletonList(filter), false);
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        floatKey, Collections.singletonList(notEquals), false);
 
-            assertResult(
-                    state.result(), Collections.emptyList(), Collections.singletonList(filter));
-            assertThat(
-                            state.keySet(
-                                    Collections.singletonList(
-                                            new KeyColumn("ratio", 3, false, true))))
-                    .isNull();
-        }
+        assertResult(state.result(), Collections.emptyList(), Collections.singletonList(notEquals));
+        assertThat(state.keySet(Collections.singletonList(new KeyColumn("ratio", 3, false, true))))
+                .isNull();
     }
 
     @Test
@@ -399,9 +389,13 @@ class SpannerFilterPushDownTest {
     void comparisonsAndIsNotNullProveNullFilteredIndexSafety() {
         ResolvedExpression comparison = equals(field(2), literal(5));
         ResolvedExpression nonNull = call(BuiltInFunctionDefinitions.IS_NOT_NULL, field(3));
-        SpannerFilterPushDown.RuntimeState runtime =
-                SpannerFilterPushDown.translate(SCHEMA, Arrays.asList(comparison, nonNull), true)
-                        .runtime();
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(SCHEMA, Arrays.asList(comparison, nonNull), true);
+        assertResult(
+                state.result(),
+                Arrays.asList(comparison, nonNull),
+                Arrays.asList(comparison, nonNull));
+        SpannerFilterPushDown.RuntimeState runtime = state.runtime();
 
         assertThat(runtime.provesNonNull(2)).isTrue();
         assertThat(runtime.provesNonNull(3)).isTrue();

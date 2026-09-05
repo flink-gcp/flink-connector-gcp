@@ -111,6 +111,25 @@ class SpannerTablePlanTest {
     }
 
     @Test
+    void infiniteStringCastsRemainResidual() {
+        TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        table.executeSql(
+                "CREATE TABLE floats (ratio DOUBLE, id BIGINT, "
+                        + "PRIMARY KEY (ratio, id) NOT ENFORCED) WITH ("
+                        + "'connector'='spanner', 'project'='p', 'instance'='i', "
+                        + "'database'='d', 'table'='floats')");
+        for (String bound : new String[] {"Infinity", "-Infinity"}) {
+            for (String operator : new String[] {"<", "<=", ">", ">="}) {
+                String condition = "ratio " + operator + " CAST('" + bound + "' AS DOUBLE)";
+                assertThat(table.explainSql("SELECT id FROM floats WHERE " + condition))
+                        .as(condition)
+                        .contains("where=[")
+                        .doesNotContain("filter=[" + operator + "(ratio");
+            }
+        }
+    }
+
+    @Test
     void secondaryIndexPrefiltersRemainAsFlinkResiduals() {
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
@@ -123,6 +142,6 @@ class SpannerTablePlanTest {
 
         String plan = table.explainSql("SELECT name FROM records WHERE score = 5");
 
-        assertThat(plan).contains("filter=[]").contains("Calc(select=[name], where=[=(score");
+        assertThat(plan).contains("filter=[=(score").contains("Calc(select=[name], where=[=(score");
     }
 }

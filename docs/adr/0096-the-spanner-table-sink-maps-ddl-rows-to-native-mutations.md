@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0096: The Spanner table connector maps DDL rows to native values
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-13, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, and by [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134) on 2026-08-29
+- Date: 2026-08-11, revised 2026-08-13, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134) on 2026-08-29, and by [#1159](https://github.com/flink-gcp/flink-connector-gcp/issues/1159) on 2026-09-05
 - Issues: [#502](https://github.com/flink-gcp/flink-connector-gcp/issues/502), [#503](https://github.com/flink-gcp/flink-connector-gcp/issues/503), [#527](https://github.com/flink-gcp/flink-connector-gcp/issues/527), [#528](https://github.com/flink-gcp/flink-connector-gcp/issues/528), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529), [#563](https://github.com/flink-gcp/flink-connector-gcp/issues/563) (under
   [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#544](https://github.com/flink-gcp/flink-connector-gcp/issues/544), [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053), [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134)
 - Modules: spanner
@@ -90,8 +90,18 @@ The bounded-scan and lookup options a sink cannot act on stay accepted: one tabl
 The source translates equality and ordered comparisons over consecutive key columns into native `KeySet` points and lexicographic ranges.
 A complete primary-key equality and a leading equality prefix, optionally followed by one range column, are exact, so Flink need not evaluate them again.
 Unsupported or non-leading predicates remain residual.
+The translator accepts finite and infinite `DOUBLE` literals, but leaves every comparison with a `NaN` literal residual.
+Flink leaves non-finite SQL string casts as expressions, so those comparisons remain residual; native-read and translator tests establish literal-infinity behavior separately.
+Ranges intersect the numeric domain `[-Infinity, +Infinity]` before contradiction detection.
+This excludes null keys and the GoogleSQL `NaN` keys accepted by the emulator from a one-sided range without excluding either infinity: [GoogleSQL sorts `NaN` before negative infinity but ordered comparisons with it are false](https://cloud.google.com/spanner/docs/reference/standard-sql/data-types#floating_point_semantics).
+The real service rejects `NaN` keys in both dialects; PostgreSQL also [states this restriction explicitly for `FLOAT8` key columns](https://cloud.google.com/spanner/docs/reference/postgresql/data-types).
+The existing signed-zero comparison governs equality, competing bounds, contradictions, and lookup gating.
+The physical range endpoints follow the live key direction; synchronous and asynchronous lookup gating use the same logical constraint and reject `NaN`.
 When `scan.index` is set, the source resolves schema existence, key order, direction, readiness, null filtering, and readable columns from the live `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.
 Secondary-index filtering is best effort, so every candidate remains a Flink residual.
+The source also reports parsed filter candidates as accepted filters so Flink's source-reuse digest distinguishes scans with different runtime prefilters.
+Only candidates usable with the live index key order narrow the read.
+Reporting an empty accepted list would allow `UNION ALL` branches to share one narrowed index scan and lose rows needed by another branch.
 The job fails when the named index is absent, not `READ_WRITE`, unsafe for nullable key rows, or cannot return the requested and residual columns; it never silently falls back to the base table.
 
 ## Evidence
@@ -106,6 +116,12 @@ Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 - Named-schema tests pin dialect parsing, qualified sink and source paths, schema-aware metadata bindings, and distinct all-schema cell weights.
 - Issue #563 adds PostgreSQL decimal coverage for multiple Flink shapes, exact scalar and array conversion, nulls, overflow, scale loss, NaN, and production sink-to-bounded-source round trips.
 - Issue #527 adds native UUID scalar, array, null, primary-key, scan, and synchronous and asynchronous lookup coverage for both emulator dialects.
+
+Measured 2026-09-05 against Flink 2.2.1 and Spanner emulator 1.5.56 for [#1159](https://github.com/flink-gcp/flink-connector-gcp/issues/1159):
+
+- Native SQL and resolved float-key reads return the same rows across 350 comparison, direction, access-path, dialect, and reversed-operand cases, including infinities and signed zero.
+- Flink scans match forced-residual scans, including differently filtered secondary-index branches of a `UNION ALL`.
+- The emulator accepts NaN keys in both dialects. The real-service fixture excludes NaN from its numeric-range data and checks NaN-key rejection separately for primary and secondary keys in each dialect.
 
 ## Alternatives declined
 

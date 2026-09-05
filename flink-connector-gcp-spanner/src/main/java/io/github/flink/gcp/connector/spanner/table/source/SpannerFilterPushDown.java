@@ -64,9 +64,10 @@ import java.util.UUID;
  * problem from the prefix walk, and this class does not attempt it.
  *
  * <p>Comparisons are normalized so that the column is always on the left; {@code 10 < id} is parsed
- * as {@code id > 10}. Two types are carved out because a range needs a total order the key agrees
- * with: a {@code Double} is refused outside equality and refused entirely when it is {@code NaN},
- * and a {@code UUID} is accepted only for equality.
+ * as {@code id > 10}. A {@code Double} literal is refused when it is {@code NaN}. Floating-point
+ * ranges are intersected with {@code [-Infinity, +Infinity]}: GoogleSQL sorts {@code NaN} before
+ * negative infinity, but no ordered comparison matches it. Both signed zeros compare equal. A
+ * {@code UUID} is accepted only for equality.
  *
  * <h2>The rule that keeps this safe</h2>
  *
@@ -86,9 +87,11 @@ import java.util.UUID;
  * above its upper, compile to an empty key set, so Spanner is never asked to read a range that
  * cannot match.
  *
- * <p>A read through a secondary index accepts nothing. These predicates were compiled against the
- * <em>primary</em> key, and an index has a key of its own; the state carries them all the same, so
- * that {@code RuntimeState.keySet} can recompile against whichever key the read actually uses.
+ * <p>A read through a secondary index reports parsed filter candidates as both accepted and
+ * remaining. Only candidates usable with the index key resolved at runtime narrow the read.
+ * Reporting them also distinguishes differently filtered scans in Flink's source-reuse digest; an
+ * empty accepted list would let the planner share a scan whose hidden prefilter drops another
+ * branch's rows.
  */
 @Internal
 final class SpannerFilterPushDown {
@@ -121,7 +124,10 @@ final class SpannerFilterPushDown {
         List<ResolvedExpression> accepted = new ArrayList<>();
         List<ResolvedExpression> remaining = new ArrayList<>();
         for (ParsedFilter parsed : parsedFilters) {
-            boolean contributes = !secondaryIndex && parsed.contributesAny(used);
+            boolean contributes =
+                    secondaryIndex
+                            ? !parsed.predicateIds.isEmpty() || !parsed.nonNullFields.isEmpty()
+                            : parsed.contributesAny(used);
             if (contributes) {
                 accepted.add(parsed.expression);
             }
@@ -193,9 +199,7 @@ final class SpannerFilterPushDown {
         SpannerTableSchemaConverter.Column column = schema.getColumns().get(fieldIndex);
         Optional<Object> encoded = SpannerKeyValueEncoder.literalValue(column, literal);
         if (!encoded.isPresent()
-                || (encoded.get() instanceof Double
-                        && (Double.isNaN((Double) encoded.get())
-                                || normalized != Comparison.EQUALS))
+                || (encoded.get() instanceof Double && Double.isNaN((Double) encoded.get()))
                 || (encoded.get() instanceof UUID && normalized != Comparison.EQUALS)) {
             parent.unsupported = true;
             return nextId;
@@ -241,6 +245,15 @@ final class SpannerFilterPushDown {
                 }
             }
             if (lower != null || upper != null) {
+                if ((lower != null && lower.value instanceof Double)
+                        || (upper != null && upper.value instanceof Double)) {
+                    if (lower == null) {
+                        lower = new Bound(Double.NEGATIVE_INFINITY, true);
+                    }
+                    if (upper == null) {
+                        upper = new Bound(Double.POSITIVE_INFINITY, true);
+                    }
+                }
                 if (lower != null && upper != null) {
                     int comparison = SpannerKeyValueEncoder.compare(lower.value, upper.value);
                     empty = comparison > 0 || (comparison == 0 && (!lower.closed || !upper.closed));
@@ -623,6 +636,9 @@ final class SpannerFilterPushDown {
                 return false;
             }
             Object ranged = parts.next();
+            if (ranged == null || (ranged instanceof Double && Double.isNaN((Double) ranged))) {
+                return false;
+            }
             if (lower != null) {
                 int comparison = SpannerKeyValueEncoder.compare(ranged, lower.value);
                 if (comparison < 0 || (comparison == 0 && !lower.closed)) {
