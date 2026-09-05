@@ -73,6 +73,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -597,6 +598,55 @@ class SpannerLookupSourceTest {
         assertThat(async.asyncLookup(rejected).join()).isEmpty();
         assertThat(syncLookup.keys).isEmpty();
         assertThat(asyncLookup.keys).isEmpty();
+    }
+
+    @Test
+    void syncAndAsyncFloatLookupGatingPreservesZeroAndRejectsNan() {
+        SpannerTableSchemaConverter floatSchema =
+                SpannerTableSchemaConverter.of(
+                        (RowType)
+                                DataTypes.ROW(
+                                                DataTypes.FIELD(
+                                                        "ratio", DataTypes.DOUBLE().notNull()))
+                                        .getLogicalType(),
+                        new int[] {0},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        List.of(),
+                        List.of(),
+                        Map.of(),
+                        Map.of());
+        CallExpression atMostZero =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                        List.of(
+                                new FieldReferenceExpression("ratio", DataTypes.DOUBLE(), 0, 0),
+                                new ValueLiteralExpression(-0.0d)),
+                        DataTypes.BOOLEAN());
+        SpannerFilterPushDown.RuntimeState filters =
+                SpannerFilterPushDown.translate(floatSchema, List.of(atMostZero), false).runtime();
+        FakeLookup syncLookup = new FakeLookup(null);
+        FakeLookup asyncLookup = new FakeLookup(null);
+        SpannerRowDataLookupFunction sync =
+                new SpannerRowDataLookupFunction(
+                        floatSchema, new int[] {0}, new int[] {0}, 0, syncLookup, filters);
+        SpannerRowDataAsyncLookupFunction async =
+                new SpannerRowDataAsyncLookupFunction(
+                        floatSchema, new int[] {0}, new int[] {0}, 0, asyncLookup, filters);
+
+        for (double rejected :
+                new double[] {Double.NaN, Double.MIN_VALUE, Double.POSITIVE_INFINITY}) {
+            assertThat(sync.lookup(GenericRowData.of(rejected))).isEmpty();
+            assertThat(async.asyncLookup(GenericRowData.of(rejected)).join()).isEmpty();
+        }
+        assertThat(syncLookup.keys).isEmpty();
+        assertThat(asyncLookup.keys).isEmpty();
+        for (double accepted : new double[] {-0.0d, 0.0d, Double.NEGATIVE_INFINITY}) {
+            sync.lookup(GenericRowData.of(accepted));
+            async.asyncLookup(GenericRowData.of(accepted)).join();
+        }
+        assertThat(syncLookup.keys)
+                .containsExactly(Key.of(-0.0d), Key.of(0.0d), Key.of(Double.NEGATIVE_INFINITY));
+        assertThat(asyncLookup.keys).containsExactlyElementsOf(syncLookup.keys);
     }
 
     @Test

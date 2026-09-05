@@ -113,12 +113,24 @@ If the planner requests no physical column, the connector reads the first declar
 The source translates `=`, `<`, `<=`, `>`, `>=`, and conjunctions over consecutive key columns into Spanner `KeySet` points and lexicographic ranges.
 A complete primary-key equality is an exact point read.
 A leading equality prefix, optionally followed by a range on the next primary-key column, is exact and is removed from Flink's residual filter.
-Predicates on later key columns, `OR`, `IN`, `<>`, computed expressions, null literals, and ordered `FLOAT64` comparisons remain with Flink.
+For `DOUBLE` keys (`FLOAT64` / PostgreSQL `FLOAT8`), equality and ordered comparisons accept finite literals.
+The literal must reach the connector as `DOUBLE`; a `DECIMAL` literal that Flink leaves unconverted remains residual.
+The translator also handles infinite `DOUBLE` literals.
+Both infinities are valid key values; a range includes or excludes them according to its comparison.
+Flink leaves `CAST('Infinity' AS DOUBLE)` and `CAST('-Infinity' AS DOUBLE)` as expressions, so comparisons with these SQL string casts remain residual.
+Both signed zeros are equal, including at open and closed range boundaries.
+Comparisons with a `NaN` literal remain with Flink.
+Spanner rejects `NaN` in `FLOAT64` / PostgreSQL `FLOAT8` key columns; the emulator accepts these keys, as recorded in the [emulator deviations]({{< relref "docs/connectors/datastream/spanner" >}}#emulator-deviations).
+The PostgreSQL [type contract](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) also states this restriction explicitly.
+Predicates on later key columns, `OR`, `IN`, `<>`, computed expressions, casts that survive planning, field-to-field comparisons, and null literals remain with Flink.
 A literal the connector cannot convert to its key column's Spanner type, such as a non-integral value compared with an `INT64` column or text that is not a canonical UUID, also remains with Flink instead of failing the job during planning.
 
 Set `scan.index` to read a bounded scan through a named [secondary index](https://cloud.google.com/spanner/docs/secondary-indexes).
 The connector resolves the live index key order, sort direction, state, null filtering, and readable columns from the [GoogleSQL](https://cloud.google.com/spanner/docs/information-schema) or [PostgreSQL](https://cloud.google.com/spanner/docs/information-schema-pg) `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.
 It then uses matching predicates as a best-effort index-key prefilter and leaves every such predicate with Flink to preserve SQL semantics.
+`EXPLAIN` lists parsed filter candidates under the source's `filter` as well as in the residual calculation.
+Only candidates usable with the live index key order narrow the read.
+Reporting these candidates keeps differently filtered scans distinct during Flink source reuse.
 The selected index must be `READ_WRITE`, belong to the configured table and schema, cover every column the scan reads, and be safe for nullable key rows.
 GoogleSQL `STORING` and PostgreSQL `INCLUDE` columns are readable through the index together with its key and the base-table primary key.
 A null-filtered index is accepted only when the pushed filters prove every nullable index key is not null.
