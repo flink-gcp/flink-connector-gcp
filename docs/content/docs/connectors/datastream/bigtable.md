@@ -609,9 +609,9 @@ value is the reason to call it. This connector runs them on a second runtime, in
 
 `BigtableConditionalSink` and `BigtableConditionalAsync` expose conditional writes through immutable
 `ConditionalRequest`, `ConditionalFilter` and `ConditionalMutation` values.
-The read-modify-write entry points remain in [#1180]({{< param BookRepo >}}/issues/1180), and
-result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
-The [Table sink]({{< relref "docs/connectors/table/bigtable" >}}#insert-if-absent) also offers atomic `insert-if-absent`.
+`BigtableReadModifyWriteSink` and `BigtableReadModifyWriteAsync` expose append and increment rules.
+Result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+The [Table sink]({{< relref "docs/connectors/table/bigtable" >}}#sink) also offers `insert-if-absent`, `append` and `increment` modes.
 
 ### Conditional requests and results
 
@@ -666,11 +666,54 @@ Explicit microsecond timestamps are preserved; the destination table validates i
 Only SetCell accepts `-1` to request server time, which can produce another version on replay.
 AddToCell and MergeToCell require a concrete nonnegative timestamp, including zero; no writer clock is inferred for an aggregate cell.
 
+### Append and increment requests
+
+Use read-modify-write for appending bytes to a raw cell or incrementing its signed 64-bit integer when the updated state is needed.
+For counters that can use an aggregate family, Google recommends [aggregate cells and AddToCell](https://cloud.google.com/bigtable/docs/writes#appends).
+Read-modify-write uses its own RPC and never enters `MutateRows`.
+
+These examples receive a stream named `changes` with this input shape:
+
+{{< java-snippet file="BigtableReadModifyWriteWrites.java" tag="rmw-input" >}}
+
+The schema appends a nonempty note and adds a signed delta to a raw counter in one atomic row request:
+
+{{< java-snippet file="BigtableReadModifyWriteWrites.java" tag="rmw-schema" >}}
+
+Both families must already exist.
+A request holds one nonempty row key and between one and 100,000 ordered rules.
+The list can mix append and increment and can address one column more than once; earlier rules affect later ones.
+Empty append values are rejected by the connector and the Java SDK builder.
+Increment accepts negative amounts and zero; an unset counter starts at zero, while an existing counter must use the service's eight-byte big-endian signed representation.
+Arithmetic and overflow follow Bigtable; the connector does not read the counter first, saturate it or calculate a replacement value.
+
+Use the sink when successful responses need no downstream processing:
+
+{{< java-snippet file="BigtableReadModifyWriteWrites.java" tag="rmw-sink" >}}
+
+Use the same schema with the async helper to receive the input and response:
+
+{{< java-snippet file="BigtableReadModifyWriteWrites.java" tag="rmw-async" >}}
+
+Each result contains the actual resolved destination and a `BigtableRow` with the final changed cells, not a complete stored row or one result per rule.
+Cell values remain bytes and timestamps remain service microseconds.
+The result uses explicit Flink type information and a versioned serializer; the input keeps its stream type information.
+For this schema, decode the returned counter as follows:
+
+{{< java-snippet file="BigtableReadModifyWriteWrites.java" tag="rmw-returned-integer" >}}
+
+Both helpers resolve destinations before serialization and call the schema's `open` once per subtask.
+A null serializer result skips the record without an RPC, output or failure callback.
+The async resolver and schema receive a null `SinkWriter.Context`.
+`orderedWait` orders emitted results, not separate RPC executions against the same row.
+Neither helper retries; a timeout or lost acknowledgement can leave an applied request whose replay appends or increments again.
+Checkpoint completion drains sink requests and does not deduplicate recovery.
+
 ### Shared request runtime
 
 This section describes the internal runtime shared by the request operations.
-The public conditional helper wraps it with `orderedWait` and `unorderedWait` only;
-it does not expose the retrying forms discussed below.
+The public conditional and read-modify-write helpers wrap it with `orderedWait` and `unorderedWait` only;
+they do not expose the retrying forms discussed below.
 
 **Both RPCs are Bigtable's single-row transactions, and the instance has to allow them.** Bigtable
 permits a conditional write or a read-modify-write only through an application profile that uses
@@ -689,7 +732,7 @@ An unambiguous `INVALID_ARGUMENT` reaches the sink failure handler even if its c
 profile; `FAILED_PRECONDITION` fails the job.
 A dropping handler can therefore discard a profile rejection reported as `INVALID_ARGUMENT`.
 The default handler fails the job, and the async helper has no dropping handler.
-The conditional routing hint states a prerequisite; the preserved service cause gives the rejection reason.
+The single-row routing hint states a prerequisite; the preserved service cause gives the rejection reason.
 
 **Two surfaces over one runtime.** A *sink* surface — a `SinkWriter` in the shape of the batching
 writer: one request per record, the answers discarded, `flush()` waiting for every outstanding
@@ -947,8 +990,7 @@ A deadline failure is additionally counted under [`requestsTimedOut`](#single-ro
 The async surface has **no failure handler**: the handler contract is task-thread, and an answer
 arrives on a client thread with no mailbox to hop back onto, so every failed request fails the job
 there. The conditional helper emits successful predicate outcomes as values; an RPC failure
-completes the input exceptionally. The planned read-modify-write entry points remain in
-[#1180]({{< param BookRepo >}}/issues/1180).
+completes the input exceptionally. The read-modify-write helper emits successful changed cells and likewise fails RPC errors.
 
 ### Failed-mutation policy
 
@@ -1119,6 +1161,10 @@ answer it.
 | `errorClass.CODE.errors` | counter | failed requests by status code, `CODE` being a gRPC status name or `UNCLASSIFIED`; a record the serializer rejected carries no status and is counted under none |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the standard pair per table — requests the client accepted and records routed to the handler — **only** with `perDestinationMetrics(true)` |
 
+These counters describe attempts within one running subtask, not unique application records.
+Recovery creates fresh task metrics and can submit a previously applied append or increment again.
+`requestsAccepted` does not prove a unique service application, and no replay counter can infer external deduplication.
+
 **There is no counter of discarded answers on the sink surface**: every completed request discards
 its answer there, so the count would equal `requestsCompleted`. And `errorClass` here counts one
 attempt per request, since the client retries neither RPC — `UNAVAILABLE` under it means one failed
@@ -1266,7 +1312,7 @@ the same admission rule and the same once-a-minute stall warning, though under t
 `requestTimeout` every stalled request fails before the warning's minute is up, so it fires only
 when the deadline has been raised past a minute — and it counts requests, since a single-row RPC
 carries one row and nothing accumulates. On the async surface the bound is the
-capacity handed to `AsyncDataStream`; the conditional helper supplies `maxInFlightRequests`
+capacity handed to `AsyncDataStream`; both public helpers supply `maxInFlightRequests`
 automatically. `requestTimeout` is the
 client's whole deadline for one attempt, 20 s by default; a request past it is
 [ambiguous](#error-handling), and the runtime would rather report that than retry it; whatever
@@ -1434,7 +1480,6 @@ gated suite.
 
 ## Scope
 
-Read-modify-write entry points remain in [#1180]({{< param BookRepo >}}/issues/1180).
 Result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
 DDL-defined conditional SQL commands with named predicates and numbered mutation options remain in
 [#1226]({{< param BookRepo >}}/issues/1226); arbitrary composable filters are available through DataStream.

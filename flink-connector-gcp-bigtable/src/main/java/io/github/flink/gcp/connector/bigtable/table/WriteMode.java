@@ -24,7 +24,11 @@ public enum WriteMode {
     /** Writes cells through the ordinary mutation batcher. */
     UPSERT("upsert"),
     /** Atomically writes input cells only when the entire stored row has no cell. */
-    INSERT_IF_ABSENT("insert-if-absent");
+    INSERT_IF_ABSENT("insert-if-absent"),
+    /** Atomically appends each nonnull input cell to its latest stored value. */
+    APPEND("append"),
+    /** Atomically adds each nonnull BIGINT input cell to its latest stored integer. */
+    INCREMENT("increment");
 
     private final String value;
 

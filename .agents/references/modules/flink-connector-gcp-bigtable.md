@@ -78,7 +78,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `maxActiveInstances` (the factory's wait for the evicted client's close remains). Its
   counters are `ThreadSafeSimpleCounter`s through the base helpers' supplier overloads; the sink
   surface keeps `SimpleCounter`. Capacity is `AsyncDataStream`'s, documented as
-  `maxInFlightRequests` through the conditional helper; Flink's operator timeout must sit above
+  `maxInFlightRequests` through the conditional and read-modify-write helpers; Flink's operator timeout must sit above
   `requestTimeout`. Preserve the original request and resolved destination through completion;
   outcome policies run after successful-RPC and predicate counters (ADR-0152).
 - **`BigtableRequestFunction.timeout` completes the result on every path** (#1203, ADR-0148's
@@ -100,11 +100,27 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   helper that takes the name as a parameter.
 - `FailedRequest.getPayloadBytes()` remains `null`: the conditional model's job-graph encoding
   is not a dead-letter format (ADR-0152). `sink.write-mode` selects ordinary `upsert` or conditional
-  `insert-if-absent`; #1177 and #1226 extend this same option. Keep request options mapped through
-  `RequestOptionsMapper` and guard explicit mode-incompatible options with `ConditionalOptionChecks`.
+  `insert-if-absent`, or read-modify-write `append`/`increment` (ADR-0153); #1177 and #1226 extend this same option. Keep request options mapped through
+  `RequestOptionsMapper` and guard explicit mode-incompatible options with `WriteModeOptionChecks`.
 - Conditional SQL keeps the ordinary family/qualifier schema and codec. Its unset RPC predicate
   tests the entire stored row, including undeclared families. Keep INSERT-only changelog handling,
   preserve repeated inputs through the planner and retain ADR-0149's per-cell writer clock.
+
+## Read-modify-write API (`docs/adr/0153`)
+
+- Keep the public request and rules immutable and serializable, preserving repeated columns and
+  mixed DataStream operations in list order. Build the SDK request against the actual resolved
+  destination through the existing single-row adapter.
+- Return only final changed cells in `ReadModifyWriteResult`, with destination and `BigtableRow`;
+  keep the nested row serializer snapshot in its explicit Flink serializer. No callback is repeated
+  to construct output. Empty append values fail; zero and negative increments remain operations.
+- SQL uses the ordinary family/qualifier schema and one write mode per DDL. Append accepts string
+  and binary cells; increment accepts BIGINT. NULL cells/families omit rules, all-null rows fail,
+  INSERT-only input is preserved, and timestamp metadata is unavailable. Keep mode-specific
+  validation in `ReadModifyWriteSchemaChecks` and `WriteModeOptionChecks`.
+- Delegate increment arithmetic and overflow to Bigtable. No pre-read, saturation, retry or
+  application-level deduplication is inferred. Runtime counters count attempts in a subtask, not
+  unique service applications across recovery.
 
 ## Batch knobs, and entries versus mutations (`docs/adr/0082`)
 

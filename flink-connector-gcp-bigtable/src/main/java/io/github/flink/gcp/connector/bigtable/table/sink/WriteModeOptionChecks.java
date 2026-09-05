@@ -23,13 +23,14 @@ import org.apache.flink.table.api.ValidationException;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.WriteMode;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /** Refuses explicit options that the selected write operation cannot use. */
 @Internal
-public final class ConditionalOptionChecks {
-    private ConditionalOptionChecks() {}
+public final class WriteModeOptionChecks {
+    private WriteModeOptionChecks() {}
 
     /**
      * Validates only explicit keys, including explicit values equal to an option's default.
@@ -39,7 +40,7 @@ public final class ConditionalOptionChecks {
      */
     public static void validate(Map<String, String> options, WriteMode mode) {
         List<ConfigOption<?>> rejected =
-                mode == WriteMode.INSERT_IF_ABSENT
+                mode != WriteMode.UPSERT
                         ? List.of(
                                 BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
                                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
@@ -57,6 +58,11 @@ public final class ConditionalOptionChecks {
                                 BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
                                 BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
                                 BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS);
+        rejected = new ArrayList<>(rejected);
+        if (mode == WriteMode.APPEND || mode == WriteMode.INCREMENT) {
+            rejected.add(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY);
+            rejected.add(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS);
+        }
         for (ConfigOption<?> option : rejected) {
             if (options.containsKey(option.key())) {
                 throw new ValidationException(
