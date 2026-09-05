@@ -72,7 +72,7 @@ Checkpointing must be enabled in a streaming job for that durability boundary to
 | [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) `STORAGE_API_AT_LEAST_ONCE` | Stateless writer flushes the default stream before the barrier | The same row may be appended again | At-least-once |
 | [Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}) sink | Stateless writer flushes SDK publishers and waits for publish acknowledgements | A replay is a new publish with a new service-assigned message ID | At-least-once; no publisher-side idempotent mode |
 | [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` or Table API `task-id` metadata |
-| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A writer-clock-timestamped cell gains another version; an explicit timestamp overwrites the same version | At-least-once; selected cell writes and deletes can be idempotent |
+| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A regenerated `setCell` timestamp can add a version; a stable timestamp targets the same version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once; replay safety depends on the mutation shape |
 | [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes) single-row request runtime | Sink surface: stateless writer waits for every `CheckAndMutateRow` or `ReadModifyWriteRow` request. Async surface: Flink's async operator checkpoints un-emitted inputs and replays them | A replayed conditional write re-evaluates its predicate against the state the first attempt left; a replayed read-modify-write applies its increment or append again | At-least-once; neither RPC is idempotent, and the runtime retries neither. Entry points arrive with [#1179]({{< param BookRepo >}}/issues/1179) and [#1180]({{< param BookRepo >}}/issues/1180) |
 | [Spanner]({{< relref "docs/connectors/datastream/spanner" >}}) sink | Stateless writer consumes `BatchWrite` responses before the barrier | Spanner documents no replay protection; the selected mutation operation may nevertheless be idempotent | At-least-once; `insertOrUpdate`, `replace`, `update`, and delete effects can be idempotent within their operation constraints |
 
@@ -92,7 +92,7 @@ implements insert-if-absent.
 | Spanner Table API | A declared `PRIMARY KEY` selects `insertOrUpdate` and key deletes; without one the sink accepts inserts only and uses `insert` | Replaying one upsert or delete repeats its effect idempotently; `insert` can return `ALREADY_EXISTS` | At-least-once submission; `BatchWrite` does not preserve the order of successive same-key mutation groups |
 | Spanner DataStream API | The serializer chooses the key and `Mutation` operation | Replaying one `insertOrUpdate`, `replace`, `update`, or delete can be idempotent within its operation constraints; `insert` can return `ALREADY_EXISTS` | At-least-once submission; replay safety belongs to each mutation, and `BatchWrite` does not preserve same-key group order |
 | Bigtable Table API | The one atomic column is always the row key; a declared `PRIMARY KEY` improves planner handling, while `sink.insert-only-input-mode` changes only the accepted changelog | The same row key is physically upserted; a stable explicit cell timestamp targets the same version, while an omitted timestamp uses the writer's wall clock and a Flink replay can create another version | At-least-once submission; no Table option provides destination-side insert-if-absent |
-| Bigtable DataStream API | The serializer chooses the `RowMutationEntry` row key, mutations, qualifiers, and cell timestamps | Repeating an explicit cell timestamp targets the same version; repeating a writer-clock-timestamped write can create another version | At-least-once submission; replay safety belongs to the mutation shape |
+| Bigtable DataStream API | The serializer chooses the `RowMutationEntry` row key, mutations, qualifiers, and cell timestamps | Replaying `setCell` with a stable explicit timestamp targets the same version; a regenerated timestamp can create another version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once submission; replay safety belongs to the mutation shape |
 | Bigtable single-row request runtime | The request names the row key; `CheckAndMutateRow` carries a predicate and a mutation per branch, `ReadModifyWriteRow` an ordered list of append and increment rules | Repeating a conditional write re-runs the predicate, so a marker it writes can make the second attempt a no-op; repeating a read-modify-write appends or increments again, with no timestamp to target | At-least-once submission, one attempt per request; a conditional write is the only shape here that can be made replay-safe, and only by what the application puts in the row |
 | Cloud Tasks Table API | The sink accepts inserts only; writable `task-id` metadata optionally selects a stable task identity | A remembered ID returns `ALREADY_EXISTS`; the existing task is neither compared nor updated | At-least-once submission; bounded effectively-once task creation when `task-id` is selected |
 | Cloud Tasks DataStream API | `taskIdExtractor(...)` optionally selects a stable task identity; otherwise Cloud Tasks assigns one | A remembered extracted ID returns `ALREADY_EXISTS`; an unnamed replay creates another task | At-least-once submission; bounded effectively-once task creation with an extractor |
@@ -168,8 +168,7 @@ latency, so its practical recommendation depends on the measured workload.
 
 ### Bigtable
 
-The current sink can already make individual cell effects idempotent when the serializer writes a
-stable explicit timestamp.
+The current sink can make an individual `setCell` effect idempotent when the serializer writes the same value with a stable explicit timestamp.
 That does not cover a writer-clock timestamp, arbitrary mutation shapes, or two legitimate events
 that happen to target the same cell version.
 
@@ -182,6 +181,17 @@ calls this same effect "Exactly Once out of the box": its writer flushes at the 
 with no committer, and three of its four built-in serializers stamp each cell with the Flink record
 timestamp when the record carries a positive one, so the two connectors offer the same mechanism
 under different names.
+
+Aggregate `addToCell` and `mergeToCell` mutations have a different replay effect.
+Their timestamp identifies the aggregate cell, so a stable timestamp targets the same cell but does not identify or deduplicate an input.
+An Int64 Sum can count the input or accumulated state again after replay.
+Regenerating the timestamp can target another cell version instead.
+An upstream Flink aggregation emitting ordinary upserts remains subject to same-key ordering whenever it emits repeated updates; aggregation removes that collision only if the entire write emits at most one mutation per key.
+
+An immediate keep-latest mutation deletes a column's versions and then sets its replacement inside one atomic `RowMutationEntry`.
+Separate entries can execute in any order, including for the same row, and replaying an older replacement can delete a newer value.
+Neither a batch size of one nor `maxVersions(1)` GC establishes application order or an immediate ordered-upsert guarantee.
+See the [aggregate update]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) and [column replacement]({{< relref "docs/examples/bigtable" >}}#replacing-a-column-immediately) examples, and ADR-0093.
 
 A stronger opt-in design is feasible for effects contained in one row.
 [`CheckAndMutateRow`](https://cloud.google.com/bigtable/docs/writes#conditional) can test for an
