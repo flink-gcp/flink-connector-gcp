@@ -1,0 +1,43 @@
+/*
+Copyright 2026 The flink-gcp authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  enabledManagers: ['custom.regex'],
+  dependencyDashboard: false,
+  automerge: false,
+  draftPR: true,
+  // The workflow owns the monthly cadence; manual recovery can run on any day.
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: ['flink-connector-gcp-test-utils/**/*EmulatorContainers.java'],
+      matchStrings: [
+        'private static final (?:DockerImageName|String) IMAGE\\s*=\\s*(?:DockerImageName\\.parse\\(\\s*)?"(?<depName>(?:gcr\\.io|ghcr\\.io)/[^"\\s:]+):(?<currentValue>[^"\\s]+)"\\s*(?:\\)|;)',
+      ],
+      datasourceTemplate: 'docker',
+      versioningTemplate: 'docker',
+    },
+  ],
+  packageRules: [
+    {
+      matchManagers: ['custom.regex'],
+      groupName: 'emulator images',
+      groupSlug: 'emulator-images',
+      separateMajorMinor: false,
+    },
+  ],
+  prBodyTemplate: '## WHAT\n\nUpdate the pinned emulator images used by the integration tests.\n\n{{{table}}}{{{warnings}}}\n\n## WHY\n\nKeep the pins current before registry retention removes an old image. The workflow runs monthly and can be dispatched manually for recovery.\n\nBefore merging, record the Bigtable deviation suites\' verdict and any changed behavior ([ADR-0044](https://github.com/flink-gcp/flink-connector-gcp/blob/main/docs/adr/0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md)). For a Spanner bump, recheck the pinned-emulator measurements in [ADR-0075](https://github.com/flink-gcp/flink-connector-gcp/blob/main/docs/adr/0075-the-spanner-sink-batch-writes-and-owns-the-whole-retry-loop.md) and [ADR-0077](https://github.com/flink-gcp/flink-connector-gcp/blob/main/docs/adr/0077-batch-limits-are-counted-in-index-aware-cells-read-once-at-open.md). For Spanner or Cloud Tasks updates, update the matching `docker run` image tag in the [Spanner](https://github.com/flink-gcp/flink-connector-gcp/blob/main/docs/content/docs/examples/spanner.md#running-against-the-emulator) or [Cloud Tasks](https://github.com/flink-gcp/flink-connector-gcp/blob/main/docs/content/docs/examples/cloudtasks.md#running-against-the-emulator) example page; keep dated measurement references unchanged.\n\n{{{notes}}}{{{changelogs}}}{{{configDescription}}}{{{controls}}}{{{footer}}}',
+}
