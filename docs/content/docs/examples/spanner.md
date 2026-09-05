@@ -255,7 +255,7 @@ Restrict the Change Stream's DDL watch definition when exclusion must happen ins
 ### Running against the emulator
 
 ```sh
-docker run -p 9010:9010 -p 9020:9020 gcr.io/cloud-spanner-emulator/emulator:1.5.56
+docker run -p 9010:9010 -p 9020:9020 gcr.io/cloud-spanner-emulator/emulator:1.5.57
 ```
 
 The emulator has separate resources from the real service.

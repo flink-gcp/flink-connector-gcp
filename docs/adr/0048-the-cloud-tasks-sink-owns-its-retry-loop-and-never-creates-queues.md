@@ -78,8 +78,8 @@ limitations under the License.
   REST-only HTTP target override, this field is visible in the v2 `Queue` proto, but the sink does
   not fetch queue configuration before each write. The documented queue configuration therefore
   remains authoritative.
-- App Engine dispatch and queue-level routing have a gated real-service acceptance suite because
-  the emulator implements neither behavior.
+- App Engine dispatch and queue-level routing have a gated real-service acceptance suite to
+  establish their behavior against the service.
   The gated suite creates one isolated queue per case and inspects requests while queues are
   paused before selectively resuming them for dispatch.
   Its manually scaled App Engine fixture is started only around that suite and is stopped and

@@ -61,7 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Real-GCP acceptance for Cloud Tasks {@code AppEngineHttpRequest} targets.
  *
- * <p>The emulator cannot dispatch App Engine tasks or apply queue-level App Engine routing. The
+ * <p>These tests establish App Engine dispatch and queue-level routing against the service. The
  * surrounding lifecycle wrapper starts one manually scaled instance only for this class and exports
  * its exact service, version and instance identifiers. Every test owns a unique queue and deletes
  * it even when an assertion fails.

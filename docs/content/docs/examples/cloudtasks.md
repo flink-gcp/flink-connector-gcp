@@ -279,9 +279,9 @@ declared at startup, since neither the emulator nor the sink creates one on dema
 
 ```sh
 docker run --rm -p 8123:8123 --add-host=host.docker.internal:host-gateway \
-    ghcr.io/aertje/cloud-tasks-emulator:1.2.0 \
+    ghcr.io/aertje/cloud-tasks-emulator:2.0.1 \
     -host 0.0.0.0 -port 8123 \
-    -queue projects/my-project/locations/asia-northeast1/queues/webhooks
+    -initial-queue projects/my-project/locations/asia-northeast1/queues/webhooks
 ```
 
 {{< java-snippet file="CloudTasksExamplesEmulator.java" tag="cloud-tasks-examples-emulator" >}}
@@ -291,8 +291,9 @@ sees exactly what the tasks carry — which is the whole reason it is worth runn
 target URL has to be reachable from the container's network rather than yours. (The module's own
 tests solve the same problem with testcontainers' `exposeHostPorts(...)`.)
 
-What it cannot show, per the
-[rule about emulators]({{< relref "docs/examples" >}}#an-emulator-is-a-convenience-not-an-authority):
-task-name garbage collection, so the deduplication *window* is untestable and only the
-`ALREADY_EXISTS` response is; queue-level `uriOverride` routing; the OAuth token path, since it
-implements OIDC only; failure injection; and any size limit.
+Use real GCP to establish the service's task-name deduplication window, task-size boundaries,
+scheduling and App Engine routing behavior, per the
+[rule about emulators]({{< relref "docs/examples" >}}#an-emulator-is-a-convenience-not-an-authority).
+The emulator's HTTP dispatch supports OIDC only, and its unimplemented `UpdateQueue` leaves
+queue-level `uriOverride` routing untested here. Transient failure injection remains in the
+connector's tests with fake clients.

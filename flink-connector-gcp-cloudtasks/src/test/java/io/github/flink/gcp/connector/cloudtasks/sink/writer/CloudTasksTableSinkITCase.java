@@ -99,8 +99,7 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
                         + ", 3), 'event-1')";
 
         tEnv.executeSql("INSERT INTO tasks" + values).await();
-        // A separate completed job gives the emulator two distinct create calls. This avoids the
-        // emulator's non-atomic uniqueness check while proving replay deduplication.
+        // A second completed job replays the same named task to verify deduplication across jobs.
         tEnv.executeSql("INSERT INTO tasks" + values).await();
 
         List<Task> tasks = listTasks(queue);

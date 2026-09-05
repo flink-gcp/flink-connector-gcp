@@ -422,5 +422,5 @@ validation without submitting a job or calling GCP.
 Serializer and factory tests cover physical-column projection, target-family metadata, header
 precedence, body methods, OIDC and OAuth selection, and task-ID extraction.
 The emulator integration tests add HTTP dispatch, metadata overrides, named-task deduplication,
-form bytes, and an inspectable App Engine task; the App Engine real-service suite covers behavior
-the emulator cannot implement.
+form bytes, and an inspectable App Engine task; the App Engine real-service suite establishes
+routing and dispatch behavior against the service.

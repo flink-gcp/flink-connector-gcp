@@ -108,6 +108,12 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <dependency>
+            <!-- Inspect dispatched JWT claims as JSON rather than matching their encoding. -->
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- Shared test utilities (#27). -->
             <groupId>io.github.flink-gcp</groupId>
             <artifactId>flink-connector-gcp-test-utils</artifactId>

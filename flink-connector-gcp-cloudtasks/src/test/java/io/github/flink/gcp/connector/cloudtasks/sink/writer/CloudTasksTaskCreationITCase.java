@@ -63,11 +63,8 @@ class CloudTasksTaskCreationITCase extends AbstractCloudTasksEmulatorITCase {
         try (CloudTasksWriter<String> writer =
                 newWriter(TestSinkConfigs.builder(queue).taskIdExtractor(element -> element))) {
             write(writer, "order-1");
-            // The replay goes through a second write/flush cycle rather than a second record in the
-            // same one, so its create provably starts after the first task is stored: the emulator
-            // checks a task name and stores it under separate locks, so two concurrent creates of
-            // one name can both succeed and the test would never reach ALREADY_EXISTS. Reusing the
-            // writer also covers the cycles a streaming job puts it through.
+            // Replay after the first task is stored, exercising deduplication across successive
+            // write/flush cycles on the same writer.
             write(writer, "order-1");
         }
 

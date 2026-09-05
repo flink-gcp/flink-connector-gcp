@@ -32,7 +32,7 @@ import org.testcontainers.containers.wait.strategy.Wait;
 @Internal
 public final class CloudTasksEmulatorContainers {
 
-    private static final String IMAGE = "ghcr.io/aertje/cloud-tasks-emulator:1.2.0";
+    private static final String IMAGE = "ghcr.io/aertje/cloud-tasks-emulator:2.0.1";
 
     private static final int PORT = 8123;
 

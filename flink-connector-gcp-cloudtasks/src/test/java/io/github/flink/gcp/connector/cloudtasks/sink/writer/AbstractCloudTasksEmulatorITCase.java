@@ -182,9 +182,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
                         LocationName.of(PROJECT, LOCATION),
                         Queue.newBuilder()
                                 .setName(destination.toQueuePath())
-                                // The emulator runs one dispatch worker per allowed concurrent
-                                // dispatch and
-                                // defaults to 1000 of them; a small cap keeps the container cheap.
+                                // Limit dispatch concurrency in this shared test fixture.
                                 .setRateLimits(
                                         RateLimits.newBuilder().setMaxConcurrentDispatches(10))
                                 .build());
@@ -201,9 +199,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
                 .listTasks(
                         ListTasksRequest.newBuilder()
                                 .setParent(destination.toQueuePath())
-                                // The emulator ignores response_view, but Cloud Tasks omits bodies
-                                // and headers under the default BASIC view; asking for FULL keeps
-                                // these assertions true of the service as well.
+                                // Request FULL so task-inspection assertions can read the body.
                                 .setResponseView(Task.View.FULL)
                                 .build())
                 .iterateAll()
