@@ -102,5 +102,14 @@ public final class BigtableMetricNames {
     // not: it takes its partitions from the service.
     public static final String ROW_KEY_SAMPLES_TAKEN = "rowKeySamplesTaken";
 
+    /** Successful conditional requests whose predicate matched; SingleRowRequestMetrics. */
+    public static final String PREDICATES_MATCHED = "predicatesMatched";
+
+    /** Successful conditional requests whose predicate did not match; SingleRowRequestMetrics. */
+    public static final String PREDICATES_NOT_MATCHED = "predicatesNotMatched";
+
+    /** Successful conditional requests selecting an empty branch; SingleRowRequestMetrics. */
+    public static final String EMPTY_BRANCHES_SELECTED = "emptyBranchesSelected";
+
     private BigtableMetricNames() {}
 }

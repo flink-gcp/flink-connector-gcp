@@ -161,7 +161,13 @@ public final class RequestFailures {
                                 == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND
                         ? " because the table or one of its column families does not exist"
                         : "";
-        return new IOException(head + " failed" + reason + ".", throwable);
+        return new IOException(head + " failed" + reason + "." + routingHint(operation), throwable);
+    }
+
+    static String routingHint(RowOperation operation) {
+        return operation == RowOperation.CHECK_AND_MUTATE_ROW
+                ? " CheckAndMutateRow requires an app profile with single-cluster routing and single-row transactions enabled; inspect the service cause for the rejection reason."
+                : "";
     }
 
     private static String describeStatus(Throwable throwable) {

@@ -1,14 +1,16 @@
 # flink-connector-gcp-bigtable
 
 Cloud Bigtable connector for Apache Flink.
-The sink applies one row mutation per record through the client's bulk `MutateRows` batcher, into
+The bulk sink applies one row mutation per record through the client's `MutateRows` batcher, into
 a fixed table or one the record names.
+The conditional sink and async helper atomically select a mutation branch with `CheckAndMutateRow`.
 The bounded source splits a table by sampled row-key boundaries, while the Change Streams source
 checkpoints the service's moving partition topology and continuation tokens.
 
 | Feature | Status |
 |---|---|
 | SinkV2 at-least-once sink over the bulk mutation batcher; `RowMutationEntry` serialization SPI | Implemented ([#33](https://github.com/flink-gcp/flink-connector-gcp/issues/33)) |
+| Conditional sink and async helpers over `CheckAndMutateRow`; connector-owned request and result types | Implemented ([#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179)) |
 | Per-mutation failure policy (the shared `FailureHandler` SPI) | Implemented ([#33](https://github.com/flink-gcp/flink-connector-gcp/issues/33)) |
 | Emulator integration tests | Implemented ([#33](https://github.com/flink-gcp/flink-connector-gcp/issues/33)) |
 | DataStream bounded scan source | Implemented ([#216](https://github.com/flink-gcp/flink-connector-gcp/issues/216)) |
@@ -50,6 +52,7 @@ Source<OrderEvent, ?, ?> source =
 | Table API / SQL feature | Status |
 |---|---|
 | `bigtable` table connector; the HBase-compatible DDL model, the cell codec, an upsert `DynamicTableSink` and table auto-creation | Implemented ([#458](https://github.com/flink-gcp/flink-connector-gcp/issues/458)) |
+| Atomic `sink.write-mode = insert-if-absent` with INSERT-only input and whole-row existence checks | Implemented ([#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179)) |
 | `ScanTableSource` with column-family projection pushdown | Implemented ([#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459)) |
 | SQL filter pushdown for exact row-key ranges and best-effort cell existence | Implemented ([#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518)) |
 | `LookupTableSource`, sync and async, with the standard lookup caches | Implemented ([#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460)) |

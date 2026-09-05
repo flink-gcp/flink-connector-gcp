@@ -40,7 +40,11 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
+import io.github.flink.gcp.connector.bigtable.table.sink.ConditionalOptionChecks;
+import io.github.flink.gcp.connector.bigtable.table.sink.RequestOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.TableCreateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
@@ -147,6 +151,10 @@ public class BigtableDynamicTableFactory
                         LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE,
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
+                        BigtableConnectorOptions.SINK_WRITE_MODE,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
+                        BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
+                        BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS,
                         BigtableConnectorOptions.SINK_APP_PROFILE_ID,
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE,
@@ -179,6 +187,8 @@ public class BigtableDynamicTableFactory
 
         validateCredentialsMode(config);
         checkSinkHasNoChangeStreamOptions(context);
+        WriteMode writeMode = config.get(BigtableConnectorOptions.SINK_WRITE_MODE);
+        ConditionalOptionChecks.validate(context.getCatalogTable().getOptions(), writeMode);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
@@ -200,7 +210,20 @@ public class BigtableDynamicTableFactory
                 .serviceAccountKeyFile(
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
-                .writerOptions(WriterOptionsMapper.map(config))
+                .writerOptions(
+                        writeMode == WriteMode.UPSERT
+                                ? WriterOptionsMapper.map(config)
+                                : BigtableWriterOptions.builder().build())
+                .writeMode(writeMode)
+                .requestOptions(
+                        writeMode == WriteMode.INSERT_IF_ABSENT
+                                ? RequestOptionsMapper.map(config)
+                                : BigtableRequestOptions.builder().build())
+                .emptyBranchPolicy(
+                        config.getOptional(
+                                        BigtableConnectorOptions
+                                                .SINK_CONDITIONAL_EMPTY_BRANCH_POLICY)
+                                .orElse(null))
                 .createDisposition(
                         config.getOptional(BigtableConnectorOptions.SINK_CREATE_DISPOSITION)
                                 .orElse(null))

@@ -376,6 +376,34 @@ whole table.
 
 ## Sink
 
+### Insert-if-absent
+
+Set `sink.write-mode` to `insert-if-absent` to atomically insert cells only when the stored row has no cell anywhere.
+A cell in an undeclared family also makes the row exist.
+The existing row-key and family/qualifier schema, cell codec, nullable cells and writable timestamp metadata still apply.
+A null family writes no cells; a row whose every family is null is rejected.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="insert-if-absent" >}}
+
+The table and families must exist, and the application profile must use single-cluster routing with single-row transactions enabled.
+The mode accepts INSERT-only input and works with plain `INSERT VALUES` and `INSERT SELECT` on the supported Flink versions.
+It uses one `CheckAndMutateRow` RPC per input: a whole-row existence check, an empty true branch, and the input cells in the false branch.
+Concurrent requests for one absent row have no defined winner; an atomic request that finds the row absent can insert it.
+
+`sink.conditional.empty-branch-policy` is `ignore` unless configured as `fail`.
+The latter fails the job after a successful RPC selects the empty branch because the row exists.
+This is at-least-once delivery: if an applied insertion loses its acknowledgement, recovery can replay it against the now-existing row and fail repeatedly under `fail`.
+A checkpoint drains requests and does not make Bigtable writes transactional with Flink state.
+
+Tune `sink.request-timeout` and `sink.in-flight.max-requests` through `BigtableRequestOptions`.
+Idle-timeout, active-instance and per-destination-metrics options are shared with the ordinary sink.
+Explicit batching, in-flight entry/byte limits, automatic table creation/repair, rejection-limit and `sink.insert-only-input-mode` settings are rejected for this mode.
+Conditional-only options are rejected under `upsert`.
+The scan and lookup paths remain available for this ordinary schema.
+
+`ON CONFLICT` controls Flink planner/job behavior; it is not the destination's atomic existence test.
+The remaining upsert discussion applies to the default `sink.write-mode = upsert`.
+
 ### Flink 2.3 may demand ON CONFLICT
 
 Flink 2.3
@@ -448,6 +476,8 @@ existing bulk path and this explicit caveat.
 The sink exposes writable metadata named `timestamp` with type `TIMESTAMP_LTZ(6)`.
 One value is applied to every cell written by that row; a delete ignores it because `deleteRow`
 has no cell timestamp.
+In both write modes, metadata before the Unix epoch is rejected as a serialization failure.
+A negative SQL timestamp cannot request server time; use `NULL` for the writer clock.
 
 {{< sql-snippet file="flink/BigtableTableReference.sql" tag="cell-timestamps" >}}
 
@@ -464,8 +494,9 @@ The value is always millisecond-aligned, so this path cannot produce the granula
 below, and sub-millisecond precision is not kept — use the metadata column when you need it.
 The sink stamps it rather than letting the client library do so, which is what it did until
 [ADR-0149]({{< param BookRepo >}}/blob/main/docs/adr/0149-the-table-sink-stamps-its-own-writer-clock-cell-timestamp.md).
-The same `RowMutationEntry` is reused by the client when it retries an RPC, so that retry rewrites
-the same cell version.
+In `upsert` mode the client reuses the same `RowMutationEntry` when it retries an RPC, so that retry
+rewrites the same cell version.
+The `insert-if-absent` runtime makes one RPC attempt without retry.
 A Flink recovery serializes the record again, however, and therefore takes a new writer-clock value.
 Use a stable event timestamp from the record when the same version must be addressed across job
 replay.
@@ -704,7 +735,7 @@ They do not change point lookups or FULL-cache reloads, whose loader and memory 
 They are rejected when `scan.mode = change-stream`.
 
 `scan.mode`, `null-string-literal`, `decode.trailing-bytes`, `scan.row-key-encoding`,
-`lookup.async`, `sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to
+`lookup.async`, `sink.cell-timestamp.truncate-to-millis`, `sink.insert-only-input-mode` and `sink.write-mode` belong to
 the table layer because they configure its codec, runtime shape or planner contract rather than a
 DataStream builder.
 
@@ -767,6 +798,10 @@ DataStream builder.
 
 | Option | Type | Maps to |
 |---|---|---|
+| `sink.write-mode` | Enum | Destination operation: `upsert` (default) or `insert-if-absent` |
+| `sink.conditional.empty-branch-policy` | Enum | `emptyBranchPolicy(...)`; `ignore` or `fail`, conditional mode only |
+| `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional mode only, at least 1 ms |
+| `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional mode only |
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
@@ -779,9 +814,9 @@ DataStream builder.
 | `sink.recovery.initial-backoff` | Duration | `BigtableWriterOptions.recoveryInitialBackoff(...)`, the budget for repairing a missing table or family |
 | `sink.recovery.max-backoff` | Duration | `BigtableWriterOptions.recoveryMaxBackoff(...)` |
 | `sink.recovery.max-attempts` | Integer | `BigtableWriterOptions.recoveryMaxAttempts(...)` |
-| `sink.destination-idle-timeout` | Duration | `BigtableWriterOptions.destinationIdleTimeout(...)` |
-| `sink.max-active-instances` | Integer | `BigtableWriterOptions.maxActiveInstances(...)`. **Inert from SQL**: one DDL sink names one instance, so every valid positive cap already contains it. It exists so the DDL surface stays one key per writer knob |
-| `sink.metrics.per-destination` | Boolean | `BigtableWriterOptions.perDestinationMetrics(...)` |
+| `sink.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)` on the selected runtime options |
+| `sink.max-active-instances` | Integer | `maxActiveInstances(...)` on the selected runtime options. **Inert from SQL**: one DDL sink names one instance, so every valid positive cap already contains it. It exists so the DDL surface stays one key per writer knob |
+| `sink.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` on the selected runtime options |
 | `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
 
 ### Table creation

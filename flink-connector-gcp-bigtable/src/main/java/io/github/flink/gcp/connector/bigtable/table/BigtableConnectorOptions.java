@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.MemorySize;
 
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
 
 import java.time.Duration;
 import java.util.List;
@@ -457,6 +458,40 @@ public final class BigtableConnectorOptions {
     // ------------------------------------------------------------------------
     //  Sink
     // ------------------------------------------------------------------------
+
+    /** The destination-side write operation: 'upsert' or atomic whole-row 'insert-if-absent'. */
+    public static final ConfigOption<WriteMode> SINK_WRITE_MODE =
+            ConfigOptions.key("sink.write-mode")
+                    .enumType(WriteMode.class)
+                    .defaultValue(WriteMode.UPSERT)
+                    .withDescription(
+                            "The destination-side write operation: 'upsert' or atomic whole-row 'insert-if-absent'.");
+
+    /**
+     * The policy when a successful conditional request selects an empty mutation branch: 'ignore'
+     * or 'fail'.
+     */
+    public static final ConfigOption<EmptyBranchPolicy> SINK_CONDITIONAL_EMPTY_BRANCH_POLICY =
+            ConfigOptions.key("sink.conditional.empty-branch-policy")
+                    .enumType(EmptyBranchPolicy.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "The policy when a successful conditional request selects an empty mutation branch: 'ignore' or 'fail'.");
+
+    /** The deadline for a single conditional RPC, with no retry. */
+    public static final ConfigOption<Duration> SINK_REQUEST_TIMEOUT =
+            ConfigOptions.key("sink.request-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The deadline for a single conditional RPC, with no retry.");
+
+    /** The maximum number of conditional requests in flight per writer subtask. */
+    public static final ConfigOption<Integer> SINK_IN_FLIGHT_MAX_REQUESTS =
+            ConfigOptions.key("sink.in-flight.max-requests")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum number of conditional requests in flight per writer subtask.");
 
     /**
      * The app profile the writes are attributed to. Named for the sink rather than shared, because

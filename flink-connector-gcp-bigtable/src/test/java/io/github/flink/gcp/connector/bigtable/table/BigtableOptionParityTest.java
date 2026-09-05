@@ -59,9 +59,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Six surfaces: the writer options, the sink builder, the table-creation options, the bounded
  * {@code BigtableSourceBuilder}, the {@code BigtableChangeStreamSourceBuilder}, and the single-row
- * request options, whose every knob is recorded as having no key yet. The two source builders are
- * alternative scan modes, so their shared destination/profile/credential keys are pinned explicitly
- * rather than treated as two setters in one runtime path.
+ * request options, mapped by insert-if-absent. The two source builders are alternative scan modes,
+ * so their shared destination/profile/credential keys are pinned explicitly rather than treated as
+ * two setters in one runtime path.
  */
 class BigtableOptionParityTest {
 
@@ -126,24 +126,15 @@ class BigtableOptionParityTest {
         return Collections.unmodifiableMap(map);
     }
 
-    /**
-     * {@code BigtableRequestOptions.Builder}: every knob, and why none has a key yet. The
-     * single-row request runtime ships without a table entry point (ADR-0148); the first consuming
-     * write mode, with #1177's mode option, is what gives these keys. Listed here rather than
-     * skipped so that PR finds the gap by a failing assertion and not by a reader's memory.
-     */
-    private static final Map<String, String> REQUEST_OPTIONS_NO_DDL = requestOptionsExemptions();
-
-    private static Map<String, String> requestOptionsExemptions() {
-        String reason = "no table entry point consumes the single-row runtime yet (ADR-0148)";
-        Map<String, String> map = new LinkedHashMap<>();
-        map.put("maxInFlightRequests", reason);
-        map.put("requestTimeout", reason);
-        map.put("destinationIdleTimeout", reason);
-        map.put("maxActiveInstances", reason);
-        map.put("perDestinationMetrics", reason);
-        return Collections.unmodifiableMap(map);
-    }
+    /** Every single-row request option is mapped by the conditional SQL runtime. */
+    private static final Map<String, ConfigOption<?>> REQUEST_OPTIONS =
+            Map.of(
+                    "maxInFlightRequests", BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS,
+                    "requestTimeout", BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
+                    "destinationIdleTimeout",
+                            BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
+                    "maxActiveInstances", BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES,
+                    "perDestinationMetrics", BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION);
 
     /** {@code BigtableSourceBuilder}: the setters a {@code WITH} clause can reach. */
     private static final Map<String, ConfigOption<?>> SOURCE_BUILDER = sourceBuilder();
@@ -239,6 +230,9 @@ class BigtableOptionParityTest {
 
     private static Map<String, String> notASetter() {
         Map<String, String> map = new LinkedHashMap<>();
+        map.put(
+                BigtableConnectorOptions.SINK_WRITE_MODE.key(),
+                "selects the destination-side write runtime");
         map.put(
                 BigtableConnectorOptions.PROJECT.key(),
                 "a component of the TableDestination that table(...) takes");
@@ -345,9 +339,9 @@ class BigtableOptionParityTest {
     }
 
     @Test
-    void everyRequestKnobIsRecordedAsHavingNoOptionYet() {
+    void everyRequestKnobHasAnOption() {
         assertThat(publicSettersOf(BigtableRequestOptions.Builder.class))
-                .isEqualTo(REQUEST_OPTIONS_NO_DDL.keySet());
+                .isEqualTo(REQUEST_OPTIONS.keySet());
     }
 
     @Test
@@ -385,12 +379,36 @@ class BigtableOptionParityTest {
                         .collect(Collectors.toList());
 
         assertThat(sinkKeys).doesNotHaveDuplicates();
+        assertThat(
+                        java.util.stream.Stream.concat(
+                                        REQUEST_OPTIONS.values().stream(),
+                                        SINK_BUILDER.values().stream())
+                                .map(ConfigOption::key)
+                                .collect(Collectors.toList()))
+                .doesNotHaveDuplicates();
         assertThat(sourceKeys).doesNotHaveDuplicates();
         assertThat(
                         CHANGE_STREAM_SOURCE_BUILDER.values().stream()
                                 .map(ConfigOption::key)
                                 .collect(Collectors.toList()))
                 .doesNotHaveDuplicates();
+    }
+
+    @Test
+    void sinkModesShareExactlyIdleTimeoutInstanceCapAndDestinationMetrics() {
+        Set<String> bulk =
+                WRITER_OPTIONS.values().stream().map(ConfigOption::key).collect(Collectors.toSet());
+        Set<String> shared =
+                REQUEST_OPTIONS.values().stream()
+                        .map(ConfigOption::key)
+                        .filter(bulk::contains)
+                        .collect(Collectors.toSet());
+
+        assertThat(shared)
+                .containsExactlyInAnyOrder(
+                        BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT.key(),
+                        BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES.key(),
+                        BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION.key());
     }
 
     @Test
@@ -437,6 +455,8 @@ class BigtableOptionParityTest {
         SINK_BUILDER.values().forEach(o -> mapped.add(o.key()));
         SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
         CHANGE_STREAM_SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
+        REQUEST_OPTIONS.values().forEach(o -> mapped.add(o.key()));
+        mapped.add(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY.key());
         mapped.addAll(NOT_A_SETTER.keySet());
 
         Set<String> declared = declaredKeys();

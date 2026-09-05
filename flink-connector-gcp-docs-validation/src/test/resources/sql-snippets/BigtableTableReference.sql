@@ -151,3 +151,19 @@ CREATE TABLE profiles_with_event_time (
 INSERT INTO profiles_with_event_time
 SELECT user_id, ROW(name, email), event_time FROM staged_profiles;
 -- end::cell-timestamps[]
+
+-- tag::insert-if-absent[]
+CREATE TABLE new_users (
+  row_key STRING,
+  profile ROW<name STRING, email STRING>
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'users',
+  'sink.app-profile-id' = 'single-cluster',
+  'sink.write-mode' = 'insert-if-absent'
+);
+
+INSERT INTO new_users VALUES ('u1', ROW('Alice', 'alice@example.com'));
+-- end::insert-if-absent[]

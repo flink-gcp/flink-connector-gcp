@@ -62,17 +62,19 @@ import java.util.function.LongSupplier;
  * answered before the callback was registered — and must complete the {@link ResultFuture} from
  * there. So the destination pool stays task-thread-only, and everything an answer touches is
  * thread-safe: the in-flight ledger, the counters, and the handle's one-shot settlement that
- * decides between the answer and Flink's timeout when both arrive. {@link #result(Object, Object)}
- * runs on the client thread too.
+ * decides between the answer and Flink's timeout when both arrive. {@link #result(Object, Object,
+ * TableDestination, RowRequest)} runs on the client thread too.
  *
  * <h2>Capacity and timeouts</h2>
  *
  * <p>The operator's capacity — the number handed to {@code AsyncDataStream} — is this surface's
- * in-flight bound; {@code BigtableRequestOptions.maxInFlightRequests} is the sink writer's, and the
- * documentation asks that the two be the same number. The client's own deadline, {@code
- * BigtableRequestOptions.requestTimeout}, is where a slow request is expected to fail, with a
- * Bigtable-named message and an ambiguity verdict; Flink's operator timeout should sit above it,
- * and when it fires first {@link #timeout} cancels the request and fails the input naming both.
+ * in-flight bound. The conditional async helper passes {@code
+ * BigtableRequestOptions.maxInFlightRequests} as that capacity; callers constructing an operator
+ * directly supply its capacity themselves. This function has no separate admission gate. The
+ * client's own deadline, {@code BigtableRequestOptions.requestTimeout}, is where a slow request is
+ * expected to fail, with a Bigtable-named message and an ambiguity verdict; Flink's operator
+ * timeout should sit above it, and when it fires first {@link #timeout} cancels the request and
+ * fails the input naming both.
  *
  * <p>Under the operator's retry mode ({@code AsyncDataStream.unorderedWaitWithRetry} and its
  * ordered twin) the retries are the job's, chosen by its predicate: each attempt is a new call of
@@ -231,10 +233,14 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
      *
      * @param input the input
      * @param answer the request's answer
+     * @param destination the destination resolved for this invocation
+     * @param request the request serialized for this invocation
      * @return the output
      * @throws Exception if the answer cannot be mapped; fails the input
      */
-    protected abstract OUT result(IN input, R answer) throws Exception;
+    protected abstract OUT result(
+            IN input, R answer, TableDestination destination, RowRequest<R> request)
+            throws Exception;
 
     @Override
     public void open(OpenContext openContext) throws Exception {
@@ -319,6 +325,7 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
                 new Answer(
                         input,
                         new RequestHandle(state, request.operation(), request.rowKey(), future),
+                        request,
                         resultFuture);
         outstanding.put(resultFuture, answer);
         ApiFutures.addCallback(future, answer, Runnable::run);
@@ -547,7 +554,14 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         private final RequestHandle handle;
         private final ResultFuture<OUT> resultFuture;
 
-        private Answer(IN input, RequestHandle handle, ResultFuture<OUT> resultFuture) {
+        private final RowRequest<R> request;
+
+        private Answer(
+                IN input,
+                RequestHandle handle,
+                RowRequest<R> request,
+                ResultFuture<OUT> resultFuture) {
+            this.request = request;
             this.input = input;
             this.handle = handle;
             this.resultFuture = resultFuture;
@@ -568,7 +582,8 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
                 metrics.requestCompleted();
                 OUT output;
                 try {
-                    output = result(input, answer);
+                    request.onSuccess(answer, metrics);
+                    output = result(input, answer, handle.state.destination, request);
                 } catch (Exception e) {
                     completeExceptionally(e);
                     return;
@@ -601,7 +616,8 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
                                             + handle.state.destination
                                             + " was rejected because "
                                             + RequestFailures.ROW_LEVEL_REASON
-                                            + ".",
+                                            + "."
+                                            + RequestFailures.routingHint(handle.operation),
                                     throwable);
                 } else {
                     failure =

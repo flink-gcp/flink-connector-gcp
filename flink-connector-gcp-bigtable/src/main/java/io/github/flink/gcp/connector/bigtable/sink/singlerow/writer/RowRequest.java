@@ -23,6 +23,8 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 
+import java.io.IOException;
+
 /**
  * One single-row request, built from a record and started against a client once its destination is
  * known.
@@ -66,4 +68,14 @@ public interface RowRequest<R> {
      *     types, so no client type reaches a stream
      */
     ApiFuture<R> start(SingleRowClient client, TableDestination destination);
+
+    /**
+     * Interprets a successful answer after the runtime counts completion. The async surface calls
+     * this on callback threads, so implementations must be thread-safe.
+     *
+     * @param answer the response to this request
+     * @param metrics the runtime's counters
+     * @throws IOException if an outcome policy fails the job
+     */
+    default void onSuccess(Object answer, SingleRowRequestMetrics metrics) throws IOException {}
 }

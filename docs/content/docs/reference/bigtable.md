@@ -123,20 +123,53 @@ that retunes them is inherited. Lowering `batchElementCountThreshold` shortens t
 mutation reaches the service at low volume; the client also sends a batch after one second
 regardless.
 
+## `BigtableConditionalSink.builder()`
+
+A key file and an emulator endpoint cannot be combined; `build()` rejects that configuration.
+
+| Option | Default | What it does |
+|---|---|---|
+| `table` / `destinationResolver` | required | Fixed table or per-record resolver; the last setter wins and resolution precedes serialization |
+| `serializer` | required | `ConditionalSerializationSchema`; null means skip |
+| `appProfileId` | *unset ⇒ instance default profile* | Application profile requiring single-cluster routing with single-row transactions enabled |
+| `requestOptions` | `BigtableRequestOptions.builder().build()` | RPC deadline, request capacity and client lifecycle |
+| `emptyBranchPolicy` | `IGNORE` | Whether a successful response selecting an empty list is accepted or fails the job |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Key-file path readable by each TaskManager |
+| `emulatorEndpoint` | unset | Emulator endpoint; uses plaintext and no credentials |
+| `failedRequestHandler` | `FailureHandler.failJob()` | Handles serialization and row-level RPC failures; ambiguous failures and empty-branch policy failures bypass it |
+
+## `BigtableConditionalAsync.builder()`
+
+A key file and an emulator endpoint cannot be combined; `build()` rejects that configuration.
+
+| Option | Default | What it does |
+|---|---|---|
+| `table` / `destinationResolver` | required | Fixed table or per-record resolver; the last setter wins and resolution precedes serialization |
+| `serializer` | required | `ConditionalSerializationSchema`; null means skip |
+| `appProfileId` | *unset ⇒ instance default profile* | Application profile requiring single-cluster routing with single-row transactions enabled |
+| `requestOptions` | `BigtableRequestOptions.builder().build()` | RPC deadline, request capacity and client lifecycle |
+| `emptyBranchPolicy` | `IGNORE` | Whether a successful response selecting an empty list is accepted or fails the job |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Key-file path readable by each TaskManager |
+| `emulatorEndpoint` | unset | Emulator endpoint; uses plaintext and no credentials |
+
+`orderedWait(input, timeout)` and `unorderedWait(input, timeout)` require an explicit Flink timeout no larger than `Duration.ofNanos(Long.MAX_VALUE)`.
+After Flink truncates that value to milliseconds, it must remain greater than `requestTimeout`.
+The async helper exposes no failure handler; the resolver and serializer receive a null writer context.
+
 ## `BigtableRequestOptions`
 
 The options of the
 [single-row request runtime]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes)
-behind `CheckAndMutateRow` and `ReadModifyWriteRow`; the entry points that take them arrive with
-[#1179]({{< param BookRepo >}}/issues/1179) and [#1180]({{< param BookRepo >}}/issues/1180). Every
-knob is defaulted, and there is no shared default instance: `builder().build()` is the empty
+behind `CheckAndMutateRow` and `ReadModifyWriteRow`.
+The conditional sink and async helper both consume these options; the read-modify-write entry points remain in [#1180]({{< param BookRepo >}}/issues/1180).
+Every knob is defaulted, and there is no shared default instance: `builder().build()` is the empty
 configuration. The type is separate from `BigtableWriterOptions` because a single-row request has
 no batch thresholds and no in-flight bytes — one RPC for one row, whose answer is a value — so what
 it needs is a deadline and a count.
 
 | Option | Default | What it does |
 |---|---|---|
-| `maxInFlightRequests` | 100 | Caps requests the sink surface keeps outstanding — accepted by the client and not yet answered. At the cap `write()` yields to the task mailbox until completions bring the count down. The async surface does not read it: its bound is the capacity handed to `AsyncDataStream`, which should be set to the same number |
+| `maxInFlightRequests` | 100 | Caps requests the sink surface keeps outstanding — accepted by the client and not yet answered. At the cap `write()` yields to the task mailbox until completions bring the count down. The conditional async helper passes this value to `AsyncDataStream` as its operator capacity; Flink enforces that bound |
 | `requestTimeout` | 20 s | The deadline of one request, applied to the client as a single attempt's whole budget: no retries, and the timeout is the total. A request past it fails with `DEADLINE_EXCEEDED`, which the runtime treats as [ambiguous]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling) and counts under `requestsTimedOut`. On the async surface, Flink's operator timeout should be longer than this, so that the client's deadline fires first, and under the operator's retry mode longer than this for every attempt the strategy allows, plus the backoff. At least 1 ms |
 | `destinationIdleTimeout` | 1 h | How long a table may go without requests before the runtime drops its per-table state and its lease on the instance's client. Swept at the end of each successful non-final flush on the sink surface, and as inputs arrive — at most once per idle timeout, skipping a table with a request in flight — on the async surface; an evicted table rebuilds transparently. To never evict, set a very large duration — up to `Duration.ofNanos(Long.MAX_VALUE)` |
 | `maxActiveInstances` | 16 | Caps open-or-closing instance clients per subtask. At capacity the sink surface drains its outstanding requests and evicts the least recently used instance; the async surface, which cannot wait, evicts an instance with nothing in flight or fails the record naming this option. Many tables sharing one instance consume one slot |

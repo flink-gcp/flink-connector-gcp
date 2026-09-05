@@ -217,8 +217,9 @@ public final class BigtableRequestOptions implements Serializable {
          * answered. A write at the cap yields to the task mailbox until completions bring the count
          * down. Defaults to {@value #DEFAULT_MAX_IN_FLIGHT_REQUESTS}.
          *
-         * <p>The async-operator surface does not read this: its bound is the capacity handed to
-         * {@code AsyncDataStream}, and the documentation asks that the two be the same number.
+         * <p>The conditional async helper passes this value to {@code AsyncDataStream} as its
+         * operator capacity. Flink enforces that bound; the async request function has no separate
+         * admission gate.
          *
          * @param maxInFlightRequests the in-flight cap, positive
          * @return this builder

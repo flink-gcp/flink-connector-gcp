@@ -1,0 +1,185 @@
+/*
+ * Copyright 2026 The flink-gcp authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigtable.sink.conditional;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.util.Preconditions;
+
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
+import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
+
+/**
+ * Builder for {@link BigtableConditionalSink}.
+ *
+ * @param <T> the input type
+ */
+@PublicEvolving
+public final class BigtableConditionalSinkBuilder<T> {
+    private DestinationResolver<? super T> destinationResolver;
+    private ConditionalSerializationSchema<? super T> serializer;
+    private String appProfileId;
+    private BigtableRequestOptions requestOptions = BigtableRequestOptions.builder().build();
+    private EmptyBranchPolicy emptyBranchPolicy = EmptyBranchPolicy.IGNORE;
+    private String serviceAccountKeyFile;
+    private EmulatorEndpoint emulatorEndpoint;
+    private FailureHandler<? super FailedRequest> failedRequestHandler = FailureHandler.failJob();
+
+    BigtableConditionalSinkBuilder() {}
+
+    /**
+     * Writes to one table; this and destinationResolver are last-writer-wins.
+     *
+     * @param table the table
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> table(TableDestination table) {
+        this.destinationResolver =
+                new FixedDestinationResolver(
+                        Preconditions.checkNotNull(table, "table must not be null"));
+        return this;
+    }
+
+    /**
+     * Resolves each destination before serialization.
+     *
+     * @param destinationResolver the resolver
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> destinationResolver(
+            DestinationResolver<? super T> destinationResolver) {
+        this.destinationResolver =
+                Preconditions.checkNotNull(
+                        destinationResolver, "destinationResolver must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the required schema; a null serialization result skips an input.
+     *
+     * @param serializer the schema
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> serializer(
+            ConditionalSerializationSchema<? super T> serializer) {
+        this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
+        return this;
+    }
+
+    /**
+     * Selects an application profile; conditional writes require single-cluster routing and
+     * single-row transactions.
+     *
+     * @param appProfileId the profile ID
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> appProfileId(String appProfileId) {
+        Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
+        Preconditions.checkArgument(!appProfileId.isBlank(), "appProfileId must not be blank");
+        this.appProfileId = appProfileId;
+        return this;
+    }
+
+    /**
+     * Sets deadlines and bounded request/client capacity.
+     *
+     * @param requestOptions the options
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> requestOptions(BigtableRequestOptions requestOptions) {
+        this.requestOptions =
+                Preconditions.checkNotNull(requestOptions, "requestOptions must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the successful empty-branch policy; FAIL can keep failing on replay after an applied
+     * insertion.
+     *
+     * @param emptyBranchPolicy the policy
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> emptyBranchPolicy(
+            EmptyBranchPolicy emptyBranchPolicy) {
+        this.emptyBranchPolicy =
+                Preconditions.checkNotNull(emptyBranchPolicy, "emptyBranchPolicy must not be null");
+        return this;
+    }
+
+    /**
+     * Selects a service-account key file.
+     *
+     * @param serviceAccountKeyFile the key-file path
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        Preconditions.checkNotNull(serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(
+                !serviceAccountKeyFile.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
+        return this;
+    }
+
+    /**
+     * Routes requests to an emulator.
+     *
+     * @param emulatorEndpoint the endpoint
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> emulatorEndpoint(EmulatorEndpoint emulatorEndpoint) {
+        this.emulatorEndpoint =
+                Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
+        return this;
+    }
+
+    /**
+     * Handles row-level failures; ambiguous failures and successful empty-branch policy failures
+     * always fail the job.
+     *
+     * @param failedRequestHandler the handler
+     * @return this builder
+     */
+    public BigtableConditionalSinkBuilder<T> failedRequestHandler(
+            FailureHandler<? super FailedRequest> failedRequestHandler) {
+        this.failedRequestHandler =
+                Preconditions.checkNotNull(
+                        failedRequestHandler, "failedRequestHandler must not be null");
+        return this;
+    }
+
+    /**
+     * Builds the configured sink.
+     *
+     * @return the sink
+     */
+    public BigtableConditionalSink<T> build() {
+        return new BigtableConditionalSink<>(
+                new ConditionalConfig<>(
+                        destinationResolver,
+                        serializer,
+                        appProfileId,
+                        requestOptions,
+                        emptyBranchPolicy,
+                        serviceAccountKeyFile,
+                        emulatorEndpoint),
+                failedRequestHandler);
+    }
+}
