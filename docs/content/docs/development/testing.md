@@ -35,7 +35,9 @@ in the wrong lane. Both kinds run in `just verify`. The integration tests
 talk to Docker-backed service emulators, so Docker must be running, but no Google Cloud project
 is touched. An emulator is a convenience rather than an authority: the deviations that have
 been measured are recorded on the connector pages, and the real service is exercised by the
-gated suites below.
+gated suites below. The emulator images are pinned in `flink-connector-gcp-test-utils`, and
+`just check-emulator-images` — see [Checks]({{< relref "docs/development/checks" >}}) — watches
+the registries for them.
 
 While iterating, scope the run to what changed rather than rebuilding the reactor — and keep
 `-am`, so the sibling modules come from the working tree rather than from whatever jars an

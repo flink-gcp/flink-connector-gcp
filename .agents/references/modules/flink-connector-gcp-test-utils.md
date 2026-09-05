@@ -18,6 +18,13 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **Real-GCP gating annotations never move here** — `scripts/e2e-gated-its.sh` parses the
   annotations on concrete classes; a meta-annotation or shared base would silently defeat it.
 - The justfile `binary-compat`/`e2e` install lists name this module; a rename must update them.
+- Each `<Product>EmulatorContainers` class pins its image in one `IMAGE` literal, and
+  `scripts/check-emulator-images.sh` (ADR-0151) discovers the pins from exactly that name and
+  shape — one whole quoted `registry/path:tag` argument per class outside comments; a
+  concatenation or a digest reads as none — so a sixth emulator follows the name or goes
+  unwatched, and a second quoted full image reference in one of these files fails the weekly
+  check by design. Pub/Sub and Bigtable duplicate the google-cloud-cli pin on purpose so a bump
+  declares its scope (#27).
 - **The bar for a test in this module is narrow**: only behaviour a consumer *cannot* reach
   (`AwaitsTest`, `LogCaptureTest`). Anything covered incidentally by a consumer's ITs stays
   uncovered here.

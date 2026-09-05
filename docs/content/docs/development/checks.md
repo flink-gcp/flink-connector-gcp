@@ -41,6 +41,7 @@ it is cheaper to run the relevant checker locally than to discover it on the pul
 | `just check-doc-sql-snippets` | Every code block labeled `sql` in examples, quickstarts, and Table connector references is source-backed; each Flink SQL region reaches its command, catalog, planner, enclosed-fragment, or intentional-negative boundary, while GoogleSQL DDL and seed statements execute against the Spanner emulator |
 | `just check-notice <module>` / `just check-notice-sources` | A shaded jar's generated `NOTICE` matches what it bundles, and the pinned licence texts still match what is served |
 | `just check-gated-tags` | Every credential-gated test carries both its environment gate and the tag that keeps it out of ordinary builds |
+| `just check-emulator-images` | Every emulator image the integration tests pin is still served by its registry, and a gcr.io pin is not about to rotate out of the retention window |
 | `just lint` / `just test-scripts` | The scripts, workflows, rendered Markdown and OpenTofu formatting — and the checkers' own test suite |
 
 `just --list` is the full index; the table stays at this altitude so it does not chase every

@@ -291,6 +291,17 @@ binary-compat ceiling:
 check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.yaml | cut -d"'" -f2`:
     scripts/check-flink-release.sh {{ ceiling }}
 
+# The pins are string literals in the test-utils *EmulatorContainers classes,
+# and a registry can drop one under an unchanged repository (issue #1196), so
+# the script asks each registry, and gcr.io for its retention margin. Network
+# by design, which is why it runs from weekly.yaml (the emulator_images job)
+# and is not part of `just lint` — the check-notice-sources rule. The script's
+# header carries the failure modes and the MARGIN_DAYS override.
+#
+# Do the registries still serve the pinned emulator images, and for how long?
+check-emulator-images:
+    scripts/check-emulator-images.sh
+
 # The guard logic lives in scripts/worktree-env.sh, where shellcheck reads it
 # (issue #156).
 #

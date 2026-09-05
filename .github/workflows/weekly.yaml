@@ -4,7 +4,7 @@ name: Weekly
 # verify.yaml builds one version for fast feedback (the same split Flink's own
 # externalized connectors use between push_pr.yml and weekly.yml).
 #
-# Six things are checked here:
+# Seven things are checked here:
 #   * every supported minor still compiles and passes the suite
 #   * a jar built against the floor still runs on the newest supported minor
 #     without recompiling, which is what lets this project publish one artifact
@@ -17,6 +17,9 @@ name: Weekly
 #   * the pinned licence-text sources still serve the checked-in bytes even
 #     when nothing in the repository changed — verify.yaml re-fetches them
 #     only on a licence-input change — see notice_sources
+#   * every emulator image the integration tests pin is still served by its
+#     registry, and the gcr.io pins are not about to rotate out of the
+#     retention window that took 441.0.0-emulators (#1196) — see emulator_images
 on:
   schedule:
     # Sundays. Off the hour, because everything scheduled at :00 lands on the
@@ -59,7 +62,7 @@ jobs:
     # there. The immutable ID of flink-gcp/flink-connector-gcp, not the owner
     # name: a fork gets its own ID, while a transfer or a rename changes the
     # name and would switch a name guard off silently, leaving every job in
-    # this file green and idle. The three guards below are the same test.
+    # this file green and idle. The four guards below are the same test.
     if: github.repository_id == '1305440656'
     name: ${{ matrix.role }} (JDK ${{ matrix.jdk }})
     runs-on: ubuntu-latest
@@ -267,3 +270,32 @@ jobs:
 
       - name: Regenerate the NOTICEs from the pinned sources and diff
         run: just check-notice-sources
+
+  # The emulator images are string literals in the test-utils
+  # *EmulatorContainers classes, and a registry can drop one under an
+  # unchanged repository (issue #1196) — nothing else asks the registry, and
+  # the per-PR lanes only find out by failing. The header of
+  # scripts/check-emulator-images.sh carries the failure modes.
+  #
+  # Independent of the Flink-range jobs above, like notice_sources: a rotten
+  # pin must not stop the range from being verified, nor the other way round.
+  # No JDK: the docker CLI, curl and python3 come from the runner image (the
+  # python is stdlib only, the scripts/ci-gate.py precedent).
+  emulator_images:
+    if: github.repository_id == '1305440656'
+    name: Emulator image pins still served?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in verify.yaml.
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: just
+
+      - name: Ask each registry for the pinned manifests and the gcr.io margins
+        run: just check-emulator-images

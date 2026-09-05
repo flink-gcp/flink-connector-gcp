@@ -185,6 +185,16 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   is argued rather than an oversight: those skills exist for allowlist judgment — which entry,
   with what reason — and this check has no allowlist and exactly two mechanical fixes, both named
   in the failure message
+- `just check-emulator-images` — do the registries still serve the emulator images the
+  integration tests pin, and for how long (#1200; ADR-0151, after the #1196 rotation)? The pins
+  are string literals in the `IMAGE` constant of each test-utils `*EmulatorContainers` class,
+  which no dependabot ecosystem reads. `scripts/check-emulator-images.sh` discovers the pins
+  from those classes — exactly one whole quoted `registry/path:tag` argument per class, or it
+  fails naming the file — asks `docker manifest inspect` whether each still pulls, and on gcr.io
+  reads the upload times so a pin within `MARGIN_DAYS` of the oldest surviving tag fails while it
+  still pulls. Network by design: the weekly `emulator_images` job, never `just lint`; needs the
+  docker CLI. **A checker with no `curate-*` skill**, for `check-gated-tags`'s reason: no
+  allowlist, and the failure names the pin, the file and the repair
 - `just ci-maven-args` — CI's module-selection decision (#243; ADR-0058 carries the design):
   which Maven modules does a change build? The mapping is derived from the poms, never
   configured — the script's docstring is the specification.
@@ -668,7 +678,10 @@ facts); the rules a session needs:
 - The version matrix lives in `weekly.yaml`, not `verify.yaml` — per-PR CI stays single-version
   for latency. Rows carry a **role** (`floor` / `ceiling` / `next` / `lts`) resolved from the
   `FLINK_*` envs at the top of the file, and every matrix job checks out `github.sha`; the
-  whys, including why the `floor` row passes no `-Dflink.version`, are in ADR-0053
+  whys, including why the `floor` row passes no `-Dflink.version`, are in ADR-0053. The
+  upstream probes beside the matrix — `new_minor_check`, `notice_sources` and `emulator_images`
+  (ADR-0151) — are deliberately independent jobs: an upstream moving must not stop the range
+  from being verified, nor the other way round
 - **The test frameworks follow Flink across a major.** The root POM imports `junit-bom` and
   `testcontainers-bom` in `dependencyManagement`, so those imports set the version of artifacts
   **Flink's own test utilities declare** — `flink-test-utils-junit` 2.2.1 declares
