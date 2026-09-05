@@ -41,9 +41,8 @@ to make a checkpoint mean something.
 
 Two properties of the service shape the design more than anything else. The mutations inside one
 `RowMutationEntry` apply atomically to its row, while different entries do not form one atomic
-operation. A write also carries a **cell timestamp**, which turns at-least-once from a duplicate
-problem into a choice — the same mutation applied twice is either an overwrite or a second version,
-depending on what the serializer set.
+operation. A `setCell` write also carries a **cell timestamp**: a stable explicit timestamp targets the same version after replay, while a regenerated timestamp can add a version.
+Aggregate updates have a separate [replay boundary](#delivery-guarantees-and-state).
 
 **Submission order is not a same-key last-write-wins guarantee.** The client batches entries into
 `MutateRows`, whose contract permits arbitrary application order even between entries for the same
@@ -52,7 +51,9 @@ reversals in 86,196 mirrored same-row pairs, but that bounded observation does n
 contract. If dependent mutations need a defined winner, encode the version in the row key or split
 them into writes whose completion is awaited before the next begins.
 `batchElementCountThreshold(1)` only makes concurrent one-entry requests and does not establish
-order. ADR-0093 records the measurement and decision.
+order.
+Upstream aggregation avoids this collision only when it emits at most one mutation per key for the entire write, not merely per window.
+ADR-0093 records the measurement and decision.
 
 ## Credential file deployment
 
@@ -411,8 +412,18 @@ Returning a `RowMutationEntry` rather than a narrower value type is deliberate: 
 own mutation builder, so `setCell`, `deleteCells`, `deleteFamily`, `deleteRow` and the aggregate
 `addToCell` and `mergeToCell` are all expressible, several of them per record, and the sink adds no
 vocabulary of its own to learn.
-The two aggregate mutations take a value model the client library has not settled, so a client
-upgrade may move their argument types.
+The writer passes the complete entry to `BigtableDataClient.newBulkMutationBatcher` without translating its mutations.
+[Mutations within one entry](https://cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#mutaterowsrequest.entry) execute in their listed order and atomically; the batch as a whole is not atomic.
+The client offers typed `Value` arguments as well as convenience overloads for integer inputs and encoded accumulator bytes.
+The typed value model is a client-library beta API, so upgrades can move that surface.
+In the pinned SDK 2.82.0, the `mergeToCell` convenience overload encodes accumulator input as `raw_value`.
+The typed SDK `Value` model has no `bytes_value` variant either.
+An Int64 Sum write to real Bigtable on 2026-09-05 rejected that input and required `bytes_value`; ADR-0041 records that observation and the successful rerun.
+The [aggregate example]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) uses the SDK's public beta protobuf wrappers to supply `bytes_value`; the sink forwards that entry unchanged too.
+
+Aggregate updates require an aggregate family whose input or state type matches the supplied value.
+See the source-backed [aggregate updates]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) and [immediate column replacement]({{< relref "docs/examples/bigtable" >}}#replacing-a-column-immediately) examples.
+The Table sink's ordinary upserts do not expose these mutation patterns; [#1176]({{< param BookRepo >}}/issues/1176) and [#1177]({{< param BookRepo >}}/issues/1177) own the opt-in SQL modes.
 Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
 the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
 in the serializer rather than upstream of the sink. Every serializer in this connector family reads
@@ -711,6 +722,18 @@ makes it a [row-level failure](#error-handling) and so droppable — measured ag
 inferred. Worth reading before running a dropping policy: a job that multiplies the timestamp
 wrongly produces the violation on *every* record, which is the case that puts the sink into the
 [isolation pass](#error-handling) for the whole stream and costs it its batching.
+
+For `addToCell` and `mergeToCell`, the timestamp selects the aggregate cell to update.
+It must remain stable when a replay is intended to address that same cell, and must match the table's timestamp granularity.
+A timestamp regenerated from a clock on replay can address a different version.
+A stable timestamp alone does not deduplicate the contribution: replaying an Int64 Sum input or accumulator can add it again to the same cell.
+The connector provides no durable input identity for aggregate mutations, and neither SDK retries nor the sink's isolation resubmissions establish a Flink exactly-once contract.
+Repeated contributions are also possible without a Flink restart: if Bigtable applies an input but its response is lost, an SDK retry can apply it again.
+A successfully completed job therefore does not prove that each aggregate input contributed only once.
+
+The delete-all-versions followed by `setCell` pattern is atomic only when both mutations are in one entry, in that order.
+A replay with the same value and timestamp leaves that replacement in place if no intervening write changed the column.
+Replaying an older replacement after a newer write can delete the newer value; an explicit timestamp does not make the deletion conditional.
 
 Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
 `deleteRow` replayed after later writes for the same key would delete those too. That is a property
@@ -1071,15 +1094,15 @@ Two pairs of knobs, doing different jobs, both on
 [`BigtableWriterOptions`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions).
 
 **Every count among them counts entries, not mutations.** An entry is one `RowMutationEntry` — one
-record the serializer returned — and it carries as many mutations as the serializer put `setCell`
-calls in it, so a job writing ten cells per record puts ten mutations behind each unit these knobs
-count. Bigtable's own documented limit is stated in the other unit: no more than
+record the serializer returned — and every set, delete, add or merge inside it counts as a mutation.
+An immediate replacement uses two mutations for one column, while a job setting ten cells per record puts ten mutations behind each unit these knobs count. Bigtable's own documented limit is stated in the other unit: no more than
 [100,000 mutations](https://cloud.google.com/bigtable/quotas) in a batch. **The two never have to be
 reconciled by a job**, because the client enforces the mutation limit itself and unconditionally: it
 flushes the accumulated batch as soon as one more entry would carry it past 100,000 mutations,
 whatever `batchElementCountThreshold` says, and refuses to build a single entry carrying more than
 that on its own. So no setting of these knobs produces an over-limit request, and a test pins both
 facts so that a client upgrade moving either one goes red.
+The SDK's 100 MiB flow-control budget described below is an outstanding-byte budget, not a documented service limit on request bytes.
 
 **The batch thresholds** (`batchElementCountThreshold`, `batchRequestByteThreshold`) are handed to
 the client and decide when it sends a batch. Both are unset by default, which leaves the client's
@@ -1165,6 +1188,11 @@ requires, and a handler failure raised inside a completion callback surviving to
 fake completes nothing on its own, which is what lets a test hold the writer at a cap; the writer
 tests carry a timeout, because a broken admission predicate hangs rather than fails.
 
+`BigtableAdvancedMutationTest` checks exact protobuf types, binary qualifiers, input/state values, timestamps and delete-then-write order after schema serialization, writer submission and isolation resubmission.
+It also decodes the failure payload to verify that a dead-letter consumer receives the whole entry.
+Its SDK characterization case pins the `mergeToCell` convenience overload's `raw_value` encoding so an overload encoding change prompts a review of the example.
+The emulator write suite seeds multiple versions and checks that delete-then-write preserves other columns while replacing the target column immediately.
+
 The adapter that wraps the client's batcher is unit-tested too
 ([#324]({{< param BookRepo >}}/issues/324)): its teardown shuts the batcher down and then releases
 the client, and releases it whatever that shutdown throws — the sink absorbs only the batcher's
@@ -1240,6 +1268,10 @@ between you and a new instance. The gated suite shows:
   and of a missing column family are pinned, and where the batch-wide rejection that the isolation
   pass answers was both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be
   answered: a good record written beside a bad one is applied, and only the bad one is routed.
+- **Aggregate and delete-then-write semantics.** The gated sink suite exercises `AddToCell` and `MergeToCell` against a pre-created Int64 Sum family, including repeated inputs with a fixed timestamp.
+  The merge uses an explicit protobuf `bytes_value` input after the service rejected SDK 2.82.0's convenience overload for Int64 Sum on 2026-09-05 (ADR-0041).
+  It also checks immediate column replacement, replay with no intervening write, and that a rejected compound entry preserves the original versions.
+  Its replay cases submit a reserialized input in a second completed job; they do not simulate an SDK retry or a checkpoint restore.
 - **How same-row entries behaved in one `MutateRows` request under a bounded campaign**
   ([#471]({{< param BookRepo >}}/issues/471), ADR-0093): 86,196 pairs across mirrored submission
   arms and request sizes from 2 through 19,998 produced zero reversals. The probe was deliberately

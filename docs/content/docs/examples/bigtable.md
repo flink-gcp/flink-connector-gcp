@@ -64,11 +64,60 @@ The worked cases below change the mutation, destination, rejection policy, or me
 
 ### Several cells, and a delete, per record
 
-One `RowMutationEntry` may carry any number of mutations, and they apply to the row atomically —
+One `RowMutationEntry` may carry up to 100,000 mutations, and they apply to the row atomically —
 which is the one atomicity guarantee Bigtable offers, and the reason a record that updates several
 columns should build one entry rather than be split upstream:
 
 {{< java-snippet file="BigtableExamplesSeveralCellsAndDelete.java" tag="bigtable-examples-several-cells-and-delete" >}}
+
+### Updating aggregate cells
+
+Bigtable can combine inputs inside an [aggregate column family](https://cloud.google.com/bigtable/docs/aggregates).
+For these examples, provision a table named `counters` with an Int64 Sum family named `totals` before submitting the job, using the [Bigtable admin tools](https://cloud.google.com/bigtable/docs/managing-tables).
+The connector's table auto-creation options do not configure aggregate families; [#1176]({{< param BookRepo >}}/issues/1176) owns that addition.
+
+`CounterUpdate` carries a row key, a bucket start in epoch milliseconds, and a signed delta.
+All updates for one counter bucket use the same row key, qualifier and bucket timestamp, so they address the same aggregate cell:
+
+{{< java-snippet file="BigtableExamplesAggregateUpdates.java" tag="bigtable-examples-aggregate-add" >}}
+
+`addToCell` contributes an input to the family's aggregation function.
+`MergeToCell` contributes an already accumulated state, such as the bytes read from an Int64 Sum cell in another table.
+The pinned Java SDK 2.82.0's `mergeToCell` convenience overload encodes that state as `raw_value`.
+Its typed `Value` model has no `bytes_value` variant either.
+An Int64 Sum write to real Bigtable on 2026-09-05 rejected that input with `INVALID_ARGUMENT: ... must use bytes_value`; ADR-0041 records the observation and the successful `bytes_value` rerun.
+The example therefore builds the protobuf input with `bytes_value` and wraps the mutation through the SDK's public beta `fromProtoUnsafe` and `createFromMutationUnsafe` methods.
+These methods bypass the mutation builder's 200 MiB byte-size guard and permit server-side timestamps on subsequently chained `setCell` calls.
+They must not be used to infer a size bound or retry idempotence; this example supplies one mutation with an explicit timestamp and a service-produced Int64 Sum accumulator.
+`CounterState` carries the destination key, bucket start and those accumulator bytes; the state must match the destination family's aggregate type.
+
+`Mutation` and `Value` below are the protobuf types from `com.google.bigtable.v2`.
+
+{{< java-snippet file="BigtableExamplesAggregateUpdates.java" tag="bigtable-examples-aggregate-merge" >}}
+
+A stable bucket timestamp selects the same cell after replay; it does not identify a unique input or prevent a Sum input from being added again.
+The sink remains at-least-once, so use these examples only when the application can tolerate repeated contributions or prevents them outside this sink.
+See [replay semantics]({{< relref "docs/connectors/datastream/bigtable" >}}#delivery-guarantees-and-state).
+
+A Flink aggregation that emits ordinary `setCell` upserts has a different meaning: it writes computed totals, while these operations ask Bigtable to combine inputs or states.
+Do not feed repeatedly emitted running totals into `addToCell` as deltas; each total would contribute again.
+The [bounded SQL example](#writing-a-bounded-aggregate-as-upserts) uses ordinary cells.
+
+### Replacing a column immediately
+
+A [delete-then-write](https://cloud.google.com/bigtable/docs/keep-only-latest-value) removes all versions of one column and writes its replacement in one atomic row entry.
+Create the `orders` table with the ordinary family `cf` first, as in the Quickstart.
+The deletion must precede `setCell` in the same `RowMutationEntry`:
+
+{{< java-snippet file="BigtableExamplesKeepLatest.java" tag="bigtable-examples-keep-latest" >}}
+
+After this entry succeeds, `cf:status` contains the replacement version and other columns are unchanged.
+A `maxVersions(1)` garbage-collection policy alone does not give that immediate result because garbage collection runs later.
+Other writers can subsequently add versions again.
+
+Separate entries remain unordered, including entries for the same row and entries in different concurrent requests.
+An older event replayed after a newer replacement can delete that newer value, even if both carry explicit timestamps.
+This pattern keeps one version at the time it is applied; applications requiring event-order winners must separate dependent writes so each completes before the next begins, or encode versions in their row keys.
 
 ### A table per day, from the record
 
@@ -158,8 +207,8 @@ Flink 2.3 requires an `ON CONFLICT DO DEDUPLICATE`, `DO ERROR`, or `DO NOTHING` 
 The default `sink.insert-only-input-mode = upsert` exposes those conflict strategies for an insert-only input too.
 An updating input remains upsert-shaped under either option value.
 
-The writer does not order two entries for the same row key when they share a bulk-mutation batch, so a streaming aggregation that emits repeated updates for one key has no latest-input-value guarantee.
-Use this bounded form only when the aggregate emits at most one final mutation per key, or separate dependent writes so one completes before the next begins.
+The writer does not order two entries for the same row key, including entries in concurrent requests, so a streaming aggregation that emits repeated updates for one key has no latest-input-value guarantee.
+Use this bounded form only when the aggregate emits at most one final mutation per key for the entire write, not merely per window, or separate dependent writes so one completes before the next begins.
 
 ### Keeping a plain insert portable
 

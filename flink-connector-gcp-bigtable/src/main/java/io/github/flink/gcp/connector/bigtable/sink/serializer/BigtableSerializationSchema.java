@@ -35,7 +35,14 @@ import java.io.Serializable;
  * the aggregate {@code addToCell} and {@code mergeToCell} — are expressible, and one record may
  * carry several of them. The two aggregate mutations take a value model the client library has not
  * settled, so a client upgrade may move their argument types. The mutations of one entry are
- * applied atomically; entries are not ordered against each other.
+ * applied in their listed order and atomically; entries are not ordered against each other, even
+ * for the same row or across concurrent requests.
+ *
+ * <p>SDK 2.82.0's {@code mergeToCell} convenience overload encodes accumulator input as {@code
+ * raw_value}, which the service rejected for Int64 Sum. The <a
+ * href="https://flink-gcp.github.io/flink-connector-gcp/docs/examples/bigtable/#updating-aggregate-cells">aggregate
+ * example</a> builds {@code bytes_value} through the client's public beta protobuf wrappers and
+ * explains their validation and timestamp caveats.
  * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="serialization-schema" -->
  *
  * <pre>{@code
@@ -48,13 +55,19 @@ import java.io.Serializable;
  *                         record.getBody());
  * }</pre>
  *
- * <p><b>Cell timestamps decide what a replay does.</b> The sink is at-least-once, so a record may
- * be written twice after a failure. A {@code setCell} carrying a stable timestamp from the record —
- * the event time, or {@code context.timestamp()} — addresses the same cell version after Flink
- * serializes the record again. The three-argument {@code setCell} instead stamps the mutation from
- * the writer's wall clock: the client reuses that mutation for its own RPC retries, but a Flink
- * recovery builds a new one with a new timestamp and can add another cell version. The table's
- * garbage-collection policy then decides the fate of that version.
+ * <p><b>Cell timestamps select the version that a replay addresses.</b> The sink is at-least-once,
+ * so a record may be written twice after a failure. A {@code setCell} carrying a stable timestamp
+ * from the record — the event time, or {@code context.timestamp()} — addresses the same cell
+ * version after Flink serializes the record again. The three-argument {@code setCell} instead
+ * stamps the mutation from the writer's wall clock: the client reuses that mutation for its own RPC
+ * retries, but a Flink recovery builds a new one with a new timestamp and can add another cell
+ * version. The table's garbage-collection policy then decides the fate of that version.
+ *
+ * <p>For aggregate {@code addToCell} and {@code mergeToCell}, a stable timestamp selects the same
+ * aggregate cell after replay; it does not deduplicate an input or accumulator. A Sum contribution
+ * can be applied again. An immediate replacement combines an unbounded {@code deleteCells} with
+ * {@code setCell} in one entry, in that order. Replaying that entry after a newer write can delete
+ * the newer value even when the replacement has an explicit timestamp.
  *
  * <p>Returning {@code null} skips the record: it is written nowhere and is not a failure. Every
  * serializer of this connector family reads {@code null} that way, and so does the {@code

@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 (design settled on [#33], which holds the full comparison), revised by [#236]
-  (2026-08-08) and by [#436] (2026-08-10, the flow controller's figures)
-- Issues: [#33], [#216], [#217], [#232], [#236], [#436]
+  (2026-08-08), by [#436] (2026-08-10, the flow controller's figures), and by [#1175]
+  (2026-09-05, protobuf wrappers for aggregate state)
+- Issues: [#33], [#216], [#217], [#232], [#236], [#436], [#1175]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md`
 
@@ -222,8 +223,34 @@ added through `setCell` produced 100,005 mutations with no exception. The count 
 `RowMutationEntry.toProto()` and `BulkMutation.add`, which re-check the real list size, so it
 surfaces late and as a different exception type; the **byte** limit has no backstop anywhere, and
 that is the half genuinely lost. It reaches this connector only through
-`createFromMutationUnsafe`, which the sink does not use — recorded because it bounds what a future
-serializer may rely on.
+`createFromMutationUnsafe`. The sink runtime does not construct entries through that factory,
+but the aggregate-state serializer example added by [#1175] does; its limits are recorded below.
+
+**Aggregate state through protobuf wrappers, measured 2026-09-05 ([#1175]).** With
+`google-cloud-bigtable` 2.82.0, the first real-GCP run of `BigtableSinkRealGcpITCase` passed five
+cases and failed `mergesAnAccumulatorAndRepeatsItsEffectOnReplay`: an Int64 Sum state read from
+the service and passed to the SDK's `mergeToCell` convenience overload was rejected with
+`INVALID_ARGUMENT` and `Error in field 'input' : must use bytes_value`.
+`MutationApi` wraps this input as `Value.RawValue`, and the SDK `Value` model has no
+`bytes_value` variant. These are versioned client facts; the rejection is an observation for
+Int64 Sum on that date, not a claim about every aggregate type or future service behavior.
+
+The example therefore sets `MergeToCell.input.bytes_value` in a protobuf and uses the public
+beta `Mutation.fromProtoUnsafe` and `RowMutationEntry.createFromMutationUnsafe` factories.
+The second run passed all six cases. Its merge case read an Int64 Sum accumulator from the
+service, wrote it through the public sink, and observed 7 then 14 after a second completed job
+serialized the same input. This does not simulate an SDK retry or checkpoint restoration.
+`BigtableAdvancedMutationTest` pins both the convenience overload's current encoding and the
+explicit protobuf's preservation through schema serialization, writer submission, isolation,
+and failure payloads.
+
+The wrappers' costs remain: `fromProtoUnsafe` bypasses `Mutation`'s 200 MiB byte-size guard
+and returns a mutation that permits server-side timestamps, so a chained
+`setCell(family, qualifier, -1L, value)` accepts a timestamp the ordinary builder rejects.
+The row-entry count check in `toProto()` still reads the actual mutation list, but no analogous
+byte-size check is restored. The example supplies one mutation, an explicit timestamp, and
+service-produced Int64 Sum state; copying the wrapper into a general serializer does not
+establish a byte bound or retry idempotence.
 
 Adopting the accessors once a released client has them is [#400], deliberately a separate issue
 from [#236]: the measurement [#236] asked for is finished and its answer was "change nothing
@@ -264,3 +291,4 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#400]: https://github.com/flink-gcp/flink-connector-gcp/issues/400
 [#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436
 [#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178
+[#1175]: https://github.com/flink-gcp/flink-connector-gcp/issues/1175

@@ -26,9 +26,12 @@ import org.apache.flink.connector.datagen.source.DataGeneratorSource;
 import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
+import com.google.bigtable.v2.Mutation;
+import com.google.bigtable.v2.Value;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
@@ -38,12 +41,14 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
+import java.nio.ByteBuffer;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The sink against real Cloud Bigtable, driven through the public builder with <b>no</b> {@code
@@ -53,9 +58,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every real job takes — runs nowhere else.
  *
  * <p>A MiniCluster streaming job with a rate-limited source, so checkpoints happen while records
- * are still arriving and a lost flush shows up as a missing row. Batch execution is not repeated
- * here: what distinguishes it is the end-of-input flush rather than anything about the service, and
- * {@code BigtableSinkJobITCase} covers it against the emulator.
+ * are still arriving and a lost flush shows up as a missing row. The advanced-mutation cases use
+ * completed batch jobs to separate dependent writes and read back aggregate inputs, replay effects
+ * and atomic delete-then-write replacements.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
@@ -167,6 +172,157 @@ class BigtableSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
         }
         assertThat(rowKeys(even)).containsExactlyInAnyOrderElementsOf(expectedEven);
         assertThat(rowKeys(odd)).containsExactlyInAnyOrderElementsOf(expectedOdd);
+    }
+
+    @Test
+    void addsAggregateInputsAgainWhenFlinkReserializesThemWithTheSameTimestamp() throws Exception {
+        TableDestination table = createAggregateTable("aggregate-add");
+        BigtableSerializationSchema<String> serializer =
+                (input, context) ->
+                        RowMutationEntry.create("total")
+                                .addToCell(FAMILY, "sum", CELL_TIMESTAMP, Long.parseLong(input));
+
+        writeJob(table, serializer, "3", "5");
+        assertAggregate(table, "total", 8);
+        // A second completed job serializes the original input again, as a Flink replay does.
+        // This does not simulate an SDK retry or a checkpoint restore.
+        writeJob(table, serializer, "3");
+        assertAggregate(table, "total", 11);
+    }
+
+    @Test
+    void mergesAnAccumulatorAndRepeatsItsEffectOnReplay() throws Exception {
+        TableDestination table = createAggregateTable("aggregate-merge");
+        mutateRow(
+                table,
+                ByteString.copyFromUtf8("source"),
+                mutation -> mutation.addToCell(FAMILY, "sum", CELL_TIMESTAMP, 7));
+        // Read the service's accumulator bytes rather than invent an encoding for aggregate state.
+        ByteString accumulator = readRows(table).get(0).getCells(FAMILY, "sum").get(0).getValue();
+        BigtableSerializationSchema<String> serializer =
+                (rowKey, context) -> {
+                    // Int64 Sum rejected SDK 2.82.0's raw_value input on 2026-09-05 (ADR-0041).
+                    Value qualifier =
+                            Value.newBuilder().setRawValue(ByteString.copyFromUtf8("sum")).build();
+                    Value timestamp =
+                            Value.newBuilder().setRawTimestampMicros(CELL_TIMESTAMP).build();
+                    Value input = Value.newBuilder().setBytesValue(accumulator).build();
+                    Mutation merge =
+                            Mutation.newBuilder()
+                                    .setMergeToCell(
+                                            Mutation.MergeToCell.newBuilder()
+                                                    .setFamilyName(FAMILY)
+                                                    .setColumnQualifier(qualifier)
+                                                    .setTimestamp(timestamp)
+                                                    .setInput(input))
+                                    .build();
+                    return RowMutationEntry.createFromMutationUnsafe(
+                            ByteString.copyFromUtf8(rowKey),
+                            com.google.cloud.bigtable.data.v2.models.Mutation.fromProtoUnsafe(
+                                    List.of(merge)));
+                };
+
+        writeJob(table, serializer, "target");
+        assertAggregate(table, "target", 7);
+        writeJob(table, serializer, "target");
+        assertAggregate(table, "target", 14);
+    }
+
+    @Test
+    void deleteThenWriteKeepsOneVersionEvenWhenTheEntryIsReplayed() throws Exception {
+        TableDestination table = createTable("keep-latest");
+        seedVersions(table);
+        BigtableSerializationSchema<String> serializer =
+                (rowKey, context) ->
+                        RowMutationEntry.create(rowKey)
+                                .deleteCells(FAMILY, "payload")
+                                .setCell(FAMILY, "payload", 3_000L, "replacement");
+
+        writeJob(table, serializer, "row");
+        assertReplacement(table);
+        writeJob(table, serializer, "row");
+        assertReplacement(table);
+    }
+
+    @Test
+    void aRejectedReplacementLeavesTheDeletedVersionsIntact() throws Exception {
+        TableDestination table = createTable("keep-latest-rejected");
+        seedVersions(table);
+        List<RowCell> original = readRows(table).get(0).getCells();
+
+        assertThatThrownBy(
+                        () ->
+                                writeJob(
+                                        table,
+                                        (rowKey, context) ->
+                                                RowMutationEntry.create(rowKey)
+                                                        .deleteCells(FAMILY, "payload")
+                                                        .setCell(
+                                                                "missing",
+                                                                "payload",
+                                                                3_000L,
+                                                                "replacement"),
+                                        "row"))
+                .hasStackTraceContaining("NOT_FOUND");
+        assertThat(readRows(table).get(0).getCells()).containsExactlyElementsOf(original);
+    }
+
+    private static void seedVersions(TableDestination table) {
+        mutateRow(
+                table,
+                ByteString.copyFromUtf8("row"),
+                mutation ->
+                        mutation.setCell(FAMILY, "payload", 1_000L, "first")
+                                .setCell(FAMILY, "payload", 2_000L, "second")
+                                .setCell(FAMILY, "other", 1_000L, "untouched"));
+        assertThat(readRows(table).get(0).getCells(FAMILY, "payload")).hasSize(2);
+    }
+
+    private static void assertReplacement(TableDestination table) {
+        Row row = readRows(table).get(0);
+        assertThat(row.getCells(FAMILY, "payload"))
+                .singleElement()
+                .satisfies(
+                        cell -> {
+                            assertThat(cell.getTimestamp()).isEqualTo(3_000L);
+                            assertThat(cell.getValue().toStringUtf8()).isEqualTo("replacement");
+                        });
+        assertThat(row.getCells(FAMILY, "other"))
+                .singleElement()
+                .satisfies(
+                        cell -> assertThat(cell.getValue().toStringUtf8()).isEqualTo("untouched"));
+    }
+
+    private static void assertAggregate(TableDestination table, String rowKey, long expected) {
+        Row row =
+                readRows(table).stream()
+                        .filter(candidate -> candidate.getKey().toStringUtf8().equals(rowKey))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(row.getCells(FAMILY, "sum"))
+                .singleElement()
+                .satisfies(
+                        cell -> {
+                            assertThat(cell.getTimestamp()).isEqualTo(CELL_TIMESTAMP);
+                            assertThat(ByteBuffer.wrap(cell.getValue().toByteArray()).getLong())
+                                    .isEqualTo(expected);
+                        });
+    }
+
+    private static void writeJob(
+            TableDestination table,
+            BigtableSerializationSchema<String> serializer,
+            String... records)
+            throws Exception {
+        Configuration configuration = new Configuration();
+        configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(configuration);
+        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        env.setParallelism(1);
+        env.fromData(records)
+                .sinkTo(BigtableSink.<String>builder().table(table).serializer(serializer).build());
+        env.execute("bigtable-advanced-mutation-it");
     }
 
     private static long index(String record) {

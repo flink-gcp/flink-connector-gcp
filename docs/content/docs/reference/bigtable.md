@@ -57,9 +57,9 @@ resumes a broken `ReadRows` stream from the last key it saw.
 **The mutation itself is built by the serializer, not configured here.** Row key, column families
 and qualifiers, cell timestamps, deletes — every per-record decision about the *mutation* belongs to
 the `BigtableSerializationSchema`, which returns the whole `RowMutationEntry`; the table it goes to
-is the resolver's, never the serializer's. The one decision worth
-making deliberately is the cell timestamp, because it is what decides whether a replayed record
-overwrites a cell or adds a version to it; see
+is the resolver's, never the serializer's.
+For `setCell`, a stable explicit timestamp targets the same version after replay, while a regenerated timestamp can add a version.
+For aggregate `addToCell` and `mergeToCell`, the timestamp selects the cell but does not deduplicate a contribution; see
 [Delivery guarantees]({{< relref "docs/connectors/datastream/bigtable" >}}#delivery-guarantees-and-state).
 
 **A destination costs a batcher.** The client binds a bulk mutation batcher to one table, so the

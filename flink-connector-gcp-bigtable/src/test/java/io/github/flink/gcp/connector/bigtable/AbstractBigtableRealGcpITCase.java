@@ -230,6 +230,15 @@ public abstract class AbstractBigtableRealGcpITCase {
         }
     }
 
+    /** Creates an Int64 Sum family through the SDK; sink auto-creation does not provision it. */
+    protected static TableDestination createAggregateTable(String tableId) {
+        tableAdmin.createTable(
+                CreateTableRequest.of(tableId)
+                        .addFamily(
+                                FAMILY, com.google.cloud.bigtable.admin.v2.models.Type.int64Sum()));
+        return tableDestination(tableId);
+    }
+
     /** Creates a table with the shared column family and returns its destination. */
     protected static TableDestination createTable(String tableId) {
         tableAdmin.createTable(CreateTableRequest.of(tableId).addFamily(FAMILY));

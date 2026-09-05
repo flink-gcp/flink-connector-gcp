@@ -128,6 +128,49 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
         }
     }
 
+    @Test
+    void deleteThenWriteReplacesAllVersionsAndPreservesOtherColumns() throws Exception {
+        TableDestination table = createTable("keep-latest");
+        try (SinkWriter<String> writer =
+                writer(
+                        table,
+                        BigtableWriterOptions.builder().build(),
+                        (phase, context) ->
+                                phase.equals("seed")
+                                        ? RowMutationEntry.create("row")
+                                                .setCell(FAMILY, "payload", 1_000L, "first")
+                                                .setCell(FAMILY, "payload", 2_000L, "second")
+                                                .setCell(FAMILY, "other", 1_000L, "untouched")
+                                        : RowMutationEntry.create("row")
+                                                .deleteCells(FAMILY, "payload")
+                                                .setCell(
+                                                        FAMILY,
+                                                        "payload",
+                                                        3_000L,
+                                                        "replacement"))) {
+            writer.write("seed", TestContexts.NO_OP);
+            writer.flush(false);
+            assertThat(readRows(table).get(0).getCells(FAMILY, "payload")).hasSize(2);
+
+            writer.write("replace", TestContexts.NO_OP);
+            writer.flush(false);
+            Row row = readRows(table).get(0);
+            assertThat(row.getCells(FAMILY, "payload"))
+                    .singleElement()
+                    .satisfies(
+                            cell -> {
+                                assertThat(cell.getValue().toStringUtf8()).isEqualTo("replacement");
+                                assertThat(cell.getTimestamp()).isEqualTo(3_000L);
+                            });
+            assertThat(row.getCells(FAMILY, "other"))
+                    .singleElement()
+                    .satisfies(
+                            cell ->
+                                    assertThat(cell.getValue().toStringUtf8())
+                                            .isEqualTo("untouched"));
+        }
+    }
+
     /**
      * Builds a writer over a batcher the production factory created against the emulator. The
      * writer is created through the sink's injecting overload rather than from a {@code
