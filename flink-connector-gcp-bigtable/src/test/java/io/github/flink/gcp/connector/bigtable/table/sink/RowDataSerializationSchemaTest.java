@@ -274,7 +274,7 @@ class RowDataSerializationSchemaTest {
         // spot. Feeding a clock no wall clock could produce is what pins the stamping here.
         RowDataSerializationSchema serializer =
                 new RowDataSerializationSchema(
-                        SCHEMA, "NULL", WITH_TIMESTAMP, true, new FakeClock());
+                        SCHEMA, "NULL", WITH_TIMESTAMP, true, false, new FakeClock());
 
         MutateRowsRequest.Entry entry =
                 serializer.serialize(rowWithTimestamp(RowKind.INSERT, null), null).toProto();
@@ -297,7 +297,7 @@ class RowDataSerializationSchemaTest {
         // test clock must not keep it.
         RowDataSerializationSchema serializer =
                 new RowDataSerializationSchema(
-                        SCHEMA, "NULL", WITH_TIMESTAMP, true, new FakeClock());
+                        SCHEMA, "NULL", WITH_TIMESTAMP, true, false, new FakeClock());
 
         RowDataSerializationSchema restored =
                 InstantiationUtil.deserializeObject(
@@ -323,7 +323,8 @@ class RowDataSerializationSchemaTest {
         // at all, rather than a declared-but-null one. It reaches the same arm, but by a different
         // route — timestampMetadataIndex is negative here instead of the value being null.
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(SCHEMA, "NULL", NO_METADATA, false, new FakeClock());
+                new RowDataSerializationSchema(
+                        SCHEMA, "NULL", NO_METADATA, false, false, new FakeClock());
 
         MutateRowsRequest.Entry entry =
                 serializer

@@ -276,6 +276,41 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void keepLatestSurvivesCopyAndMapsTheOrdinaryWriterConfiguration() throws Exception {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.write-mode", "keep-latest");
+        options.put("sink.batching.element-count-threshold", "250");
+        options.put("sink.create-disposition", "create-if-needed");
+        options.put("sink.table-create.gc-rule.max-versions", "2");
+        options.put("sink.app-profile-id", "writer-profile");
+        options.put("emulator-endpoint", "localhost:8086");
+        DynamicTableSink original = sink(options);
+        assertThat(original.copy()).isEqualTo(original).hasSameHashCodeAs(original);
+        assertThat(original).isNotEqualTo(sink(minimalOptions()));
+        BigtableMutateRowsSink<RowData> runtime = built(original.copy());
+        assertThat(runtime.getConfig().getWriterOptions().getBatchElementCountThreshold())
+                .isEqualTo(250L);
+        assertThat(runtime.getConfig().getCreateDisposition())
+                .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(runtime.getConfig().getTableCreateOptions().getColumnFamilies())
+                .containsExactly(java.util.Map.entry("cf1", GcRule.maxVersions(2)));
+        assertThat(runtime.getConfig().getAppProfileId()).isEqualTo("writer-profile");
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("r"),
+                        GenericRowData.of(StringData.fromString("v"), 7L));
+        assertThat(
+                        runtime.getConfig()
+                                .getSerializer()
+                                .serialize(row, null)
+                                .toProto()
+                                .getMutationsList())
+                .extracting(mutation -> mutation.getMutationCase().name())
+                .containsExactly(
+                        "DELETE_FROM_COLUMN", "SET_CELL", "DELETE_FROM_COLUMN", "SET_CELL");
+    }
+
+    @Test
     void cellTimestampTruncationOptionReachesTheSink() {
         Map<String, String> truncatingOptions = minimalOptions();
         truncatingOptions.put("sink.cell-timestamp.truncate-to-millis", "true");

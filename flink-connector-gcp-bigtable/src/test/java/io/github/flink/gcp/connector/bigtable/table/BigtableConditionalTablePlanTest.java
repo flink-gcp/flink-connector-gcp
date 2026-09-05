@@ -84,6 +84,53 @@ class BigtableConditionalTablePlanTest {
                 .hasStackTraceContaining("cannot be used with 'sink.write-mode' = 'upsert'");
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void keepLatestPlansPortableInsertsAndUpdatingQueries(boolean primaryKey) {
+        TableEnvironment env =
+                table(
+                        primaryKey,
+                        "'sink.write-mode'='keep-latest', 'sink.insert-only-input-mode'='insert-only'");
+        assertThat(
+                        env.explainSql(
+                                "INSERT INTO bt VALUES ('r', ROW('first')), ('r', ROW('second'))"))
+                .containsIgnoringCase("sink");
+        assertThat(
+                        env.explainSql(
+                                "INSERT INTO bt SELECT k, ROW(v) FROM (VALUES ('r', 'first'), ('r', 'second')) AS input(k, v)"))
+                .containsIgnoringCase("sink");
+        env.executeSql(
+                "CREATE TABLE src (k STRING, v STRING) WITH ('connector'='datagen', 'rows-per-second'='1')");
+        assertThat(
+                        env.explainSql(
+                                "INSERT INTO bt SELECT k, ROW(CAST(COUNT(*) AS STRING)) FROM src GROUP BY k"))
+                .containsIgnoringCase("sink");
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "'sink.conditional.empty-branch-policy'='ignore'",
+                "'sink.request-timeout'='3s'",
+                "'sink.in-flight.max-requests'='4'"
+            })
+    void keepLatestRejectsConditionalOptions(String extra) {
+        TableEnvironment env = table(false, "'sink.write-mode'='keep-latest', " + extra);
+        assertThatThrownBy(() -> env.explainSql("INSERT INTO bt VALUES ('r', ROW('v'))"))
+                .hasStackTraceContaining("cannot be used with 'sink.write-mode' = 'keep-latest'");
+    }
+
+    @Test
+    void keepLatestValidatesWriterOptionsUsingTheSqlKey() {
+        TableEnvironment env =
+                table(
+                        false,
+                        "'sink.write-mode'='keep-latest', 'sink.batching.element-count-threshold'='0'");
+        assertThatThrownBy(() -> env.explainSql("INSERT INTO bt VALUES ('r', ROW('v'))"))
+                .hasStackTraceContaining(
+                        "Option 'sink.batching.element-count-threshold' is invalid:");
+    }
+
     private static TableEnvironment table(boolean primaryKey, String extra) {
         TableEnvironment env = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
         env.executeSql(

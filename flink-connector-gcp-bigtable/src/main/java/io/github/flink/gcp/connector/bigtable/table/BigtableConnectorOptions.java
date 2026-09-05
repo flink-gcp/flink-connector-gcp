@@ -459,13 +459,16 @@ public final class BigtableConnectorOptions {
     //  Sink
     // ------------------------------------------------------------------------
 
-    /** The destination-side write operation: 'upsert' or atomic whole-row 'insert-if-absent'. */
+    /**
+     * The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', or
+     * atomic replacement of written cells with 'keep-latest'.
+     */
     public static final ConfigOption<WriteMode> SINK_WRITE_MODE =
             ConfigOptions.key("sink.write-mode")
                     .enumType(WriteMode.class)
                     .defaultValue(WriteMode.UPSERT)
                     .withDescription(
-                            "The destination-side write operation: 'upsert' or atomic whole-row 'insert-if-absent'.");
+                            "The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', or atomic replacement of written cells with 'keep-latest'.");
 
     /**
      * The policy when a successful conditional request selects an empty mutation branch: 'ignore'

@@ -211,7 +211,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                                         schema,
                                         nullStringLiteral,
                                         selected,
-                                        truncateCellTimestampToMillis))
+                                        truncateCellTimestampToMillis,
+                                        writeMode == WriteMode.KEEP_LATEST))
                         .writerOptions(writerOptions);
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);

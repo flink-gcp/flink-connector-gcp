@@ -53,6 +53,7 @@ Source<OrderEvent, ?, ?> source =
 |---|---|
 | `bigtable` table connector; the HBase-compatible DDL model, the cell codec, an upsert `DynamicTableSink` and table auto-creation | Implemented ([#458](https://github.com/flink-gcp/flink-connector-gcp/issues/458)) |
 | Atomic `sink.write-mode = insert-if-absent` with INSERT-only input and whole-row existence checks | Implemented ([#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179)) |
+| Atomic `sink.write-mode = keep-latest` replacement of each written cell | Implemented ([#1177](https://github.com/flink-gcp/flink-connector-gcp/issues/1177)) |
 | `ScanTableSource` with column-family projection pushdown | Implemented ([#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459)) |
 | SQL filter pushdown for exact row-key ranges and best-effort cell existence | Implemented ([#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518)) |
 | `LookupTableSource`, sync and async, with the standard lookup caches | Implemented ([#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460)) |

@@ -423,7 +423,8 @@ The [aggregate example]({{< relref "docs/examples/bigtable" >}}#updating-aggrega
 
 Aggregate updates require an aggregate family whose input or state type matches the supplied value.
 See the source-backed [aggregate updates]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) and [immediate column replacement]({{< relref "docs/examples/bigtable" >}}#replacing-a-column-immediately) examples.
-The Table sink's ordinary upserts do not expose these mutation patterns; [#1176]({{< param BookRepo >}}/issues/1176) and [#1177]({{< param BookRepo >}}/issues/1177) own the opt-in SQL modes.
+The Table sink exposes immediate column replacement through [`sink.write-mode = keep-latest`]({{< relref "docs/connectors/table/bigtable" >}}#keep-latest).
+Aggregate updates through SQL remain planned in [#1176]({{< param BookRepo >}}/issues/1176).
 Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
 the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
 in the serializer rather than upstream of the sink. Every serializer in this connector family reads
