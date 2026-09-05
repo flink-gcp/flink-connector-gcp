@@ -18,8 +18,10 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13; revised by [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596) (2026-08-14)
+  and by [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208) (2026-09-05)
 - Issues: [#591](https://github.com/flink-gcp/flink-connector-gcp/issues/591),
-  [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596)
+  [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596),
+  [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
@@ -96,6 +98,8 @@ The connector-specific decisions are:
   single-cluster routing with transactional writes enabled, and marker retention must exceed the
   replay horizon.
   Multi-row effects are outside this candidate.
+  A compliant repeat with evenly distributed keys on 2026-09-05 met the ratios twice but failed
+  the 10% variability rule twice, so the result stays inconclusive (evidence below).
 - **Only the Spanner 100-record ledger-transaction shape remains correctness-feasible, but its
   performance result is inconclusive and it is not a supported connector mode.**
   The ledger and effects must share a database and a short read-write transaction.
@@ -110,8 +114,11 @@ concrete requirement that the current row-key, cell, or mutation upserts cannot 
 Cloud Tasks already exposes its useful replay primitive through both connector APIs, while Pub/Sub
 exposes no publisher-side replay primitive to add.
 
-If such a requirement reopens a candidate, Bigtable and Spanner must first repeat Stage 1 with
-evenly distributed keys, while Cloud Tasks must first produce a stable run-to-run result.
+If such a requirement reopens a candidate, Spanner must first repeat Stage 1 with evenly
+distributed keys, and Cloud Tasks must first produce a stable run-to-run result.
+Bigtable made its compliant repeat on 2026-09-05; a further Bigtable attempt needs an amended
+Stage 1, preregistered before it runs, that instruments the throughput decline the repeat showed
+within each run, with its own resource and cost approval.
 Passing Stage 1 would permit Stage 2 measurement, not implementation.
 Stage 2 would require separate resource and cost approval and would cover 64 KiB payloads, hot
 keys, concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals of 1, 10, and 60
@@ -192,8 +199,9 @@ These are service-client measurements, not end-to-end Flink measurements.
 Evidence review found that the Bigtable and Spanner harness used unique but lexicographically
 increasing keys rather than the preregistered evenly distributed keys.
 Their ratios are observations, not formal gate passes.
-Both Stage 1 results are inconclusive and require a compliant repeat before Stage 2.
-No repeat ran because it requires new resource and cost approval.
+Both Stage 1 results were inconclusive and required a compliant repeat before Stage 2.
+No repeat ran on 2026-08-13 because it required new resource and cost approval; Bigtable's
+repeat is recorded below.
 
 The Bigtable candidate throughput range was 2.2% of its mean, and the baseline range was 2.9%.
 The 10% replay arms measured 5,808--5,857 ops/s and preserved one effect and marker per event.
@@ -213,6 +221,59 @@ The paused queue dispatched no handlers, and the serialized control measured 4.5
 No extra repetition ran because it would have exceeded the approved operation count and cost
 estimate.
 
+### Stage 1 repeat for Bigtable with evenly distributed keys (2026-09-05)
+
+[#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208) repeated the Bigtable
+Stage 1 on 2026-09-05 with resource approval recorded on the issue before creation.
+The preregistered arms, payload, concurrency, warm-up, repetitions, replay share, and serialized
+control were those of 2026-08-13; two inputs moved, and two checks were added.
+The key scheme: both arms used a 64-bit hash prefix (`splitmix64` of a per-arm salt and the
+logical index, 16 hex digits) followed by the logical index, deterministic per logical index so
+the replay arm targets the same row.
+The client library: it followed the repository pin, `libraries-bom` 26.87.0 where the 2026-08-13
+run had 26.85.1, and the effect of that move was not measured separately.
+The first added check ran at the start of every benchmark run, and once before the instance
+existed: it bucketed 100,000 generated keys by first hex digit, and the hashed scheme's max/min
+bucket ratios were 1.049, 1.064, and 1.050 against a limit of 1.2, while the 2026-08-13 increasing
+scheme put all 100,000 keys in one bucket and failed the same check, so the check can fail.
+The second added check is the 1,000-row read-back described below.
+The run used the 2026-08-13 configuration above and an application profile created with
+single-cluster routing and transactional writes enabled, plus one repeat inside the same instance,
+on tables already holding the first run's rows, because the first run exceeded the variability
+limit.
+
+| Run and arm | Throughput repetitions | p95 latency repetitions | Mean and range |
+|---|---|---|---|
+| Run 1, bulk baseline | 4,795 / 4,623 / 4,418 ops/s | 257 / 268 / 303 ms | 4,612 ops/s, range 8.2% |
+| Run 1, same-row conditional marker | 5,563 / 5,589 / 4,074 ops/s | 207 / 195 / 368 ms | 5,075 ops/s, range 29.8% |
+| Run 1, conditional marker with 10% replay | 5,615 / 4,830 / 3,742 ops/s | 201 / 267 / 453 ms | 4,729 ops/s, range 39.6% |
+| Repeat, bulk baseline | 4,677 / 4,415 / 4,727 ops/s | 263 / 287 / 243 ms | 4,606 ops/s, range 6.8% |
+| Repeat, same-row conditional marker | 5,593 / 4,121 / 4,162 ops/s | 197 / 317 / 354 ms | 4,625 ops/s, range 31.8% |
+| Repeat, conditional marker with 10% replay | 4,789 / 3,758 / 3,600 ops/s | 266 / 369 / 493 ms | 4,049 ops/s, range 29.4% |
+
+The candidate measured 110.0% of baseline throughput at 0.93x baseline p95 in run 1 and 100.4% at
+1.09x in the repeat, inside the general-support thresholds both times.
+The baseline arm stayed within the 10% variability limit in both runs; the candidate arms did
+not, so the formal result is inconclusive twice and the one authorized repeat is consumed.
+The serialized control measured 5.9 ops/s in both runs.
+
+Correctness held in both runs: the single-row check applied on the first attempt and observed
+the marker on the second, and a 1,000-row sample of rows the replay arm submitted twice read back
+exactly one payload cell and one marker cell each, in a family with no garbage-collection rule
+where a duplicate write would have been a second version.
+
+The variation has a shape, though two runs of three repetitions cannot establish it.
+In both runs the conditional path measured about 5,600 ops/s in its first repetition and about
+4,100 ops/s in a later one; the bulk path declined the same way in run 1 at lower amplitude, 4,795
+to 4,418 ops/s, and not in the repeat.
+The repeat's first repetition, on a candidate table that already held more than 800,000 rows from
+run 1, measured 5,593 ops/s, which cumulative table growth alone does not explain; no client-side
+or service-side metric was collected that would name a cause, and neither random variation nor a
+table-state effect is excluded.
+Each repetition submitted between 109,000 and 170,000 operations.
+The instance lived 13 minutes and was reported absent by the harness and by
+`gcloud bigtable instances list` after deletion; the harness source is attached to the issue.
+
 ## Alternatives declined
 
 - **Add `SupportsCommitter` to every sink** — a committer cannot hide or retract an eager publish,
@@ -222,22 +283,38 @@ estimate.
 - **Keep a Spanner transaction open from pre-commit to checkpoint completion** — the source offset
   is not part of that transaction, Flink checkpoints can outlive the transaction, and Spanner can
   abort idle read-write transactions.
-- **Implement Bigtable or Spanner from the observed Stage 1 ratios** — the key-distribution
-  deviation prevents a formal Stage 1 pass, and Stage 1 does not measure Flink recovery,
-  checkpoint interval, hot-key contention, large payloads, or the connector's failure-routing
-  semantics.
-- **Treat the Cloud Tasks averages as a pass** — doing so would discard the variability rule after
-  observing its result and turn a preregistered gate into post-hoc judgment.
+- **Implement Bigtable or Spanner from the observed Stage 1 ratios** — a key-distribution
+  deviation (Spanner) or a variability failure (Bigtable, 2026-09-05) prevents a formal Stage 1
+  pass, and Stage 1 does not measure Flink recovery, checkpoint interval, hot-key contention, large
+  payloads, or the connector's failure-routing semantics.
+- **Treat the Cloud Tasks averages or the 2026-09-05 Bigtable ratios as a pass** — doing so would
+  discard the variability rule after observing its result and turn a preregistered gate into
+  post-hoc judgment.
 - **Continue measuring without a concrete non-idempotent requirement** — Spanner and Bigtable
   already expose idempotent keyed mutation shapes for workloads that respect each service's
   ordering constraints, while Cloud Tasks already exposes bounded task-creation deduplication.
   The stronger candidates impose service-specific schema and failure-policy costs without an
   identified workload that needs them.
+  The 2026-09-05 Bigtable repeat was the one authorized exception, made so that the record holds
+  a compliant measurement rather than a deviation.
+- **Match the "Exactly Once out of the box" of the
+  [google/flink-connector-gcp Bigtable sink](https://github.com/google/flink-connector-gcp/blob/main/connectors/bigtable/README.md#exactly-once)**
+  — compared 2026-09-05: that sink is a plain `Sink` and `SinkWriter` that flushes a bulk-mutation
+  batcher at the checkpoint barrier, with no committer, writer state, or two-phase commit; three of
+  its four built-in serializers stamp each cell with the Flink record timestamp when the record
+  carries a positive one and with the writer's wall clock otherwise, and the fourth hands the whole
+  entry to a user function.
+  Its guarantee rests on Bigtable's cell idempotence under an explicit timestamp, which this
+  connector already documents as the replay-safe shape of its at-least-once sink, so there is no
+  capability for the marker candidate to match.
 
 ## Consequences
 
 - User documentation states what each current sink guarantees without equating checkpoint flush,
   idempotence, two-phase commit, and end-to-end exactly-once processing.
+- The delivery-guarantees guide names the google/flink-connector-gcp sink's "Exactly Once out of
+  the box" as the same explicit-timestamp effect, so a reader comparing the two finds a difference
+  in naming, not in capability.
 - BigQuery's BUFFERED-stream implementation is documented as related to, but not a copy of, the
   official COMMITTED-stream example.
 - Pub/Sub has no connector-only implementation issue to pursue.

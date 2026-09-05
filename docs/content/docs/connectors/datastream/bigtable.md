@@ -692,14 +692,18 @@ outstanding mutations are lost on a failure; batch execution is covered by the e
 the last checkpoint are written again, and:
 
 - a `setCell` carrying an **explicit** timestamp overwrites the same cell — the second write is
-  invisible, and the sink is effectively exactly-once for that column;
-- a `setCell` **without** one takes the server's clock, so the replay writes another version of the
-  cell, and the table's garbage-collection policy (`maxVersions`, `maxAge`) decides how long both
-  survive.
+  invisible;
+- a `setCell` **without** one takes the writer's wall clock, which the client library stamps when
+  the entry is built, so the replay writes another version of the cell, and the table's
+  garbage-collection policy (`maxVersions`, `maxAge`) decides how long both survive.
 
 Neither is wrong, but only one of them is a choice made on purpose. Setting the timestamp from the
 record — its event time, an updated-at column, `context.timestamp()` — is what makes a replay a
-no-op. Note that a cell timestamp is in microseconds but a table's granularity is milliseconds, so
+no-op. The no-op is Bigtable's storage model absorbing the duplicate, not the sink: nothing in the
+sink tracks or rejects a replayed record, and the
+[delivery-guarantees guide]({{< relref "docs/connectors/delivery-guarantees" >}}#bigtable) says
+where the effect ends. Note that a cell timestamp is in microseconds but a table's granularity is
+milliseconds, so
 the value must be a multiple of 1000 — `context.timestamp()`, which is in milliseconds, has to be
 multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
 (*"Timestamp granularity mismatch. Expected a multiple of 1000 (millisecond granularity)"*), which

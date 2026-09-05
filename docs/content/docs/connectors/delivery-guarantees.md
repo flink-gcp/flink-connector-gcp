@@ -170,8 +170,18 @@ latency, so its practical recommendation depends on the measured workload.
 
 The current sink can already make individual cell effects idempotent when the serializer writes a
 stable explicit timestamp.
-That does not cover arbitrary mutation shapes or distinguish two legitimate events that happen to
-target the same cell version.
+That does not cover a writer-clock timestamp, arbitrary mutation shapes, or two legitimate events
+that happen to target the same cell version.
+
+That idempotence is a property of Bigtable's storage model, not an exactly-once sink protocol.
+The sink has no committer, no writer state, and no step that makes a replayed record invisible or
+rejected; a replayed `setCell` carrying the same row key, family, qualifier, and timestamp
+overwrites the same cell version, and the overwrite is what makes the duplicate disappear.
+The [Bigtable sink of google/flink-connector-gcp](https://github.com/google/flink-connector-gcp/blob/main/connectors/bigtable/README.md#exactly-once)
+calls this same effect "Exactly Once out of the box": its writer flushes at the checkpoint barrier
+with no committer, and three of its four built-in serializers stamp each cell with the Flink record
+timestamp when the record carries a positive one, so the two connectors offer the same mechanism
+under different names.
 
 A stronger opt-in design is feasible for effects contained in one row.
 [`CheckAndMutateRow`](https://cloud.google.com/bigtable/docs/writes#conditional) can test for an
@@ -266,7 +276,7 @@ cross-service comparison consistent.
 ## Evaluation status
 
 Stage 1 ran against the real services on 2026-08-13 with the repository's pinned Google Cloud
-clients.
+clients, and the Bigtable candidate ran again on 2026-09-05 with evenly distributed keys.
 These results measure the service primitives, not end-to-end Flink jobs, and none of the
 not-yet-implemented modes below is currently available through a connector builder.
 The observations remain evidence, but no additional performance stage or non-BigQuery
@@ -275,13 +285,14 @@ existing write shapes cannot satisfy.
 
 | Candidate | Stage 1 result | Current decision |
 |---|---|---|
-| Bigtable same-row conditional marker | Inconclusive: observed 119.4% of baseline throughput and 0.80x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing row-key and cell upserts; reopen measurement only for a concrete same-row non-idempotent effect |
+| Bigtable same-row conditional marker | Inconclusive twice: the 2026-08-13 run used increasing keys, and the 2026-09-05 repeat with evenly distributed keys observed 110.0% and 100.4% of baseline throughput at 0.93x and 1.09x baseline p95 but exceeded the 10% run-to-run variation limit in both runs | Keep the existing row-key and cell upserts; reopen measurement only for a concrete same-row non-idempotent effect, and then under a protocol that instruments the throughput decline the repeat showed within each run |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
 | Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Keep the existing bounded task-creation guarantee; no broader mode or repeat is planned |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in
-[ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md)
-and [issue #591]({{< param BookRepo >}}/issues/591).
+[ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md),
+[issue #591]({{< param BookRepo >}}/issues/591), and, for the 2026-09-05 Bigtable repeat,
+[#1208]({{< param BookRepo >}}/issues/1208).
 The current support decision is tracked by
 [#596]({{< param BookRepo >}}/issues/596).
