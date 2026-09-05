@@ -824,6 +824,11 @@ superseded by `docs/adr/0140`; the unchanged package decisions remain in force).
 
 ## Emulators are conveniences, not authorities
 
+Emulator image updates are proposed monthly by `.github/workflows/renovate.yaml` using
+`.github/renovate.json5` (ADR-0151). Keep its manager scoped to the test-utils image declarations;
+Dependabot owns the other dependency managers. An image update still owes the deviation
+measurements named in its pull request, followed by human review and merge.
+
 An emulator is a convenience for fast feedback, never evidence about the service's behaviour.
 Where the two disagree, the real service decides, and the emulator gets a documented workaround
 naming the deviation. A mapping or behaviour decision may not be settled on emulator evidence

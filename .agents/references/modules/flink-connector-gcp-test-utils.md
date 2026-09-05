@@ -32,6 +32,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## Harnesses (`docs/adr/0051`)
 
+- Emulator image pins remain complete quoted literals in the `IMAGE` declarations of
+  `*EmulatorContainers.java`; the monthly Renovate regex reads both String and DockerImageName
+  initializers (ADR-0151). If that shape changes, update the manager and verify its extraction.
+
 - `LoopbackPortPublisher` is this module's one `META-INF/services` entry and the only thing here
   that reaches containers no harness constructs — testcontainers loads the SPI per
   `GenericContainer`, so it applies to Ryuk and to the `exposeHostPorts` sshd forwarder as well

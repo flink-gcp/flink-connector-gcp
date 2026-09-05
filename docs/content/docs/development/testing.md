@@ -47,6 +47,25 @@ verification:
 just verify-module flink-connector-gcp-pubsub    # the module-wide build, when a broader check is wanted
 ```
 
+## Emulator image updates
+
+The `Renovate emulator images` workflow proposes a grouped draft pull request on the first day of each month at 03:23 UTC.
+It updates the image constants in test-utils; Bigtable and Pub/Sub share a pin and move together.
+Review the Bigtable deviation suites' verdict and, for a Spanner bump, recheck the measurements named in the pull request before merging.
+A green emulator suite does not establish real-service behavior.
+
+For an initial run or recovery, dispatch the workflow on `main`:
+
+```sh
+gh workflow run renovate.yaml --repo flink-gcp/flink-connector-gcp --ref main
+gh run list --repo flink-gcp/flink-connector-gcp --workflow renovate.yaml
+```
+
+Check the run's logs for lookup failures and inspect any resulting update pull request and its CI runs.
+Missing App credentials, reported Docker package lookup failures, missing or invalid repository configuration, and the `Host error` / `Git error - aborting` paths fail the job.
+An up-to-date set of images can finish successfully without opening a pull request; an existing update pull request can be refreshed instead.
+The monthly run does not replace reviewing and merging updates, and no separate retention checker watches a pin left unmerged.
+
 ## Credential-gated suites
 
 A test that talks to real Google Cloud carries `@Tag("gated")` together with an

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0121: CI push-back runs as an org-owned GitHub App with per-use downscoped tokens
 
 - Status: Accepted
-- Date: 2026-08-16
-- Issues: [#177]
+- Date: 2026-08-16; refined 2026-09-05
+- Issues: [#177], [#1232](https://github.com/flink-gcp/flink-connector-gcp/issues/1232)
 - Modules: CI, opentofu
 - Current behavior: [pinact workflow](../../.github/workflows/pinact.yaml)
 
@@ -43,7 +43,7 @@ The repository is now public under `flink-gcp`, so that condition is met and thi
 
 **One App, owned by the `flink-gcp` organization and installed on this repository alone.**
 `flink-gcp-bot` holds three repository permissions and no others: contents write, pull requests write, and workflows write.
-Workflows write exists only for pinact; contents and pull requests cover the follow-up pull request, its comment and assignee, and the `test` action's fix commits.
+Workflows write exists only for pinact; contents and pull requests cover the follow-up pull request, its comment and assignee, the `test` action's fix commits, and Renovate's emulator update pull requests.
 Issues write is absent: the two tfaction features that would want it — drift detection's issue automation and the follow-up pull request's group labels — both stay off.
 
 **A job mints its own token at the step that needs it, downscoped below that ceiling.**
@@ -54,7 +54,7 @@ pinact-action mints its own tokens the same way from `app_id` and `app_private_k
 **Credentials live at the repository, not the organization**: variable `BOT_APP_ID`, secret `BOT_APP_PRIVATE_KEY`.
 One repository is installed, so an org-level secret would widen the blast radius without shortening the wiring.
 
-**A run without the credentials degrades to checking rather than fixing.**
+**A pinact run without the credentials degrades to checking rather than fixing.**
 pinact-action treats either credential supplied without the other as a hard error rather than a fallback, so `pinact.yaml` gates both inputs on both being present and otherwise runs under `GITHUB_TOKEN` with fixing disabled: an unpinned reference turns the check red naming the problem, and the contributor runs `just pin-actions`.
 Gating on the credentials rather than on the head repository is what makes that cover all three cases it has to.
 Fork pull requests are the obvious one.
@@ -67,10 +67,12 @@ The `test` action, which has no such fallback, is skipped outright on forks; `ju
 Enrolment is opt-in under [ADR-0059](0059-ci-yaml-orchestrates-pull-request-ci-behind-one-required-check.md), and the reason not to take it is the one [ADR-0058](0058-verify-yaml-selects-what-a-pull-request-builds-instead-of-filtering-whether-it-runs.md) already settled: a required check that never reports blocks a pull request forever, and a paths-filtered workflow reports on nothing outside its paths.
 Enrolling it would mean dropping the filter and running it on every pull request to buy a guarantee the credential-less fallback already gives.
 
-**The App pays for three features and no more.**
+**The App serves four features.**
 pinact pins action references.
 tfaction opens the follow-up pull request after a failed apply, from the apply workflow's `failure()` branch.
 tfaction's `test` action runs in the plan job, after init, pushing `tofu fmt` and `tflint --fix` corrections.
+Renovate proposes monthly emulator image updates with contents/pull-requests write (2026-09-05 refinement, [ADR-0151](0151-emulator-image-updates-are-proposed-monthly-by-renovate.md)).
+Its scheduled job requires the App credentials and fails when they are missing; it has no credential-less checking mode.
 
 **Drift detection remains off**, now by decision rather than for want of a token.
 It wants three more workflows and apply-job changes; the infrastructure in `opentofu/flink-gcp` changes rarely enough that the detection interval it would buy is not worth that surface.
@@ -83,7 +85,7 @@ The reasoning behind both is in `opentofu/README.md`'s decisions table, which is
 
 The App private key is the first long-lived credential this repository holds — `secrets.` appears nowhere else under `.github/` — so the containment was checked rather than assumed, and two of the answers are narrower than they first look.
 
-The jobs that carry a token run on `pull_request`, never `pull_request_target`.
+The pinact and tfaction plan jobs that carry a token run on `pull_request`, never `pull_request_target`.
 A fork therefore cannot reach the secret, which was the property being bought.
 It does not follow that only maintainers can cause a secret-bearing run: anyone with read access can open a pull request whose head is an existing branch of this repository.
 What they cannot do is influence what that run executes, and content control over a branch here is what the containment actually rests on.
@@ -155,6 +157,9 @@ The push flow has to absorb that: pull before the next local commit, because a f
 Adding a push-back feature is now a permission question first.
 A feature that needs a permission outside the three granted requires widening the App, which is a decision to record here rather than a settings change to make quietly.
 
-Losing the private key degrades pinact to checking without fixing, which is quiet by design, and disables the failed-apply recovery, which is quieter still because it only runs after an apply has already failed. Neither surfaces as a red check, so a rotation has to be verified rather than assumed.
+Losing the private key degrades pinact to checking without fixing, which is quiet by design, and disables the failed-apply recovery, which is quieter still because it only runs after an apply has already failed.
+Neither of those paths surfaces as a red check.
+Missing or invalid credentials fail the scheduled Renovate job and prevent its update proposals until repaired.
+Verify a credential rotation in each consumer.
 
 [#177]: https://github.com/flink-gcp/flink-connector-gcp/issues/177
