@@ -433,6 +433,41 @@ class GenericRecordToRowDataConverterTest {
     }
 
     @Test
+    void fixedBinaryDeclarationsPreserveActualLengthsAndNulls() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"fixed_binary\",\"fields\":["
+                                        + "{\"name\":\"value\",\"type\":[\"null\",\"bytes\"]}]}");
+        for (int length : new int[] {1, 2, 4}) {
+            RowType type =
+                    (RowType)
+                            DataTypes.ROW(DataTypes.FIELD("value", DataTypes.BINARY(length)))
+                                    .getLogicalType();
+            GenericRecordToRowDataConverter converter =
+                    new GenericRecordToRowDataConverter(type, null);
+            GenericRecord record = new GenericData.Record(schema);
+            record.put("value", null);
+            assertThat(converter.convert(record).isNullAt(0)).isTrue();
+            for (int actual : new int[] {0, length - 1, length, length + 1}) {
+                byte[] backing = new byte[actual + 2];
+                java.util.Arrays.fill(backing, (byte) 0x80);
+                ByteBuffer buffer = ByteBuffer.wrap(backing, 1, actual);
+                record.put("value", buffer);
+                byte[] converted = converter.convert(record).getBinary(0);
+                assertThat(converted)
+                        .containsExactly(java.util.Arrays.copyOfRange(backing, 1, actual + 1));
+                assertThat(buffer.position()).isEqualTo(1);
+                assertThat(buffer.remaining()).isEqualTo(actual);
+                backing[1] = 0;
+                if (actual > 0) {
+                    assertThat(converted[0]).isEqualTo((byte) 0x80);
+                }
+            }
+        }
+    }
+
+    @Test
     void copiesGenericFixedAndRawByteArrayShapesInsteadOfAliasingThem() {
         Schema schema =
                 new Schema.Parser()

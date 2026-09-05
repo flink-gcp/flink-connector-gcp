@@ -209,7 +209,10 @@ final class BigQueryFilterPushDown {
                         .map(value -> binary(field.name, comparison, value));
             case DECIMAL:
                 return decimalComparison(field, literal, comparison);
+            case BINARY:
             case VARBINARY:
+                // Only direct field/literal expressions reach here. A remaining cast may change
+                // the bytes and is rejected by translate; the converter itself preserves length.
                 return literal.getValueAs(byte[].class)
                         .flatMap(BigQueryFilterPushDown::bytesLiteral)
                         .map(value -> binary(field.name, comparison, value));
@@ -288,6 +291,7 @@ final class BigQueryFilterPushDown {
             case DECIMAL:
             case FLOAT:
             case DOUBLE:
+            case BINARY:
             case VARBINARY:
                 return true;
             case TIME_WITHOUT_TIME_ZONE:

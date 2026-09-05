@@ -21,7 +21,8 @@ limitations under the License.
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047) (2026-08-23)
 - Issues: [#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542),
   [#566](https://github.com/flink-gcp/flink-connector-gcp/issues/566),
-  [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047)
+  [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047),
+  [#1233](https://github.com/flink-gcp/flink-connector-gcp/issues/1233)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -101,7 +102,7 @@ The residual then rejects any row that BigQuery admits but Flink does not.
 
 The supported comparison matrix covers scalar types whose necessary conditions can be rendered
 without fetching the BigQuery schema.
-Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns accept
+Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `BINARY(n)`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns accept
 `=`, `<>`, `<`, `<=`, `>`, and `>=` against typed literals.
 `BOOLEAN` accepts `=` and `<>`, BigQuery `STRING` accepts `=`, and those supported column types
 accept `IS NULL` and `IS NOT NULL`.
@@ -125,14 +126,19 @@ Unaligned or out-of-range literals remain residual rather than being rounded by 
 Binary comparisons render each byte as a two-digit hexadecimal escape inside a GoogleSQL bytes literal, including an empty literal for an empty byte array.
 This avoids text decoding and does not depend on a Storage Read function allowlist.
 Ordered binary predicates use Flink's unsigned lexicographic comparison, including shorter-prefix ordering; `BigQueryFilterPushDownRealGcpITCase` checks the generated restrictions against Flink's scalar byte comparison on the same rows.
-Fixed-length `BINARY` remains outside this extension.
+A `BINARY(n)` declaration preserves the byte array returned by Storage Read, including shorter and longer arrays; the source converter does not pad or truncate it.
+Direct comparisons use those actual bytes, without adjusting the literal to the column's declared length.
+Only a direct field reference and a resolved byte-array literal are translated, including reversed operands.
+A remaining field-side or literal-side cast stays residual; a literal cast that Flink has already folded uses its resulting bytes.
+On Flink 1.20.4, 2.2.1, and 2.3.0, SQL equality and inequality between different fixed lengths retain a field-side `VARBINARY` cast, whereas the four ordered comparisons can reach the source directly.
+`IS NULL` and `IS NOT NULL` do not depend on the declared length and are translated independently.
 
 BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
 The planner does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot distinguish
 ordinary `STRING` from `JSON` or `GEOGRAPHY`; a generated string restriction against an unsupported
 physical type can be rejected when the Storage Read session is created.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-Fixed-length character and binary columns, nested fields,
+Fixed-length character columns, nested fields,
 complex types, field-to-field comparisons, casts, and functions remain only with Flink.
 
 An `AND` may push any translatable child because each child is necessary when the whole predicate
@@ -173,6 +179,8 @@ Read session over its materialized result.
   bytes and submits generated string, decimal, float, double, binary, `TIME`, `DATETIME`, and `TIMESTAMP`
   restrictions to the real Storage Read API before deleting its bounded temporary table.
   The binary and temporal cases compare row IDs with an unrestricted read converted at each declared precision, asserting that no matching row is lost and that residual evaluation restores the expected row set.
+- `BigQueryBinaryFilterSemanticsITCase` feeds converted `RowData` through a bounded Flink SQL pipeline, retaining actual byte lengths and evaluating all six comparisons, reversed operands, nulls, and constant and field casts at declared lengths 1, 2, and 4.
+  The same `BinaryFilterOracle` evaluates unrestricted and restricted real Storage Read batches for fixed-length binary predicates; the service test asserts containment before residual evaluation and equality afterwards.
 - `BigQueryTableSourceFidelityITCase` runs the production factory and converter against BigQuery's
   own writer schemas for native, decimal, temporal, nested, repeated and range values.
   Its interval arm reads a required control beside the measured record before verifying the

@@ -155,6 +155,34 @@ class BigQueryTablePlanTest {
                 .contains("Calc(select=[name], where=[=(id");
     }
 
+    @Test
+    void fixedBinaryFiltersRespectTheResolvedExpressionShape() {
+        TableEnvironment table = tableEnvironment();
+        table.executeSql(
+                "CREATE TABLE events (name STRING, fixed_binary BINARY(2)) WITH ("
+                        + "'connector'='bigquery', 'project'='p', 'dataset'='d', 'table'='t')");
+        for (String operator : new String[] {"=", "<>", "<", "<=", ">", ">="}) {
+            assertPushed(table, "fixed_binary " + operator + " X'0080'", "fixed_binary");
+            assertPushed(table, "X'0080' " + operator + " fixed_binary", "fixed_binary");
+        }
+        for (String literal : new String[] {"X''", "X'80'", "X'008000'"}) {
+            for (String operator : new String[] {"<", "<=", ">", ">="}) {
+                assertPushed(table, "fixed_binary " + operator + " " + literal, "fixed_binary");
+                assertPushed(table, literal + " " + operator + " fixed_binary", "fixed_binary");
+            }
+            for (String operator : new String[] {"=", "<>"}) {
+                assertResidual(table, "fixed_binary " + operator + " " + literal, "CAST");
+                assertResidual(table, literal + " " + operator + " fixed_binary", "CAST");
+            }
+        }
+        assertPushed(table, "fixed_binary IS NULL", "fixed_binary");
+        assertPushed(table, "fixed_binary IS NOT NULL", "fixed_binary");
+        assertPushed(table, "fixed_binary = CAST(X'80' AS BINARY(2))", "fixed_binary");
+        assertPushed(table, "fixed_binary = CAST(X'008000' AS BINARY(2))", "fixed_binary");
+        assertResidual(table, "CAST(fixed_binary AS BINARY(1)) = X'00'", "CAST");
+        assertResidual(table, "CAST(fixed_binary AS VARBINARY(1)) < X'80'", "CAST");
+    }
+
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
     }

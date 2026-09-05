@@ -20,6 +20,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.expressions.TypeLiteralExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinition;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
@@ -68,25 +69,91 @@ class BigQueryScalarFilterPushDownTest {
         String[] literals = {
             "b''", "b'\\x00'", "b'\\x00\\x00'", "b'\\x27\\x22\\x5c'", "b'\\x7f\\x80\\xff\\xc3\\x28'"
         };
-        for (int v = 0; v < values.size(); v++) {
-            for (int op = 0; op < OPERATORS.length; op++) {
-                assertTranslation(
+        for (DataType fieldType :
+                Arrays.asList(
                         DataTypes.BYTES(),
-                        values.get(v),
-                        DataTypes.BYTES(),
-                        op,
-                        false,
-                        "((`value` " + SQL[op] + " " + literals[v] + "))");
-                assertTranslation(
-                        DataTypes.BYTES(),
-                        values.get(v),
-                        DataTypes.BYTES(),
-                        op,
-                        true,
-                        "((`value` " + SQL[REVERSED[op]] + " " + literals[v] + "))");
+                        DataTypes.BINARY(1),
+                        DataTypes.BINARY(2),
+                        DataTypes.BINARY(4))) {
+            for (int v = 0; v < values.size(); v++) {
+                byte[] value = values.get(v);
+                List<DataType> literalTypes =
+                        value.length == 0
+                                ? Collections.singletonList(DataTypes.BYTES())
+                                : Arrays.asList(
+                                        DataTypes.BYTES(),
+                                        DataTypes.BINARY(value.length),
+                                        DataTypes.VARBINARY(value.length));
+                for (DataType literalType : literalTypes) {
+                    for (int op = 0; op < OPERATORS.length; op++) {
+                        assertTranslation(
+                                fieldType,
+                                value,
+                                literalType,
+                                op,
+                                false,
+                                "((`value` " + SQL[op] + " " + literals[v] + "))");
+                        assertTranslation(
+                                fieldType,
+                                value,
+                                literalType,
+                                op,
+                                true,
+                                "((`value` " + SQL[REVERSED[op]] + " " + literals[v] + "))");
+                    }
+                }
             }
+            assertNullChecks(fieldType);
         }
-        assertNullChecks(DataTypes.BYTES());
+    }
+
+    @Test
+    void remainingBinaryCastsComposeConservativelyWithDirectFilters() {
+        DataType type = DataTypes.BINARY(2);
+        ResolvedExpression literal = new ValueLiteralExpression(new byte[] {0});
+        ResolvedExpression cast =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.CAST,
+                        Arrays.asList(field(type), new TypeLiteralExpression(DataTypes.BINARY(1))),
+                        DataTypes.BINARY(1));
+        ResolvedExpression unsupported = call(BuiltInFunctionDefinitions.EQUALS, cast, literal);
+        ResolvedExpression supported =
+                comparison(type, new byte[] {(byte) 0x80}, DataTypes.BINARY(1), 2, false);
+        BigQueryFilterPushDown.State castOnly = translate(type, unsupported, null);
+        assertThat(castOnly.result().getAcceptedFilters()).isEmpty();
+        assertThat(castOnly.result().getRemainingFilters()).containsExactly(unsupported);
+        assertThat(castOnly.rowRestriction()).isNull();
+        ResolvedExpression conjunction =
+                call(BuiltInFunctionDefinitions.AND, unsupported, supported);
+        BigQueryFilterPushDown.State and = translate(type, conjunction, null);
+        assertThat(and.rowRestriction()).isEqualTo("(((`value` < b'\\x80')))");
+        assertThat(and.result().getAcceptedFilters()).containsExactly(conjunction);
+        assertThat(and.result().getRemainingFilters()).containsExactly(conjunction);
+        ResolvedExpression disjunction =
+                call(BuiltInFunctionDefinitions.OR, unsupported, supported);
+        BigQueryFilterPushDown.State or = translate(type, disjunction, null);
+        assertThat(or.rowRestriction()).isNull();
+        assertThat(or.result().getAcceptedFilters()).isEmpty();
+        assertThat(or.result().getRemainingFilters()).containsExactly(disjunction);
+        ResolvedExpression castLiteral =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.CAST,
+                        Arrays.asList(literal, new TypeLiteralExpression(type)),
+                        type);
+        assertThat(
+                        translate(
+                                        type,
+                                        call(
+                                                BuiltInFunctionDefinitions.EQUALS,
+                                                field(type),
+                                                castLiteral),
+                                        null)
+                                .rowRestriction())
+                .isNull();
+        assertThat(
+                        translate(type, call(BuiltInFunctionDefinitions.IS_NULL, cast), null)
+                                .rowRestriction())
+                .isNull();
     }
 
     @Test
@@ -186,10 +253,7 @@ class BigQueryScalarFilterPushDownTest {
         }
         for (DataType type :
                 Arrays.asList(
-                        DataTypes.TIME(4),
-                        DataTypes.TIMESTAMP(7),
-                        DataTypes.TIMESTAMP_LTZ(7),
-                        DataTypes.BINARY(4))) {
+                        DataTypes.TIME(4), DataTypes.TIMESTAMP(7), DataTypes.TIMESTAMP_LTZ(7))) {
             assertThat(
                             translate(
                                             type,
@@ -202,10 +266,10 @@ class BigQueryScalarFilterPushDownTest {
         assertRejected(
                 DataTypes.TIMESTAMP(7), LocalDateTime.of(2026, 1, 1, 0, 0), DataTypes.TIMESTAMP(7));
         assertRejected(DataTypes.TIMESTAMP_LTZ(7), Instant.EPOCH, DataTypes.TIMESTAMP_LTZ(7));
-        assertRejected(DataTypes.BINARY(4), new byte[4], DataTypes.BINARY(4));
         for (DataType type :
                 Arrays.asList(
                         DataTypes.BYTES(),
+                        DataTypes.BINARY(4),
                         DataTypes.TIME(3),
                         DataTypes.TIMESTAMP(3),
                         DataTypes.TIMESTAMP_LTZ(3))) {
@@ -216,21 +280,23 @@ class BigQueryScalarFilterPushDownTest {
 
     @Test
     void hexEscapingConsumesTheCombinedUtf8Budget() {
-        DataType type = DataTypes.BYTES();
-        ResolvedExpression small = comparison(type, new byte[] {0}, type, 0, false);
-        String rendered = translate(type, small, null).rowRestriction();
-        int wrapper = BigQueryFilterPushDown.combinedRowRestriction("", "").length();
-        int available =
-                BigQueryFilterPushDown.MAX_ROW_RESTRICTION_BYTES - wrapper - rendered.length();
-        String explicit = "é".repeat(available / 2) + " ".repeat(available % 2);
-        assertThat(translate(type, small, explicit).rowRestriction()).isEqualTo(rendered);
-        assertThat(translate(type, small, explicit + " ").rowRestriction()).isNull();
-        ResolvedExpression large = comparison(type, new byte[250_000], type, 0, false);
-        BigQueryFilterPushDown.State state =
-                BigQueryFilterPushDown.translate(rowType(type), Arrays.asList(large, small), null);
-        assertThat(state.result().getAcceptedFilters()).containsExactly(small);
-        assertThat(state.result().getRemainingFilters()).containsExactly(large, small);
-        assertThat(state.rowRestriction()).isEqualTo(rendered);
+        for (DataType type : Arrays.asList(DataTypes.BYTES(), DataTypes.BINARY(2))) {
+            ResolvedExpression small = comparison(type, new byte[] {0}, type, 0, false);
+            String rendered = translate(type, small, null).rowRestriction();
+            int wrapper = BigQueryFilterPushDown.combinedRowRestriction("", "").length();
+            int available =
+                    BigQueryFilterPushDown.MAX_ROW_RESTRICTION_BYTES - wrapper - rendered.length();
+            String explicit = "é".repeat(available / 2) + " ".repeat(available % 2);
+            assertThat(translate(type, small, explicit).rowRestriction()).isEqualTo(rendered);
+            assertThat(translate(type, small, explicit + " ").rowRestriction()).isNull();
+            ResolvedExpression large = comparison(type, new byte[250_000], type, 0, false);
+            BigQueryFilterPushDown.State state =
+                    BigQueryFilterPushDown.translate(
+                            rowType(type), Arrays.asList(large, small), null);
+            assertThat(state.result().getAcceptedFilters()).containsExactly(small);
+            assertThat(state.result().getRemainingFilters()).containsExactly(large, small);
+            assertThat(state.rowRestriction()).isEqualTo(rendered);
+        }
     }
 
     private static void assertTemporalMatrix(

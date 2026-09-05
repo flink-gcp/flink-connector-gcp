@@ -237,7 +237,10 @@ partitioning or clustering column.
 The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
 predicate subset onto `SupportsFilterPushDown`.
 
-Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns.
+Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `BINARY(n)`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns.
+For `BINARY(n)`, the Table source preserves the source array's actual length and translates direct field/literal comparisons and null checks.
+Predicates with a remaining cast stay in Flink; a folded literal cast uses its resulting bytes.
+The [Table reference]({{< relref "docs/connectors/table/bigquery" >}}#source) describes the fixed-length comparison boundary.
 `BOOLEAN` accepts equality and inequality, BigQuery `STRING` accepts equality, and those supported
 column types also accept `IS NULL` and `IS NOT NULL`.
 An `AND` contributes every child that is a necessary condition for the whole expression.
@@ -255,7 +258,7 @@ Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration can
 unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
 reject the generated restriction at that point.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-Fixed-length character and binary columns, nested fields,
+Fixed-length character columns, nested fields,
 complex types, field-to-field comparisons, casts, and functions are not translated.
 
 Every generated restriction is a necessary condition for the Flink predicate; otherwise BigQuery

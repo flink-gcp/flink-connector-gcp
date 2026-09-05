@@ -266,7 +266,7 @@ The supported field-literal comparisons are:
 
 | Column type | Operators |
 |---|---|
-| Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, `TIMESTAMP_LTZ(0..6)` | `=`, `<>`, `<`, `<=`, `>`, `>=` |
+| Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `BINARY(n)`, `TIME(0..3)`, `TIMESTAMP(0..6)`, `TIMESTAMP_LTZ(0..6)` | `=`, `<>`, `<`, `<=`, `>`, `>=` |
 | `BOOLEAN` | `=`, `<>` |
 | BigQuery `STRING` | `=` |
 
@@ -285,13 +285,18 @@ The source uses the precision the planner supplies: SQL `TIME(p)` resolves to `T
 A programmatically constructed catalog schema can retain `TIME(1..3)` on every supported version.
 The source rejects `TIME` precision above 3 and timestamp precision above 6; these schemas cannot be read with residual filtering alone.
 Binary literals preserve every byte, including empty and non-UTF-8 values, and ordered comparisons use unsigned lexicographic byte order.
+A `BINARY(n)` declaration preserves the actual source bytes, including arrays shorter or longer than `n`; reading does not pad or truncate them.
+Direct comparisons use the resolved literal bytes without resizing them to `n`.
+A cast that remains in the predicate stays with Flink, while a constant cast that Flink folds can become a supported literal.
+For example, with `b BINARY(2)`, `b = X'0080'` and `b < X'80'` are pushed, while `b = X'80'` retains an implicit cast and stays residual.
+Both null predicates are supported regardless of length.
 
 BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
 Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
 unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
 reject the generated restriction at that point.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-Fixed-length `CHAR` and `BINARY` columns, nested fields,
+Fixed-length `CHAR` columns, nested fields,
 complex types, field-to-field comparisons, casts, and functions stay with Flink.
 Every generated restriction is a necessary condition for the Flink predicate because residual
 evaluation cannot recover a row BigQuery excluded.
