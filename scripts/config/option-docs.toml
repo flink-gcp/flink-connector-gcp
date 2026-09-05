@@ -79,6 +79,9 @@ sources = [
 [[builders]]
 module = "flink-connector-gcp-bigtable"
 page = "docs/content/docs/reference/bigtable.md"
+sources = [
+  "flink-connector-gcp-bigtable/src/main/java/io/github/flink/gcp/connector/bigtable/sink/conditional/BigtableConditionalAsyncBuilder.java",
+]
 
 [[builders]]
 module = "flink-connector-gcp-spanner"

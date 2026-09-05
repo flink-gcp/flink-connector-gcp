@@ -25,6 +25,9 @@ import org.apache.flink.types.RowKind;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalFilter;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalMutation;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalRequest;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
@@ -33,6 +36,7 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -203,10 +207,35 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                             + " upsert changelog and so is never sent one. Writing it would delete"
                             + " the row the following UPDATE_AFTER rewrites.");
         }
-        RowMutationEntry entry = RowMutationEntry.create(rowKey(element));
+        ByteString key = rowKey(element);
+        RowMutationEntry entry = RowMutationEntry.create(key);
         if (kind == RowKind.DELETE) {
             return entry.deleteRow();
         }
+        writeCells(element, key, entry::setCell);
+        return entry;
+    }
+
+    ConditionalRequest insertIfAbsent(RowData element) throws IOException {
+        if (element.getRowKind() != RowKind.INSERT) {
+            throw new IOException(
+                    "Bigtable sink.write-mode=insert-if-absent accepts INSERT rows only; received "
+                            + element.getRowKind()
+                            + ".");
+        }
+        ByteString key = rowKey(element);
+        List<ConditionalMutation> cells = new ArrayList<>();
+        writeCells(
+                element,
+                key,
+                (family, qualifier, timestamp, value) ->
+                        cells.add(
+                                ConditionalMutation.setCell(family, qualifier, timestamp, value)));
+        return ConditionalRequest.of(key, ConditionalFilter.rowExists(), List.of(), cells);
+    }
+
+    private void writeCells(RowData element, ByteString key, CellConsumer consumer)
+            throws IOException {
         boolean hasExplicitTimestamp =
                 timestampMetadataIndex >= 0 && !element.isNullAt(timestampMetadataIndex);
         long timestampMicros = hasExplicitTimestamp ? timestampMicros(element) : 0L;
@@ -218,7 +247,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             RowData cells = element.getRow(family.index, family.qualifiers.length);
             for (int i = 0; i < family.qualifiers.length; i++) {
                 ByteString value = ByteString.copyFrom(family.encoders[i].encode(cells, i));
-                entry.setCell(
+                consumer.setCell(
                         family.name,
                         family.qualifiers[i],
                         hasExplicitTimestamp ? timestampMicros : clock.micros(),
@@ -235,14 +264,23 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                                     + " nor the reason, so it is refused here instead. A row with"
                                     + " nothing but a key is not a Bigtable row; write at least"
                                     + " one column family, or filter the record out upstream.",
-                            RowRanges.format(entry.toProto().getRowKey())));
+                            RowRanges.format(key)));
         }
-        return entry;
+    }
+
+    @FunctionalInterface
+    private interface CellConsumer {
+        void setCell(String family, ByteString qualifier, long timestamp, ByteString value);
     }
 
     private long timestampMicros(RowData element) throws IOException {
         TimestampData timestamp =
                 element.getTimestamp(timestampMetadataIndex, WritableMetadata.TIMESTAMP_PRECISION);
+        if (timestamp.getMillisecond() < 0) {
+            throw new IOException(
+                    "The 'timestamp' metadata value must not be before the Unix epoch. Use NULL"
+                            + " for the writer clock; negative metadata cannot select server time.");
+        }
         try {
             long millis = Math.multiplyExact(timestamp.getMillisecond(), 1_000L);
             if (truncateCellTimestampToMillis) {

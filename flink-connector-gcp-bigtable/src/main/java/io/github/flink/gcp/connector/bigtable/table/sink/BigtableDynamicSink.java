@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
@@ -27,14 +28,20 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSink;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSinkBuilder;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
+import io.github.flink.gcp.connector.bigtable.table.WriteMode;
 
 import javax.annotation.Nullable;
 
@@ -70,6 +77,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     @Nullable private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
     private final BigtableWriterOptions writerOptions;
+    private final WriteMode writeMode;
+    private final BigtableRequestOptions requestOptions;
+    @Nullable private final EmptyBranchPolicy emptyBranchPolicy;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
     @Nullable private final String emulatorEndpoint;
@@ -92,6 +102,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.writerOptions =
                 Preconditions.checkNotNull(builder.writerOptions, "writerOptions must not be null");
+        this.writeMode = builder.writeMode;
+        this.requestOptions = builder.requestOptions;
+        this.emptyBranchPolicy = builder.emptyBranchPolicy;
         this.createDisposition = builder.createDisposition;
         this.tableCreateOptions = builder.tableCreateOptions;
         this.emulatorEndpoint = builder.emulatorEndpoint;
@@ -130,6 +143,13 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
+        if (writeMode == WriteMode.INSERT_IF_ABSENT) {
+            if (!requestedMode.containsOnly(RowKind.INSERT)) {
+                throw new ValidationException(
+                        "Bigtable 'sink.write-mode' = 'insert-if-absent' requires INSERT-only input.");
+            }
+            return ChangelogMode.insertOnly();
+        }
         // The compatibility mode restores #488's append answer for a statement that cannot carry
         // Flink 2.3's ON CONFLICT syntax. It is deliberately narrow: an updating query must still
         // expose Bigtable's physical upsert behavior so the planner can complete and order it.
@@ -157,6 +177,32 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         WritableMetadata[] selected =
                 metadataKeys.stream().map(WritableMetadata::of).toArray(WritableMetadata[]::new);
+        if (writeMode == WriteMode.INSERT_IF_ABSENT) {
+            BigtableConditionalSinkBuilder<RowData> conditional =
+                    BigtableConditionalSink.<RowData>builder()
+                            .table(destination)
+                            .serializer(
+                                    new RowDataConditionalSerializationSchema(
+                                            schema,
+                                            nullStringLiteral,
+                                            selected,
+                                            truncateCellTimestampToMillis))
+                            .requestOptions(requestOptions);
+            if (appProfileId != null) {
+                conditional.appProfileId(appProfileId);
+            }
+            if (serviceAccountKeyFile != null) {
+                conditional.serviceAccountKeyFile(serviceAccountKeyFile);
+            }
+            if (emulatorEndpoint != null) {
+                conditional.emulatorEndpoint(
+                        EmulatorEndpoint.parse(emulatorEndpoint, "emulator-endpoint"));
+            }
+            if (emptyBranchPolicy != null) {
+                conditional.emptyBranchPolicy(emptyBranchPolicy);
+            }
+            return SinkV2Provider.of(conditional.build(), parallelism);
+        }
         BigtableSinkBuilder<RowData> builder =
                 BigtableSink.<RowData>builder()
                         .table(destination)
@@ -195,6 +241,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .appProfileId(appProfileId)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .writerOptions(writerOptions)
+                .writeMode(writeMode)
+                .requestOptions(requestOptions)
+                .emptyBranchPolicy(emptyBranchPolicy)
                 .createDisposition(createDisposition)
                 .tableCreateOptions(tableCreateOptions)
                 .emulatorEndpoint(emulatorEndpoint)
@@ -226,6 +275,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && Objects.equals(appProfileId, that.appProfileId)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && writerOptions.equals(that.writerOptions)
+                && writeMode == that.writeMode
+                && requestOptions.equals(that.requestOptions)
+                && emptyBranchPolicy == that.emptyBranchPolicy
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
@@ -245,6 +297,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 appProfileId,
                 serviceAccountKeyFile,
                 writerOptions,
+                writeMode,
+                requestOptions,
+                emptyBranchPolicy,
                 createDisposition,
                 tableCreateOptions,
                 emulatorEndpoint,
@@ -264,6 +319,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private String appProfileId;
         @Nullable private String serviceAccountKeyFile;
         private BigtableWriterOptions writerOptions;
+        private WriteMode writeMode = WriteMode.UPSERT;
+        private BigtableRequestOptions requestOptions = BigtableRequestOptions.builder().build();
+        @Nullable private EmptyBranchPolicy emptyBranchPolicy;
         @Nullable private CreateDisposition createDisposition;
         @Nullable private TableCreateOptions tableCreateOptions;
         @Nullable private String emulatorEndpoint;
@@ -274,6 +332,33 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private List<String> metadataKeys = Collections.emptyList();
 
         private Builder() {}
+
+        /**
+         * @param value the write operation
+         * @return this builder
+         */
+        public Builder writeMode(WriteMode value) {
+            this.writeMode = value;
+            return this;
+        }
+
+        /**
+         * @param value the request runtime options
+         * @return this builder
+         */
+        public Builder requestOptions(BigtableRequestOptions value) {
+            this.requestOptions = value;
+            return this;
+        }
+
+        /**
+         * @param value the explicit empty-branch policy, or null
+         * @return this builder
+         */
+        public Builder emptyBranchPolicy(@Nullable EmptyBranchPolicy value) {
+            this.emptyBranchPolicy = value;
+            return this;
+        }
 
         /**
          * @param schema the table's parsed DDL model

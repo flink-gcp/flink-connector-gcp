@@ -878,7 +878,11 @@ class BigtableRequestFunctionTest {
         }
 
         @Override
-        protected String result(String input, String answer) {
+        protected String result(
+                String input,
+                String answer,
+                TableDestination destination,
+                RowRequest<String> request) {
             if (resultFailure != null) {
                 throw resultFailure;
             }

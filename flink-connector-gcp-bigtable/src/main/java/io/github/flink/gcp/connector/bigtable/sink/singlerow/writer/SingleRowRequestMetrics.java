@@ -42,6 +42,11 @@ import java.util.function.Supplier;
  * rather than an attempt — and {@code timedOut} on top of {@code failed} when the failure was the
  * request's own deadline.
  *
+ * <p>A successful conditional response also counts either {@code predicatesMatched} or {@code
+ * predicatesNotMatched}, and {@code emptyBranchesSelected} when its selected list is empty. These
+ * counters and {@code requestsCompleted} advance before the empty-branch policy runs; a policy
+ * failure does not count as a failed RPC.
+ *
  * <p>The sink surface also moves Flink's standard {@code numRecordsSend} and {@code
  * numRecordsSendErrors}, with the meaning every sink in this repository gives them ({@code
  * docs/adr/0037}): a record is sent when it is first handed to the client — accepted, here — and a
@@ -62,6 +67,9 @@ public final class SingleRowRequestMetrics {
     @Nullable private final Counter numRecordsSendErrors;
     private final Counter requestsAccepted;
     private final Counter requestsCompleted;
+    private final Counter predicatesMatched;
+    private final Counter predicatesNotMatched;
+    private final Counter emptyBranchesSelected;
     private final Counter requestsFailed;
     private final Counter requestsTimedOut;
     private final Counter recordsSkipped;
@@ -95,6 +103,12 @@ public final class SingleRowRequestMetrics {
                 metricGroup.counter(BigtableMetricNames.CAPACITY_EVICTIONS, counters.get());
         this.idleEvictions =
                 metricGroup.counter(BigtableMetricNames.IDLE_EVICTIONS, counters.get());
+        this.predicatesMatched =
+                metricGroup.counter(BigtableMetricNames.PREDICATES_MATCHED, counters.get());
+        this.predicatesNotMatched =
+                metricGroup.counter(BigtableMetricNames.PREDICATES_NOT_MATCHED, counters.get());
+        this.emptyBranchesSelected =
+                metricGroup.counter(BigtableMetricNames.EMPTY_BRANCHES_SELECTED, counters.get());
         this.errorClasses = new ErrorClassCounters(metricGroup, counters);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics, counters);
     }
@@ -229,5 +243,22 @@ public final class SingleRowRequestMetrics {
     /** Counts an instance whose last table went idle past the idle timeout. */
     public void idleEviction() {
         idleEvictions.inc();
+    }
+
+    /**
+     * Counts a conditional response before any empty-branch policy is applied.
+     *
+     * @param matched whether the predicate selected any cells
+     * @param hasMutations whether the selected mutation list was nonempty
+     */
+    public void conditionalOutcome(boolean matched, boolean hasMutations) {
+        if (matched) {
+            predicatesMatched.inc();
+        } else {
+            predicatesNotMatched.inc();
+        }
+        if (!hasMutations) {
+            emptyBranchesSelected.inc();
+        }
     }
 }

@@ -21,6 +21,8 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 
 /**
@@ -33,11 +35,15 @@ import java.io.Serializable;
  * TableDestination} instances instead of re-creating them per record (for example via a small
  * {@code Map#computeIfAbsent} keyed on the varying component).
  *
- * <p>Each distinct table costs the writer a bulk mutation batcher of its own, held until the
- * destination goes idle, so a resolver's <em>cardinality</em> is a sink resource decision and not
- * only a routing one. {@code BigtableWriterOptions.destinationIdleTimeout} is what bounds it.
+ * <p>In the bulk sink, each distinct table costs the writer a mutation batcher of its own, held
+ * until the destination goes idle; {@code BigtableWriterOptions.destinationIdleTimeout} bounds that
+ * state. The conditional surfaces instead retain per-table request state and share a client per
+ * instance, governed by {@code BigtableRequestOptions}. Resolver <em>cardinality</em> is a resource
+ * decision on both surfaces.
  *
- * <p>The {@link SinkWriter.Context} exposes the record's event timestamp for time-based routing.
+ * <p>Sinks supply a {@link SinkWriter.Context} exposing the record's event timestamp for time-based
+ * routing. The conditional async helper supplies {@code null}; resolvers used there must obtain
+ * routing information from the element itself.
  *
  * @param <T> type of the records written by the sink
  */
@@ -49,8 +55,9 @@ public interface DestinationResolver<T> extends Serializable {
      * Returns the destination table for the given record.
      *
      * @param element the record
-     * @param context writer context exposing the record's event timestamp and current watermark
+     * @param context writer context exposing the record's event timestamp and current watermark, or
+     *     {@code null} when invoked by the conditional async helper
      * @return the destination table; never {@code null}
      */
-    TableDestination resolve(T element, SinkWriter.Context context);
+    TableDestination resolve(T element, @Nullable SinkWriter.Context context);
 }

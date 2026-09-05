@@ -17,9 +17,11 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.description.HtmlFormatter;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
 
+import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -30,6 +32,7 @@ import java.util.stream.Collectors;
 
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Guards on the option set as a whole.
@@ -51,6 +54,7 @@ class BigtableConnectorOptionsTest {
                             BigtableConnectorOptions.SCAN_MODE.key(),
                             BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING.key(),
                             BigtableConnectorOptions.LOOKUP_ASYNC.key(),
+                            BigtableConnectorOptions.SINK_WRITE_MODE.key(),
                             BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.key(),
                             BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS.key()));
 
@@ -161,6 +165,20 @@ class BigtableConnectorOptionsTest {
                 .isEqualTo(InsertOnlyInputMode.UPSERT);
         assertThat(InsertOnlyInputMode.UPSERT).hasToString("upsert");
         assertThat(InsertOnlyInputMode.INSERT_ONLY).hasToString("insert-only");
+    }
+
+    @Test
+    void emptyBranchPolicyUsesItsSqlSpellingInParsingAndErrors() {
+        Configuration configuration = new Configuration();
+        ConfigOption<EmptyBranchPolicy> option =
+                BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY;
+        configuration.setString(option.key(), "ignore");
+        assertThat(configuration.get(option)).isEqualTo(EmptyBranchPolicy.IGNORE);
+        configuration.setString(option.key(), "fail");
+        assertThat(configuration.get(option)).isEqualTo(EmptyBranchPolicy.FAIL);
+        configuration.setString(option.key(), "invalid");
+        assertThatThrownBy(() -> configuration.get(option))
+                .hasStackTraceContaining("[ignore, fail]");
     }
 
     @Test

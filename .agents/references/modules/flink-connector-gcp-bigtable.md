@@ -78,8 +78,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `maxActiveInstances` (the factory's wait for the evicted client's close remains). Its
   counters are `ThreadSafeSimpleCounter`s through the base helpers' supplier overloads; the sink
   surface keeps `SimpleCounter`. Capacity is `AsyncDataStream`'s, documented as
-  `maxInFlightRequests` until an entry point passes it; Flink's operator timeout must sit above
-  `requestTimeout`.
+  `maxInFlightRequests` through the conditional helper; Flink's operator timeout must sit above
+  `requestTimeout`. Preserve the original request and resolved destination through completion;
+  outcome policies run after successful-RPC and predicate counters (ADR-0152).
 - **`BigtableRequestFunction.timeout` completes the result on every path** (#1203, ADR-0148's
   refinement). The operator's retry mode (`*WithRetry`) holds an input between attempts under the
   same `ResultFuture`, and Flink has no fallback if the function returns without completing: with
@@ -94,12 +95,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   records the measurement or review finding behind each. Retry mode is the job's retry,
   supported; its semantics, and the Flink 1.20/2.2 difference in what a failure raised from
   `timeout` does, are on the DataStream page and in the refinement, not here.
-- The seven runtime counters are registered with their `BigtableMetricNames` constant spelled at
+- The ten runtime counters are registered with their `BigtableMetricNames` constant spelled at
   each `counter(...)` call: `check-metric-docs` reads the registrations and cannot see through a
   helper that takes the name as a parameter.
-- `FailedRequest.getPayloadBytes()` returns `null` until #1179/#1180 own a request model; no Table
-  API option exists for this family until #1179's write-mode value under #1177's option, and
-  `BigtableOptionParityTest` records every `BigtableRequestOptions` knob as having no key yet.
+- `FailedRequest.getPayloadBytes()` remains `null`: the conditional model's job-graph encoding
+  is not a dead-letter format (ADR-0152). `sink.write-mode` selects ordinary `upsert` or conditional
+  `insert-if-absent`; #1177 and #1226 extend this same option. Keep request options mapped through
+  `RequestOptionsMapper` and guard explicit mode-incompatible options with `ConditionalOptionChecks`.
+- Conditional SQL keeps the ordinary family/qualifier schema and codec. Its unset RPC predicate
+  tests the entire stored row, including undeclared families. Keep INSERT-only changelog handling,
+  preserve repeated inputs through the planner and retain ADR-0149's per-cell writer clock.
 
 ## Batch knobs, and entries versus mutations (`docs/adr/0082`)
 
@@ -491,10 +496,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
   setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated. Table-owned options have no
-  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The seven
+  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The eight
   defaulted table-owned options are `scan.mode`, `null-string-literal`, `decode.trailing-bytes`,
   `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
-  `sink.insert-only-input-mode`; `scan.change-stream.changelog-mode` is deliberately required so
+  `sink.insert-only-input-mode` and `sink.write-mode`; `scan.change-stream.changelog-mode` is deliberately required so
   selecting either Change Streams interpretation remains explicit. A mapped option gaining a
   default and a defaulted table-owned option losing its own both fail. "No default restated"
   covers the *description* as well (#1045, `docs/adr/0139`):

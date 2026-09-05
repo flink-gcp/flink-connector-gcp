@@ -366,7 +366,7 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
         RequestHandle handle =
                 new RequestHandle(state, request.operation(), request.rowKey(), future);
         outstanding.add(handle);
-        ApiFutures.addCallback(future, new Completion(handle), Runnable::run);
+        ApiFutures.addCallback(future, new Completion(handle, request), Runnable::run);
     }
 
     @Override
@@ -538,12 +538,23 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
     }
 
     /** Task-thread handler for an answered request, run as a mailbox mail. */
-    private void onCompleted(RequestHandle handle) {
+    private void onCompleted(RequestHandle handle, RowRequest<?> request, Object answer) {
         if (closed || !handle.settle()) {
             return;
         }
         release(handle);
         metrics.requestCompleted();
+        try {
+            request.onSuccess(answer, metrics);
+        } catch (IOException | RuntimeException e) {
+            if (asyncError == null) {
+                asyncError =
+                        e instanceof IOException
+                                ? (IOException) e
+                                : new IOException(
+                                        "Failed to interpret the Bigtable request outcome.", e);
+            }
+        }
     }
 
     /** Task-thread handler for a failed request, run as a mailbox mail. */
@@ -583,7 +594,8 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
                             handle.rowKey,
                             "The request was rejected because "
                                     + RequestFailures.ROW_LEVEL_REASON
-                                    + ".",
+                                    + "."
+                                    + RequestFailures.routingHint(handle.operation),
                             throwable));
         } catch (IOException | RuntimeException e) {
             if (asyncError == null) {
@@ -623,14 +635,18 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
 
         private final RequestHandle handle;
 
-        private Completion(RequestHandle handle) {
+        private final RowRequest<?> request;
+
+        private Completion(RequestHandle handle, RowRequest<?> request) {
             this.handle = handle;
+            this.request = request;
         }
 
         @Override
         public void onSuccess(Object result) {
             lastCompletionNanos = nanoClock.getAsLong();
-            dispatch(() -> onCompleted(handle), handle.state.completionDescription);
+            dispatch(
+                    () -> onCompleted(handle, request, result), handle.state.completionDescription);
         }
 
         @Override

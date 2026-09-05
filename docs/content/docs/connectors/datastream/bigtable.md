@@ -607,13 +607,70 @@ value is the reason to call it. This connector runs them on a second runtime, in
 `sink.singlerow` package beside the `MutateRows` sink rather than inside it
 ([ADR-0148]({{< param BookRepo >}}/blob/main/docs/adr/0148-bigtable-single-row-requests-run-on-a-request-response-runtime-beside-the-batcher.md)).
 
-**What ships now is the runtime and its building blocks, not an entry point.** The per-operation
-sinks and functions — a serializer SPI, a builder and a result type for each RPC — arrive with
-[#1179]({{< param BookRepo >}}/issues/1179) (conditional) and
-[#1180]({{< param BookRepo >}}/issues/1180) (read-modify-write), and Flink 2.2+ SQL functions over
-them with [#1181]({{< param BookRepo >}}/issues/1181). Until then nothing on this page is
-user-callable for these RPCs; what follows is the contract those entry points are written against,
-stated now so that a job designed against it is not redesigned later.
+`BigtableConditionalSink` and `BigtableConditionalAsync` expose conditional writes through immutable
+`ConditionalRequest`, `ConditionalFilter` and `ConditionalMutation` values.
+The read-modify-write entry points remain in [#1180]({{< param BookRepo >}}/issues/1180), and
+result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+The [Table sink]({{< relref "docs/connectors/table/bigtable" >}}#insert-if-absent) also offers atomic `insert-if-absent`.
+
+### Conditional requests and results
+
+These examples receive a stream named `changes` whose records have this shape:
+
+{{< java-snippet file="BigtableConditionalWrites.java" tag="conditional-input" >}}
+
+Build a schema that changes the name only when its latest stored value equals the expected value:
+
+{{< java-snippet file="BigtableConditionalWrites.java" tag="conditional-schema" >}}
+
+The true branch contains the replacement, and the false branch is empty.
+`latestCellValueEquals` selects the exact family and qualifier, then the newest version, then tests byte equality.
+A matching historical value cannot satisfy it.
+`rowExists` checks any cell in the entire row; `cellExists` checks any version of one column.
+Family, qualifier, value, timestamp and cell-count selections compose through `chain` and `interleave`.
+A chain filters one cell set in order; it does not express boolean AND across distinct cells.
+Branches preserve mutation order and support SetCell, DeleteCells, DeleteFamily, DeleteRow, AddToCell and MergeToCell.
+Aggregate inputs use `AggregateValue.raw`, `AggregateValue.bytes` or `AggregateValue.int64` and require a compatible aggregate family.
+These preserve distinct `raw_value`, `bytes_value` and `int_value` transport variants.
+For Int64 Sum merging, pass an accumulator read from Bigtable through `AggregateValue.bytes`; `raw` does not select the typed bytes variant.
+The adapter handles the protobuf encoding that SDK 2.82.0's typed `Value` wrapper cannot express (ADR-0041).
+Each branch may have up to 100,000 mutations; at least one branch must be nonempty.
+
+Use the schema with a sink when successful responses need no downstream processing:
+
+{{< java-snippet file="BigtableConditionalWrites.java" tag="conditional-sink" >}}
+
+Use the same schema with the async helper to receive the original input and its response:
+
+{{< java-snippet file="BigtableConditionalWrites.java" tag="conditional-async" >}}
+
+Each tuple's `f0` is the input and `f1` is a `ConditionalResult`.
+The result contains the actual resolved destination, row key, `predicateMatched` and `selectedBranchHasMutations`.
+Constructing it does not call the resolver or schema again.
+It has explicit Flink type information and a versioned field serializer; the tuple's input retains its own stream type information.
+Both helpers pass `maxInFlightRequests` to Flink as operator capacity and require a timeout representable in nanoseconds.
+Flink truncates that timeout to milliseconds; the truncated value must remain greater than `requestTimeout`.
+`orderedWait` orders emitted results; separate RPCs targeting the same row can still execute in either order.
+No `*WithRetry` entry points are provided.
+On the async surface the resolver and schema receive a null `SinkWriter.Context`; they cannot use its timestamp or watermark.
+The schema's `open` runs once per subtask on both surfaces.
+
+`EmptyBranchPolicy.IGNORE` accepts either predicate outcome, including an empty selected branch.
+`FAIL` fails the job when that list is empty, after counting RPC completion and the predicate outcome.
+A dropping failure handler cannot override this policy.
+A nonempty branch can still leave stored bytes unchanged, for example when deleting an absent cell.
+An applied request whose acknowledgement is lost may replay and select a different branch.
+With fail-on-empty, a successful initial insertion can therefore make recovery fail repeatedly because the row now exists.
+
+Explicit microsecond timestamps are preserved; the destination table validates its timestamp granularity.
+Only SetCell accepts `-1` to request server time, which can produce another version on replay.
+AddToCell and MergeToCell require a concrete nonnegative timestamp, including zero; no writer clock is inferred for an aggregate cell.
+
+### Shared request runtime
+
+This section describes the internal runtime shared by the request operations.
+The public conditional helper wraps it with `orderedWait` and `unorderedWait` only;
+it does not expose the retrying forms discussed below.
 
 **Both RPCs are Bigtable's single-row transactions, and the instance has to allow them.** Bigtable
 permits a conditional write or a read-modify-write only through an application profile that uses
@@ -626,6 +683,13 @@ does. The service account needs `bigtable.tables.checkAndMutateRow` and
 carries both, beside `bigtable.tables.mutateRows`); a permission denial is a fatal failure
 [below](#delivery-guarantees-and-state), not a row-level one, because every request to that table
 would fail the same way.
+
+Classification follows the service status, without an application-profile admin lookup.
+An unambiguous `INVALID_ARGUMENT` reaches the sink failure handler even if its cause is an invalid
+profile; `FAILED_PRECONDITION` fails the job.
+A dropping handler can therefore discard a profile rejection reported as `INVALID_ARGUMENT`.
+The default handler fails the job, and the async helper has no dropping handler.
+The conditional routing hint states a prerequisite; the preserved service cause gives the rejection reason.
 
 **Two surfaces over one runtime.** A *sink* surface — a `SinkWriter` in the shape of the batching
 writer: one request per record, the answers discarded, `flush()` waiting for every outstanding
@@ -667,8 +731,7 @@ cell value type here as it is in the batching sink's `RowMutationEntry`.
 
 **On the async surface, capacity and the outer timeout are Flink's.** The operator's capacity — the
 number handed to `AsyncDataStream` — is that surface's in-flight bound, while `maxInFlightRequests`
-bounds the sink surface; until the entry points hand the one to the other, set the capacity to the
-same number. Flink's operator timeout should sit *above* `requestTimeout`, so that the client's
+bounds the sink surface. The conditional async helper passes that same value as operator capacity. Flink's operator timeout should sit *above* `requestTimeout`, so that the client's
 deadline — with its Bigtable-named message and its ambiguity verdict — is what a slow request fails
 on. When the operator timeout fires first, the function cancels the request and fails the record
 with a message naming both timeouts; a cancelled request is as ambiguous as a timed-out one.
@@ -883,9 +946,9 @@ before the service answers leaves the service's state *unknown*:
 A deadline failure is additionally counted under [`requestsTimedOut`](#single-row-request-metrics).
 The async surface has **no failure handler**: the handler contract is task-thread, and an answer
 arrives on a client thread with no mailbox to hop back onto, so every failed request fails the job
-there. The entry points of [#1179]({{< param BookRepo >}}/issues/1179) and
-[#1180]({{< param BookRepo >}}/issues/1180) may model a row-level outcome as a value in their result
-types instead.
+there. The conditional helper emits successful predicate outcomes as values; an RPC failure
+completes the input exceptionally. The planned read-modify-write entry points remain in
+[#1180]({{< param BookRepo >}}/issues/1180).
 
 ### Failed-mutation policy
 
@@ -915,12 +978,11 @@ The [single-row sink surface](#single-row-request-writes) takes the same SPI as
 `FailureHandler<FailedRequest>`, and the same two failures reach it: a record the serializer
 rejects and a [row-level rejection](#error-handling). `FailedRequest` carries the destination, the
 operation (`CHECK_AND_MUTATE_ROW` or `READ_MODIFY_WRITE_ROW`), the row key, the message and the
-cause — and its payload is **`null`** for now. The runtime holds a request as connector-owned
+cause — and its payload is **`null`**. The runtime holds a request as connector-owned
 values that become the client's builder only when the request starts, and the builder's wire form
 is reached through an `@InternalApi` conversion this connector declines to depend on for a
 dead-letter payload, so a dead-letter consumer learns which row and which RPC failed rather than the
-request's contents. The per-operation entry points own a request model of their own and settle the
-payload's encoding with it.
+request's contents. The conditional model does not define a dead-letter wire encoding; consumers cannot reconstruct a complete request from `FailedRequest`.
 
 `PubSubDeadLetterQueue`, this repository's one shipped implementation, reports what it published,
 what it still holds and how long its waits take on **this sink's** writer
@@ -1043,7 +1105,10 @@ answer it.
 | Metric | Type | Meaning |
 |---|---|---|
 | `requestsAccepted` | counter | requests the client accepted — one per record, since a single-row RPC carries one row |
-| `requestsCompleted` | counter | requests the service answered |
+| `requestsCompleted` | counter | requests the service answered, including responses whose empty-branch policy fails the job |
+| `predicatesMatched` | counter | successful conditional responses whose predicate selected cells |
+| `predicatesNotMatched` | counter | successful conditional responses whose predicate selected no cells |
+| `emptyBranchesSelected` | counter | successful conditional responses whose selected mutation list was empty, before policy handling |
 | `requestsFailed` | counter | requests that did not complete — row-level, ambiguous and fatal failures alike — plus, on the sink surface, records the serializer rejected or the client's validation refused and, on the async surface, requests Flink's operator timeout ended |
 | `requestsTimedOut` | counter | those of them that ended on a deadline: the request's own (`DEADLINE_EXCEEDED`) or, on the async surface, Flink's operator timeout. Counted on top of `requestsFailed`; an operator timeout that finds no request in flight, between the attempts of Flink's retry mode, or finds the request answered as it fires, counts nothing |
 | `inFlightRequests` | gauge | requests accepted and not yet answered, against `maxInFlightRequests` on the sink surface and the operator's capacity on the async one |
@@ -1201,7 +1266,8 @@ the same admission rule and the same once-a-minute stall warning, though under t
 `requestTimeout` every stalled request fails before the warning's minute is up, so it fires only
 when the deadline has been raised past a minute — and it counts requests, since a single-row RPC
 carries one row and nothing accumulates. On the async surface the bound is the
-capacity handed to `AsyncDataStream`, so set that to the same number. `requestTimeout` is the
+capacity handed to `AsyncDataStream`; the conditional helper supplies `maxInFlightRequests`
+automatically. `requestTimeout` is the
 client's whole deadline for one attempt, 20 s by default; a request past it is
 [ambiguous](#error-handling), and the runtime would rather report that than retry it; whatever
 value it takes, keep Flink's operator timeout above it, and under the operator's retry mode above
@@ -1368,15 +1434,10 @@ gated suite.
 
 ## Scope
 
-Not yet callable, with what stands in the way rather than a promise:
-
-- the per-operation entry points of the [single-row request runtime](#single-row-request-writes) —
-  the conditional and read-modify-write sinks and functions, and the SQL functions over them. The
-  runtime, its options, its result type and its failure boundary ship now; the serializer SPIs,
-  builders and result wrappers that make each RPC callable arrive with
-  [#1179]({{< param BookRepo >}}/issues/1179), [#1180]({{< param BookRepo >}}/issues/1180) and
-  [#1181]({{< param BookRepo >}}/issues/1181), and a Table API write mode for them with the mode
-  option [#1177]({{< param BookRepo >}}/issues/1177) settles.
+Read-modify-write entry points remain in [#1180]({{< param BookRepo >}}/issues/1180).
+Result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+DDL-defined conditional SQL commands with named predicates and numbered mutation options remain in
+[#1226]({{< param BookRepo >}}/issues/1226); arbitrary composable filters are available through DataStream.
 
 ## Provenance and attribution
 

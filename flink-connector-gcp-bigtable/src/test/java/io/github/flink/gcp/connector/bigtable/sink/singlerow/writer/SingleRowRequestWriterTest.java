@@ -158,7 +158,8 @@ class SingleRowRequestWriterTest {
         assertThat(failed.getErrorMessage())
                 .isEqualTo(
                         "The request was rejected because the request is invalid"
-                                + " (INVALID_ARGUMENT).");
+                                + " (INVALID_ARGUMENT)."
+                                + RequestFailures.routingHint(RowOperation.CHECK_AND_MUTATE_ROW));
         assertThat(failed.getCause()).isNotNull();
         assertThat(metricGroup.counterValue("requestsFailed")).isEqualTo(1);
         assertThat(metricGroup.counterValue("numRecordsSendErrors")).isEqualTo(1);
@@ -187,7 +188,8 @@ class SingleRowRequestWriterTest {
                         "A CheckAndMutateRow request to Bigtable table "
                                 + TABLE
                                 + " failed because the table or one of its column families does"
-                                + " not exist.");
+                                + " not exist."
+                                + RequestFailures.routingHint(RowOperation.CHECK_AND_MUTATE_ROW));
         // The captured failure is sticky: flush reports it too, and does so before waiting.
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)

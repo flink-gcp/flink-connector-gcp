@@ -31,7 +31,11 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -373,6 +377,47 @@ class RowDataSerializationSchemaTest {
                                         null))
                 .hasMessageContaining("'timestamp' metadata value")
                 .hasMessageContaining("outside the range of epoch microseconds");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "false, -1, 999000",
+        "true, -1, 999000",
+        "false, -1, 0",
+        "true, -1, 0",
+        "false, -2, 999000",
+        "true, -2, 999000"
+    })
+    void negativeTimestampMetadataCannotSelectServerTimeInEitherWriteMode(
+            boolean truncate, long millis, int nanosOfMillis) {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, truncate);
+        RowData row =
+                rowWithTimestamp(
+                        RowKind.INSERT, TimestampData.fromEpochMillis(millis, nanosOfMillis));
+
+        assertThatThrownBy(() -> serializer.insertIfAbsent(row))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("'timestamp' metadata value")
+                .hasMessageContaining("before the Unix epoch");
+        assertThatThrownBy(() -> serializer.serialize(row, null))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("'timestamp' metadata value")
+                .hasMessageContaining("before the Unix epoch");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void epochTimestampMetadataRemainsValidInBothWriteModes(boolean truncate) throws Exception {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, truncate);
+        RowData row = rowWithTimestamp(RowKind.INSERT, TimestampData.fromEpochMillis(0));
+
+        assertThat(serializer.insertIfAbsent(row).getOtherwiseMutations()).hasSize(3);
+        assertThat(serializer.serialize(row, null).toProto().getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .containsOnly(0L)
+                .hasSize(3);
     }
 
     private static List<String> cells(MutateRowsRequest.Entry entry) {

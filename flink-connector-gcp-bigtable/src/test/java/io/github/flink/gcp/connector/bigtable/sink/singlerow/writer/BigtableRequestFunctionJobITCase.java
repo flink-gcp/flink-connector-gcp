@@ -250,7 +250,11 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
         }
 
         @Override
-        protected BigtableRow result(String input, BigtableRow answer) {
+        protected BigtableRow result(
+                String input,
+                BigtableRow answer,
+                TableDestination destination,
+                RowRequest<BigtableRow> request) {
             return answer;
         }
     }
@@ -288,7 +292,11 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
         }
 
         @Override
-        protected BigtableRow result(String input, BigtableRow answer) {
+        protected BigtableRow result(
+                String input,
+                BigtableRow answer,
+                TableDestination destination,
+                RowRequest<BigtableRow> request) {
             return answer;
         }
     }

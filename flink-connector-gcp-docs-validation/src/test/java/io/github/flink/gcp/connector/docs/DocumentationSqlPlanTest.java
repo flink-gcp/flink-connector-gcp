@@ -391,6 +391,9 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/BigtableTableReference.sql", "overview"),
                         snippet("flink/BigtableTableReference.sql", "lookup-join")),
                 scenario(
+                        "Bigtable table reference insert-if-absent",
+                        snippet("flink/BigtableTableReference.sql", "insert-if-absent")),
+                scenario(
                         "Bigtable table reference change stream envelope",
                         snippet("flink/BigtableTableReference.sql", "change-stream-envelope"),
                         snippet(
