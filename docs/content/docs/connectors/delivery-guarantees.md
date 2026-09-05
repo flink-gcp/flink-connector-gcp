@@ -217,6 +217,10 @@ append again. Both are at-least-once, and a failure that ends a request before t
 (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED`, `CANCELLED`) fails the job saying so rather than
 retrying a request the service may already have applied.
 
+What is now planned is not that eager marker mode but a committer-based one
+([#1211]({{< param BookRepo >}}/issues/1211)): staged records applied at checkpoint completion
+through `CheckAndMutateRow`, under a predicate that issue's design ADR settles.
+
 ### Spanner
 
 Spanner [`BatchWrite`](https://cloud.google.com/spanner/docs/batch-write) is optimized for
@@ -276,23 +280,25 @@ cross-service comparison consistent.
 ## Evaluation status
 
 Stage 1 ran against the real services on 2026-08-13 with the repository's pinned Google Cloud
-clients, and the Bigtable candidate ran again on 2026-09-05 with evenly distributed keys.
+clients; the Bigtable candidate ran again on 2026-09-05 with evenly distributed keys, and once
+more the same day under an amended protocol with every repetition in its own JVM.
 These results measure the service primitives, not end-to-end Flink jobs, and none of the
 not-yet-implemented modes below is currently available through a connector builder.
-The observations remain evidence, but no additional performance stage or non-BigQuery
-exactly-once implementation is planned without a concrete non-idempotent requirement that the
+Apart from the committer-based Bigtable mode planned under
+[#1211]({{< param BookRepo >}}/issues/1211), no non-BigQuery exactly-once implementation or
+additional performance stage is planned without a concrete non-idempotent requirement that the
 existing write shapes cannot satisfy.
 
 | Candidate | Stage 1 result | Current decision |
 |---|---|---|
-| Bigtable same-row conditional marker | Inconclusive twice: the 2026-08-13 run used increasing keys, and the 2026-09-05 repeat with evenly distributed keys observed 110.0% and 100.4% of baseline throughput at 0.93x and 1.09x baseline p95 but exceeded the 10% run-to-run variation limit in both runs | Keep the existing row-key and cell upserts; reopen measurement only for a concrete same-row non-idempotent effect, and then under a protocol that instruments the throughput decline the repeat showed within each run |
+| Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
 | Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Keep the existing bounded task-creation guarantee; no broader mode or repeat is planned |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in
 [ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md),
-[issue #591]({{< param BookRepo >}}/issues/591), and, for the 2026-09-05 Bigtable repeat,
-[#1208]({{< param BookRepo >}}/issues/1208).
+[issue #591]({{< param BookRepo >}}/issues/591), and, for the 2026-09-05 Bigtable runs,
+[#1208]({{< param BookRepo >}}/issues/1208) and [#1210]({{< param BookRepo >}}/issues/1210).
 The current support decision is tracked by
 [#596]({{< param BookRepo >}}/issues/596).

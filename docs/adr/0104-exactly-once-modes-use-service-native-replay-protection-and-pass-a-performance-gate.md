@@ -18,10 +18,14 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13; revised by [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596) (2026-08-14)
-  and by [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208) (2026-09-05)
+  and by [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
+  [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210), and
+  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) (2026-09-05)
 - Issues: [#591](https://github.com/flink-gcp/flink-connector-gcp/issues/591),
   [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596),
-  [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208)
+  [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
+  [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210),
+  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
@@ -67,10 +71,13 @@ primitive that atomically binds a stable application event identity to the prote
 The mechanism may be an eager idempotent or transactional write; it does not have to be a Flink
 two-phase commit.
 
-**BigQuery remains the only connector for which an exactly-once sink mode is supported or
-planned.**
-No non-BigQuery exactly-once implementation or additional performance stage is planned without a
-concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
+**BigQuery remains the only connector with a supported exactly-once sink mode.**
+A committer-based Bigtable mode — a connector-specific committer whose pre-commit never reaches
+the target table, not the common layer declined above — is planned under
+[#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) and will be settled by its
+own ADR; no other non-BigQuery exactly-once implementation or additional performance stage is
+planned without a concrete non-idempotent user requirement that the existing write shapes cannot
+satisfy.
 
 The connector documentation distinguishes four boundaries:
 
@@ -92,14 +99,16 @@ The connector-specific decisions are:
   and `ALREADY_EXISTS` is successful creation within the service's name-retention window.
   A repeated ID neither compares nor updates the existing task.
   The handler remains at least once, and no broader guarantee is claimed.
-- **The Bigtable same-row marker candidate is correctness-feasible but performance-inconclusive,
-  and is not a supported connector mode.**
+- **The Bigtable same-row conditional write passed Stage 1 on 2026-09-05, and the eager marker
+  mode built on it is not a supported connector mode.**
   Every protected mutation and its marker must share a row, the application profile must use
   single-cluster routing with transactional writes enabled, and marker retention must exceed the
-  replay horizon.
-  Multi-row effects are outside this candidate.
-  A compliant repeat with evenly distributed keys on 2026-09-05 met the ratios twice but failed
-  the 10% variability rule twice, so the result stays inconclusive (evidence below).
+  replay horizon; multi-row effects are outside this candidate.
+  The eager mode is not built: the direction chosen on
+  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) is a mode that rides
+  Flink's two-phase commit and uses the same conditional write as its commit path, and that
+  issue's design ADR settles the identity the commit binds, the cost it pays, and whether the
+  exactly-once name is reserved for such modes (evidence below).
 - **Only the Spanner 100-record ledger-transaction shape remains correctness-feasible, but its
   performance result is inconclusive and it is not a supported connector mode.**
   The ledger and effects must share a database and a short read-write transaction.
@@ -109,20 +118,21 @@ The stronger Bigtable and Spanner candidates address narrower non-idempotent eff
 idempotent keyed mutations.
 Spanner's individual mutation replay safety does not promise ordering between same-key
 `BatchWrite` mutation groups.
-Their schema, retention, routing, batching, and failure-policy costs are not justified without a
-concrete requirement that the current row-key, cell, or mutation upserts cannot meet.
+Spanner's schema, retention, batching, and failure-policy costs are not justified without a
+concrete requirement that the current mutation upserts cannot meet; Bigtable's are weighed by
+[#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)'s design ADR.
 Cloud Tasks already exposes its useful replay primitive through both connector APIs, while Pub/Sub
 exposes no publisher-side replay primitive to add.
 
 If such a requirement reopens a candidate, Spanner must first repeat Stage 1 with evenly
 distributed keys, and Cloud Tasks must first produce a stable run-to-run result.
-Bigtable made its compliant repeat on 2026-09-05; a further Bigtable attempt needs an amended
-Stage 1, preregistered before it runs, that instruments the throughput decline the repeat showed
-within each run, with its own resource and cost approval.
-Passing Stage 1 would permit Stage 2 measurement, not implementation.
+Passing Stage 1 permits Stage 2 measurement, not implementation.
 Stage 2 would require separate resource and cost approval and would cover 64 KiB payloads, hot
 keys, concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals of 1, 10, and 60
 seconds.
+For Bigtable, which passed Stage 1 on 2026-09-05 (evidence below), that measurement runs inside
+[#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)'s design work under its own
+resource and cost approval rather than as a standalone stage, and the list above binds it.
 Any implementation that passed those gates would require a connector-specific ADR to settle
 identity, schema or marker ownership, retention, failure routing, recovery tests, and operational
 limits.
@@ -274,29 +284,86 @@ Each repetition submitted between 109,000 and 170,000 operations.
 The instance lived 13 minutes and was reported absent by the harness and by
 `gcloud bigtable instances list` after deletion; the harness source is attached to the issue.
 
+### Amended Stage 1 for Bigtable with JVM-isolated repetitions (2026-09-05)
+
+[#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210) ran on 2026-09-05 the
+amended protocol the [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208)
+revision of this ADR required — the repeat's within-run decline instrumented — preregistered with
+resource approval on the issue before creation.
+It kept the 2026-08-13 arms, payload, concurrency, warm-up, repetitions, replay share, and
+serialized control and the repeat's evenly distributed keys.
+It added every arm repetition in its own JVM after a 30-second idle, the JVM's garbage-collection
+time and heap recorded per repetition, and a read-only Cloud Monitoring query over the run window.
+One SSD node, `libraries-bom` 26.87.0, an application profile with single-cluster routing and
+transactional writes enabled from creation, and fresh keys in every JVM.
+
+| Arm | Throughput repetitions | p95 latency repetitions | Mean and range |
+|---|---|---|---|
+| Bulk baseline | 3,778 / 3,792 / 3,807 ops/s | 316 / 308 / 292 ms | 3,792 ops/s, range 0.8% |
+| Same-row conditional marker | 5,566 / 5,513 / 5,608 ops/s | 195 / 206 / 194 ms | 5,562 ops/s, range 1.7% |
+| Conditional marker with 10% replay | 5,631 / 5,623 / 5,496 ops/s | 192 / 194 / 214 ms | 5,583 ops/s, range 2.4% |
+
+The candidate measured 146.7% of baseline throughput at 0.65x baseline p95, every arm's range is
+within the 10% limit, and the serialized control measured 5.6 ops/s, so the conditional write
+passed Stage 1 under the preregistered rule with general-support ratios.
+The 1,000-row read-back of rows the replay arm submitted twice found no duplicate cell.
+
+The instrumentation places the limiting latency on the client side of the service: the single
+node's CPU load peaked at 0.20 to 0.24, server-side p95 latency per minute stayed at 3.5 to 5.8 ms
+for `CheckAndMutateRow` and 7.9 ms per `MutateRows` request, and client-observed p95 was 198 and
+306 ms.
+With 1,000 requests in flight, throughput was of the order of in-flight divided by
+client-observed latency — 5,051 and 3,268 ops/s at p95 against 5,562 and 3,792 measured, with mean
+latency not recorded — and the
+[#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208) decline did not recur once
+each repetition ran in its own process; the mechanism inside the client was not instrumented.
+The bulk path measured 3.8k ops/s here against 4.6k to 4.8k on
+[#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208)'s instance, a gap this run
+did not measure, while the conditional path was unchanged at 5.5k to 5.6k; the 146.7% ratio
+therefore compares the two paths on this instance under this protocol and is not a cross-run
+figure.
+
+An aggregate-counter probe outside the gate answered the open capability question: the service
+accepted `AddToCell` on an `int64Sum` family inside `CheckAndMutateRow`'s conditional branch, and
+with ten submissions per row of which one re-sent the previous event, all 1,000 rows read back
+the sum and marker count of the nine distinct events, so a marker-guarded conditional mutation
+absorbs a replayed increment.
+The first read-back expected ten and reported a failure; the expectation was corrected to the
+nine distinct events the replay scheme delivers and the probe re-run on fresh rows with the same
+values, both outputs on the issue.
+The instance lived 34 minutes and was reported absent by the harness and by
+`gcloud bigtable instances list` after deletion; the harness, driver, and raw output are attached
+to the issue.
+
 ## Alternatives declined
 
-- **Add `SupportsCommitter` to every sink** — a committer cannot hide or retract an eager publish,
-  task creation, row mutation, or batch write that the service has already made visible.
+- **Add `SupportsCommitter` to every sink** — a committer around an eager API cannot hide or
+  retract a publish, task creation, row mutation, or batch write that the service has already made
+  visible; [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)'s committer defers
+  the Bigtable write until commit and is not this alternative.
 - **Call producer event IDs Pub/Sub exactly-once** — downstream deduplication can protect a consumer
   effect, but does not prevent duplicate messages in the topic.
 - **Keep a Spanner transaction open from pre-commit to checkpoint completion** — the source offset
   is not part of that transaction, Flink checkpoints can outlive the transaction, and Spanner can
   abort idle read-write transactions.
-- **Implement Bigtable or Spanner from the observed Stage 1 ratios** — a key-distribution
-  deviation (Spanner) or a variability failure (Bigtable, 2026-09-05) prevents a formal Stage 1
-  pass, and Stage 1 does not measure Flink recovery, checkpoint interval, hot-key contention, large
-  payloads, or the connector's failure-routing semantics.
-- **Treat the Cloud Tasks averages or the 2026-09-05 Bigtable ratios as a pass** — doing so would
+- **Implement Bigtable or Spanner from the observed Stage 1 ratios** — Stage 1 does not measure
+  Flink recovery, checkpoint interval, hot-key contention, large payloads, or the connector's
+  failure-routing semantics, and Spanner's key-distribution deviation prevents even a formal
+  Stage 1 pass; Bigtable's pass of 2026-09-05 changes what is planned
+  ([#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)), not this rule.
+- **Treat the Cloud Tasks averages or the Bigtable repeat's ratios as a pass** — doing so would
   discard the variability rule after observing its result and turn a preregistered gate into
-  post-hoc judgment.
+  post-hoc judgment; the Bigtable pass came from a preregistered amendment, not from relaxing the
+  rule.
 - **Continue measuring without a concrete non-idempotent requirement** — Spanner and Bigtable
   already expose idempotent keyed mutation shapes for workloads that respect each service's
   ordering constraints, while Cloud Tasks already exposes bounded task-creation deduplication.
   The stronger candidates impose service-specific schema and failure-policy costs without an
   identified workload that needs them.
-  The 2026-09-05 Bigtable repeat was the one authorized exception, made so that the record holds
-  a compliant measurement rather than a deviation.
+  The 2026-09-05 Bigtable repeat and its amended run were the authorized exceptions, made so that
+  the record holds a compliant measurement rather than a deviation; the Flink-level measurement
+  inside [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)'s design work is
+  planned under that issue's own approval, not under this rule.
 - **Match the "Exactly Once out of the box" of the
   [google/flink-connector-gcp Bigtable sink](https://github.com/google/flink-connector-gcp/blob/main/connectors/bigtable/README.md#exactly-once)**
   — compared 2026-09-05: that sink is a plain `Sink` and `SinkWriter` that flushes a bulk-mutation
@@ -322,6 +389,7 @@ The instance lived 13 minutes and was reported absent by the harness and by
   broader mode or repeat is planned.
 - Bigtable and Spanner keep their current keyed write shapes and their documented replay and
   ordering boundaries.
-  A concrete non-idempotent requirement must justify reopening measurement before either candidate
-  advances.
+  Bigtable's next step is the committer-based mode planned under
+  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211); Spanner's candidate
+  advances only when a concrete non-idempotent requirement justifies reopening its measurement.
 - No unsupported exactly-once mode is added by this documentation decision.
