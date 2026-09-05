@@ -1190,7 +1190,8 @@ limitations under the License.
              `just stage-release <version>` is the entry point, and the tag-push release
              workflow (.github/workflows/release.yaml) calls the same recipe. autoPublish
              stays false: the upload stops at VALIDATED on the Portal, and the one-way
-             Publish — or the dry run's Drop — is a deliberate click in the Portal UI. -->
+             Publish happens through the workflow only after both version lines validate;
+             workflow_dispatch instead drops both deployments (#1185, ADR-0147). -->
         <profile>
             <id>central-release</id>
             <activation>

@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0147: Releases stage on the Central Portal and publish by hand
+# ADR-0147: Releases publish after both Central Portal deployments validate
 
 - Status: Accepted
-- Date: 2026-08-30
-- Issues: [#724], [#39], [#29]
+- Date: 2026-08-30; revised by [#1185] (2026-09-06)
+- Issues: [#724], [#39], [#29], [#1185]
 - Modules: all (build and release engineering)
 - Current behavior: `justfile` § `stage-release`, `.agents/references/repository-guide.md`
   § Version policy
@@ -37,18 +37,26 @@ irreversibility of a first Central release, not about feasibility.
 
 ## Decision
 
-**A tag push stages the release; a person publishes it from the Portal UI.**
-`.github/workflows/release.yaml` runs `just stage-release` once per version line on a `v*`
-tag push, and its `workflow_dispatch` trigger is the validate-then-drop dry run.
+**A tag push stages both version lines and publishes only after both validate.**
+`.github/workflows/release.yaml` runs `just stage-release` once per version line on a `vX.Y.Z` tag push.
+Its `workflow_dispatch` trigger rehearses the same pair from a bare `X.Y.Z` input and drops both deployments after validation.
 The recipe re-versions the reactor with `versions:set` and runs
 `deploy -Drelease -DskipTests -Djapicmp.skip=true`. `-Drelease` activates two profiles at once:
 the connector parent's `release` (GPG signing at verify, the javadoc jar, the enforcer floor) and
 this project's `central-release` (the sources jar the parent profile does not attach, a compiler
 re-pin, and `central-publishing-maven-plugin` with `autoPublish=false` and
-`waitUntil=validated`). The upload stops at *validated*; Publish — or a dry run's Drop — is a
-deliberate click. Once the pipeline has survived a real release, the manual gate can be
-retired — two changes together, `autoPublish=true` and the workflow's `draft: false`, per the
-Consequences below.
+`waitUntil=validated`).
+The upload stops at *validated*.
+`scripts/central-portal.py` captures each upload ID before the plugin waits for validation, preserving it even if Maven subsequently fails.
+After both staging commands and both artifact collections succeed, the helper checks both deployment states before sending either Publish request.
+It waits for both to be PUBLISHED before the workflow creates a public GitHub Release with generated notes, ten SQL uber-jars and their ten signatures.
+The pinned `softprops/action-gh-release` first creates an ordinary release as a draft, uploads its assets, then applies `draft: false` when finalizing it.
+
+**The first release used manual Publish and Drop; [#1185] retires those clicks.**
+Release run `33323702321` exercised both staging paths for `1.0.0` and `1.0.0-1.20`.
+The maintainer found that the tagged commit already fixed what would ship, and no further review happened between VALIDATED and Publish.
+The revision keeps the two independent deployments and `autoPublish=false`: the workflow, rather than either Maven build, owns the decision to publish.
+It changes the GitHub Release to `draft: false` at the same time.
 
 **Each release stages two version lines** (decided with the maintainer 2026-08-30, resolving
 the publishing half that ADR-0054 had left with [#39]'s suffix scheme): bare `X.Y.Z` is the
@@ -98,11 +106,13 @@ classpath as old API (ADR-0124).
 
 ## Declined alternatives
 
-- **Tag → fully automatic publish (`autoPublish=true`).** Declined *for the first release only*,
-  with the maintainer's explicit preference: Maven Central is new to this project, a published
-  version is permanent, and the Portal's validated-deployment page is also the dry-run mechanism
-  — the same workflow proves the pipeline by staging a bundle that is dropped instead of
-  published. The Consequences below name the two-change path back to the PyPI shape.
+- **Publishing each line with `autoPublish=true`.**
+  The first decision deferred automatic publication until the first real release.
+  The revision automates it through the publisher API instead: plugin auto-publication could publish the 2.x line before the 1.20 build or validation failed.
+  Per-PR CI covers 2.x; the weekly LTS lane does not prove that every tagged commit has passed a 1.20 build.
+- **Combining both version lines into one Portal bundle.**
+  Considered for [#1185]; the maintainer chose to retain two deployments and require both validations before either publication.
+  This keeps the existing staging builds and their module-local publication exclusions.
 - **Publishing `flink-connector-gcp-test-utils`.** Declined; reasons in the decision. Revisit if
   a user asks for the test doubles as a dependency.
 - **A `maven-release-plugin` release-commit flow** (`release:prepare`/`release:perform`).
@@ -120,32 +130,47 @@ classpath as old API (ADR-0124).
 
 ## Consequences
 
-- The dry run [#724] requires is the same workflow with the Portal's Drop button — with one
-  honest limit: a dispatch stages **one line per run** (rehearsing both lines is two
-  dispatches, and the deployment is named "dry run" on the Portal), and the draft-Release step
-  only executes on a real tag, so its first real execution is the first release.
+- A dispatch now stages **both lines per run** and names each deployment with its version, run ID, attempt and "dry run".
+  Its final cleanup attempts to Drop every captured deployment in VALIDATED or FAILED state, including the first if the second staging run failed.
+  A deployment still validating, a failed Drop, or runner termination can leave a deployment behind; its captured ID and the failure remain in the run log and summary.
+  The event guard excludes both Publish and GitHub Release creation even when a dispatch targets a tag.
+  Rehearsals exercise ID capture, status and Drop authentication; Publish first runs at a real release.
 - The staged bundle's validation report (signing, checksums, POM completeness, sources/javadoc
   presence) is produced by the Portal on every upload, giving each release a pre-publish
   checklist for free.
-- A future `autoPublish=true` flip removes the Portal gate but is **two** changes, not one:
-  the workflow's `draft: true` must flip with it, or Central goes live while the GitHub
-  Release stays invisible.
-- A `vX.Y.Z` tag — the only shape the trigger admits, so a release is always both version
-  lines — runs the staging recipe once per line and drafts the GitHub Release with generated
-  notes and the ten SQL uber-jars (five per line) attached; a release is then two Portal
-  deployments, and publishing them and the draft Release are the manual steps, taken
-  together.
-- **The two staging runs are not atomic, and recovery is manual.** A failure in the LTS half
-  leaves the bare line VALIDATED on the Portal; a re-run stages it again, and the Portal keeps
-  both — deployments are named with the run id so they are tellable apart, and the stale one
-  is Dropped by hand. A draft Release that failed half-made is deleted before re-running
-  (GitHub allows several drafts on one tag name, and a draft survives deleting the tag). A tag
-  cut on the wrong commit is recoverable **only before** Publish: Drop the deployments, delete
-  the draft, delete and re-push the tag — the workflow refuses a tag whose commit is not an
-  ancestor of `main`, and a tag only triggers it at all if the tagged tree already contains
-  `release.yaml`. After Publish, Central is immutable and the only move is the next patch
-  version.
+- A failure in either build, validation, ID capture or artifact collection skips both publications and the GitHub Release.
+  The upload plugin stays at `autoPublish=false`; changing that setting would bypass the shared validation gate.
+- **The guarantee ends at the decision to publish.**
+  The [Portal API] publishes one deployment per request; the two requests and GitHub Release creation are not a transaction.
+  A network failure after the first request can leave one line PUBLISHED and the other VALIDATED.
+  The helper stops on preflight or Publish errors and on invalid or permanently rejected status responses.
+  During the publication wait, it retries read-only status polls after transport failures, HTTP 429 or HTTP 5xx; it uses a 30-second socket timeout and checks a 30-minute deadline between polling rounds.
+  The run summary records state transitions; repeated unchanged polls remain in the log.
+  It does not blindly retry a Publish whose response was lost.
+
+### Recovery
+
+Use `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD`, the same token pair as staging, for `just central-portal`.
+Take deployment IDs from the run summary or the upload logs, and inspect them with `just central-portal status <2x-id> <1x-id>`.
+
+Before publication starts, Drop leftover VALIDATED or FAILED deployments with `just central-portal drop <id> ...` before rerunning the workflow.
+Drop attempts every supplied ID even if one deletion fails, tolerates an already absent ID, and refuses deployments in other states.
+Leave a still-validating deployment until its state can be checked again.
+
+After any Publish request, **do not rerun the entire workflow**: that would upload another pair under immutable release coordinates.
+Resume with `just central-portal publish <2x-id> <1x-id>`.
+It checks every ID before acting, publishes only VALIDATED deployments, and waits for already PUBLISHING deployments without issuing another Publish.
+PUBLISHED deployments need no further publication.
+If publication fails permanently, inspect the Portal error before choosing a recovery; the helper cannot roll back Central.
+
+If only GitHub Release creation failed, confirm both deployments are PUBLISHED, download the ten published SQL jars and their `.asc` files from Maven Central, then use `gh release create --draft --verify-tag --generate-notes` with the original tag and those twenty files.
+If the Release already exists with incomplete attachments, use `gh release upload` for the missing files.
+If it remains a draft, confirm all twenty files are attached, then publish it with `gh release edit <tag> --draft=false`.
+Do not restage Central to repair GitHub attachments.
+A tag cut on the wrong commit remains correctable only before Publish; afterward, changed artifacts require a new version.
 
 [#724]: https://github.com/flink-gcp/flink-connector-gcp/issues/724
 [#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
 [#29]: https://github.com/flink-gcp/flink-connector-gcp/issues/29
+[#1185]: https://github.com/flink-gcp/flink-connector-gcp/issues/1185
+[Portal API]: https://central.sonatype.org/publish/publish-portal-api/

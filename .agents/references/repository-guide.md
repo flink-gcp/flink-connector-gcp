@@ -595,15 +595,21 @@ facts); the rules a session needs:
   next `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
   rides the CI Maven cache — measured on #728, the cache archives the whole local repository
   including it; ADR-0124's revision records why)
-- **Releases stage on the Central Portal; a person publishes them** (ADR-0147, issue #724):
+- **Releases publish after both Central Portal deployments validate** (ADR-0147, issues #724, #1185):
   `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
-  version line on a `v[0-9]*` tag push, with `workflow_dispatch` as the validate-then-drop
-  dry run (one line per dispatch; the deployment is named "dry run" on the Portal) —
+  version line on a `vX.Y.Z` tag push, with `workflow_dispatch` as the validate-then-drop
+  dry run (bare `X.Y.Z` input, both lines per dispatch, automatic Drop) —
   re-versions the reactor with `versions:set` and deploys with `-Drelease`: the
   connector parent's `release` profile (GPG sign, javadoc jar) plus this project's
   `central-release` (sources jar, SQL javadoc stubs, compiler re-pin back to target 17,
   `central-publishing-maven-plugin` with `autoPublish=false`). The upload stops at *validated*;
-  Publish, or a dry run's Drop, is a click in the Portal UI. Every release stages two version
+  the workflow publishes only after both lines validate and both artifact collections succeed,
+  and creates a public GitHub Release only after both deployments are PUBLISHED.
+  `just central-portal` captures upload IDs immediately and provides status, publish and drop
+  operations with the existing token pair. A failed build or validation publishes neither line;
+  a failure after a Publish request requires recovery with the saved IDs, not a workflow rerun.
+  The two publications and GitHub Release are separate operations, with no rollback; ADR-0147
+  records recovery commands. Every release stages two version
   lines: bare `X.Y.Z` built for the 2.x range (ADR-0053's one artifact) and `X.Y.Z-1.20` built
   for the 1.x LTS — the recipe adds `-Dflink.compat=flink1` itself, requires the matching
   `-Dflink.version=1.20.<patch>`, and refuses a mislabelled pairing in either direction. The

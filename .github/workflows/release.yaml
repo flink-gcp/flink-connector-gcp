@@ -14,28 +14,12 @@
 
 name: Release
 
-# Stages a release on the Central Portal without publishing it (issue #724,
-# ADR-0147). A tag push runs `just stage-release` once per version line — bare
-# X.Y.Z for the Flink 2.x range and X.Y.Z-1.20 for the 1.x LTS — and each
-# upload stops at VALIDATED: the one-way Publish is a deliberate click in the
-# Portal UI, once per line. The GitHub Release is created as a DRAFT with the
-# collected SQL uber-jars and their signatures attached, and is published by
-# hand together with the Portal clicks so the public artifacts appear at the
-# same moment (issue #29 records why there is no CHANGELOG.md; for v1.0.0 the
-# generated notes are replaced by a short curated summary before publishing).
-#
-# workflow_dispatch is the validate-then-drop dry run: it stages exactly the
-# version it is given — one line per dispatch, so rehearsing both lines is two
-# dispatches — names the Portal deployment "dry run", and drafts no GitHub
-# Release (the event guard, not the absence of a tag: a dispatch can be aimed
-# at a tag ref).
-#
-# The recipe's guards (scripts/stage-release-guard.py and the
-# enforce-version-line-toolchain enforcer rule) hold the version shape and the
-# version/toolchain pairing per staging run. They cannot make the two runs
-# atomic: a failure in the LTS half leaves the bare line already VALIDATED on
-# the Portal, and recovery — Drop the orphaned deployment, delete a leftover
-# draft, then re-run — is written down in ADR-0147's Consequences.
+# A tag stages both version lines, publishes only after both are VALIDATED,
+# and creates the GitHub Release after both are PUBLISHED (#1185, ADR-0147).
+# workflow_dispatch rehearses both lines through validation and automatic Drop;
+# its event guard prevents publication even when the dispatch targets a tag.
+# Publish requests are separate operations. Recovery after publication starts
+# uses the saved deployment IDs, not another staging run (see ADR-0147).
 on:
   push:
     tags:
@@ -43,7 +27,7 @@ on:
       # tags like v1-experiment and leaves a red "Release" run for something
       # that was never a release. An LTS-only tag (v1.0.0-1.20) is
       # deliberately NOT a trigger — a release is both version lines from one
-      # bare tag, and the LTS line alone is only ever a dispatch rehearsal.
+      # bare tag. A dispatch rehearses the same pair from a bare version.
       # The one shape the glob cannot exclude is a leading zero (v01.2.3):
       # that IS an attempted release with a malformed version, the guard
       # fails it before anything is signed, and the red run is the right
@@ -53,8 +37,8 @@ on:
     inputs:
       version:
         description: >-
-          Version to stage for the dry run (X.Y.Z or X.Y.Z-1.20; no v prefix).
-          Drop the VALIDATED deployment in the Portal afterwards.
+          Bare version for the dry run (X.Y.Z; no v prefix or -1.20 suffix).
+          Both version lines are validated and automatically dropped.
         required: true
         type: string
 
@@ -69,7 +53,7 @@ concurrency:
   cancel-in-progress: false
 
 # The default token is dropped entirely at the workflow level; the one job
-# re-grants the single scope the draft-release step needs.
+# re-grants the single scope the GitHub Release step needs.
 permissions: {}
 
 jobs:
@@ -78,21 +62,18 @@ jobs:
     # immutable repository ID, not the owner name, for the reason e2e.yaml
     # records (a transfer or rename switches a name guard off silently).
     if: github.repository_id == '1305440656'
-    name: Stage on the Central Portal
+    name: Validate both lines and release
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Two staging builds plus two Portal validation waits, each of which the
-    # upload plugin polls for up to its waitMaxTime default — 1800 s, read
-    # from the plugin descriptor — before giving up; a ceiling below that
-    # budget would cancel the job while a deployment is mid-validation, with
-    # its id never printed. 2 x 30 min of waiting plus two uncached builds
-    # fits with room to spare.
+    # Allow up to 30 min for each validation and for the publication wait;
+    # builds, setup and asset uploads share the remaining budget. IDs are saved after
+    # upload, before the plugin starts waiting for validation.
     timeout-minutes: 150
     steps:
       # persist-credentials matters more here than anywhere else in this
       # repository: this is the one job that both holds a write-capable token
-      # and executes third-party Maven plugin code, and the draft-release
+      # and executes third-party Maven plugin code, and the release
       # action authenticates from its env, not from .git/config. fetch-depth 0
       # is for the ancestry assertion below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,11 +114,15 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
+          version="$INPUT_VERSION"
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF_NAME#v}"
           fi
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release: expected bare X.Y.Z, without v prefix or -1.20 suffix" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # ADR-0147 justifies -DskipTests with "the staged commit already passed
       # every CI lane", and a tag push runs no verification of its own — so
@@ -170,15 +155,34 @@ jobs:
       - name: Point Maven at the Central Portal credentials
         run: scripts/write-central-settings.sh --overwrite
 
-      # On a tag this is always the bare 2.x line (the trigger admits no
-      # other shape); a dispatch stages exactly the version it was given, so
-      # a -1.20 input rehearses the LTS line and needs the LTS toolchain flag
-      # here too (the recipe adds flink.compat itself and its guard holds the
-      # pairing either way). deploymentName is
-      # what keeps the Portal deployments page legible: it names the line and
-      # the run, and marks a dry run as one, so a re-run after a partial
-      # failure is distinguishable from the deployment it replaces.
-      - name: Stage the requested line
+      # The capture wrapper preserves Maven's failure and records an upload ID
+      # before validation, including on a failed run. Files stay outside the
+      # tree so the next clean build and RAT cannot consume them.
+      - name: Stage the Flink 2.x line
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          name="flink-connector-gcp $VERSION (run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            name="$name dry run"
+          fi
+          just central-portal capture "$RUNNER_TEMP/central-2x.id" \
+            just stage-release "$VERSION" -DdeploymentName="$name"
+
+      # Collected OUTSIDE the working tree: the next staging build opens with
+      # `clean` (which would wipe target/) and runs apache-rat over the whole
+      # tree (which fails on a collected .asc). The script asserts the count,
+      # so the Release cannot quietly miss an artifact.
+      - name: Collect the staged uber-jars
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/collect-release-jars.sh "$VERSION" "$RUNNER_TEMP/dist"
+
+      - name: Stage the Flink 1.20 LTS line
         env:
           VERSION: ${{ steps.version.outputs.version }}
           FLINK_LTS: ${{ steps.lts.outputs.flink_lts }}
@@ -187,50 +191,55 @@ jobs:
           CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
         run: |
-          name="flink-connector-gcp $VERSION (run $GITHUB_RUN_ID)"
+          name="flink-connector-gcp $VERSION-1.20 (run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT)"
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             name="$name dry run"
           fi
-          if [[ "$VERSION" == *-1.20 ]]; then
-            just stage-release "$VERSION" -Dflink.version="$FLINK_LTS" -DdeploymentName="$name"
-          else
-            just stage-release "$VERSION" -DdeploymentName="$name"
-          fi
-
-      # Collected OUTSIDE the working tree: the next staging build opens with
-      # `clean` (which would wipe target/) and runs apache-rat over the whole
-      # tree (which fails on a collected .asc). The script asserts the count,
-      # so a draft Release can never quietly miss an artifact.
-      - name: Collect the staged uber-jars
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: scripts/collect-release-jars.sh "$VERSION" "$RUNNER_TEMP/dist"
-
-      - name: Stage the Flink 1.20 LTS line
-        if: github.event_name == 'push'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          FLINK_LTS: ${{ steps.lts.outputs.flink_lts }}
-          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-        run: just stage-release "$VERSION-1.20" -Dflink.version="$FLINK_LTS" -DdeploymentName="flink-connector-gcp $VERSION-1.20 (run $GITHUB_RUN_ID)"
+          just central-portal capture "$RUNNER_TEMP/central-1x.id" \
+            just stage-release "$VERSION-1.20" -Dflink.version="$FLINK_LTS" -DdeploymentName="$name"
 
       - name: Collect the 1.20 uber-jars
-        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: scripts/collect-release-jars.sh "$VERSION-1.20" "$RUNNER_TEMP/dist"
 
-      # Draft, deliberately: publishing it is the same manual gate as the
-      # Portal's Publish clicks, taken together once every deployment is
-      # VALIDATED. The generated notes are the release history mechanism —
-      # there is no CHANGELOG.md (issue #29).
-      - name: Draft the GitHub Release
+      # The helper checks BOTH states before its first Publish request. A failed
+      # build, validation, ID capture or collection skips this step entirely.
+      - name: Publish both Central deployments
+        if: github.event_name == 'push'
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          just central-portal publish \
+            "$(cat "$RUNNER_TEMP/central-2x.id")" "$(cat "$RUNNER_TEMP/central-1x.id")"
+
+      # Generated notes remain the release history mechanism (#29). The preceding
+      # step waits for both PUBLISHED states before exposing this Release.
+      - name: Publish the GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          draft: true
+          draft: false
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: ${{ runner.temp }}/dist/*
+
+      # Also clean up a successful first upload if the second staging run fails.
+      # Missing files mean no ID was captured. A validation still in progress or
+      # a failed Drop leaves a red run and its ID in the summary for recovery.
+      - name: Drop dry-run deployments
+        if: always() && github.event_name == 'workflow_dispatch'
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          ids=()
+          for file in "$RUNNER_TEMP/central-2x.id" "$RUNNER_TEMP/central-1x.id"; do
+            if [ -f "$file" ]; then
+              while IFS= read -r id; do ids+=("$id"); done < "$file"
+            fi
+          done
+          if [ "${#ids[@]}" -gt 0 ]; then
+            just central-portal drop "${ids[@]}"
+          fi

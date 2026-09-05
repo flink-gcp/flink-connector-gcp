@@ -47,7 +47,8 @@ package = false
 # pyyaml is a *test* dependency, not the project's: check-skill-frontmatter.py
 # declares it in PEP 723 metadata of its own and runs through
 # `uv run --no-project`, but the suite loads that script by file path, so the
-# import has to resolve here too. Nothing else in scripts/ needs it.
+# import has to resolve here too. Release workflow tests also use it to parse
+# the YAML program under test; the release helper itself needs only the stdlib.
 dev = [
     "pytest>=9",
     "pyyaml>=6",
