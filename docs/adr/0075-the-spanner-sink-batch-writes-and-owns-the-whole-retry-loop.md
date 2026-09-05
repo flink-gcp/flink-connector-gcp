@@ -35,7 +35,7 @@ the sink was actually built, and all three were:
   v1.5.17 and closed 2025-06-20). The fallback is therefore not needed, and the emulator suite
   drives the real write path. It did mean this module could not share the
   `google-cloud-cli:441.0.0-emulators` image the Bigtable and Pub/Sub tests used at the time — its
-  bundled Spanner emulator predates the RPC — so the module pins
+  bundled Spanner emulator predates the RPC — so the module initially pinned
   `gcr.io/cloud-spanner-emulator/emulator:1.5.56` of its own. That pin stands on its own terms and
   did not move when the shared image did (2026-09-03, now `583.0.0-emulators`): the reason to hold
   a separate image is the version *floor* the write path needs, which a bundle bump does not

@@ -18,13 +18,15 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.cloud.tasks.v2.HttpMethod;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import org.junit.jupiter.api.Test;
 
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -143,13 +145,10 @@ class CloudTasksDispatchITCase extends AbstractCloudTasksEmulatorITCase {
 
         // The emulator signs its own tokens with a throwaway key, so the signature says nothing;
         // the claims are what prove the service account and audience reached the token minter.
-        assertThat(claims(awaitRequests("/oidc", 1)))
-                .contains("\"email\":\"" + serviceAccount + "\"")
-                .contains("\"aud\":\"https://api.example.com\"");
+        assertClaims(awaitRequests("/oidc", 1), serviceAccount, "https://api.example.com");
         // Left unset, the audience defaults to the target URL — a service behaviour, not the
         // sink's, and the reason the builder can leave it out.
-        assertThat(claims(awaitRequests("/oidc-default", 1)))
-                .contains("\"aud\":\"" + targetUrl("/oidc-default") + "\"");
+        assertClaims(awaitRequests("/oidc-default", 1), serviceAccount, targetUrl("/oidc-default"));
     }
 
     private static CloudTasksSinkBuilder<String> methodTarget(
@@ -161,12 +160,18 @@ class CloudTasksDispatchITCase extends AbstractCloudTasksEmulatorITCase {
                         .withMethod(method));
     }
 
-    /** Returns the decoded payload of the single dispatch's {@code Bearer <jwt>} header. */
-    private static String claims(List<RecordedRequest> requests) {
+    private static void assertClaims(
+            List<RecordedRequest> requests, String serviceAccount, String audience)
+            throws IOException {
         assertThat(requests).hasSize(1);
         String authorization = requests.get(0).header("Authorization");
         assertThat(authorization).startsWith("Bearer ");
         String payload = authorization.substring("Bearer ".length()).split("\\.")[1];
-        return new String(Base64.getUrlDecoder().decode(payload), StandardCharsets.UTF_8);
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode claims = mapper.readTree(Base64.getUrlDecoder().decode(payload));
+        assertThat(claims.path("email")).isEqualTo(mapper.valueToTree(serviceAccount));
+        // RFC 7519 section 4.1.3 permits a single audience as a string or an array.
+        assertThat(claims.path("aud"))
+                .isIn(mapper.valueToTree(audience), mapper.valueToTree(List.of(audience)));
     }
 }

@@ -33,7 +33,7 @@ public final class SpannerEmulatorContainers {
      * issue #172, closed 2025-06-20).
      */
     private static final DockerImageName IMAGE =
-            DockerImageName.parse("gcr.io/cloud-spanner-emulator/emulator:1.5.56");
+            DockerImageName.parse("gcr.io/cloud-spanner-emulator/emulator:1.5.57");
 
     private SpannerEmulatorContainers() {}
 

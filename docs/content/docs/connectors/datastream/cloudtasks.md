@@ -677,7 +677,9 @@ construction by the runtime. Queues are created by the tests, since the sink nev
   the method, path, body and headers of every dispatch, which is what separates a task the service
   accepted from a task that arrives as intended — the POST body and its headers, the empty body
   under `GET`, per-record URLs, and an OIDC token arriving as a `Bearer` JWT whose claims carry the
-  configured service account and audience.
+  configured service account and audience. The assertions parse the payload as JSON and accept
+  a single audience encoded as a string or a one-element array, as allowed by
+  [RFC 7519 section 4.1.3](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.3).
 - **What the service stores.** Task creation is asserted against **paused** queues, which accept
   tasks without dispatching them; a running queue drops a task as soon as it completes, which would
   race every assertion about the task itself. Unnamed tasks are created one per record and a replay
@@ -693,7 +695,7 @@ construction by the runtime. Queues are created by the tests, since the sink nev
   final one, since the writer creates each task as it is written rather than buffering until the
   flush.
 
-The gated real-GCP suite exercises the App Engine behavior that the emulator omits.
+The gated real-GCP suite establishes App Engine routing and dispatch behavior against the service.
 It runs through the production writer and creates one uniquely named, paused queue per case.
 `FULL` task reads assert fixed and per-record relative URIs, bodies, headers and exact
 service/version/instance routing before dispatch can delete a successful task.
@@ -713,31 +715,27 @@ failure after a successful test.
 The scheduled sweep restores the stopped state after a hard cancellation that cannot run shell cleanup.
 The remaining gated suites run after the fixture has returned to its idle state.
 
-What remains uncovered by the emulator and this App Engine suite:
+Limits of this coverage:
 
-- It never garbage-collects task names — the dedup window cannot be exercised, only the
-  `ALREADY_EXISTS` response. (Its uniqueness check is also a non-atomic check-then-act, so a
-  deduplication test has to sequence its writes into separate flush cycles rather than rely on two
-  concurrent creations of one name colliding. Task names are keyed by their full path, so a queue
-  per test is already a namespace per test and no `--hard-reset-on-purge-queue` is needed.)
-- It does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
+- The deduplication tests assert `ALREADY_EXISTS` using separate flush cycles and a queue per
+  test. They do not establish the service's task-name reservation window.
+- The emulator does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
   silently redirect per-record URLs — is not testable there. (Nor is it reachable through the v2
   client at all, as the targets section explains.)
-- It does not implement App Engine dispatch.
-  Deterministic tests therefore cover the request protobuf, validation and routing precedence,
-  while the gated real-GCP suite covers queue-level override and handler behavior.
-- It authenticates **OIDC only** — its task dispatch has a single `GetOidcToken` branch — so the
+- App Engine request protobufs, validation and routing precedence are covered by deterministic
+  tests. The gated real-GCP suite establishes queue-level override and handler behavior; local
+  emulator dispatch cannot establish the service's routing or authentication behavior.
+- The emulator's HTTP dispatch authenticates **OIDC only**, so the
   OAuth path in the v1 scope has no emulator coverage and needs real GCP or a hand-written fake.
-- It offers no failure injection, so the transient retry budget stays a unit test against the fake
+- The emulator offers no failure injection, so the transient retry budget stays a unit test against the fake
   creator. `NOT_FOUND` is the exception — a queue that was never created produces it, so one
   integration test spends that short budget end to end; it is also the only test that drives the
   park-and-re-dispatch loop on the real clock rather than an injected time source.
-- Its `ListTasks` and `GetTask` ignore `response_view` and always return the full task, where Cloud
-  Tasks omits the body and headers under the default `BASIC` view. The tests ask for `FULL`
-  explicitly, so their assertions describe the service and not the emulator's leniency.
-- It enforces no task-size limit, so a test of the limits above would assert the emulator's
-  leniency rather than the service's behaviour. Scheduling semantics (`scheduleTime` and
-  `dispatchDeadline`, which a custom serialization schema may set) are likewise left to real GCP.
+- The task-inspection tests request `FULL` explicitly so they can inspect the body. They do not
+  assert the default `BASIC` response view.
+- Task-size boundaries and scheduling semantics (`scheduleTime` and `dispatchDeadline`, which a
+  custom serialization schema may set) remain real-service measurements. Emulator results do not
+  establish those service limits.
 
 ## Scope
 
