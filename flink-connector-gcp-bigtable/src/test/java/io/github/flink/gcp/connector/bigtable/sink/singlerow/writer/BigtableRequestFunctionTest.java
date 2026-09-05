@@ -51,8 +51,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link BigtableRequestFunction}: the ledger and the counters it keeps across the task
- * thread and the client threads, the one-shot settlement between an answer and Flink's timeout, and
- * the instance cap it meets without waiting.
+ * thread and the client threads, the one-shot settlement between an answer and Flink's timeout, the
+ * completion the function owes on every timeout path, and the instance cap it meets without
+ * waiting.
  */
 @Timeout(30)
 class BigtableRequestFunctionTest {
@@ -223,26 +224,31 @@ class BigtableRequestFunctionTest {
 
     @Test
     void anAnswerAfterTheTimeoutIsIgnored() throws Exception {
-        // The one-shot settlement: whichever of the timeout and the answer comes second finds
-        // the handle taken and completes nothing, so the result is completed exactly once. The
-        // late answer and a repeated timer firing are the two late arrivals the ledger must
-        // ignore.
+        // The one-shot settlement against the client's own race: timeout() settles the handle
+        // and then cancels the future, and an answer that wins the future's completion in
+        // between — modelled by a request whose future ignores the cancel — reaches the callback
+        // with the handle taken, and completes nothing.
         TestFunction function = open(options());
         FakeResultFuture<String> result = new FakeResultFuture<>();
+        request("row-1").ignoreCancellation();
         function.asyncInvoke("row-1", result.asResultFuture());
         function.timeout("row-1", result.asResultFuture());
 
         request("row-1").succeed();
-        function.timeout("row-1", result.asResultFuture());
 
         assertThat(result.completions()).isEqualTo(1);
         assertThat(result.failure()).hasMessageContaining("async operator's timeout");
+        assertThat(function.getInFlight()).isZero();
         assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isEqualTo(1);
         assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_COMPLETED)).isZero();
     }
 
     @Test
-    void aTimeoutAfterTheAnswerIsIgnored() throws Exception {
+    void aTimeoutAfterTheAnswerCancelsNothingAndCountsNothing() throws Exception {
+        // The operator calls timeout() only while the result is open, which after an answer is
+        // the moment between its completion and the timer reading that. The ledger is empty by
+        // then, so the function fails the input as one with no request in flight — a completion
+        // the operator's own guard drops — and cancels and counts nothing.
         TestFunction function = open(options());
         FakeResultFuture<String> result = new FakeResultFuture<>();
         function.asyncInvoke("row-1", result.asResultFuture());
@@ -250,13 +256,45 @@ class BigtableRequestFunctionTest {
 
         function.timeout("row-1", result.asResultFuture());
 
-        assertThat(result.completions()).isEqualTo(1);
+        assertThat(result.completions()).isEqualTo(2);
         assertThat(result.results()).containsExactly("out:row-1:answer:row-1");
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0)).hasMessageContaining("no Bigtable request in flight");
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isZero();
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_COMPLETED)).isEqualTo(1);
+    }
+
+    @Test
+    void aTimeoutBetweenRetryAttemptsFailsTheInputNamingNoRequestInFlight() throws Exception {
+        // Retry mode: the operator's delegator takes the first attempt's failure for a retry and
+        // holds the result open through the backoff; the timeout firing there cancels the retry
+        // and hands the function the same result with nothing in flight. Flink has no fallback of
+        // its own, so the function must complete it — a silent return leaks the queue slot.
+        TestFunction function = open(options().requestTimeout(Duration.ofSeconds(7)).build());
+        FakeResultFuture<String> result = new FakeResultFuture<>();
+        function.asyncInvoke("row-1", result.asResultFuture());
+        request("row-1").fail(StatusCode.Code.UNAVAILABLE);
+
+        function.timeout("row-1", result.asResultFuture());
+
+        assertThat(result.failures()).hasSize(2);
+        assertThat(result.failures().get(0)).hasMessageContaining("failed with UNAVAILABLE");
+        assertThat(result.failures().get(1))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("no Bigtable request in flight")
+                .hasMessageContaining("between attempts of its retry strategy")
+                .hasMessageContaining("nothing was cancelled")
+                .hasMessageContaining("BigtableRequestOptions.requestTimeout (PT7S)");
+        assertThat(function.getInFlight()).isZero();
+        // No request ended on this timeout: the attempt before it was already counted.
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_FAILED)).isEqualTo(1);
         assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isZero();
     }
 
     @Test
-    void aTimeoutForAnInputThatWasNeverAcceptedDoesNothing() throws Exception {
+    void aTimeoutAfterASkippedAttemptFailsTheInputTheSameWay() throws Exception {
+        // A skip completes with an empty collection, which a retry strategy's result predicate
+        // may take for a retry; the timeout then arrives with no ledger entry either.
         TestFunction function = open(options());
         FakeResultFuture<String> result = new FakeResultFuture<>();
         skipped.add("row-1");
@@ -264,8 +302,122 @@ class BigtableRequestFunctionTest {
 
         function.timeout("row-1", result.asResultFuture());
 
-        assertThat(result.completions()).isEqualTo(1);
         assertThat(result.results()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0)).hasMessageContaining("no Bigtable request in flight");
+        assertThat(metricGroup.counterValue(BigtableMetricNames.RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isZero();
+    }
+
+    @Test
+    void aTimeoutWhileAFailureIsBeingHandedOffReadsTheRequestAsAnswered() throws Exception {
+        // The ledger entry outlives the hand-off: a timer firing after the answer settled the
+        // handle and before its completion reached Flink finds the entry and loses the
+        // settlement, so it reports the request as answered at the timeout, not as an input
+        // between retry attempts, which is what an emptied ledger would have made it say. It
+        // completes the result itself, as Flink's default timeout would, because in retry mode
+        // the operator may already have taken the answer for a retry this timeout cancelled;
+        // whichever completion the operator processes first stands. The request's own counters
+        // are the answer's.
+        TestFunction function = open(options().requestTimeout(Duration.ofSeconds(7)).build());
+        FakeResultFuture<String> result = new FakeResultFuture<>();
+        function.asyncInvoke("row-1", result.asResultFuture());
+        result.onNextCompletion(() -> function.timeout("row-1", result.asResultFuture()));
+
+        request("row-1").fail(StatusCode.Code.INVALID_ARGUMENT);
+
+        assertThat(result.failure())
+                .as("the timeout's completion")
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("CheckAndMutateRow request to Bigtable table " + TABLE)
+                .hasMessageContaining("answered as the async operator's timeout elapsed")
+                .hasMessageContaining("BigtableRequestOptions.requestTimeout (PT7S)");
+        assertThat(result.completions())
+                .as("the timeout's completion, then the answer's")
+                .isEqualTo(2);
+        assertThat(result.failures().get(1))
+                .hasMessageContaining("rejected because the request is invalid");
+        assertThat(function.getInFlight()).isZero();
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isZero();
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_FAILED)).isEqualTo(1);
+    }
+
+    @Test
+    void aTimeoutWhileAnAnswerIsBeingHandedOffReadsTheRequestAsAnswered() throws Exception {
+        // The same on the success path, which drops its ledger entry in a block of its own.
+        TestFunction function = open(options());
+        FakeResultFuture<String> result = new FakeResultFuture<>();
+        function.asyncInvoke("row-1", result.asResultFuture());
+        result.onNextCompletion(() -> function.timeout("row-1", result.asResultFuture()));
+
+        request("row-1").succeed();
+
+        assertThat(result.failure())
+                .as("the timeout's completion")
+                .hasMessageContaining("answered as the async operator's timeout elapsed");
+        assertThat(result.completions())
+                .as("the timeout's completion, then the answer's")
+                .isEqualTo(2);
+        assertThat(result.failures()).hasSize(1);
+        assertThat(function.getInFlight()).isZero();
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isZero();
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_COMPLETED)).isEqualTo(1);
+    }
+
+    @Test
+    void anAnsweredRequestFreesItsInstanceBeforeItsResultReachesFlink() throws Exception {
+        // Flink can emit an answer's result and hand the function the next input before the
+        // answering thread has returned from its hand-off. The in-flight counts are released
+        // before the hand-off, so at the instance cap that next input finds the answered
+        // instance idle and evicts it, instead of being refused as if its request were still in
+        // flight.
+        TestFunction function = open(options().maxActiveInstances(1).build());
+        destinations.put("row-2", SECOND_INSTANCE);
+        FakeResultFuture<String> first = new FakeResultFuture<>();
+        FakeResultFuture<String> second = new FakeResultFuture<>();
+        function.asyncInvoke("row-1", first.asResultFuture());
+        first.onNextCompletion(() -> function.asyncInvoke("row-2", second.asResultFuture()));
+
+        request("row-1").succeed();
+
+        assertThat(second.failure()).as("second input refused").isNull();
+        assertThat(factory.released).containsExactly(TABLE);
+        assertThat(factory.created).containsExactly(TABLE, SECOND_INSTANCE);
+        assertThat(metricGroup.counterValue(BigtableMetricNames.CAPACITY_EVICTIONS)).isEqualTo(1);
+        // The first answer's hand-off went on over the evicted state and reached its result.
+        assertThat(first.results()).containsExactly("out:row-1:answer:row-1");
+        request("row-2").succeed();
+        assertThat(second.results()).containsExactly("out:row-2:answer:row-2");
+        assertThat(function.getInFlight()).isZero();
+    }
+
+    @Test
+    void aRetryAttemptUnderTheSameResultKeepsItsOwnLedgerEntry() throws Exception {
+        // Retry mode re-invokes asyncInvoke with the ResultFuture of the attempt before, and can
+        // do so while that attempt's answer is between its hand-off and its ledger removal: the
+        // removal must leave the new attempt's entry alone, or the timeout finds nothing to cancel
+        // and
+        // reports no request in flight while one is.
+        TestFunction function = open(options());
+        String input = "row-1";
+        ScriptedRowRequest first = new ScriptedRowRequest(input);
+        ScriptedRowRequest second = new ScriptedRowRequest(input);
+        queuedRequests.add(first);
+        queuedRequests.add(second);
+        FakeResultFuture<String> result = new FakeResultFuture<>();
+        function.asyncInvoke(input, result.asResultFuture());
+        result.onNextCompletion(() -> function.asyncInvoke(input, result.asResultFuture()));
+        first.fail(StatusCode.Code.UNAVAILABLE);
+
+        function.timeout(input, result.asResultFuture());
+
+        assertThat(second.future.isCancelled()).as("second attempt cancelled").isTrue();
+        assertThat(result.failures()).hasSize(2);
+        assertThat(result.failures().get(0)).hasMessageContaining("failed with UNAVAILABLE");
+        assertThat(result.failures().get(1))
+                .hasMessageContaining("did not complete within the async operator's timeout");
+        assertThat(function.getInFlight()).isZero();
+        assertThat(metricGroup.counterValue(BigtableMetricNames.REQUESTS_TIMED_OUT)).isEqualTo(1);
     }
 
     @Test

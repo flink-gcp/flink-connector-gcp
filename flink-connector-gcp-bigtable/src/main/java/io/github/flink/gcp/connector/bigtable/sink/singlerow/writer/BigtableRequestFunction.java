@@ -58,7 +58,8 @@ import java.util.function.LongSupplier;
  *
  * <p>Unlike the sink writer, this surface has no mailbox to hop back onto: {@link #asyncInvoke} and
  * {@link #timeout} run on the task thread (Flink runs the operator's timers on its mailbox), while
- * a request's answer arrives on a client thread and must complete the {@link ResultFuture} from
+ * a request's answer arrives on a client thread — or inline on the task thread, when the client
+ * answered before the callback was registered — and must complete the {@link ResultFuture} from
  * there. So the destination pool stays task-thread-only, and everything an answer touches is
  * thread-safe: the in-flight ledger, the counters, and the handle's one-shot settlement that
  * decides between the answer and Flink's timeout when both arrive. {@link #result(Object, Object)}
@@ -72,6 +73,16 @@ import java.util.function.LongSupplier;
  * BigtableRequestOptions.requestTimeout}, is where a slow request is expected to fail, with a
  * Bigtable-named message and an ambiguity verdict; Flink's operator timeout should sit above it,
  * and when it fires first {@link #timeout} cancels the request and fails the input naming both.
+ *
+ * <p>Under the operator's retry mode ({@code AsyncDataStream.unorderedWaitWithRetry} and its
+ * ordered twin) the retries are the job's, chosen by its predicate: each attempt is a new call of
+ * {@link #asyncInvoke} with the same {@link ResultFuture}, so a new request carrying the
+ * at-least-once cost of a replay, and the operator timeout spans every attempt and every backoff of
+ * one input. When it fires between attempts there is nothing to cancel, and {@link #timeout} fails
+ * the input saying so; an answer arriving as it fires stands only if the operator processed it
+ * first, as under Flink's default timeout. It completes the result on every path: the operator has
+ * no fallback of its own, and an open result holds its queue slot until the task ends, or until end
+ * of input forces one more attempt in a bounded job.
  *
  * <p>The instance cap never waits on in-flight work: at {@code
  * BigtableRequestOptions.maxActiveInstances} a new instance evicts the least recently used one with
@@ -124,13 +135,14 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
     private transient AtomicInteger inFlight;
 
     /**
-     * The accepted requests not yet settled, for {@link #timeout} and {@link #close()}, keyed by
-     * the {@link ResultFuture} Flink hands to both {@link #asyncInvoke} and {@link #timeout} —
-     * never by the input, whose instance two records in flight can share. Identity-keyed, as the
-     * operator's handler defines no equality; synchronized, since an answer removes its entry from
-     * the client thread.
+     * The accepted requests whose outcome is not yet handed to Flink, for {@link #timeout} and
+     * {@link #close()}, keyed by the {@link ResultFuture} Flink hands to both {@link #asyncInvoke}
+     * and {@link #timeout} — never by the input, whose instance two records in flight can share.
+     * Identity-keyed, as the operator's handler defines no equality; synchronized, since an answer
+     * removes its entry from the client thread. An entry is dropped only after its completion was
+     * handed off, so a missing entry means nothing is in flight and nothing is completing.
      */
-    private transient Map<ResultFuture<OUT>, RequestHandle> outstanding;
+    private transient Map<ResultFuture<OUT>, Answer> outstanding;
 
     private transient long lastIdleSweepNanos;
     private transient volatile boolean closed;
@@ -303,21 +315,39 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         inFlight.incrementAndGet();
         state.inFlight.incrementAndGet();
         metrics.requestAccepted(state.counters);
-        RequestHandle handle =
-                new RequestHandle(state, request.operation(), request.rowKey(), future);
-        outstanding.put(resultFuture, handle);
-        ApiFutures.addCallback(future, new Answer(input, handle, resultFuture), Runnable::run);
+        Answer answer =
+                new Answer(
+                        input,
+                        new RequestHandle(state, request.operation(), request.rowKey(), future),
+                        resultFuture);
+        outstanding.put(resultFuture, answer);
+        ApiFutures.addCallback(future, answer, Runnable::run);
     }
 
     @Override
     public void timeout(IN input, ResultFuture<OUT> resultFuture) throws Exception {
-        RequestHandle handle = outstanding.get(resultFuture);
-        if (handle == null || !handle.settle()) {
-            // Either never accepted — its result is already complete — or its answer arrived
-            // first and is completing the result from the client thread.
+        Answer answer = outstanding.get(resultFuture);
+        if (answer == null) {
+            // Outside retry mode the operator reaches here only in the moment after an answer
+            // completed the result and before its timer saw that, and drops this second
+            // completion. No counter moves: no request ended, and the attempt before was counted
+            // as what it was.
+            resultFuture.completeExceptionally(betweenAttempts());
             return;
         }
-        release(resultFuture, handle);
+        RequestHandle handle = answer.handle;
+        if (!handle.settle()) {
+            // The answer won the settlement and is handing its outcome to Flink. This call cannot
+            // tell whether the operator already took that outcome for a retry it has just
+            // cancelled — the one ordering in which nothing else would complete the result — so
+            // it completes the result now, as Flink's own default timeout would: whichever of the
+            // two completions the operator processes first stands, and it drops the other. The
+            // request itself is counted by the answer.
+            resultFuture.completeExceptionally(answeredAtTimeout(handle));
+            return;
+        }
+        forget(resultFuture, answer);
+        releaseCount(answer);
         metrics.requestTimedOut();
         // The cancellation's callback runs synchronously inside this call, finds the handle
         // settled and does nothing.
@@ -334,6 +364,36 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
                                 + options.getRequestTimeout()
                                 + ") is the client's own deadline, where a slow request is expected"
                                 + " to fail; set the operator timeout above it."));
+    }
+
+    /**
+     * The failure for a timeout that found no request to cancel: the operator's retry mode holds
+     * the input between attempts, and the timeout just cancelled the retry, so this is the only
+     * completion the result will get.
+     */
+    private IOException betweenAttempts() {
+        return new IOException(
+                "The async operator's timeout elapsed with no Bigtable request in flight for the"
+                        + " input: the operator was between attempts of its retry strategy, and"
+                        + " nothing was cancelled. The operator timeout covers every attempt and"
+                        + " every backoff of one input; set it above"
+                        + " BigtableRequestOptions.requestTimeout ("
+                        + options.getRequestTimeout()
+                        + ") for each attempt the strategy allows, plus the backoff.");
+    }
+
+    /** The failure for a timeout that found the request answered and its outcome on its way. */
+    private IOException answeredAtTimeout(RequestHandle handle) {
+        return new IOException(
+                "A "
+                        + handle.operation.getRpcName()
+                        + " request to Bigtable table "
+                        + handle.state.destination
+                        + " answered as the async operator's timeout elapsed."
+                        + " BigtableRequestOptions.requestTimeout ("
+                        + options.getRequestTimeout()
+                        + ") is the client's own deadline, where a slow request is expected to"
+                        + " fail; set the operator timeout above it.");
     }
 
     /** Returns the destination's state, leasing its instance's client on first use. */
@@ -420,9 +480,9 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         if (outstanding != null) {
             // Every cancellation's callback settles and releases its handle, from this thread,
             // mutating the map: snapshot first.
-            List<RequestHandle> cancelled = new ArrayList<>(outstanding.values());
-            for (RequestHandle handle : cancelled) {
-                handle.cancel();
+            List<Answer> cancelled = new ArrayList<>(outstanding.values());
+            for (Answer answer : cancelled) {
+                answer.handle.cancel();
             }
             outstanding.clear();
             // The in-flight count is not reset: a handle an answer settled on a client thread just
@@ -441,11 +501,19 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         }
     }
 
-    /** Releases one settled request from the ledger; callable from any thread. */
-    private void release(ResultFuture<OUT> resultFuture, RequestHandle handle) {
-        outstanding.remove(resultFuture, handle);
+    /**
+     * Drops one settled request from the ledger; callable from any thread. The removal names its
+     * own entry: retry mode hands the same {@link ResultFuture} to every attempt, so a removal that
+     * raced the next attempt's registration must not take that entry.
+     */
+    private void forget(ResultFuture<OUT> resultFuture, Answer answer) {
+        outstanding.remove(resultFuture, answer);
+    }
+
+    /** Releases one settled request's share of the in-flight counts; callable from any thread. */
+    private void releaseCount(Answer answer) {
         inFlight.decrementAndGet();
-        handle.state.inFlight.decrementAndGet();
+        answer.handle.state.inFlight.decrementAndGet();
     }
 
     @VisibleForTesting
@@ -467,6 +535,11 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
      * on the finish path, and closes it after them on the failure path. An answer landing in that
      * window is logged at debug and dropped: the operator's checkpointed inputs replay it after the
      * restart, and a finishing task has already drained its queue.
+     *
+     * <p>The in-flight counts are released before the hand-off, so an answered instance is idle for
+     * the next input by the time Flink emits the result; the ledger entry is dropped after it, so a
+     * timeout firing in between finds the entry and reads the request as answered rather than as
+     * absent, which would make it report an input between retry attempts.
      */
     private final class Answer implements ApiFutureCallback<R> {
 
@@ -485,21 +558,25 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
             if (!handle.settle()) {
                 return;
             }
-            release(resultFuture, handle);
-            if (closed) {
-                return;
-            }
-            // The service answered, whatever the mapping below makes of it: the counter is the
-            // request's, and a mapping failure is the function's own, reported on the result.
-            metrics.requestCompleted();
-            OUT output;
+            releaseCount(this);
             try {
-                output = result(input, answer);
-            } catch (Exception e) {
-                completeExceptionally(e);
-                return;
+                if (closed) {
+                    return;
+                }
+                // The service answered, whatever the mapping below makes of it: the counter is the
+                // request's, and a mapping failure is the function's own, reported on the result.
+                metrics.requestCompleted();
+                OUT output;
+                try {
+                    output = result(input, answer);
+                } catch (Exception e) {
+                    completeExceptionally(e);
+                    return;
+                }
+                complete(output);
+            } finally {
+                forget(resultFuture, this);
             }
-            complete(output);
         }
 
         @Override
@@ -507,30 +584,34 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
             if (!handle.settle()) {
                 return;
             }
-            release(resultFuture, handle);
-            if (closed) {
-                return;
+            releaseCount(this);
+            try {
+                if (closed) {
+                    return;
+                }
+                metrics.requestFailed(throwable);
+                RequestFailures.Kind kind = RequestFailures.classify(throwable);
+                Throwable failure;
+                if (kind == RequestFailures.Kind.ROW_LEVEL) {
+                    failure =
+                            new IOException(
+                                    "A "
+                                            + handle.operation.getRpcName()
+                                            + " request to Bigtable table "
+                                            + handle.state.destination
+                                            + " was rejected because "
+                                            + RequestFailures.ROW_LEVEL_REASON
+                                            + ".",
+                                    throwable);
+                } else {
+                    failure =
+                            RequestFailures.jobFailure(
+                                    kind, handle.operation, handle.state.destination, throwable);
+                }
+                completeExceptionally(failure);
+            } finally {
+                forget(resultFuture, this);
             }
-            metrics.requestFailed(throwable);
-            RequestFailures.Kind kind = RequestFailures.classify(throwable);
-            Throwable failure;
-            if (kind == RequestFailures.Kind.ROW_LEVEL) {
-                failure =
-                        new IOException(
-                                "A "
-                                        + handle.operation.getRpcName()
-                                        + " request to Bigtable table "
-                                        + handle.state.destination
-                                        + " was rejected because "
-                                        + RequestFailures.ROW_LEVEL_REASON
-                                        + ".",
-                                throwable);
-            } else {
-                failure =
-                        RequestFailures.jobFailure(
-                                kind, handle.operation, handle.state.destination, throwable);
-            }
-            completeExceptionally(failure);
         }
 
         private void complete(OUT output) {

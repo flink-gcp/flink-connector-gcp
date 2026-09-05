@@ -619,8 +619,8 @@ would fail the same way.
 **Two surfaces over one runtime.** A *sink* surface — a `SinkWriter` in the shape of the batching
 writer: one request per record, the answers discarded, `flush()` waiting for every outstanding
 request at each checkpoint barrier — and an *async-operator* surface, a `RichAsyncFunction` base
-for `AsyncDataStream.unorderedWait` or `orderedWait`, where each answer becomes the operator's
-output. Both resolve the table per record — the sink surface through a `DestinationResolver`, the
+for `AsyncDataStream.unorderedWait` or `orderedWait` or their retrying forms, where each answer
+becomes the operator's output. Both resolve the table per record — the sink surface through a `DestinationResolver`, the
 function through its own `destination(IN)` step — and the request is built against that table only
 when it starts, which is what lets one request shape be routed anywhere. A record whose request comes back `null` — from the serializer on the sink surface, from
 the function's own request step on the async one — is skipped exactly as [above](#api-notes):
@@ -633,15 +633,17 @@ written nowhere, not a failure, counted by `recordsSkipped`, and emitting nothin
 `BigtableWriterOptions` on purpose: a single-row request has no batch thresholds and no in-flight
 bytes, so sharing the type would leave most of its setters inert here.
 
-**The client's deadline is the only timeout, and there are no retries — on either side.** The client
-ships both RPCs with an empty retryable-code set and a 20 s total timeout, and this runtime keeps it
-that way: `requestTimeout` is applied to the client as one attempt's whole deadline, no connector
-loop sits around it, and there is no knob to add one. Retrying a non-idempotent RPC after an
-ambiguous failure could apply an increment twice; the client's own defaults make the same judgement,
-and a test pins them so that a client upgrade which changes them goes red rather than changing the
-semantics. This is the mirror image of the batching sink's
+**The client's deadline is the only timeout, and neither the client nor the runtime retries.** The
+client ships both RPCs with an empty retryable-code set and a 20 s total timeout, and this runtime
+keeps it that way: `requestTimeout` is applied to the client as one attempt's whole deadline, no
+connector loop sits around it, and there is no knob to add one. Retrying a non-idempotent RPC after
+an ambiguous failure could apply an increment twice; the client's own defaults make the same
+judgement, and a test pins them so that a client upgrade which changes them goes red rather than
+changing the semantics. This is the mirror image of the batching sink's
 [retries belong to the client](#retries-belong-to-the-client), for the same reason: the difference
-is in the RPCs, not in a preference.
+is in the RPCs, not in a preference. The one loop a job can put around a request is Flink's own,
+the async operator's retry mode, which the job opts into with a predicate; the runtime treats its
+attempts as the job's decision, described with the async surface's timeout below.
 
 **Answers are connector-owned.** `CheckAndMutateRow` answers with a `boolean` — whether the
 predicate matched. `ReadModifyWriteRow` answers with the row it wrote, which the runtime hands on as
@@ -659,6 +661,31 @@ same number. Flink's operator timeout should sit *above* `requestTimeout`, so th
 deadline — with its Bigtable-named message and its ambiguity verdict — is what a slow request fails
 on. When the operator timeout fires first, the function cancels the request and fails the record
 with a message naming both timeouts; a cancelled request is as ambiguous as a timed-out one.
+
+**Flink's retry mode is the job's own retry, and the function is written for it.**
+`AsyncDataStream.unorderedWaitWithRetry` and `orderedWaitWithRetry` call the function again, after
+the strategy's backoff, for an input whose failure the job's predicate accepts; a strategy with a
+result predicate can retry an empty result too, and a [skipped](#api-notes) record completes with
+one. To the runtime an attempt is a new request, with the at-least-once cost of a
+[replay](#delivery-guarantees-and-state): a `ReadModifyWriteRow` retried after an ambiguous failure
+may apply its increment twice. That is the judgement the runtime declines to make on its own, and
+the job makes it here by naming the failures its predicate accepts. The operator timeout spans every
+attempt and every backoff of one input, so under retry mode it has to sit above `requestTimeout`
+for each attempt the strategy allows, plus the backoff between them. When it fires between
+attempts there is nothing to cancel, and the function fails the input with a message saying that no
+request was in flight; that failure is counted under no request counter, since the attempt before
+it was already counted as what it was. An answer arriving in the moment the timeout fires stands
+only if the operator processed it first, as under Flink's own default timeout: otherwise the
+function's failure saying the request answered as the timeout elapsed is the outcome, and the
+answer's own completion is dropped; the request is counted as answered either way. One exception
+belongs to Flink 1.20 and a predicate that accepts that failure: the retry it schedules reopens
+the input, and an answer landing after that retry started is taken as the outcome while the retry
+runs. Two behaviours of the operator itself shape the arithmetic: on
+Flink 1.20 a failure raised by the timeout goes back through the predicate, so a predicate that
+accepts it schedules further attempts, each bounded by `requestTimeout` alone and by the strategy's
+attempt count, while 2.2 refuses a retry once the timeout has elapsed; and at the end of a bounded
+input Flink gives every input in its retry set one immediate attempt, under whatever remains of
+its operator timeout, beside a retry of it already in flight if there is one.
 
 **The instance cap is met differently by the two surfaces.** One client per (project, instance),
 shared by that instance's tables, as [above](#per-record-destinations). At `maxActiveInstances` the
@@ -995,7 +1022,7 @@ answer it.
 | `requestsAccepted` | counter | requests the client accepted — one per record, since a single-row RPC carries one row |
 | `requestsCompleted` | counter | requests the service answered |
 | `requestsFailed` | counter | requests that did not complete — row-level, ambiguous and fatal failures alike — plus, on the sink surface, records the serializer rejected or the client's validation refused and, on the async surface, requests Flink's operator timeout ended |
-| `requestsTimedOut` | counter | those of them that ended on a deadline: the request's own (`DEADLINE_EXCEEDED`) or, on the async surface, Flink's operator timeout. Counted on top of `requestsFailed` |
+| `requestsTimedOut` | counter | those of them that ended on a deadline: the request's own (`DEADLINE_EXCEEDED`) or, on the async surface, Flink's operator timeout. Counted on top of `requestsFailed`; an operator timeout that finds no request in flight, between the attempts of Flink's retry mode, or finds the request answered as it fires, counts nothing |
 | `inFlightRequests` | gauge | requests accepted and not yet answered, against `maxInFlightRequests` on the sink surface and the operator's capacity on the async one |
 | `activeClients` | gauge | instance clients held by this subtask, against `maxActiveInstances` |
 | `capacityEvictions` | counter | instances evicted to make room under `maxActiveInstances` |
@@ -1154,8 +1181,10 @@ carries one row and nothing accumulates. On the async surface the bound is the
 capacity handed to `AsyncDataStream`, so set that to the same number. `requestTimeout` is the
 client's whole deadline for one attempt, 20 s by default; a request past it is
 [ambiguous](#error-handling), and the runtime would rather report that than retry it; whatever
-value it takes, keep Flink's operator timeout above it. There is no batching to tune: every request
-is its own RPC, so throughput is the instance's, not a threshold's.
+value it takes, keep Flink's operator timeout above it, and under the operator's retry mode above
+it for every attempt the strategy allows plus the backoff, since one timeout covers them all. There
+is no batching to tune: every request is its own RPC, so throughput is the instance's, not a
+threshold's.
 
 ## Testing
 
@@ -1181,10 +1210,15 @@ writer's tests hold that capacity is released on every terminal outcome, that a 
 rejection by the client counts nothing, that a closed writer turns late completions into no-ops,
 and that `flush()` waits for every accepted request; the async function's tests hold the ambiguity
 boundary from the callback thread, that Flink's timeout cancels and counts, that a late answer after
-it is ignored, and that the counters are exact under concurrent completions. The emulator suite
-drives both RPCs through the production client-construction path and reads the rows back, and a
-MiniCluster job emits `BigtableRow` downstream through `AsyncDataStream.unorderedWait` and fails a
-never-answering request with the Bigtable-named timeout message.
+it is ignored, that a timeout arriving between the attempts of Flink's retry mode still completes
+the result while one arriving as an answer is being handed off reads the request as answered, that
+an answered instance is idle for the next input before its result reaches Flink, and that the
+counters are exact under concurrent completions. The emulator suite drives both RPCs through the production
+client-construction path and reads the rows back, and a MiniCluster job emits `BigtableRow`
+downstream through `AsyncDataStream.unorderedWait` and fails a never-answering request with the
+Bigtable-named timeout message; a second one, under `unorderedWaitWithRetry`, fails a job whose
+operator timeout fires inside a retry backoff with the message naming that no request was in
+flight.
 
 The source's coverage is split three ways, because no one level can carry it. **Split planning is a
 unit test**, over a pure function fed sampled boundaries directly: the emulator models no tablets,
