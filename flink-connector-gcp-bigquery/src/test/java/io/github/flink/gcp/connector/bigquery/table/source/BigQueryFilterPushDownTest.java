@@ -35,7 +35,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -58,10 +57,7 @@ class BigQueryFilterPushDownTest {
                             "nested", DataTypes.ROW(DataTypes.FIELD("value", DataTypes.STRING()))),
                     DataTypes.FIELD("single_ratio", DataTypes.FLOAT()),
                     DataTypes.FIELD("civil_time", DataTypes.TIMESTAMP(6)),
-                    DataTypes.FIELD("event_time", DataTypes.TIMESTAMP_LTZ(6)),
-                    DataTypes.FIELD("millis_time", DataTypes.TIMESTAMP(3)),
-                    DataTypes.FIELD("clock_time", DataTypes.TIME(3)),
-                    DataTypes.FIELD("payload", DataTypes.BYTES()));
+                    DataTypes.FIELD("event_time", DataTypes.TIMESTAMP_LTZ(6)));
     private static final RowType ROW_TYPE = (RowType) PHYSICAL.getLogicalType();
 
     @Test
@@ -152,6 +148,83 @@ class BigQueryFilterPushDownTest {
         assertRestriction(
                 equals(field(4), new ValueLiteralExpression("O'Reilly\\line\n\t\u0001😀")),
                 "((`name` = 'O\\'Reilly\\\\line\\n\\t\\u0001😀'))");
+    }
+
+    @Test
+    void escapedStringsRespectTheUtf8BoundaryWithoutLosingFittingPredicates() {
+        String[][] forms = {
+            {"a", "a"},
+            {"'", "\\'"},
+            {"\\", "\\\\"},
+            {"\b", "\\b"},
+            {"\f", "\\f"},
+            {"\n", "\\n"},
+            {"\r", "\\r"},
+            {"\t", "\\t"},
+            {"\u0001", "\\u0001"},
+            {"\u007f", "\\u007f"},
+            {"é", "é"},
+            {"\u0800", "\u0800"},
+            {"😀", "😀"}
+        };
+        int available =
+                BigQueryFilterPushDown.MAX_ROW_RESTRICTION_BYTES
+                        - "((`name` = ''))".getBytes(StandardCharsets.UTF_8).length;
+        ResolvedExpression fitting = equals(field(3), new ValueLiteralExpression(true));
+        for (String[] form : forms) {
+            int unitBytes = form[1].getBytes(StandardCharsets.UTF_8).length;
+            int repetitions = available / unitBytes;
+            String padding = "a".repeat(available % unitBytes);
+            String value = form[0].repeat(repetitions) + padding;
+            assertRestriction(
+                    equals(field(4), new ValueLiteralExpression(value)),
+                    "((`name` = '" + form[1].repeat(repetitions) + padding + "'))");
+
+            ResolvedExpression oversized =
+                    equals(field(4), new ValueLiteralExpression(value + "a"));
+            ResolvedExpression oversizedLiteral =
+                    equals(
+                            field(4),
+                            new ValueLiteralExpression(
+                                    form[0].repeat(
+                                            BigQueryFilterPushDown.MAX_ROW_RESTRICTION_BYTES
+                                                            / unitBytes
+                                                    + 1)));
+            List<ResolvedExpression> filters = Arrays.asList(oversized, oversizedLiteral, fitting);
+            BigQueryFilterPushDown.State state =
+                    BigQueryFilterPushDown.translate(ROW_TYPE, filters, null);
+            assertResult(state.result(), Collections.singletonList(fitting), filters);
+            assertThat(state.rowRestriction()).isEqualTo("((`active` = TRUE))");
+        }
+    }
+
+    @Test
+    void oversizedStringLiteralsKeepSafeAndChildrenButRejectPartialOr() {
+        ResolvedExpression oversized =
+                equals(
+                        field(4),
+                        new ValueLiteralExpression(
+                                "'".repeat(BigQueryFilterPushDown.MAX_ROW_RESTRICTION_BYTES / 2)));
+        ResolvedExpression fitting = equals(field(3), new ValueLiteralExpression(true));
+        assertRestriction(
+                call(BuiltInFunctionDefinitions.AND, oversized, fitting), "(((`active` = TRUE)))");
+        ResolvedExpression disjunction = call(BuiltInFunctionDefinitions.OR, oversized, fitting);
+        BigQueryFilterPushDown.State state = translate(disjunction);
+        assertResult(
+                state.result(), Collections.emptyList(), Collections.singletonList(disjunction));
+        assertThat(state.rowRestriction()).isNull();
+    }
+
+    @Test
+    void malformedSurrogatesStayResidualAndEmptyStringsRemainSupported() {
+        assertRestriction(equals(field(4), new ValueLiteralExpression("")), "((`name` = ''))");
+        for (String value : Arrays.asList("\ud800", "\udc00", "\ud800x", "😀\udc00")) {
+            ResolvedExpression filter = equals(field(4), new ValueLiteralExpression(value));
+            BigQueryFilterPushDown.State state = translate(filter);
+            assertResult(
+                    state.result(), Collections.emptyList(), Collections.singletonList(filter));
+            assertThat(state.rowRestriction()).isNull();
+        }
     }
 
     @Test
@@ -246,16 +319,6 @@ class BigQueryFilterPushDownTest {
                 equals(field(0), new ValueLiteralExpression(null, DataTypes.BIGINT()));
         ResolvedExpression complexNullCheck = call(BuiltInFunctionDefinitions.IS_NULL, field(7));
         ResolvedExpression charNullCheck = call(BuiltInFunctionDefinitions.IS_NULL, field(6));
-        ResolvedExpression millisecondTimestampNullCheck =
-                call(BuiltInFunctionDefinitions.IS_NOT_NULL, field(11));
-        ResolvedExpression timeNullCheck = call(BuiltInFunctionDefinitions.IS_NULL, field(12));
-        ResolvedExpression bytesNullCheck = call(BuiltInFunctionDefinitions.IS_NOT_NULL, field(13));
-        ResolvedExpression millisecondTimestamp =
-                equals(
-                        field(11),
-                        new ValueLiteralExpression(
-                                LocalDateTime.parse("2026-08-29T12:34:56.123"),
-                                DataTypes.TIMESTAMP(3).notNull()));
         ResolvedExpression nonFiniteDouble =
                 equals(field(5), new ValueLiteralExpression(Double.NaN));
         ResolvedExpression malformedUnicode =
@@ -265,16 +328,6 @@ class BigQueryFilterPushDownTest {
                         BuiltInFunctionDefinitions.NOT_EQUALS,
                         field(4),
                         new ValueLiteralExpression("alice"));
-        ResolvedExpression timeComparison =
-                equals(
-                        field(12),
-                        new ValueLiteralExpression(
-                                LocalTime.parse("12:34:56.123"), DataTypes.TIME(3).notNull()));
-        ResolvedExpression bytesComparison =
-                equals(
-                        field(13),
-                        new ValueLiteralExpression(
-                                new byte[] {1, 2, 3}, DataTypes.BYTES().notNull()));
         ResolvedExpression outsideDatetimeRange =
                 equals(
                         field(9),
@@ -300,15 +353,9 @@ class BigQueryFilterPushDownTest {
                         nullComparison,
                         complexNullCheck,
                         charNullCheck,
-                        millisecondTimestampNullCheck,
-                        timeNullCheck,
-                        bytesNullCheck,
-                        millisecondTimestamp,
                         nonFiniteDouble,
                         malformedUnicode,
                         stringInequality,
-                        timeComparison,
-                        bytesComparison,
                         outsideDateRange,
                         outsideDatetimeRange,
                         outsideTimestampRange);

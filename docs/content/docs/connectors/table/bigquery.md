@@ -262,23 +262,36 @@ Nested projection is not advertised.
 
 The source also translates a conservative subset of SQL predicates into Storage Read row
 restrictions.
-It supports literal comparisons on integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `TIMESTAMP(6)`,
-and `TIMESTAMP_LTZ(6)` columns; equality and inequality on `BOOLEAN`; equality on BigQuery
-`STRING`; and `IS NULL` or `IS NOT NULL` on those supported column types.
+The supported field-literal comparisons are:
+
+| Column type | Operators |
+|---|---|
+| Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, `TIMESTAMP_LTZ(0..6)` | `=`, `<>`, `<`, `<=`, `>`, `>=` |
+| `BOOLEAN` | `=`, `<>` |
+| BigQuery `STRING` | `=` |
+
+These types also support `IS NULL` and `IS NOT NULL`.
 An `AND` pushes every translatable necessary child, while an `OR` is pushed only when every branch
 translates.
 String inequality and ordered string comparisons are not translated.
 Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
 rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
-Timestamp comparison pushdown requires precision 6 because the source preserves BigQuery
-microseconds at that precision.
+Temporal comparisons cover source-side truncation to the declared Flink precision.
+For example, equality to `12:34:56.123` at precision 3 reads every BigQuery microsecond from `12:34:56.123000` through `12:34:56.123999`.
+`TIMESTAMP(6)` and `TIMESTAMP_LTZ(6)` preserve BigQuery microseconds and use the literal directly.
+Temporal literals must align with the declared precision and fit BigQuery's value range; other literals remain with Flink.
+`TIMESTAMP` predicates use BigQuery `DATETIME` literals, while `TIMESTAMP_LTZ` predicates use UTC `TIMESTAMP` literals.
+The source uses the precision the planner supplies: SQL `TIME(p)` resolves to `TIME(0)` on Flink 1.20 and 2.2, while Flink 2.3 and newer retain precision through 3.
+A programmatically constructed catalog schema can retain `TIME(1..3)` on every supported version.
+The source rejects `TIME` precision above 3 and timestamp precision above 6; these schemas cannot be read with residual filtering alone.
+Binary literals preserve every byte, including empty and non-UTF-8 values, and ordered comparisons use unsigned lexicographic byte order.
 
 BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
 Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
 unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
 reject the generated restriction at that point.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+Fixed-length `CHAR` and `BINARY` columns, nested fields,
 complex types, field-to-field comparisons, casts, and functions stay with Flink.
 Every generated restriction is a necessary condition for the Flink predicate because residual
 evaluation cannot recover a row BigQuery excluded.

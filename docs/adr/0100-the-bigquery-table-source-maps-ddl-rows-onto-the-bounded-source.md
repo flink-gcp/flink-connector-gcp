@@ -101,7 +101,7 @@ The residual then rejects any row that BigQuery admits but Flink does not.
 
 The supported comparison matrix covers scalar types whose necessary conditions can be rendered
 without fetching the BigQuery schema.
-Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns accept
+Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns accept
 `=`, `<>`, `<`, `<=`, `>`, and `>=` against typed literals.
 `BOOLEAN` accepts `=` and `<>`, BigQuery `STRING` accepts `=`, and those supported column types
 accept `IS NULL` and `IS NOT NULL`.
@@ -113,15 +113,26 @@ a BigQuery decimal through that scale can round the source value.
 A Flink `FLOAT` restriction uses adjacent single-precision values as bounds because the source
 narrows a BigQuery `FLOAT64` value before residual evaluation.
 `DOUBLE` uses the finite double literal directly.
-`TIMESTAMP(6)` maps to a BigQuery `DATETIME` literal, and `TIMESTAMP_LTZ(6)` maps to a UTC BigQuery
-`TIMESTAMP` literal; precision 6 is required because it preserves BigQuery microseconds.
+`TIMESTAMP` maps to a BigQuery `DATETIME` literal, and `TIMESTAMP_LTZ` maps to a UTC BigQuery `TIMESTAMP` literal.
+Precision 6 preserves BigQuery microseconds and uses the literal directly.
+At lower timestamp precisions and for `TIME`, the converter truncates fractional seconds.
+For a precision-aligned literal `L` at precision `p`, every BigQuery value in the closed interval from `L` to `U = L + (10^(6-p) - 1)` microseconds converts to `L`.
+Equality therefore becomes `field >= L AND field <= U`; `<= L` becomes `<= U`, and `> L` becomes `> U`.
+The `<`, `>=`, and `<>` comparisons use `L` directly, with `<>` deliberately admitting other microseconds in the same bucket for the residual to reject.
+The inclusive upper bound stays within the same second, including at midnight and the maximum BigQuery year.
+Unaligned or out-of-range literals remain residual rather than being rounded by the translator.
+
+Binary comparisons render each byte as a two-digit hexadecimal escape inside a GoogleSQL bytes literal, including an empty literal for an empty byte array.
+This avoids text decoding and does not depend on a Storage Read function allowlist.
+Ordered binary predicates use Flink's unsigned lexicographic comparison, including shorter-prefix ordering; `BigQueryFilterPushDownRealGcpITCase` checks the generated restrictions against Flink's scalar byte comparison on the same rows.
+Fixed-length `BINARY` remains outside this extension.
 
 BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
 The planner does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot distinguish
 ordinary `STRING` from `JSON` or `GEOGRAPHY`; a generated string restriction against an unsupported
 physical type can be rejected when the Storage Read session is created.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+Fixed-length character and binary columns, nested fields,
 complex types, field-to-field comparisons, casts, and functions remain only with Flink.
 
 An `AND` may push any translatable child because each child is necessary when the whole predicate
@@ -136,6 +147,8 @@ When it and a generated restriction coexist, the source validates the explicit v
 parenthesizes both operands separately, and combines them with `AND`.
 The source counts the combined expression as UTF-8 and admits each generated restriction only
 while the result remains within the Storage Read API's 1 MB row-restriction limit.
+String and bytes literals that alone exceed that limit are rejected before their escaped text is allocated.
+The string preflight counts escapes and UTF-8 bytes and validates surrogate pairs; the combined-expression check still accounts for identifiers, operators, wrappers, and explicit restrictions.
 A predicate that would cross the limit remains a Flink residual without discarding other generated
 restrictions that fit, and all SQL predicates remain residuals so that fallback does not change the
 result.
@@ -157,8 +170,9 @@ Read session over its materialized result.
   remains a residual, unsupported shapes stay above the source, and direct and query sources share
   the ability.
 - `BigQueryFilterPushDownRealGcpITCase` measures fewer returned rows and serialized Avro response
-  bytes and submits generated string, decimal, float, double, `DATETIME`, and `TIMESTAMP`
+  bytes and submits generated string, decimal, float, double, binary, `TIME`, `DATETIME`, and `TIMESTAMP`
   restrictions to the real Storage Read API before deleting its bounded temporary table.
+  The binary and temporal cases compare row IDs with an unrestricted read converted at each declared precision, asserting that no matching row is lost and that residual evaluation restores the expected row set.
 - `BigQueryTableSourceFidelityITCase` runs the production factory and converter against BigQuery's
   own writer schemas for native, decimal, temporal, nested, repeated and range values.
   Its interval arm reads a required control beside the measured record before verifying the

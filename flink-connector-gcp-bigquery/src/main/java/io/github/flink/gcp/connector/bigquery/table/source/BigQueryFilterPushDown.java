@@ -28,6 +28,7 @@ import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampType;
 
 import javax.annotation.Nullable;
@@ -38,6 +39,7 @@ import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -52,6 +54,8 @@ final class BigQueryFilterPushDown {
 
     static final int MAX_ROW_RESTRICTION_BYTES = 1_000_000;
     private static final int BIGQUERY_TIMESTAMP_PRECISION = 6;
+    private static final DateTimeFormatter TIME_LITERAL =
+            DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
     private static final DateTimeFormatter DATETIME_LITERAL =
             DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSS");
     private static final DateTimeFormatter TIMESTAMP_LITERAL =
@@ -205,6 +209,10 @@ final class BigQueryFilterPushDown {
                         .map(value -> binary(field.name, comparison, value));
             case DECIMAL:
                 return decimalComparison(field, literal, comparison);
+            case VARBINARY:
+                return literal.getValueAs(byte[].class)
+                        .flatMap(BigQueryFilterPushDown::bytesLiteral)
+                        .map(value -> binary(field.name, comparison, value));
             case FLOAT:
                 return floatComparison(field, literal, comparison);
             case DOUBLE:
@@ -212,22 +220,57 @@ final class BigQueryFilterPushDown {
                         .map(Object::toString)
                         .map(value -> binary(field.name, comparison, value));
             case TIMESTAMP_WITHOUT_TIME_ZONE:
-                if (((TimestampType) type).getPrecision() != BIGQUERY_TIMESTAMP_PRECISION) {
+                int datetimePrecision = ((TimestampType) type).getPrecision();
+                if (datetimePrecision > BIGQUERY_TIMESTAMP_PRECISION) {
                     return Optional.empty();
                 }
                 return literal.getValueAs(LocalDateTime.class)
                         .filter(BigQueryFilterPushDown::isBigQueryDatetime)
-                        .map(value -> "DATETIME '" + DATETIME_LITERAL.format(value) + "'")
-                        .map(value -> binary(field.name, comparison, value));
+                        .filter(value -> isPrecisionAligned(value.getNano(), datetimePrecision))
+                        .map(
+                                value ->
+                                        temporalComparison(
+                                                field.name,
+                                                comparison,
+                                                datetimeLiteral(value),
+                                                datetimeLiteral(
+                                                        value.plusNanos(
+                                                                bucketTailNanos(
+                                                                        datetimePrecision)))));
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                if (((LocalZonedTimestampType) type).getPrecision()
-                        != BIGQUERY_TIMESTAMP_PRECISION) {
+                int timestampPrecision = ((LocalZonedTimestampType) type).getPrecision();
+                if (timestampPrecision > BIGQUERY_TIMESTAMP_PRECISION) {
                     return Optional.empty();
                 }
                 return literal.getValueAs(Instant.class)
                         .filter(BigQueryFilterPushDown::isBigQueryTimestamp)
-                        .map(value -> "TIMESTAMP '" + TIMESTAMP_LITERAL.format(value) + "Z'")
-                        .map(value -> binary(field.name, comparison, value));
+                        .filter(value -> isPrecisionAligned(value.getNano(), timestampPrecision))
+                        .map(
+                                value ->
+                                        temporalComparison(
+                                                field.name,
+                                                comparison,
+                                                timestampLiteral(value),
+                                                timestampLiteral(
+                                                        value.plusNanos(
+                                                                bucketTailNanos(
+                                                                        timestampPrecision)))));
+            case TIME_WITHOUT_TIME_ZONE:
+                int timePrecision = ((TimeType) type).getPrecision();
+                if (timePrecision > GenericRecordToRowDataConverter.MAX_TIME_PRECISION) {
+                    return Optional.empty();
+                }
+                return literal.getValueAs(LocalTime.class)
+                        .filter(value -> isPrecisionAligned(value.getNano(), timePrecision))
+                        .map(
+                                value ->
+                                        temporalComparison(
+                                                field.name,
+                                                comparison,
+                                                timeLiteral(value),
+                                                timeLiteral(
+                                                        value.plusNanos(
+                                                                bucketTailNanos(timePrecision)))));
             default:
                 return Optional.empty();
         }
@@ -245,14 +288,80 @@ final class BigQueryFilterPushDown {
             case DECIMAL:
             case FLOAT:
             case DOUBLE:
+            case VARBINARY:
                 return true;
+            case TIME_WITHOUT_TIME_ZONE:
+                return ((TimeType) type).getPrecision()
+                        <= GenericRecordToRowDataConverter.MAX_TIME_PRECISION;
             case TIMESTAMP_WITHOUT_TIME_ZONE:
-                return ((TimestampType) type).getPrecision() == BIGQUERY_TIMESTAMP_PRECISION;
+                return ((TimestampType) type).getPrecision() <= BIGQUERY_TIMESTAMP_PRECISION;
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 return ((LocalZonedTimestampType) type).getPrecision()
-                        == BIGQUERY_TIMESTAMP_PRECISION;
+                        <= BIGQUERY_TIMESTAMP_PRECISION;
             default:
                 return false;
+        }
+    }
+
+    private static Optional<String> bytesLiteral(byte[] value) {
+        long size = 4L * value.length + 3;
+        if (size > MAX_ROW_RESTRICTION_BYTES) {
+            return Optional.empty();
+        }
+        StringBuilder escaped = new StringBuilder((int) size).append("b'");
+        for (byte element : value) {
+            escaped.append("\\x")
+                    .append(Character.forDigit((element & 0xff) >>> 4, 16))
+                    .append(Character.forDigit(element & 0xf, 16));
+        }
+        return Optional.of(escaped.append('\'').toString());
+    }
+
+    private static long bucketTailNanos(int precision) {
+        long unit = 1;
+        for (int i = precision; i < BIGQUERY_TIMESTAMP_PRECISION; i++) {
+            unit *= 10;
+        }
+        return (unit - 1) * 1_000;
+    }
+
+    private static boolean isPrecisionAligned(int nanos, int precision) {
+        return nanos % (bucketTailNanos(precision) + 1_000) == 0;
+    }
+
+    private static String timeLiteral(LocalTime value) {
+        return "TIME '" + TIME_LITERAL.format(value) + "'";
+    }
+
+    private static String datetimeLiteral(LocalDateTime value) {
+        return "DATETIME '" + DATETIME_LITERAL.format(value) + "'";
+    }
+
+    private static String timestampLiteral(Instant value) {
+        return "TIMESTAMP '" + TIMESTAMP_LITERAL.format(value) + "Z'";
+    }
+
+    private static String temporalComparison(
+            String field, Comparison comparison, String lower, String upper) {
+        // The converter truncates fractional seconds. Every source microsecond from lower to
+        // upper therefore becomes the same Flink value. An inclusive upper bound stays within
+        // that second, including at the end of the BigQuery date range or the TIME day.
+        if (lower.equals(upper)) {
+            return binary(field, comparison, lower);
+        }
+        switch (comparison) {
+            case EQUALS:
+                List<String> bounds = new ArrayList<>();
+                bounds.add(binary(field, Comparison.GREATER_THAN_OR_EQUAL, lower));
+                bounds.add(binary(field, Comparison.LESS_THAN_OR_EQUAL, upper));
+                return join("AND", bounds);
+            case LESS_THAN_OR_EQUAL:
+            case GREATER_THAN:
+                return binary(field, comparison, upper);
+            default:
+                // In particular, <> lower is necessary but may retain other values in the
+                // same truncation bucket; the Flink residual removes those extra rows.
+                return binary(field, comparison, lower);
         }
     }
 
@@ -391,18 +500,15 @@ final class BigQueryFilterPushDown {
     }
 
     private static Optional<String> stringLiteral(String value) {
+        if (!stringLiteralFitsSizeLimit(value)) {
+            return Optional.empty();
+        }
         StringBuilder escaped = new StringBuilder(value.length() + 2).append('\'');
         for (int i = 0; i < value.length(); i++) {
             char character = value.charAt(i);
             if (Character.isHighSurrogate(character)) {
-                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
-                    return Optional.empty();
-                }
                 escaped.append(character).append(value.charAt(++i));
                 continue;
-            }
-            if (Character.isLowSurrogate(character)) {
-                return Optional.empty();
             }
             switch (character) {
                 case '\'':
@@ -435,6 +541,44 @@ final class BigQueryFilterPushDown {
             }
         }
         return Optional.of(escaped.append('\'').toString());
+    }
+
+    private static boolean stringLiteralFitsSizeLimit(String value) {
+        if (value.length() > MAX_ROW_RESTRICTION_BYTES - 2) {
+            return false;
+        }
+        int bytes = 2;
+        for (int i = 0; i < value.length(); i++) {
+            char character = value.charAt(i);
+            if (Character.isHighSurrogate(character)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(++i))) {
+                    return false;
+                }
+                bytes += 4;
+            } else if (Character.isLowSurrogate(character)) {
+                return false;
+            } else if (character == '\''
+                    || character == '\\'
+                    || character == '\b'
+                    || character == '\f'
+                    || character == '\n'
+                    || character == '\r'
+                    || character == '\t') {
+                bytes += 2;
+            } else if (character < 0x20 || character == 0x7f) {
+                bytes += 6;
+            } else if (character < 0x80) {
+                bytes++;
+            } else if (character < 0x800) {
+                bytes += 2;
+            } else {
+                bytes += 3;
+            }
+            if (bytes > MAX_ROW_RESTRICTION_BYTES) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void appendUnicodeEscape(StringBuilder escaped, char character) {

@@ -17,11 +17,14 @@
 package io.github.flink.gcp.connector.bigquery.table.source;
 
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinition;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.runtime.functions.SqlFunctionUtils;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -37,6 +40,11 @@ import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamO
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericDatumReader;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.io.BinaryDecoder;
+import org.apache.avro.io.DecoderFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -47,8 +55,14 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,6 +74,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BigQueryFilterPushDownRealGcpITCase {
 
     private static final String TABLE = "filter_pushdown_" + TestNames.runId();
+    private static final BuiltInFunctionDefinition[] SCALAR_OPERATORS = {
+        BuiltInFunctionDefinitions.EQUALS,
+        BuiltInFunctionDefinitions.NOT_EQUALS,
+        BuiltInFunctionDefinitions.LESS_THAN,
+        BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+        BuiltInFunctionDefinitions.GREATER_THAN,
+        BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+        BuiltInFunctionDefinitions.IS_NULL,
+        BuiltInFunctionDefinitions.IS_NOT_NULL
+    };
 
     @BeforeAll
     static void seed() throws Exception {
@@ -77,8 +101,19 @@ class BigQueryFilterPushDownRealGcpITCase {
                             + "DATETIME_ADD(DATETIME '2026-08-29 12:00:00', "
                             + "INTERVAL id MICROSECOND) AS civil_time, "
                             + "TIMESTAMP_ADD(TIMESTAMP '2026-08-29 03:00:00+00', "
-                            + "INTERVAL id MICROSECOND) AS event_time "
-                            + "FROM UNNEST(GENERATE_ARRAY(1, 64)) AS id");
+                            + "INTERVAL id MICROSECOND) AS event_time, "
+                            + "IF(id = 64, NULL, TIME_ADD(TIME '23:59:59', INTERVAL delta MICROSECOND)) AS clock_time, "
+                            + "IF(id = 64, NULL, DATETIME_ADD(DATETIME '1969-12-31 23:59:59', INTERVAL delta MICROSECOND)) AS civil_truncated, "
+                            + "IF(id = 64, NULL, TIMESTAMP_ADD(TIMESTAMP '1969-12-31 23:59:59+00', INTERVAL delta MICROSECOND)) AS event_truncated, "
+                            + "CASE MOD(id, 12) WHEN 0 THEN NULL WHEN 1 THEN FROM_HEX('') "
+                            + "WHEN 2 THEN FROM_HEX('00') WHEN 3 THEN FROM_HEX('0000') "
+                            + "WHEN 4 THEN FROM_HEX('007f') WHEN 5 THEN FROM_HEX('0080') "
+                            + "WHEN 6 THEN FROM_HEX('7f') WHEN 7 THEN FROM_HEX('80') "
+                            + "WHEN 8 THEN FROM_HEX('ff') WHEN 9 THEN FROM_HEX('27225c') "
+                            + "WHEN 10 THEN FROM_HEX('c328') ELSE FROM_HEX('ffff') END AS binary_value "
+                            + "FROM (SELECT id, [-1, 0, 1, 9, 10, 99, 100, 999, 1000, "
+                            + "9999, 10000, 99999, 100000, 999999, 1000000, 1000001]"
+                            + "[OFFSET(MOD(id, 16))] AS delta FROM UNNEST(GENERATE_ARRAY(1, 64)) AS id)");
         } catch (Exception e) {
             RealBigQuery.deleteTables(TABLE);
             throw e;
@@ -211,6 +246,226 @@ class BigQueryFilterPushDownRealGcpITCase {
                 BuiltInFunctionDefinitions.EQUALS,
                 new ValueLiteralExpression(new BigDecimal("7.000000001")),
                 1);
+    }
+
+    @Test
+    void bytesRestrictionsPreserveFlinkEqualityAndUnsignedLexicographicOrdering() throws Exception {
+        List<GenericRecord> baseline = readRecords("binary_value", null);
+        assertThat(baseline).hasSize(64);
+        for (byte[] literal :
+                Arrays.asList(
+                        new byte[0],
+                        new byte[] {0},
+                        new byte[] {0, (byte) 0x80},
+                        new byte[] {0x7f},
+                        new byte[] {(byte) 0x80},
+                        new byte[] {(byte) 0xff},
+                        new byte[] {'\'', '"', '\\'},
+                        new byte[] {(byte) 0xc3, 0x28})) {
+            assertScalarRestrictions(
+                    baseline, "binary_value", DataTypes.BYTES(), literal, literal.length == 0);
+        }
+    }
+
+    @Test
+    void timeRestrictionsKeepEveryRowThatMatchesAfterTruncation() throws Exception {
+        List<GenericRecord> baseline = readRecords("clock_time", null);
+        assertThat(baseline).hasSize(64);
+        for (int p = 0; p <= 3; p++) {
+            assertScalarRestrictions(
+                    baseline, "clock_time", DataTypes.TIME(p), LocalTime.of(23, 59, 59), p == 0);
+        }
+    }
+
+    @Test
+    void datetimeRestrictionsKeepEveryRowThatMatchesAfterTruncation() throws Exception {
+        List<GenericRecord> baseline = readRecords("civil_truncated", null);
+        assertThat(baseline).hasSize(64);
+        for (int p = 0; p < 6; p++) {
+            assertScalarRestrictions(
+                    baseline,
+                    "civil_truncated",
+                    DataTypes.TIMESTAMP(p),
+                    LocalDateTime.of(1969, 12, 31, 23, 59, 59),
+                    p == 0);
+        }
+    }
+
+    @Test
+    void timestampRestrictionsKeepEveryRowThatMatchesAfterTruncation() throws Exception {
+        List<GenericRecord> baseline = readRecords("event_truncated", null);
+        assertThat(baseline).hasSize(64);
+        for (int p = 0; p < 6; p++) {
+            assertScalarRestrictions(
+                    baseline,
+                    "event_truncated",
+                    DataTypes.TIMESTAMP_LTZ(p),
+                    Instant.parse("1969-12-31T23:59:59Z"),
+                    p == 0);
+        }
+    }
+
+    private static void assertScalarRestrictions(
+            List<GenericRecord> baseline,
+            String column,
+            DataType type,
+            Object literal,
+            boolean includeNullChecks)
+            throws Exception {
+        RowType physical =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                        DataTypes.FIELD(column, type))
+                                .getLogicalType();
+        GenericRecordToRowDataConverter converter =
+                new GenericRecordToRowDataConverter(physical, new int[] {0, 1});
+        // NULL restrictions do not depend on the comparison literal or temporal precision.
+        int operatorCount = includeNullChecks ? SCALAR_OPERATORS.length : 6;
+        for (int op = 0; op < operatorCount; op++) {
+            FieldReferenceExpression field = new FieldReferenceExpression(column, type, 0, 1);
+            List<ResolvedExpression> children = new ArrayList<>();
+            children.add(field);
+            if (op < 6) {
+                children.add(new ValueLiteralExpression(literal, type.notNull()));
+            }
+            ResolvedExpression filter =
+                    CallExpression.permanent(SCALAR_OPERATORS[op], children, DataTypes.BOOLEAN());
+            BigQueryFilterPushDown.State translated =
+                    BigQueryFilterPushDown.translate(
+                            physical, Collections.singletonList(filter), null);
+            assertThat(translated.result().getAcceptedFilters()).containsExactly(filter);
+            assertThat(translated.result().getRemainingFilters()).containsExactly(filter);
+            assertThat(translated.rowRestriction()).isNotNull();
+            int operator = op;
+            Predicate<RowData> residual = row -> matches(row, type, literal, operator);
+            Set<Long> expected = ids(baseline, converter, residual);
+            List<GenericRecord> returned = readRecords(column, translated.rowRestriction());
+            assertThat(ids(returned, converter, row -> true))
+                    .as("%s, literal %s: %s", type, literal, translated.rowRestriction())
+                    .containsAll(expected);
+            assertThat(ids(returned, converter, residual)).isEqualTo(expected);
+            // Equality must exercise a retained value, not pass vacuously on an empty oracle.
+            if (op == 0) {
+                assertThat(expected).isNotEmpty();
+            }
+        }
+    }
+
+    private static Set<Long> ids(
+            List<GenericRecord> records,
+            GenericRecordToRowDataConverter converter,
+            Predicate<RowData> predicate) {
+        Set<Long> ids = new TreeSet<>();
+        for (GenericRecord record : records) {
+            RowData row = converter.convert(record);
+            if (predicate.test(row)) {
+                ids.add(row.getLong(0));
+            }
+        }
+        return ids;
+    }
+
+    private static boolean matches(RowData row, DataType type, Object literal, int operator) {
+        if (operator == 6) {
+            return row.isNullAt(1);
+        }
+        if (operator == 7) {
+            return !row.isNullAt(1);
+        }
+        if (row.isNullAt(1)) {
+            return false;
+        }
+        int compared;
+        switch (type.getLogicalType().getTypeRoot()) {
+            case VARBINARY:
+                // This is the comparison used by Flink's generated scalar predicates.
+                compared = SqlFunctionUtils.byteArrayCompare(row.getBinary(1), (byte[]) literal);
+                break;
+            case TIME_WITHOUT_TIME_ZONE:
+                compared =
+                        Long.compare(
+                                row.getInt(1), ((LocalTime) literal).toNanoOfDay() / 1_000_000);
+                break;
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                compared =
+                        row.getTimestamp(1, 6).toLocalDateTime().compareTo((LocalDateTime) literal);
+                break;
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                compared = row.getTimestamp(1, 6).toInstant().compareTo((Instant) literal);
+                break;
+            default:
+                throw new AssertionError(type);
+        }
+        switch (operator) {
+            case 0:
+                return compared == 0;
+            case 1:
+                return compared != 0;
+            case 2:
+                return compared < 0;
+            case 3:
+                return compared <= 0;
+            case 4:
+                return compared > 0;
+            case 5:
+                return compared >= 0;
+            default:
+                throw new AssertionError(operator);
+        }
+    }
+
+    private static List<GenericRecord> readRecords(String column, String restriction)
+            throws Exception {
+        ReadSession.TableReadOptions.Builder options =
+                ReadSession.TableReadOptions.newBuilder()
+                        .addSelectedFields("id")
+                        .addSelectedFields(column);
+        if (restriction != null) {
+            options.setRowRestriction(restriction);
+        }
+        ReadSession session;
+        try (ReadSessionCreator creator = new ReadClientSessionCreator(null)) {
+            session =
+                    creator.create(
+                            CreateReadSessionRequest.newBuilder()
+                                    .setParent("projects/" + RealBigQuery.project())
+                                    .setMaxStreamCount(1)
+                                    .setReadSession(
+                                            ReadSession.newBuilder()
+                                                    .setTable(
+                                                            RealBigQuery.destination(TABLE)
+                                                                    .toTablePath())
+                                                    .setDataFormat(DataFormat.AVRO)
+                                                    .setReadOptions(options))
+                                    .build());
+        }
+        Schema schema = new Schema.Parser().parse(session.getAvroSchema().getSchema());
+        GenericDatumReader<GenericRecord> decoder = new GenericDatumReader<>(schema);
+        List<GenericRecord> records = new ArrayList<>();
+        try (RowStreamOpener opener =
+                new ReadClientRowStreamOpener(
+                        null, BigQuerySourceBuilder.DEFAULT_RETRY_MAX_ATTEMPTS)) {
+            for (com.google.cloud.bigquery.storage.v1.ReadStream readStream :
+                    session.getStreamsList()) {
+                try (RowStream stream = opener.open(readStream.getName(), 0)) {
+                    ReadRowsResponse response;
+                    while ((response = stream.next()) != null) {
+                        BinaryDecoder input =
+                                DecoderFactory.get()
+                                        .binaryDecoder(
+                                                response.getAvroRows()
+                                                        .getSerializedBinaryRows()
+                                                        .toByteArray(),
+                                                null);
+                        for (long i = 0; i < response.getRowCount(); i++) {
+                            records.add(decoder.read(null, input));
+                        }
+                    }
+                }
+            }
+        }
+        return records;
     }
 
     private static void assertRows(
