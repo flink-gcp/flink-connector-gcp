@@ -59,7 +59,9 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Predicate;
@@ -105,12 +107,13 @@ class BigQueryFilterPushDownRealGcpITCase {
                             + "IF(id = 64, NULL, TIME_ADD(TIME '23:59:59', INTERVAL delta MICROSECOND)) AS clock_time, "
                             + "IF(id = 64, NULL, DATETIME_ADD(DATETIME '1969-12-31 23:59:59', INTERVAL delta MICROSECOND)) AS civil_truncated, "
                             + "IF(id = 64, NULL, TIMESTAMP_ADD(TIMESTAMP '1969-12-31 23:59:59+00', INTERVAL delta MICROSECOND)) AS event_truncated, "
-                            + "CASE MOD(id, 12) WHEN 0 THEN NULL WHEN 1 THEN FROM_HEX('') "
+                            + "CASE MOD(id, 14) WHEN 0 THEN NULL WHEN 1 THEN FROM_HEX('') "
                             + "WHEN 2 THEN FROM_HEX('00') WHEN 3 THEN FROM_HEX('0000') "
                             + "WHEN 4 THEN FROM_HEX('007f') WHEN 5 THEN FROM_HEX('0080') "
                             + "WHEN 6 THEN FROM_HEX('7f') WHEN 7 THEN FROM_HEX('80') "
                             + "WHEN 8 THEN FROM_HEX('ff') WHEN 9 THEN FROM_HEX('27225c') "
-                            + "WHEN 10 THEN FROM_HEX('c328') ELSE FROM_HEX('ffff') END AS binary_value "
+                            + "WHEN 10 THEN FROM_HEX('c328') WHEN 11 THEN FROM_HEX('ffff') "
+                            + "WHEN 12 THEN FROM_HEX('00000000') ELSE FROM_HEX('0000000000') END AS binary_value "
                             + "FROM (SELECT id, [-1, 0, 1, 9, 10, 99, 100, 999, 1000, "
                             + "9999, 10000, 99999, 100000, 999999, 1000000, 1000001]"
                             + "[OFFSET(MOD(id, 16))] AS delta FROM UNNEST(GENERATE_ARRAY(1, 64)) AS id)");
@@ -265,6 +268,116 @@ class BigQueryFilterPushDownRealGcpITCase {
             assertScalarRestrictions(
                     baseline, "binary_value", DataTypes.BYTES(), literal, literal.length == 0);
         }
+    }
+
+    @Test
+    void fixedBinaryRestrictionsKeepEveryRowAcceptedByFlinkSql() throws Exception {
+        List<GenericRecord> baseline = readRecords("binary_value", null);
+        assertThat(baseline).hasSize(64);
+        Map<String, List<GenericRecord>> reads = new LinkedHashMap<>();
+        String[] operators = {"=", "<>", "<", "<=", ">", ">="};
+        for (int length : new int[] {1, 2, 4}) {
+            DataType type = DataTypes.BINARY(length);
+            RowType physical =
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                            DataTypes.FIELD("binary_value", type))
+                                    .getLogicalType();
+            FieldReferenceExpression field =
+                    new FieldReferenceExpression("binary_value", type, 0, 1);
+            Map<String, String> restrictions = new LinkedHashMap<>();
+            for (byte[] value :
+                    Arrays.asList(
+                            new byte[0],
+                            new byte[] {0},
+                            new byte[] {0, 0},
+                            new byte[4],
+                            new byte[] {0, (byte) 0x80},
+                            new byte[] {(byte) 0x80},
+                            new byte[] {(byte) 0xff},
+                            new byte[] {(byte) 0xc3, 0x28})) {
+                ValueLiteralExpression literal = new ValueLiteralExpression(value);
+                for (int op = 0; op < 6; op++) {
+                    // SQL equality with incompatible fixed lengths retains a field-side cast.
+                    // Planner tests pin that residual-only boundary; no cast is erased here.
+                    if (op < 2 && value.length != length) {
+                        continue;
+                    }
+                    for (boolean reverse : new boolean[] {false, true}) {
+                        ResolvedExpression filter =
+                                CallExpression.permanent(
+                                        SCALAR_OPERATORS[op],
+                                        reverse
+                                                ? Arrays.asList(literal, field)
+                                                : Arrays.asList(field, literal),
+                                        DataTypes.BOOLEAN());
+                        String sql =
+                                reverse
+                                        ? literal.asSerializableString()
+                                                + " "
+                                                + operators[op]
+                                                + " binary_value"
+                                        : "binary_value "
+                                                + operators[op]
+                                                + " "
+                                                + literal.asSerializableString();
+                        restrictions.put(sql, acceptedRestriction(physical, filter));
+                    }
+                }
+            }
+            for (int op = 6; op < 8; op++) {
+                ResolvedExpression filter =
+                        CallExpression.permanent(
+                                SCALAR_OPERATORS[op],
+                                Collections.singletonList(field),
+                                DataTypes.BOOLEAN());
+                restrictions.put(
+                        "binary_value IS " + (op == 6 ? "NULL" : "NOT NULL"),
+                        acceptedRestriction(physical, filter));
+            }
+            List<List<GenericRecord>> batches = new ArrayList<>();
+            batches.add(baseline);
+            Map<String, Integer> batchIndex = new LinkedHashMap<>();
+            for (String restriction : restrictions.values()) {
+                if (!batchIndex.containsKey(restriction)) {
+                    List<GenericRecord> rows = reads.get(restriction);
+                    if (rows == null) {
+                        rows = readRecords("binary_value", restriction);
+                        reads.put(restriction, rows);
+                    }
+                    batchIndex.put(restriction, batches.size());
+                    batches.add(rows);
+                }
+            }
+            List<Map<String, Set<Long>>> evaluated =
+                    BinaryFilterOracle.evaluate(
+                            batches, type, new ArrayList<>(restrictions.keySet()));
+            for (Map.Entry<String, String> entry : restrictions.entrySet()) {
+                int batch = batchIndex.get(entry.getValue());
+                Set<Long> expected = evaluated.get(0).get(entry.getKey());
+                Set<Long> returned = new TreeSet<>();
+                batches.get(batch).forEach(row -> returned.add((Long) row.get("id")));
+                assertThat(returned)
+                        .as("%s: %s -> %s", type, entry.getKey(), entry.getValue())
+                        .containsAll(expected);
+                assertThat(evaluated.get(batch).get(entry.getKey()))
+                        .as("residual result for %s: %s", type, entry.getKey())
+                        .isEqualTo(expected);
+                if (entry.getKey().contains(" = ") || entry.getKey().contains(" IS ")) {
+                    assertThat(expected).as("nonempty control: %s", entry.getKey()).isNotEmpty();
+                }
+            }
+        }
+    }
+
+    private static String acceptedRestriction(RowType physical, ResolvedExpression filter) {
+        BigQueryFilterPushDown.State state =
+                BigQueryFilterPushDown.translate(physical, Collections.singletonList(filter), null);
+        assertThat(state.result().getAcceptedFilters()).containsExactly(filter);
+        assertThat(state.result().getRemainingFilters()).containsExactly(filter);
+        assertThat(state.rowRestriction()).isNotNull();
+        return state.rowRestriction();
     }
 
     @Test
