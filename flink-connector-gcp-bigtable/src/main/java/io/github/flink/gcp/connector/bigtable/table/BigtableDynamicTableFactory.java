@@ -43,9 +43,10 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
-import io.github.flink.gcp.connector.bigtable.table.sink.ConditionalOptionChecks;
+import io.github.flink.gcp.connector.bigtable.table.sink.ReadModifyWriteSchemaChecks;
 import io.github.flink.gcp.connector.bigtable.table.sink.RequestOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.TableCreateOptionsMapper;
+import io.github.flink.gcp.connector.bigtable.table.sink.WriteModeOptionChecks;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamEnvelopeSchema;
@@ -188,7 +189,7 @@ public class BigtableDynamicTableFactory
         validateCredentialsMode(config);
         checkSinkHasNoChangeStreamOptions(context);
         WriteMode writeMode = config.get(BigtableConnectorOptions.SINK_WRITE_MODE);
-        ConditionalOptionChecks.validate(context.getCatalogTable().getOptions(), writeMode);
+        WriteModeOptionChecks.validate(context.getCatalogTable().getOptions(), writeMode);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
@@ -196,6 +197,7 @@ public class BigtableDynamicTableFactory
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
         checkPrimaryKeyIsTheRowKey(context, schema);
         checkSinkHasSomewhereToWrite(schema);
+        ReadModifyWriteSchemaChecks.validate(schema, writeMode);
 
         return BigtableDynamicSink.builder()
                 .schema(schema)
@@ -216,7 +218,7 @@ public class BigtableDynamicTableFactory
                                 : BigtableWriterOptions.builder().build())
                 .writeMode(writeMode)
                 .requestOptions(
-                        writeMode == WriteMode.INSERT_IF_ABSENT
+                        writeMode != WriteMode.UPSERT
                                 ? RequestOptionsMapper.map(config)
                                 : BigtableRequestOptions.builder().build())
                 .emptyBranchPolicy(

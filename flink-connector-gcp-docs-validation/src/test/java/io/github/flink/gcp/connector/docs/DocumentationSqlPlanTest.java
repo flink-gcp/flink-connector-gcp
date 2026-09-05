@@ -391,6 +391,12 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/BigtableTableReference.sql", "overview"),
                         snippet("flink/BigtableTableReference.sql", "lookup-join")),
                 scenario(
+                        "Bigtable table reference append",
+                        snippet("flink/BigtableTableReference.sql", "append")),
+                scenario(
+                        "Bigtable table reference increment",
+                        snippet("flink/BigtableTableReference.sql", "increment")),
+                scenario(
                         "Bigtable table reference insert-if-absent",
                         snippet("flink/BigtableTableReference.sql", "insert-if-absent")),
                 scenario(

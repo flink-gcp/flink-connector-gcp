@@ -38,6 +38,8 @@ import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSink;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
+import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteSink;
+import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
@@ -61,7 +63,7 @@ import java.util.Objects;
  * <p>{@code SupportsPartitioning} is not implemented: a Bigtable table is partitioned by row-key
  * range, which the service chooses and moves on its own, so there is nothing a {@code PARTITIONED
  * BY} clause could name. {@link SupportsWritingMetadata} exposes the timestamp shared by every cell
- * the row writes.
+ * the row writes, except in append and increment modes, whose timestamps are service-assigned.
  *
  * <p>Built through {@link #builder()} rather than a constructor, for the reason {@code
  * BigQueryDynamicSink} records: a positional list is repeated four times over — the constructor,
@@ -129,7 +131,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     @Override
     public Map<String, DataType> listWritableMetadata() {
-        return WritableMetadata.listAll();
+        return writeMode == WriteMode.APPEND || writeMode == WriteMode.INCREMENT
+                ? Collections.emptyMap()
+                : WritableMetadata.listAll();
     }
 
     @Override
@@ -137,16 +141,25 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         // consumedDataType is discarded: a position follows from the selection order and the
         // physical column count the DDL model already carries, so keeping it would add a field to
         // equals and hashCode that says nothing the schema does not.
+        if (!metadataKeys.isEmpty()
+                && (writeMode == WriteMode.APPEND || writeMode == WriteMode.INCREMENT)) {
+            throw new ValidationException(
+                    "Writable metadata cannot be used with 'sink.write-mode' = '"
+                            + writeMode
+                            + "'.");
+        }
         metadataKeys.forEach(WritableMetadata::of);
         this.metadataKeys = Collections.unmodifiableList(new ArrayList<>(metadataKeys));
     }
 
     @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
-        if (writeMode == WriteMode.INSERT_IF_ABSENT) {
+        if (writeMode != WriteMode.UPSERT) {
             if (!requestedMode.containsOnly(RowKind.INSERT)) {
                 throw new ValidationException(
-                        "Bigtable 'sink.write-mode' = 'insert-if-absent' requires INSERT-only input.");
+                        "Bigtable 'sink.write-mode' = '"
+                                + writeMode
+                                + "' requires INSERT-only input.");
             }
             return ChangelogMode.insertOnly();
         }
@@ -177,6 +190,26 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         WritableMetadata[] selected =
                 metadataKeys.stream().map(WritableMetadata::of).toArray(WritableMetadata[]::new);
+        if (writeMode == WriteMode.APPEND || writeMode == WriteMode.INCREMENT) {
+            BigtableReadModifyWriteSinkBuilder<RowData> requests =
+                    BigtableReadModifyWriteSink.<RowData>builder()
+                            .table(destination)
+                            .serializer(
+                                    new RowDataReadModifyWriteSerializationSchema(
+                                            schema, writeMode))
+                            .requestOptions(requestOptions);
+            if (appProfileId != null) {
+                requests.appProfileId(appProfileId);
+            }
+            if (serviceAccountKeyFile != null) {
+                requests.serviceAccountKeyFile(serviceAccountKeyFile);
+            }
+            if (emulatorEndpoint != null) {
+                requests.emulatorEndpoint(
+                        EmulatorEndpoint.parse(emulatorEndpoint, "emulator-endpoint"));
+            }
+            return SinkV2Provider.of(requests.build(), parallelism);
+        }
         if (writeMode == WriteMode.INSERT_IF_ABSENT) {
             BigtableConditionalSinkBuilder<RowData> conditional =
                     BigtableConditionalSink.<RowData>builder()

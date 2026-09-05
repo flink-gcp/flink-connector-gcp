@@ -167,3 +167,35 @@ CREATE TABLE new_users (
 
 INSERT INTO new_users VALUES ('u1', ROW('Alice', 'alice@example.com'));
 -- end::insert-if-absent[]
+
+-- tag::append[]
+CREATE TABLE account_notes (
+    rowkey STRING,
+    activity ROW<notes STRING, binary_log BYTES>
+) WITH (
+    'connector' = 'bigtable',
+    'project' = 'my-project',
+    'instance' = 'my-instance',
+    'table' = 'accounts',
+    'sink.app-profile-id' = 'single-cluster',
+    'sink.write-mode' = 'append'
+);
+INSERT INTO account_notes
+VALUES ('account-1', ROW(' payment received;', X'0102'));
+-- end::append[]
+
+-- tag::increment[]
+CREATE TABLE account_counters (
+    rowkey STRING,
+    counters ROW<balance BIGINT, adjustments BIGINT>
+) WITH (
+    'connector' = 'bigtable',
+    'project' = 'my-project',
+    'instance' = 'my-instance',
+    'table' = 'accounts',
+    'sink.app-profile-id' = 'single-cluster',
+    'sink.write-mode' = 'increment'
+);
+INSERT INTO account_counters
+VALUES ('account-1', ROW(CAST(-5 AS BIGINT), CAST(1 AS BIGINT)));
+-- end::increment[]

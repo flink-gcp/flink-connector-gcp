@@ -164,11 +164,12 @@ stores the changelog mode it was compiled with rather than asking the connector 
 written before this change therefore keeps the pre-upgrade topology, and the job running it keeps
 the pre-upgrade behaviour, until the plan is recompiled.
 
-**Every rejection on this page happens when a statement is planned, not at `CREATE TABLE`.** Flink
+**Schema and option rejections happen when a statement is planned, not at `CREATE TABLE`.** Flink
 does not consult a connector while registering a table, so a `CREATE TABLE` naming a column this
 connector cannot encode is accepted and the first `INSERT INTO` over it fails. The message arrives
 wrapped in Flink's own "Unable to create a sink for writing table ..." — the actionable sentence is
 in the cause.
+Per-record checks, such as an empty append operand or an input whose cells are all null, run in the sink on the TaskManager.
 
 ## Type mapping
 
@@ -402,7 +403,43 @@ Conditional-only options are rejected under `upsert`.
 The scan and lookup paths remain available for this ordinary schema.
 
 `ON CONFLICT` controls Flink planner/job behavior; it is not the destination's atomic existence test.
-The remaining upsert discussion applies to the default `sink.write-mode = upsert`.
+The upsert discussion below applies to the default `sink.write-mode = upsert`.
+
+### Append and increment
+
+`sink.write-mode = append` appends each nonnull cell to its latest stored value.
+Use CHAR, VARCHAR, BINARY or VARBINARY cells; the existing codec supplies UTF-8 strings and unchanged binary bytes.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="append" >}}
+
+`sink.write-mode = increment` adds each nonnull BIGINT cell to its latest stored signed integer.
+Negative values decrement, and zero remains an operation.
+For workloads that can use aggregate cells, prefer [AddToCell](https://cloud.google.com/bigtable/docs/writes#appends); this mode addresses raw families.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="increment" >}}
+
+One DDL selects one operation and fixes its project, instance, table and sink application profile.
+Mixed or incompatible cell types fail during planning.
+Each family and qualifier becomes a rule in declaration order.
+NULL families and cells omit rules; `null-string-literal` does not change this behavior.
+A row with no remaining rule, a null or empty row key, or an empty append value fails.
+The cell type describes the input operand rather than a maximum length or range for accumulated state.
+Bigtable performs increment arithmetic, including overflow, without a connector-side read or overflow policy.
+An existing increment target must contain the service's eight-byte big-endian signed representation.
+
+These modes accept INSERT-only input, including repeated same-key inputs with or without a primary key.
+They wait for one `ReadModifyWriteRow` response per input and discard the returned cells.
+To consume those values, use the [DataStream async helper]({{< relref "docs/connectors/datastream/bigtable" >}}#append-and-increment-requests); SQL result functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+
+The table and families must exist, and the sink profile must use single-cluster routing with single-row transactions enabled.
+The request timeout, in-flight request limit and client-lifecycle options use `BigtableRequestOptions`.
+Explicit batch, entry/byte flow-control, creation/repair, rejection-limit, insert-only compatibility and conditional empty-branch options are rejected.
+Writable `timestamp` metadata and `sink.cell-timestamp.truncate-to-millis` are also rejected because read-modify-write uses service timestamps.
+The existing scan and lookup paths remain available.
+
+These are non-idempotent operations with at-least-once delivery.
+The connector does not retry an ambiguous RPC; it fails the job and explains that recovery can apply an already committed append or increment again.
+A checkpoint drains requests without committing a transaction between Bigtable and Flink state.
 
 ### Flink 2.3 may demand ON CONFLICT
 
@@ -798,10 +835,10 @@ DataStream builder.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.write-mode` | Enum | Destination operation: `upsert` (default) or `insert-if-absent` |
+| `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, `append` or `increment` |
 | `sink.conditional.empty-branch-policy` | Enum | `emptyBranchPolicy(...)`; `ignore` or `fail`, conditional mode only |
-| `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional mode only, at least 1 ms |
-| `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional mode only |
+| `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional and read-modify-write modes, at least 1 ms |
+| `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional and read-modify-write modes |
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
