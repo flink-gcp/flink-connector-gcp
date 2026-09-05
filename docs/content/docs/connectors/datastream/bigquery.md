@@ -243,7 +243,7 @@ Predicates with a remaining cast stay in Flink; a folded literal cast uses its r
 The [Table reference]({{< relref "docs/connectors/table/bigquery" >}}#source) describes the fixed-length comparison boundary.
 `BOOLEAN` accepts equality and inequality, BigQuery `STRING` accepts equality, and those supported
 column types also accept `IS NULL` and `IS NOT NULL`.
-An `AND` contributes every child that is a necessary condition for the whole expression.
+An `AND` can contribute a subset of its children as a necessary condition for the whole expression.
 An `OR` contributes only when every branch translates.
 String inequality and ordered string comparisons are not translated.
 Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
@@ -271,8 +271,16 @@ An explicit `rowRestriction` is parenthesized separately and combined with the g
 restriction using `AND`.
 The connector admits each generated restriction only while the combined UTF-8 expression remains
 within the Storage Read API's 1 MB limit.
-A predicate that would cross the limit remains with Flink without discarding other generated
-restrictions that fit.
+Within an `AND`, the connector visits children in their original order, skips unsupported or oversized children, and still tries later children against the remaining budget.
+An `OR` contributes only if every branch supplies a necessary condition and their combination fits; an `AND` inside a branch may contribute only its fitting children.
+If an `OR` fails, its tentative conditions consume no budget for later filters.
+The connector does not retry an earlier branch with fewer conditions to make a later branch fit.
+Every original predicate remains with Flink for residual evaluation.
+
+The connector selects the restriction before rendering its large literals, escaped identifiers, or compound text.
+It counts UTF-8 bytes, escaping, operators, separators, and wrappers before allocating the final generated-text buffer.
+The generated-text buffer uses space proportional to the admitted byte budget.
+This does not impose a 1 MB heap limit on Flink's input expressions, traversal metadata, scalar conversion, or residual-filter lists.
 `snapshotTime` remains an explicit option rather than a SQL translation.
 
 `snapshotTime` is served from BigQuery's time-travel window, which is seven days by default: an

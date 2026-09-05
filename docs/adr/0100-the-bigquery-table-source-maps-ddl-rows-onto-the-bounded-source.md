@@ -22,7 +22,8 @@ limitations under the License.
 - Issues: [#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542),
   [#566](https://github.com/flink-gcp/flink-connector-gcp/issues/566),
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047),
-  [#1233](https://github.com/flink-gcp/flink-connector-gcp/issues/1233)
+  [#1233](https://github.com/flink-gcp/flink-connector-gcp/issues/1233),
+  [#1234](https://github.com/flink-gcp/flink-connector-gcp/issues/1234)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -153,11 +154,19 @@ When it and a generated restriction coexist, the source validates the explicit v
 parenthesizes both operands separately, and combines them with `AND`.
 The source counts the combined expression as UTF-8 and admits each generated restriction only
 while the result remains within the Storage Read API's 1 MB row-restriction limit.
-String and bytes literals that alone exceed that limit are rejected before their escaped text is allocated.
-The string preflight counts escapes and UTF-8 bytes and validates surrogate pairs; the combined-expression check still accounts for identifiers, operators, wrappers, and explicit restrictions.
-A predicate that would cross the limit remains a Flink residual without discarding other generated
-restrictions that fit, and all SQL predicates remain residuals so that fallback does not change the
-result.
+The translator first selects measured fragments, then renders the selected tree directly into one generated-text buffer.
+The measurement includes escaped identifiers, UTF-8 literals, operators, separators, every enclosing wrapper, and the separately parenthesized explicit restriction.
+String literals retain surrogate validation; bytes literals retain their hexadecimal escapes.
+Scalar comparisons that generate multiple bounds are admitted as one unit, including every occurrence of the identifier.
+No rejected compound, escaped identifier, or large literal needs its rendered text allocated.
+The final buffer and its resulting string use space proportional to the admitted byte budget; the later combination with an explicit restriction also fits that budget.
+This is not a bound on total heap or cumulative allocation: Flink owns the input expressions, and traversal metadata, scalar conversion, fragment objects, and accepted/residual lists also allocate.
+
+An `AND` visits children in order, skips unsupported or oversized children, and tries later children with the remaining budget.
+An `OR` requires a necessary condition from every branch, allowing a partial `AND` within a branch.
+A failed `OR` releases its tentative conditions and budget; it does not retry earlier branches with fewer conjuncts.
+This preserves fitting restrictions and can admit a partial `AND` whose combined translation previously exceeded the limit.
+All original filters remain residuals so that fallback does not change the result.
 A query source leaves the configured query untouched and applies both restrictions to the Storage
 Read session over its materialized result.
 
@@ -187,6 +196,41 @@ Read session over its materialized result.
   connector's rejection.
 - The underlying DataStream source suites remain the evidence for read-session restore, query-job
   reuse, retry, and real-BigQuery behavior.
+
+### Compound construction allocation
+
+Measured for [#1234](https://github.com/flink-gcp/flink-connector-gcp/issues/1234) on 2026-09-06 with Temurin 17.0.20 on arm64 macOS.
+The baseline is commit `85ac1f5c631a0f6a136d48d6406eeeead2e215b4`; the candidate uses the measured-fragment construction above.
+Each case ran in a fresh JVM with `-Xms64m -Xmx512m`, three warmups, and five measured translations; the table reports the median current-thread allocated bytes from `com.sun.management.ThreadMXBean`.
+Inputs were constructed before warmup and measurement, and each result was retained through a volatile reference.
+The count is cumulative allocation during one translation, not peak or retained heap and not a service-throughput measurement.
+
+The harness uses one STRING or BYTES field named `value` and repeats references to one equality leaf.
+Wide cases put all leaves in one call; nested cases repeatedly wrap the previous expression as the left child and add one leaf on the right.
+The ASCII literal contains 200,000 `a` characters, the control literal contains 80,000 U+0001 characters, and the bytes literal contains 120,000 zero bytes.
+Each literal individually fits after escaping.
+The late-failure case wraps the wide OR and an unsupported NOT in another OR.
+The explicit-restriction case supplies 500,000 `x` characters as a size-only input; no service parses that synthetic input.
+
+| expression | leaves | baseline allocated bytes | candidate allocated bytes | candidate combined restriction bytes |
+|---|---:|---:|---:|---:|
+| wide AND, ASCII | 8 | 9,609,152 | 1,609,280 | 800,075 |
+| wide AND, ASCII | 32 | 38,435,272 | 1,630,208 | 800,075 |
+| wide OR, ASCII | 32 | 38,435,432 | 6,032 | 0 |
+| nested AND, ASCII | 32 | 236,466,744 | 1,638,000 | 800,135 |
+| nested OR, ASCII | 32 | 236,463,928 | 8,312 | 0 |
+| late-failure OR, ASCII | 1 | 1,001,752 | 1,840 | 0 |
+| wide AND, controls | 32 | 176,679,368 | 1,949,488 | 960,037 |
+| wide OR, controls | 32 | 176,678,760 | 3,648 | 0 |
+| wide AND, bytes | 32 | 92,196,136 | 1,949,488 | 960,039 |
+| wide AND, ASCII with explicit restriction | 32 | 39,435,360 | 829,544 | 900,050 |
+
+Zero restriction bytes means no generated condition was admitted.
+Every baseline case in this table rejected its whole expression; the candidate AND cases retain the fitting children.
+Increasing the wide AND from 8 to 32 leaves still allocates traversal and fragment objects, but does not render another 24 large literals.
+The late-failure case establishes that even a fitting tentative OR is not rendered before its enclosing OR succeeds.
+Unit tests independently hold exact and exceeded UTF-8 budgets, large escaped identifiers, scalar bounds, nested composition, and budget recovery after a rejected OR.
+A local Flink execution test checks the emitted integer/null/Boolean composition and residual row sets, including nulls; it does not replace the existing real-service scalar evidence.
 
 ## Alternatives declined
 
