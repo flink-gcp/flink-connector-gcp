@@ -63,6 +63,8 @@ import java.util.Map;
 @Internal
 final class GenericRecordToRowDataConverter implements Serializable {
 
+    static final int MAX_TIME_PRECISION = 3;
+
     private static final long serialVersionUID = 1L;
 
     @FunctionalInterface
@@ -148,7 +150,7 @@ final class GenericRecordToRowDataConverter implements Serializable {
             case TIME_WITHOUT_TIME_ZONE:
                 int timePrecision = ((TimeType) type).getPrecision();
                 Preconditions.checkArgument(
-                        timePrecision <= 3,
+                        timePrecision <= MAX_TIME_PRECISION,
                         "Column %s has %s, but RowData stores time only to milliseconds",
                         path,
                         type);

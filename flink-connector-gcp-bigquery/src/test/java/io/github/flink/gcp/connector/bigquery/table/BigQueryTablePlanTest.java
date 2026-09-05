@@ -16,10 +16,15 @@
 
 package io.github.flink.gcp.connector.bigquery.table;
 
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.TableEnvironment;
 
 import org.junit.jupiter.api.Test;
+
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,6 +79,17 @@ class BigQueryTablePlanTest {
         createDirectSource(table, "events");
 
         assertPushed(table, "name = 'alice'", "=(name");
+        assertPushed(table, "millis_time >= TIMESTAMP '2026-08-29 12:34:56.123'", ">=(millis_time");
+        assertPushed(table, "millis_time IS NOT NULL", "millis_time");
+        assertPushed(
+                table,
+                "millis_event = CAST(TIMESTAMP '2026-08-29 03:34:56.123' AS TIMESTAMP_LTZ(3))",
+                "=(millis_event");
+        assertPushed(table, "clock_time = TIME '12:34:56'", "=(clock_time");
+        assertPushed(table, "id >= 7 AND clock_time = TIME '12:34:56'", "=(clock_time");
+        assertPushed(table, "clock_time IS NULL", "clock_time");
+        assertPushed(table, "binary_value < X'80'", "<(binary_value");
+        assertPushed(table, "binary_value IS NOT NULL", "binary_value");
         assertPushed(table, "amount = 7.250000000", "=(amount");
         assertPushed(table, "single_score <= CAST(1.0 AS FLOAT)", "<=(single_score");
         assertPushed(
@@ -85,6 +101,33 @@ class BigQueryTablePlanTest {
     }
 
     @Test
+    void programmaticTimePrecisionsReachTheSourceOnEverySupportedVersion() {
+        for (int precision = 0; precision <= 3; precision++) {
+            TableEnvironment table = tableEnvironment();
+            table.createTemporaryTable(
+                    "events",
+                    TableDescriptor.forConnector("bigquery")
+                            .schema(
+                                    Schema.newBuilder()
+                                            .column("name", DataTypes.STRING())
+                                            .column("clock_time", DataTypes.TIME(precision))
+                                            .build())
+                            .option("project", "p")
+                            .option("dataset", "d")
+                            .option("table", "t")
+                            .build());
+            assertThat(
+                            table.from("events")
+                                    .getResolvedSchema()
+                                    .getColumn("clock_time")
+                                    .get()
+                                    .getDataType())
+                    .isEqualTo(DataTypes.TIME(precision));
+            assertPushed(table, "clock_time = TIME '12:34:56'", "=(clock_time");
+        }
+    }
+
+    @Test
     void deliberatelyUnsupportedShapesRemainOnlyAboveTheSource() {
         TableEnvironment table = tableEnvironment();
         createDirectSource(table, "events");
@@ -92,8 +135,6 @@ class BigQueryTablePlanTest {
         assertResidual(table, "fixed > 'aaaa'", "fixed");
         assertResidual(table, "fixed IS NULL", "fixed");
         assertResidual(table, "name <> 'alice'", "name");
-        assertResidual(table, "millis_time >= TIMESTAMP '2026-08-29 12:34:56.123'", "millis_time");
-        assertResidual(table, "millis_time IS NOT NULL", "millis_time");
         assertResidual(table, "UPPER(name) = 'ALICE'", "name");
         assertResidual(table, "id = other_id", "id");
     }
@@ -125,16 +166,15 @@ class BigQueryTablePlanTest {
                         + " (id BIGINT, other_id BIGINT, name STRING, score DOUBLE, "
                         + "amount DECIMAL(38, 9), single_score FLOAT, fixed CHAR(4), "
                         + "civil_time TIMESTAMP(6), event_time TIMESTAMP_LTZ(6), "
-                        + "millis_time TIMESTAMP(3)) WITH ("
+                        + "millis_time TIMESTAMP(3), millis_event TIMESTAMP_LTZ(3), "
+                        + "clock_time TIME(3), binary_value BYTES) WITH ("
                         + "'connector'='bigquery', 'project'='p', 'dataset'='d', 'table'='t')");
     }
 
     private static void assertPushed(TableEnvironment table, String predicate, String marker) {
         String plan = table.explainSql("SELECT name FROM events WHERE " + predicate);
         assertThat(plan)
-                .contains("filter=[")
-                .doesNotContain("filter=[]")
-                .contains(marker)
+                .containsPattern("filter=\\[[^\\]]*" + Pattern.quote(marker))
                 .contains("Calc(");
     }
 

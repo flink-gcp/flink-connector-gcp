@@ -237,8 +237,7 @@ partitioning or clustering column.
 The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
 predicate subset onto `SupportsFilterPushDown`.
 
-Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`,
-`TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns.
+Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns.
 `BOOLEAN` accepts equality and inequality, BigQuery `STRING` accepts equality, and those supported
 column types also accept `IS NULL` and `IS NOT NULL`.
 An `AND` contributes every child that is a necessary condition for the whole expression.
@@ -246,15 +245,17 @@ An `OR` contributes only when every branch translates.
 String inequality and ordered string comparisons are not translated.
 Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
 rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
-Timestamp comparison pushdown requires precision 6 because the source preserves BigQuery
-microseconds at that precision.
+Temporal restrictions cover the source's truncation to the declared precision, while timestamp precision 6 uses the literal directly.
+Unaligned or out-of-range temporal literals remain with Flink.
+Binary literals preserve arbitrary bytes; ordered binary comparisons use unsigned lexicographic order.
+The [Table source reference]({{< relref "docs/connectors/table/bigquery" >}}#source) describes the precision bounds and Flink's version-dependent SQL `TIME` precision.
 
 BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
 Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
 unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
 reject the generated restriction at that point.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+Fixed-length character and binary columns, nested fields,
 complex types, field-to-field comparisons, casts, and functions are not translated.
 
 Every generated restriction is a necessary condition for the Flink predicate; otherwise BigQuery

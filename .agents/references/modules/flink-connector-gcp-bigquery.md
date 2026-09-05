@@ -307,16 +307,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   first physical column as a carrier for a zero-column planner projection.
   It does not advertise nested projection.
   Its filter pushdown is a conservative Storage Read prefilter: literal comparisons for integer,
-  date, decimal, float, double, `TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns; boolean equality and
+  date, decimal, float, double, `BYTES` / `VARBINARY`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns; boolean equality and
   inequality; BigQuery `STRING` equality; and null checks on those supported column types.
   Decimal and Flink `FLOAT` comparisons use weaker necessary bounds to cover source-side scale
   rounding and `FLOAT64`-to-`FLOAT` narrowing, respectively.
+  Temporal comparisons cover the full source truncation bucket at the declared precision;
+  unaligned or out-of-range literals remain residual (ADR-0100).
+  Binary literals preserve raw bytes through hexadecimal escapes; ordered binary comparisons
+  follow Flink's unsigned lexicographic order, held against Storage Read by the gated filter suite.
   String inequality and ordered comparisons are not translated.
   BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
   Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot detect those
   unsupported physical types before the Storage Read session is created.
   Collated `STRING` equality may admit extra rows, which the Flink residual removes.
-  `TIME`, `BYTES`, `CHAR`, timestamp precisions other than 6, nested fields, complex types, casts,
+  `CHAR`, fixed-length `BINARY`, nested fields, complex types, casts,
   functions, and field-to-field comparisons remain residual.
   A generated restriction is admitted only while the explicit-plus-generated UTF-8 text remains
   within Storage Read's 1 MB limit; a predicate that would cross the limit remains residual without
