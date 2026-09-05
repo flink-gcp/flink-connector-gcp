@@ -3,7 +3,7 @@ Copyright 2026 The flink-gcp authors
 
 This project bundles the following dependencies under the Apache Software License 2.0. (http://www.apache.org/licenses/LICENSE-2.0.txt)
 
-- com.fasterxml.jackson.core:jackson-core:2.18.3
+- com.fasterxml.jackson.core:jackson-core:2.22.1
 - com.google.android:annotations:4.1.1.4
 - com.google.api.grpc:grpc-google-cloud-spanner-admin-database-v1:6.121.0
 - com.google.api.grpc:grpc-google-cloud-spanner-admin-instance-v1:6.121.0

@@ -160,23 +160,15 @@ limitations under the License.
              if we declare it. Pinned to what avro-parent ${avro.version} pins, so the codec and
              the library it drives are the pair Avro itself tests. -->
         <zstd-jni.version>1.5.7-12</zstd-jni.version>
-        <!-- Jackson's annotations, on the *test* classpath only, and deliberately not in
-             dependencyManagement: the shaded SQL bundles resolve a coherent Jackson set of their
-             own from the libraries BOM, and managing this globally would move the annotations out
-             from under the databind those bundles ship.
-
-             testcontainers reaches
-             docker-java-api, which pins jackson-annotations 2.10.3, and that sits nearer the root
-             than the annotations avro's jackson-databind brings, so Maven picks it. That was
-             harmless while avro pinned jackson-bom 2.20.0; avro 1.12.2 moved to 2.22.1, whose
-             databind touches `JsonSerializeAs` — added in annotations 2.21 — and every test that
-             reaches `org.apache.avro.SchemaBuilder` died with NoClassDefFoundError.
-
-             Pinned to what avro-parent ${avro.version} pins, the same rule as zstd-jni above, so
-             the annotations and the databind that reads them move as the pair Avro tests.
-             Declared per module rather than here, at depth 1, so it wins wherever the old one
-             arrives from. -->
-        <jackson-annotations.version>2.22</jackson-annotations.version>
+        <!-- The whole Jackson set — core, databind, annotations, dataformat, datatype — is
+             managed by the jackson-bom import in dependencyManagement below, so every module and
+             every shaded bundle resolves one coherent set by construction rather than by
+             declaration order, which is what decided it before and what broke (#1191, #1207;
+             ADR-0150). Pinned to what avro-parent ${avro.version} pins, the same rule as
+             zstd-jni above, so the databind Avro was built against and the annotations it reads
+             move as the pair Avro tests: an avro.version bump moves this property and
+             zstd-jni.version with it. -->
+        <jackson-bom.version>2.22.1</jackson-bom.version>
         <!-- The optional Parquet staging path (#284). `provided` everywhere: a deployment that
              selects StagingFormat.PARQUET places these on its own runtime classpath, guided by the
              docs, so no user pays for a format they did not ask for. -->
@@ -267,6 +259,17 @@ limitations under the License.
 
     <dependencyManagement>
         <dependencies>
+            <!-- First on purpose: when two imported BOMs manage the same artifact the first
+                 import wins, so this stays authoritative for Jackson even if a future libraries
+                 BOM starts managing it — today it manages none. The version is explained on
+                 jackson-bom.version above. -->
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <dependency>
                 <groupId>com.google.cloud</groupId>
                 <artifactId>libraries-bom</artifactId>
@@ -535,7 +538,7 @@ limitations under the License.
                                                  at its original path, so such a class ships
                                                  unrelocated while its base copy has moved -
                                                  measured on the BigQuery bundle (#290),
-                                                 whose jackson-core brings Java 11/17/21/22
+                                                 whose jackson-core brings multi-release
                                                  variants, and caught by the packaging test.
                                                  Nothing under META-INF/versions runs in
                                                  either jar in any case: an uber-jar's

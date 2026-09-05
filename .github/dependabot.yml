@@ -53,12 +53,11 @@ updates:
       # on the property in the root POM. Every update type, because the version
       # should move when avro.version moves and at no other time.
       - dependency-name: com.github.luben:zstd-jni
-      # Same rule again: jackson-annotations is pinned to what avro-parent
-      # ${avro.version} pins, so databind and the annotations it reads stay the
-      # pair Avro tests. Every update type, for the same reason zstd-jni takes
-      # every update type — it moves when avro.version moves and at no other
-      # time. Issue #1191 records why the pin exists at all.
-      - dependency-name: com.fasterxml.jackson.core:jackson-annotations
+      # Same rule again: jackson-bom is pinned to what avro-parent ${avro.version}
+      # pins, so the Jackson set the shaded bundles ship and the tests run on is
+      # the set Avro tests — the reason is on the property in the root POM. Every
+      # update type, as for zstd-jni. ADR-0150 records the decision.
+      - dependency-name: com.fasterxml.jackson:jackson-bom
       # Same rule, different upstream: the BigQuery module hand-assembles the
       # minimum Hadoop test classpath a COMPRESSED Parquet staging file needs,
       # and these two are pinned to what hadoop-project ${hadoop.version} pins so
