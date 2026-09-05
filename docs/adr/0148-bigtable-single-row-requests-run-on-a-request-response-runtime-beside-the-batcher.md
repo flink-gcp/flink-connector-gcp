@@ -285,7 +285,7 @@ own the capacity and timeout relationship until the wiring helper arrives, and a
 ## Revision: conditional entry points (2026-09-05)
 
 [ADR-0152](0152-conditional-writes-own-their-request-and-outcome.md) adds the conditional public models, sink, async helper and SQL insert-if-absent mode.
-The initial `sink.write-mode` option belongs to #1179; #1177 extends it with keep-latest later.
+The initial `sink.write-mode` option belongs to #1179; ADR-0153 extends it with keep-latest on the ordinary batcher.
 The runtime counts completion before invoking the original request's success hook, and the async result mapper receives the original resolved destination and request.
 The helper supplies operator capacity and validates its outer timeout.
 `FailedRequest` still has no request-payload wire encoding; the new model's Java job-graph serialization is not a versioned dead-letter format.

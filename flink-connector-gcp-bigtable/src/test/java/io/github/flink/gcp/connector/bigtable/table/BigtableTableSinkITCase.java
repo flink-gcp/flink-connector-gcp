@@ -33,6 +33,8 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.ZoneId;
 import java.util.Arrays;
@@ -207,6 +209,27 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
     }
 
     @Test
+    void keepLatestReplacesVersionsWhilePreservingAnOmittedFamily() throws Exception {
+        TableDestination destination = createTable("sql-keep-latest", "cf1", "cf2");
+        TableEnvironment env = streamingTableEnvironment();
+        env.executeSql(ddl(sinkOptions("sql-keep-latest")));
+        env.executeSql("INSERT INTO bt VALUES ('r1', ROW('old', CAST(1 AS BIGINT)), ROW(true))")
+                .await();
+        List<RowCell> untouched = readRows(destination).get(0).getCells("cf2", "flag");
+        env.executeSql("ALTER TABLE bt SET ('sink.write-mode'='keep-latest')");
+        for (int replay = 0; replay < 2; replay++) {
+            env.executeSql(
+                            "INSERT INTO bt (rowkey, cf1) VALUES ('r1', ROW(CAST(NULL AS STRING), CAST(2 AS BIGINT)))")
+                    .await();
+            Row result = readRows(destination).get(0);
+            assertThat(cell(result, "cf1", "name")).isEqualTo("null");
+            assertThat(cellBytes(result, "cf1", "amount"))
+                    .isEqualTo(new byte[] {0, 0, 0, 0, 0, 0, 0, 2});
+            assertThat(result.getCells("cf2", "flag")).isEqualTo(untouched);
+        }
+    }
+
+    @Test
     void aRowWhoseFamiliesAreAllNullIsRefusedRatherThanSentEmpty() {
         // A partial column list is the ordinary way to reach it. Left to the service this is an
         // INVALID_ARGUMENT naming neither the row nor the reason.
@@ -218,16 +241,19 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
                 .hasStackTraceContaining("Every column family of the row with key 'r1' is null");
     }
 
-    @Test
-    void aChangelogDeleteRemovesTheWholeRow() throws Exception {
-        TableDestination destination = createTable("sql-delete", "cf1", "cf2");
+    @ParameterizedTest
+    @ValueSource(strings = {"upsert", "keep-latest"})
+    void aChangelogUpdateReplacesCellsAndDeleteRemovesTheWholeRow(String writeMode)
+            throws Exception {
+        String tableId = "sql-delete-" + writeMode;
+        TableDestination destination = createTable(tableId, "cf1", "cf2");
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         // The shared sink DDL selects the insert-only compatibility mode so the plain INSERT jobs
         // above remain portable. This updating query is deliberately unaffected by that setting:
         // its declared key maps onto the sink PRIMARY KEY, so it plans on 2.3 without a clause or
         // materializer as well.
-        tEnv.executeSql(ddl(sinkOptions("sql-delete")));
+        tEnv.executeSql(ddl(sinkOptions(tableId, "sink.write-mode", writeMode)));
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
                                 + " ('keep', ROW('alice', CAST(7 AS BIGINT)), ROW(true)),"
@@ -250,6 +276,8 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         DataStream<org.apache.flink.types.Row> changelog =
                 env.fromData(
                         Arrays.asList(
+                                org.apache.flink.types.Row.ofKind(
+                                        RowKind.UPDATE_AFTER, "keep", "carol", 11L, false),
                                 org.apache.flink.types.Row.ofKind(
                                         RowKind.DELETE, "gone", "bob", 9L, false)),
                         rowType);
@@ -284,6 +312,14 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         assertThat(readRows(destination))
                 .extracting(row -> row.getKey().toStringUtf8())
                 .containsExactly("keep");
+        Row result = readRows(destination).get(0);
+        assertThat(result.getCells("cf1", "name").get(0).getValue().toStringUtf8())
+                .isEqualTo("carol");
+        if (writeMode.equals("keep-latest")) {
+            assertThat(result.getCells("cf1", "name")).hasSize(1);
+            assertThat(result.getCells("cf1", "amount")).hasSize(1);
+            assertThat(result.getCells("cf2", "flag")).hasSize(1);
+        }
     }
 
     @Test

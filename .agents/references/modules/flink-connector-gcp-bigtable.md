@@ -99,9 +99,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   each `counter(...)` call: `check-metric-docs` reads the registrations and cannot see through a
   helper that takes the name as a parameter.
 - `FailedRequest.getPayloadBytes()` remains `null`: the conditional model's job-graph encoding
-  is not a dead-letter format (ADR-0152). `sink.write-mode` selects ordinary `upsert` or conditional
-  `insert-if-absent`; #1177 and #1226 extend this same option. Keep request options mapped through
-  `RequestOptionsMapper` and guard explicit mode-incompatible options with `ConditionalOptionChecks`.
+  is not a dead-letter format (ADR-0152). `sink.write-mode` selects ordinary `upsert`, atomic cell
+  replacement through `keep-latest` (ADR-0153), or conditional `insert-if-absent`; #1226 extends this
+  same option. Keep request options mapped through `RequestOptionsMapper` and guard explicit
+  mode-incompatible options with `ConditionalOptionChecks`.
 - Conditional SQL keeps the ordinary family/qualifier schema and codec. Its unset RPC predicate
   tests the entire stored row, including undeclared families. Keep INSERT-only changelog handling,
   preserve repeated inputs through the planner and retain ADR-0149's per-cell writer clock.
@@ -598,17 +599,24 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   millisecond-aligned, through the transient `CellClock` seam (ADR-0149) — not the client
   library's. This connector stamps only mutations it builds: a DataStream serializer that builds
   its own `RowMutationEntry` owns its timestamps and still gets the client's clock.
-  The client reuses one mutation for its own retry, but Flink replay serializes again, so replay
-  idempotence requires a stable explicit record timestamp. Bigtable validates millisecond
+  The client reuses one mutation for its own retry, but Flink replay serializes again, so ordinary
+  upsert replay idempotence requires a stable explicit record timestamp; keep-latest has ADR-0153's
+  replacement semantics. Bigtable validates millisecond
   granularity by default; `sink.cell-timestamp.truncate-to-millis=true` explicitly opts into
   dropping the final three microsecond digits. **#471 measured but did not convert the
   observation into a guarantee** (ADR-0093): 86,196 same-row pairs, mirrored across request sizes
   2 through 19,998, produced zero reversals on real Bigtable. The sink retains the bulk path and
   the caveat; a permanent test asserting submission order would contradict the service contract.
+- **Keep-latest replaces only physically written cells** (ADR-0153): append an unbounded column
+  delete immediately before each SetCell in one row entry. Keep null scalar encoding, skip null
+  families, preserve undeclared cells, and retain the ordinary DELETE, timestamp, changelog and
+  writer-option paths. GC remains independent. Replay bounds visible versions but can change the
+  timestamp and winning value; do not claim ordering or exactly-once effects.
 - **Table creation takes its families from the DDL and its rule from two keys**, unioned when both
   are set, and **at least one is required** under `create-if-needed` — stricter than the DataStream
-  API, because an at-least-once upsert sink writes another version on every replay. Defaulting the
-  rule instead was declined: that would be this layer inventing a default rather than mapping one.
+  API, because ordinary upsert can accumulate versions across replay. Keep that requirement
+  independent of the write mode (ADR-0153). Defaulting the rule instead was declined: that would be
+  this layer inventing a default rather than mapping one.
 - **The table source serves projection as a family filter** (`docs/adr/0092`): retained families
   become an interleave of `exactMatch`, a projection retaining **no** family becomes the keys-only
   chain (`cellsPerRow(1)` + `value().strip()`) — an empty interleave would drop every row, not

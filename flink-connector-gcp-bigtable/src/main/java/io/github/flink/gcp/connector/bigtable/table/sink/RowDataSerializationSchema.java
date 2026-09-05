@@ -53,6 +53,9 @@ import java.util.List;
  * DataStream serializer that builds its own {@code RowMutationEntry} owns its timestamps, and
  * nothing here rewrites one a user handed over.
  *
+ * <p>Keep-latest deletes all versions of each written cell immediately before setting it, in the
+ * same entry. Null families and undeclared qualifiers remain untouched.
+ *
  * <p>A delete removes the entire row, not the declared qualifiers one by one. The row key is the
  * primary key of an upsert sink, so "this key is gone" is what a {@code -D} means here; deleting
  * only the declared cells would leave a row behind made of whatever else was in it.
@@ -84,6 +87,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     private final Family[] families;
     private final int timestampMetadataIndex;
     private final boolean truncateCellTimestampToMillis;
+    private final boolean keepLatest;
 
     /**
      * Transient and restored in {@link #readObject}, not because it holds lambdas but because it is
@@ -111,7 +115,23 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             String nullStringLiteral,
             WritableMetadata[] metadata,
             boolean truncateCellTimestampToMillis) {
-        this(schema, nullStringLiteral, metadata, truncateCellTimestampToMillis, new WallClock());
+        this(schema, nullStringLiteral, metadata, truncateCellTimestampToMillis, false);
+    }
+
+    /** Creates a schema that optionally replaces all versions of each written cell. */
+    RowDataSerializationSchema(
+            BigtableTableSchema schema,
+            String nullStringLiteral,
+            WritableMetadata[] metadata,
+            boolean truncateCellTimestampToMillis,
+            boolean keepLatest) {
+        this(
+                schema,
+                nullStringLiteral,
+                metadata,
+                truncateCellTimestampToMillis,
+                keepLatest,
+                new WallClock());
     }
 
     /**
@@ -129,8 +149,10 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             String nullStringLiteral,
             WritableMetadata[] metadata,
             boolean truncateCellTimestampToMillis,
+            boolean keepLatest,
             CellClock clock) {
         this.clock = clock;
+        this.keepLatest = keepLatest;
         this.rowKeyIndex = schema.getRowKeyIndex();
         this.rowKeyName = schema.getRowKeyName();
         this.timestampMetadataIndex =
@@ -212,7 +234,15 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         if (kind == RowKind.DELETE) {
             return entry.deleteRow();
         }
-        writeCells(element, key, entry::setCell);
+        writeCells(
+                element,
+                key,
+                (family, qualifier, timestamp, value) -> {
+                    if (keepLatest) {
+                        entry.deleteCells(family, qualifier);
+                    }
+                    entry.setCell(family, qualifier, timestamp, value);
+                });
         return entry;
     }
 

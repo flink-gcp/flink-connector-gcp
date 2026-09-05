@@ -211,9 +211,9 @@ public class BigtableDynamicTableFactory
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .writerOptions(
-                        writeMode == WriteMode.UPSERT
-                                ? WriterOptionsMapper.map(config)
-                                : BigtableWriterOptions.builder().build())
+                        writeMode == WriteMode.INSERT_IF_ABSENT
+                                ? BigtableWriterOptions.builder().build()
+                                : WriterOptionsMapper.map(config))
                 .writeMode(writeMode)
                 .requestOptions(
                         writeMode == WriteMode.INSERT_IF_ABSENT

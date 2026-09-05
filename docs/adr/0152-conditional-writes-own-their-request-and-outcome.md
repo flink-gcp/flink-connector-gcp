@@ -72,7 +72,7 @@ The latter keeps the ordinary family/qualifier schema and accepts only INSERT in
 An unset RPC predicate tests for any cell in the stored row, including undeclared families; the true branch is empty and the false branch writes the input cells.
 Batching, byte flow-control, automatic creation/repair and insert-only compatibility options are rejected when explicitly supplied to this mode.
 Conditional options are rejected under ordinary upsert.
-Issue #1177 later adds keep-latest to this same option, and #1226 adds DDL-defined commands with named predicates and numbered WITH options.
+[ADR-0153](0153-the-table-keep-latest-mode-replaces-only-written-cells.md) adds keep-latest to this same option; #1226 owns DDL-defined commands with named predicates and numbered WITH options.
 JSON and result-emitting SQL functions are outside this change.
 
 Conditional writes require single-cluster routing with single-row transactions enabled.
