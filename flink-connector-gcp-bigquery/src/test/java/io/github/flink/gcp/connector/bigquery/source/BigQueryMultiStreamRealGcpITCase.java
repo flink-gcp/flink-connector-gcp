@@ -39,6 +39,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -118,9 +119,12 @@ class BigQueryMultiStreamRealGcpITCase {
         CHECKPOINTED_AFTER_RECORDS.set(false);
         SUBTASKS_THAT_READ.clear();
 
-        // A minute back, so the instant is inside the time-travel window and safely behind any
-        // write in flight against the public table.
-        Instant snapshot = Instant.now().minus(Duration.ofMinutes(1));
+        // A minute back keeps the snapshot inside the time-travel window and safely behind writes
+        // in flight against the public table. BigQuery's timestamp string conversion accepts at
+        // most six fractional digits. Truncate once so the count query and Storage Read share
+        // the same instant.
+        Instant snapshot =
+                Instant.now().minus(Duration.ofMinutes(1)).truncatedTo(ChronoUnit.MICROS);
         long expected = rowCountAsOf(snapshot);
 
         Configuration configuration = new Configuration();
