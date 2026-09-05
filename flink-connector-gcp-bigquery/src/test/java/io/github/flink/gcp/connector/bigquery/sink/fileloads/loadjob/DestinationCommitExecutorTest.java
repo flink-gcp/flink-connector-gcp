@@ -513,7 +513,7 @@ class DestinationCommitExecutorTest {
                                         plans(2),
                                         (plan, worker, stop) -> {
                                             bothStarted.countDown();
-                                            awaitIgnoringInterrupt(bothStarted);
+                                            awaitRestoringInterrupt(bothStarted);
                                             if (plan.destination.getTable().equals("t0")) {
                                                 throw new OutOfMemoryError("fatal-failure");
                                             }
@@ -571,7 +571,7 @@ class DestinationCommitExecutorTest {
                                         plans(2),
                                         (plan, worker, stop) -> {
                                             bothStarted.countDown();
-                                            awaitIgnoringInterrupt(bothStarted);
+                                            awaitRestoringInterrupt(bothStarted);
                                             if (plan.destination.getTable().equals("t0")) {
                                                 throw primary;
                                             }
@@ -628,7 +628,7 @@ class DestinationCommitExecutorTest {
                                         plans(2),
                                         (plan, worker, stop) -> {
                                             bothStarted.countDown();
-                                            awaitIgnoringInterrupt(bothStarted);
+                                            awaitRestoringInterrupt(bothStarted);
                                             awaitIgnoringInterrupt(releaseWorkers);
                                             if (plan.destination.getTable().equals("t0")) {
                                                 throw late;
@@ -733,7 +733,7 @@ class DestinationCommitExecutorTest {
                                         plans(2),
                                         (plan, worker, stop) -> {
                                             bothStarted.countDown();
-                                            awaitIgnoringInterrupt(bothStarted);
+                                            awaitRestoringInterrupt(bothStarted);
                                             if (plan.destination.getTable().equals("t0")) {
                                                 throw new OutOfMemoryError("fatal-failure");
                                             }
@@ -1799,6 +1799,27 @@ class DestinationCommitExecutorTest {
         }
     }
 
+    /**
+     * Waits for a latch that only sequences the test's workers. An interrupt pending on entry or
+     * arriving during the wait is left pending, so the worker's next blocking call observes it the
+     * way a compliant worker would. Use {@link #awaitIgnoringInterrupt(CountDownLatch)} only where
+     * the test deliberately models a worker that ignores its interrupt.
+     */
+    private static void awaitRestoringInterrupt(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                latch.await();
+                break;
+            } catch (InterruptedException ignored) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static void awaitIgnoringInterrupt(CountDownLatch latch) {
         while (true) {
             try {
@@ -1940,7 +1961,7 @@ class DestinationCommitExecutorTest {
         @Override
         public void deleteTable(TableDestination table) {
             cleanupsStarted.countDown();
-            awaitIgnoringInterrupt(cleanupsStarted);
+            awaitRestoringInterrupt(cleanupsStarted);
             if (table.getTable().equals("tmp0")) {
                 throw new OutOfMemoryError("scripted cleanup fatal");
             }
@@ -1992,7 +2013,7 @@ class DestinationCommitExecutorTest {
         @Override
         public void deleteTable(TableDestination table) {
             cleanupsStarted.countDown();
-            awaitIgnoringInterrupt(cleanupsStarted);
+            awaitRestoringInterrupt(cleanupsStarted);
             if (table.getTable().equals("tmp0")) {
                 awaitIgnoringInterrupt(releaseFirstFailure);
                 throw first;
