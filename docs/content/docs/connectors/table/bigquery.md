@@ -271,8 +271,7 @@ The supported field-literal comparisons are:
 | BigQuery `STRING` | `=` |
 
 These types also support `IS NULL` and `IS NOT NULL`.
-An `AND` pushes every translatable necessary child, while an `OR` is pushed only when every branch
-translates.
+An `AND` can push a subset of its translatable necessary children, while an `OR` requires a necessary condition from every branch.
 String inequality and ordered string comparisons are not translated.
 Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
 rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
@@ -311,8 +310,16 @@ When both it and a translated SQL predicate are present, the connector parenthes
 separately and combines them with `AND`.
 The connector admits each generated restriction only while the combined UTF-8 expression remains
 within the Storage Read API's 1 MB limit.
-A predicate that would cross the limit remains with Flink without discarding other generated
-restrictions that fit.
+Within an `AND`, the connector visits children in their original order, skips unsupported or oversized children, and still tries later children against the remaining budget.
+An `OR` contributes only if every branch supplies a necessary condition and their combination fits; an `AND` inside a branch may contribute only its fitting children.
+If an `OR` fails, its tentative conditions consume no budget for later filters.
+The connector does not retry an earlier branch with fewer conditions to make a later branch fit.
+Every original predicate remains with Flink for residual evaluation.
+
+The connector selects the restriction before rendering its large literals, escaped identifiers, or compound text.
+It counts UTF-8 bytes, escaping, operators, separators, and wrappers before allocating the final generated-text buffer.
+The generated-text buffer uses space proportional to the admitted byte budget.
+This does not impose a 1 MB heap limit on Flink's input expressions, traversal metadata, scalar conversion, or residual-filter lists.
 For `scan.query`, the configured query text is never rewritten; both explicit and generated
 restrictions apply only when Storage Read reads the materialized result table.
 

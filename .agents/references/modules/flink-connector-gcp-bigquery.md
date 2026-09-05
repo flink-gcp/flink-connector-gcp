@@ -329,8 +329,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   A generated restriction is admitted only while the explicit-plus-generated UTF-8 text remains
   within Storage Read's 1 MB limit; a predicate that would cross the limit remains residual without
   discarding other generated restrictions that fit.
-  `AND` may contribute safe necessary children, `OR` requires every branch, and every accepted
-  filter also remains a Flink residual.
+  Visit `AND` children in their original order, skipping unsupported or oversized children and
+  trying later children with the remaining budget. `OR` requires every branch, permits partial
+  `AND` branches, and releases all tentative budget if it fails; do not rebalance earlier branches.
+  Keep every original filter as a Flink residual. Select measured fragments before rendering large
+  literals, escaped identifiers, or compound text into one final buffer (ADR-0100). The buffer
+  bound is not a heap limit on input expressions, traversal metadata, or scalar conversion.
   `scan.row-restriction` is the raw BigQuery expression surface and is combined with generated SQL
   filters using separately parenthesized `AND` operands.
   A query source never rewrites its query; the restriction applies to its materialized result read.

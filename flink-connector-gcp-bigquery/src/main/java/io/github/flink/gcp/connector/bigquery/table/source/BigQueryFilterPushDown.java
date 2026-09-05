@@ -34,7 +34,6 @@ import org.apache.flink.table.types.logical.TimestampType;
 import javax.annotation.Nullable;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -47,6 +46,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /** Translates a conservative subset of Flink SQL predicates into BigQuery row restrictions. */
 @Internal
@@ -68,61 +68,64 @@ final class BigQueryFilterPushDown {
             List<ResolvedExpression> filters,
             @Nullable String explicitRowRestriction) {
         List<ResolvedExpression> accepted = new ArrayList<>();
-        List<String> restrictions = new ArrayList<>();
-        long generatedRestrictionBytes = 0;
+        List<Sql> restrictions = new ArrayList<>();
+        long generatedRestrictionBytes = 2;
         long combinedWrapperBytes =
                 explicitRowRestriction == null
                         ? 0
-                        : combinedRowRestriction(explicitRowRestriction, "")
-                                .getBytes(StandardCharsets.UTF_8)
-                                .length;
+                        : utf8Bytes(explicitRowRestriction, false)
+                                + combinedRowRestriction("", "").length();
         for (ResolvedExpression filter : filters) {
-            Optional<String> translated = translate(physicalRowType, filter);
+            int separatorBytes = restrictions.isEmpty() ? 0 : " AND ".length();
+            long remaining =
+                    MAX_ROW_RESTRICTION_BYTES
+                            - combinedWrapperBytes
+                            - generatedRestrictionBytes
+                            - separatorBytes;
+            Optional<Sql> translated = translate(physicalRowType, filter, remaining);
             if (translated.isPresent()) {
-                long translatedBytes = translated.get().getBytes(StandardCharsets.UTF_8).length;
-                long candidateRestrictionBytes =
-                        restrictions.isEmpty()
-                                ? translatedBytes + 2
-                                : generatedRestrictionBytes + translatedBytes + " AND ".length();
-                if (combinedWrapperBytes + candidateRestrictionBytes <= MAX_ROW_RESTRICTION_BYTES) {
-                    accepted.add(filter);
-                    restrictions.add(translated.get());
-                    generatedRestrictionBytes = candidateRestrictionBytes;
-                }
+                accepted.add(filter);
+                restrictions.add(translated.get());
+                generatedRestrictionBytes += separatorBytes + translated.get().bytes;
             }
         }
-        @Nullable String restriction = restrictions.isEmpty() ? null : join("AND", restrictions);
+        @Nullable
+        String restriction = restrictions.isEmpty() ? null : join("AND", restrictions).render();
         // A generated restriction must be a necessary condition for the Flink predicate: a remote
         // false negative cannot be recovered after the read. Flink evaluates every original
         // predicate again so a row that BigQuery admits but Flink rejects cannot reach the result.
         return new State(accepted, filters, restriction);
     }
 
-    private static Optional<String> translate(
-            RowType physicalRowType, ResolvedExpression expression) {
-        if (!(expression instanceof CallExpression)) {
+    private static Optional<Sql> translate(
+            RowType physicalRowType, ResolvedExpression expression, long remaining) {
+        if (remaining <= 0 || !(expression instanceof CallExpression)) {
             return Optional.empty();
         }
         CallExpression call = (CallExpression) expression;
         FunctionDefinition function = call.getFunctionDefinition();
         List<ResolvedExpression> children = call.getResolvedChildren();
-        if (function.equals(BuiltInFunctionDefinitions.AND)) {
-            List<String> translated = new ArrayList<>();
+        boolean conjunction = function.equals(BuiltInFunctionDefinitions.AND);
+        if (conjunction || function.equals(BuiltInFunctionDefinitions.OR)) {
+            String operator = conjunction ? "AND" : "OR";
+            List<Sql> translated = new ArrayList<>();
+            long used = 2;
             for (ResolvedExpression child : children) {
-                translate(physicalRowType, child).ifPresent(translated::add);
-            }
-            return translated.isEmpty() ? Optional.empty() : Optional.of(join("AND", translated));
-        }
-        if (function.equals(BuiltInFunctionDefinitions.OR)) {
-            List<String> translated = new ArrayList<>();
-            for (ResolvedExpression child : children) {
-                Optional<String> branch = translate(physicalRowType, child);
+                int separatorBytes = translated.isEmpty() ? 0 : operator.length() + 2;
+                Optional<Sql> branch =
+                        translate(physicalRowType, child, remaining - used - separatorBytes);
                 if (!branch.isPresent()) {
-                    return Optional.empty();
+                    if (!conjunction) {
+                        return Optional.empty();
+                    }
+                    continue;
                 }
                 translated.add(branch.get());
+                used += separatorBytes + branch.get().bytes;
             }
-            return translated.isEmpty() ? Optional.empty() : Optional.of(join("OR", translated));
+            return translated.isEmpty()
+                    ? Optional.empty()
+                    : Optional.of(join(operator, translated));
         }
         if (function.equals(BuiltInFunctionDefinitions.IS_NULL)
                 || function.equals(BuiltInFunctionDefinitions.IS_NOT_NULL)) {
@@ -134,12 +137,16 @@ final class BigQueryFilterPushDown {
                     .filter(value -> supportsNullCheck(value.type))
                     .map(
                             value ->
-                                    "("
-                                            + value.name
-                                            + (function.equals(BuiltInFunctionDefinitions.IS_NULL)
-                                                    ? " IS NULL"
-                                                    : " IS NOT NULL")
-                                            + ")");
+                                    concat(
+                                            text("("),
+                                            value.name,
+                                            text(
+                                                    function.equals(
+                                                                    BuiltInFunctionDefinitions
+                                                                            .IS_NULL)
+                                                            ? " IS NULL)"
+                                                            : " IS NOT NULL)")))
+                    .filter(value -> value.bytes <= remaining);
         }
 
         Comparison comparison = Comparison.of(function);
@@ -169,7 +176,8 @@ final class BigQueryFilterPushDown {
         if (!resolved.isPresent()) {
             return Optional.empty();
         }
-        return comparison(resolved.get(), literal, normalized);
+        return comparison(resolved.get(), literal, normalized, remaining)
+                .filter(value -> value.bytes <= remaining);
     }
 
     private static Optional<Field> field(RowType physicalRowType, FieldReferenceExpression field) {
@@ -183,8 +191,8 @@ final class BigQueryFilterPushDown {
                         physicalRowType.getTypeAt(index)));
     }
 
-    private static Optional<String> comparison(
-            Field field, ValueLiteralExpression literal, Comparison comparison) {
+    private static Optional<Sql> comparison(
+            Field field, ValueLiteralExpression literal, Comparison comparison, long remaining) {
         LogicalType type = field.type;
         switch (type.getTypeRoot()) {
             case TINYINT:
@@ -205,7 +213,7 @@ final class BigQueryFilterPushDown {
                     return Optional.empty();
                 }
                 return literal.getValueAs(String.class)
-                        .flatMap(BigQueryFilterPushDown::stringLiteral)
+                        .flatMap(value -> stringLiteral(value, remaining))
                         .map(value -> binary(field.name, comparison, value));
             case DECIMAL:
                 return decimalComparison(field, literal, comparison);
@@ -214,7 +222,7 @@ final class BigQueryFilterPushDown {
                 // Only direct field/literal expressions reach here. A remaining cast may change
                 // the bytes and is rejected by translate; the converter itself preserves length.
                 return literal.getValueAs(byte[].class)
-                        .flatMap(BigQueryFilterPushDown::bytesLiteral)
+                        .flatMap(value -> bytesLiteral(value, remaining))
                         .map(value -> binary(field.name, comparison, value));
             case FLOAT:
                 return floatComparison(field, literal, comparison);
@@ -307,18 +315,23 @@ final class BigQueryFilterPushDown {
         }
     }
 
-    private static Optional<String> bytesLiteral(byte[] value) {
+    private static Optional<Sql> bytesLiteral(byte[] value, long remaining) {
         long size = 4L * value.length + 3;
-        if (size > MAX_ROW_RESTRICTION_BYTES) {
+        if (size > remaining) {
             return Optional.empty();
         }
-        StringBuilder escaped = new StringBuilder((int) size).append("b'");
-        for (byte element : value) {
-            escaped.append("\\x")
-                    .append(Character.forDigit((element & 0xff) >>> 4, 16))
-                    .append(Character.forDigit(element & 0xf, 16));
-        }
-        return Optional.of(escaped.append('\'').toString());
+        return Optional.of(
+                new Sql(
+                        size,
+                        escaped -> {
+                            escaped.append("b'");
+                            for (byte element : value) {
+                                escaped.append("\\x")
+                                        .append(Character.forDigit((element & 0xff) >>> 4, 16))
+                                        .append(Character.forDigit(element & 0xf, 16));
+                            }
+                            escaped.append('\'');
+                        }));
     }
 
     private static long bucketTailNanos(int precision) {
@@ -345,8 +358,8 @@ final class BigQueryFilterPushDown {
         return "TIMESTAMP '" + TIMESTAMP_LITERAL.format(value) + "Z'";
     }
 
-    private static String temporalComparison(
-            String field, Comparison comparison, String lower, String upper) {
+    private static Sql temporalComparison(
+            Sql field, Comparison comparison, String lower, String upper) {
         // The converter truncates fractional seconds. Every source microsecond from lower to
         // upper therefore becomes the same Flink value. An inclusive upper bound stays within
         // that second, including at the end of the BigQuery date range or the TIME day.
@@ -355,7 +368,7 @@ final class BigQueryFilterPushDown {
         }
         switch (comparison) {
             case EQUALS:
-                List<String> bounds = new ArrayList<>();
+                List<Sql> bounds = new ArrayList<>();
                 bounds.add(binary(field, Comparison.GREATER_THAN_OR_EQUAL, lower));
                 bounds.add(binary(field, Comparison.LESS_THAN_OR_EQUAL, upper));
                 return join("AND", bounds);
@@ -394,7 +407,7 @@ final class BigQueryFilterPushDown {
         }
     }
 
-    private static Optional<String> decimalComparison(
+    private static Optional<Sql> decimalComparison(
             Field field, ValueLiteralExpression literal, Comparison comparison) {
         DecimalType type = (DecimalType) field.type;
         Optional<BigDecimal> converted = literal.getValueAs(BigDecimal.class);
@@ -413,7 +426,7 @@ final class BigQueryFilterPushDown {
         // extra rows.
         switch (comparison) {
             case EQUALS:
-                List<String> bounds = new ArrayList<>();
+                List<Sql> bounds = new ArrayList<>();
                 bounds.add(
                         binary(
                                 field.name,
@@ -443,7 +456,7 @@ final class BigQueryFilterPushDown {
         }
     }
 
-    private static Optional<String> floatComparison(
+    private static Optional<Sql> floatComparison(
             Field field, ValueLiteralExpression literal, Comparison comparison) {
         Optional<Float> converted = literal.getValueAs(Float.class);
         if (!converted.isPresent() || !Float.isFinite(converted.get())) {
@@ -456,7 +469,7 @@ final class BigQueryFilterPushDown {
         // float values form conservative bounds around every raw double that can narrow to value.
         switch (comparison) {
             case EQUALS:
-                List<String> bounds = new ArrayList<>();
+                List<Sql> bounds = new ArrayList<>();
                 if (Double.isFinite(previous)) {
                     bounds.add(
                             binary(field.name, Comparison.GREATER_THAN, Double.toString(previous)));
@@ -495,19 +508,28 @@ final class BigQueryFilterPushDown {
         return value.filter(Double::isFinite);
     }
 
-    private static String binary(String field, Comparison comparison, String literal) {
-        return "(" + field + " " + comparison.sql + " " + literal + ")";
+    private static Sql binary(Sql field, Comparison comparison, String literal) {
+        return binary(field, comparison, text(literal));
+    }
+
+    private static Sql binary(Sql field, Comparison comparison, Sql literal) {
+        return concat(text("("), field, text(" " + comparison.sql + " "), literal, text(")"));
     }
 
     private static String bignumeric(BigDecimal value) {
         return "BIGNUMERIC '" + value.toPlainString() + "'";
     }
 
-    private static Optional<String> stringLiteral(String value) {
-        if (!stringLiteralFitsSizeLimit(value)) {
+    private static Optional<Sql> stringLiteral(String value, long remaining) {
+        long size = stringLiteralBytes(value, remaining);
+        if (size > remaining) {
             return Optional.empty();
         }
-        StringBuilder escaped = new StringBuilder(value.length() + 2).append('\'');
+        return Optional.of(new Sql(size, escaped -> appendStringLiteral(escaped, value)));
+    }
+
+    private static void appendStringLiteral(StringBuilder escaped, String value) {
+        escaped.append('\'');
         for (int i = 0; i < value.length(); i++) {
             char character = value.charAt(i);
             if (Character.isHighSurrogate(character)) {
@@ -544,23 +566,23 @@ final class BigQueryFilterPushDown {
                     }
             }
         }
-        return Optional.of(escaped.append('\'').toString());
+        escaped.append('\'');
     }
 
-    private static boolean stringLiteralFitsSizeLimit(String value) {
-        if (value.length() > MAX_ROW_RESTRICTION_BYTES - 2) {
-            return false;
+    private static long stringLiteralBytes(String value, long remaining) {
+        if (value.length() > remaining - 2) {
+            return remaining + 1;
         }
-        int bytes = 2;
+        long bytes = 2;
         for (int i = 0; i < value.length(); i++) {
             char character = value.charAt(i);
             if (Character.isHighSurrogate(character)) {
                 if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(++i))) {
-                    return false;
+                    return remaining + 1;
                 }
                 bytes += 4;
             } else if (Character.isLowSurrogate(character)) {
-                return false;
+                return remaining + 1;
             } else if (character == '\''
                     || character == '\\'
                     || character == '\b'
@@ -578,20 +600,18 @@ final class BigQueryFilterPushDown {
             } else {
                 bytes += 3;
             }
-            if (bytes > MAX_ROW_RESTRICTION_BYTES) {
-                return false;
+            if (bytes > remaining) {
+                return remaining + 1;
             }
         }
-        return true;
+        return bytes;
     }
 
     private static void appendUnicodeEscape(StringBuilder escaped, char character) {
-        String hex = Integer.toHexString(character);
         escaped.append("\\u");
-        for (int i = hex.length(); i < 4; i++) {
-            escaped.append('0');
+        for (int shift = 12; shift >= 0; shift -= 4) {
+            escaped.append(Character.forDigit((character >>> shift) & 0xf, 16));
         }
-        escaped.append(hex);
     }
 
     private static boolean isBigQueryDatetime(LocalDateTime value) {
@@ -611,12 +631,109 @@ final class BigQueryFilterPushDown {
         }
     }
 
-    private static String join(String operator, List<String> expressions) {
-        return "(" + String.join(" " + operator + " ", expressions) + ")";
+    private static Sql join(String operator, List<Sql> expressions) {
+        String separator = " " + operator + " ";
+        long bytes = 2L + (long) separator.length() * (expressions.size() - 1);
+        for (Sql expression : expressions) {
+            bytes += expression.bytes;
+        }
+        return new Sql(
+                bytes,
+                output -> {
+                    output.append('(');
+                    for (int i = 0; i < expressions.size(); i++) {
+                        if (i > 0) {
+                            output.append(separator);
+                        }
+                        expressions.get(i).appendTo(output);
+                    }
+                    output.append(')');
+                });
     }
 
-    private static String quoteIdentifier(String identifier) {
-        return "`" + identifier.replace("\\", "\\\\").replace("`", "\\`") + "`";
+    private static Sql quoteIdentifier(String identifier) {
+        return new Sql(
+                2 + utf8Bytes(identifier, true),
+                output -> {
+                    output.append('`');
+                    for (int i = 0; i < identifier.length(); i++) {
+                        char character = identifier.charAt(i);
+                        if (character == '\\' || character == '`') {
+                            output.append('\\');
+                        }
+                        output.append(character);
+                    }
+                    output.append('`');
+                });
+    }
+
+    // Count the UTF-8 representation without allocating a byte array. Like String.getBytes,
+    // unpaired surrogates in raw SQL/identifiers encode as one replacement byte; string literals
+    // instead reject them in stringLiteralBytes. An over-limit count need not be exact.
+    private static long utf8Bytes(String value, boolean identifier) {
+        long bytes = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char character = value.charAt(i);
+            if (identifier && (character == '\\' || character == '`')) {
+                bytes += 2;
+            } else if (character < 0x80) {
+                bytes++;
+            } else if (character < 0x800) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(character)
+                    && i + 1 < value.length()
+                    && Character.isLowSurrogate(value.charAt(i + 1))) {
+                bytes += 4;
+                i++;
+            } else if (Character.isSurrogate(character)) {
+                bytes++;
+            } else {
+                bytes += 3;
+            }
+            if (bytes > MAX_ROW_RESTRICTION_BYTES) {
+                return bytes;
+            }
+        }
+        return bytes;
+    }
+
+    private static Sql text(String value) {
+        return new Sql(utf8Bytes(value, false), output -> output.append(value));
+    }
+
+    private static Sql concat(Sql... parts) {
+        long bytes = 0;
+        for (Sql part : parts) {
+            bytes += part.bytes;
+        }
+        return new Sql(
+                bytes,
+                output -> {
+                    for (Sql part : parts) {
+                        part.appendTo(output);
+                    }
+                });
+    }
+
+    /** A measured SQL fragment whose potentially large text is emitted only after selection. */
+    private static final class Sql {
+        private final long bytes;
+        private final Consumer<StringBuilder> writer;
+
+        private Sql(long bytes, Consumer<StringBuilder> writer) {
+            this.bytes = bytes;
+            this.writer = writer;
+        }
+
+        private void appendTo(StringBuilder output) {
+            writer.accept(output);
+        }
+
+        private String render() {
+            StringBuilder output = new StringBuilder((int) bytes);
+            appendTo(output);
+            return output.toString();
+        }
     }
 
     static String combinedRowRestriction(
@@ -678,10 +795,10 @@ final class BigQueryFilterPushDown {
     }
 
     private static final class Field {
-        private final String name;
+        private final Sql name;
         private final LogicalType type;
 
-        private Field(String name, LogicalType type) {
+        private Field(Sql name, LogicalType type) {
             this.name = name;
             this.type = type;
         }
