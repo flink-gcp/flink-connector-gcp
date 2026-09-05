@@ -84,7 +84,7 @@ jobs:
 
       # just comes from install-action even though mise is right here, so that
       # every workflow installs it the same way. See the note in verify.yaml.
-      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
 
@@ -109,7 +109,7 @@ jobs:
         with:
           install_args: uv
 
-      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
 

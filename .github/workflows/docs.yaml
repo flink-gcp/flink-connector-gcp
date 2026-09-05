@@ -114,7 +114,7 @@ jobs:
 
       # just comes from install-action even though mise is right above it, so
       # that every workflow installs it the same way. See the note in verify.yaml.
-      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
 
@@ -232,7 +232,7 @@ jobs:
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   # This workflow's own verdict, for the reason verify.yaml's carries one: a
   # failed job already fails the workflow, but a `deploy` that skipped on a run

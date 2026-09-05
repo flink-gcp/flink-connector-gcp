@@ -89,7 +89,7 @@ jobs:
 
       - name: Set up tfaction
         id: setup
-        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
         with:
           action: setup
           github_token: ${{ github.token }}
@@ -102,14 +102,14 @@ jobs:
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
       - name: tofu init
-        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
         with:
           action: terraform-init
           github_token: ${{ github.token }}
 
       - name: tofu apply
         id: apply
-        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
         with:
           action: apply
           github_token: ${{ github.token }}
@@ -139,7 +139,7 @@ jobs:
 
       - name: Create the follow-up pull request
         if: failure() && steps.app-token.outcome == 'success'
-        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
         with:
           action: create-follow-up-pr
           github_token: ${{ steps.app-token.outputs.token }}
