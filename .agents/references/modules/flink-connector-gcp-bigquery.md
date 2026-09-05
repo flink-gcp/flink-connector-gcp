@@ -205,6 +205,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   builds their path from `os.name`/`os.arch`/version and never from the package (the opposite of
   grpc-netty-shaded, whose loader derives its library name from its own package — that argument lives in `.agents/references/modules/flink-connector-gcp-pubsub.md`). A packaging IT computes that path the same way and fails on
   whichever platform it runs on.
+- **Jackson is managed by the root `jackson-bom` import, paired with `avro-parent`'s pin like
+  zstd-jni** (`docs/adr/0150`): the five artifacts the bundle ships and the set the Avro tests run
+  on come from it, never from a version in this pom.
 - **Parquet staging is opt-in and its dependencies are `provided`** (`docs/adr/0072`). Avro is the
   default and stays it: below **256 MiB of load input** Parquet is 3-5x slower — the regime every
   streaming checkpoint sits in — and compressed Parquet cannot be written without a Hadoop runtime
