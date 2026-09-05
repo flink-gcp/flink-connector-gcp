@@ -36,7 +36,7 @@ import javax.annotation.Nullable;
  *
  * <p>The queue itself is never created by the sink and must exist: an auto-created queue would
  * carry Cloud Tasks' default rate limits, silently discarding the pacing that is the reason to use
- * the service, and a deleted queue name cannot be reused for 3 days.
+ * the service. A deleted queue name can also remain temporarily unavailable for reuse.
  *
  * @param <T> type of the records written by the sink
  */
@@ -96,13 +96,15 @@ public class CloudTasksSinkBuilder<T> {
 
     /**
      * Opts into named tasks, deduplicating records by the extracted key. Optional; without it the
-     * sink creates unnamed tasks and a record replayed after a failure calls the endpoint twice.
+     * sink creates unnamed tasks and a record replayed after a failure can create another task.
      *
      * <p>The sink hashes the key with SHA-256 before using it as the task id, and a repeated create
      * for a key Cloud Tasks still remembers counts as success. Naming is off by default because
      * Google documents the duplicate-name lookup as significantly increasing create latency, and
      * because the window in which a key is remembered is bounded — its own documentation gives both
-     * "up to 24 hours" and "~1 hour" for it, so design against the shorter one.
+     * "up to 24 hours" and "~1 hour" for it. Neither estimate establishes a precise minimum
+     * retention period for a correctness deadline. The sink does not verify queue retention or
+     * enforce a bounded recovery protocol.
      *
      * @param taskIdExtractor the deduplication-key extractor
      * @return this builder

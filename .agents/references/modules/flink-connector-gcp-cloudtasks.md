@@ -30,8 +30,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and batching policy stay untouched. `ChannelPoolSettings` is class-level `@BetaApi` in the
   pinned gax — an internal call, tier-irrelevant under `docs/adr/0141`; reread it on a BOM bump.
 - Task naming: unnamed by default; `taskIdExtractor(...)` on the **sink builder**, key hashed
-  SHA-256, `ALREADY_EXISTS` = success; design against the 1 h dedup window (Google's own
-  sources contradict each other). `httpTarget(url)` uses the existing two-stage immutable schema
+  SHA-256, `ALREADY_EXISTS` = success; do not treat the contradictory name-release estimates as a
+  precise minimum retention guarantee (`docs/adr/0104`, Cloud Tasks G0 evidence).
+  `httpTarget(url)` uses the existing two-stage immutable schema
   API. `appEngineTarget(relativeUri)` returns a mutable builder: `withBody(...)` binds the body
   type, optional settings stay on that builder, and `build()` produces the immutable serializer.
   External HTTP bodies go

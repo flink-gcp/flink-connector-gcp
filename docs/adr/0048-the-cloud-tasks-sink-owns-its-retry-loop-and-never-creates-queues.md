@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-07-25 ([#23] design, [#24] implementation via PR
   [#107](https://github.com/flink-gcp/flink-connector-gcp/pull/107)); revised 2026-08-12
   ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
-  updated 2026-08-22 ([#937], see ADR-0129)
-- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937]
+  updated 2026-08-22 ([#937], see ADR-0129); retention interpretation clarified 2026-09-06
+  ([#1239], see ADR-0104)
+- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -30,8 +31,9 @@ limitations under the License.
 - Cloud Tasks is an HTTP dispatch queue whose **pacing lives on the queue**
   (`maxDispatchesPerSecond`, `maxConcurrentDispatches`, retry config), so the sink has no rate
   knobs and there is **no queue auto-creation** — an auto-created queue would carry default
-  limits, discarding the throttling that is the reason to use the service, and a deleted queue
-  name cannot be reused for 3 days.
+  limits, discarding the throttling that is the reason to use the service. A deleted queue name
+  can be temporarily unavailable for reuse; ADR-0104 records the conflicting duration statements
+  and why this delay is not task-name retention across queue generations.
 - The serializer supports both request-target arms of the task `oneof`: external HTTP and App
   Engine. HTTP targets need a publicly routable endpoint and choose OIDC or OAuth from what they
   call, so the builder rejects setting both tokens. App Engine targets use a relative URI and
@@ -44,8 +46,10 @@ limitations under the License.
   queue) opts into deduplication (`ALREADY_EXISTS` = success), and the sink **hashes the
   extracted key with SHA-256**, because Google documents that sequential ids raise latency *and*
   error rates. The serializer never sets a name, so there is no second path around the hashing.
-  The dedup window is **contradicted in Google's own sources — REST says up to 24 h, the v2
-  proto says ~1 h — so design against 1 h**.
+  The dedup window is contradicted in Google's own sources: REST says up to 24 h, the v2 proto
+  says ~1 h. The original advice to design against the shorter estimate is not a precise minimum
+  retention guarantee; ADR-0104's Cloud Tasks G0 evidence records why it cannot establish a
+  correctness deadline.
 - **Retries are the sink's responsibility**: the generated client gives `CreateTask` an empty
   retryable-code set and a 20 s timeout (verified in `CloudTasksStubSettings` 2.94.0, unchanged
   at 2.95.0), as it
@@ -103,3 +107,4 @@ limitations under the License.
 [#628]: https://github.com/flink-gcp/flink-connector-gcp/issues/628
 [#632]: https://github.com/flink-gcp/flink-connector-gcp/issues/632
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
+[#1239]: https://github.com/flink-gcp/flink-connector-gcp/issues/1239

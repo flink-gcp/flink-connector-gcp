@@ -20,12 +20,14 @@ limitations under the License.
 - Date: 2026-08-13; revised by [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596) (2026-08-14)
   and by [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
   [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210), and
-  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) (2026-09-05)
+  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) (2026-09-05), and
+  [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) (2026-09-06)
 - Issues: [#591](https://github.com/flink-gcp/flink-connector-gcp/issues/591),
   [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596),
   [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
   [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210),
-  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)
+  [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211),
+  [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
@@ -99,6 +101,9 @@ The connector-specific decisions are:
   and `ALREADY_EXISTS` is successful creation within the service's name-retention window.
   A repeated ID neither compares nor updates the existing task.
   The handler remains at least once, and no broader guarantee is claimed.
+  The checkpointed-creation proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238)
+  received a no-go at its service-contract gate on 2026-09-06 ([#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239), evidence below).
+  No positive recovery window is justified until retention and late-effect bounds are established.
 - **The Bigtable same-row conditional write passed Stage 1 on 2026-09-05, and the eager marker
   mode built on it is not a supported connector mode.**
   Every protected mutation and its marker must share a row, the application profile must use
@@ -335,6 +340,182 @@ The instance lived 34 minutes and was reported absent by the harness and by
 `gcloud bigtable instances list` after deletion; the harness, driver, and raw output are attached
 to the issue.
 
+### Cloud Tasks recovery feasibility gate (2026-09-06)
+
+**G0 is no-go for the scope proposed in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238).**
+The investigation in [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) establishes no positive, usable recovery window from the contracts inspected below.
+In particular, even granting a fixed minimum tombstone lifetime, the available contracts do not bound the last possible creation effect of an old request after its final deadline check.
+This is a contract and protocol result, not an observation that Cloud Tasks violated its retention specification.
+No real-GCP probe ran, no GCP resources were created or changed, and no vendor inquiry was sent.
+The service observations and cleanup results in the preregistered plan below therefore remain unexecuted, not passed.
+The dependent protocol and performance work in [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) and [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) remains gated.
+
+#### Evidence boundary and SDK access
+
+The local inspection used repository commit `c34c9d1dd8f3e2d8680b983068e772f10a31507e` and its effective Cloud Tasks module POM, generated offline with Maven's `help:effective-pom` goal.
+It resolved `libraries-bom` 26.87.0 to `google-cloud-tasks`, `proto-google-cloud-tasks-v2`, and `proto-google-cloud-tasks-v2beta3` 2.96.0, with gax/gax-grpc 2.84.0, grpc-api/core/netty-shaded 1.82.4, and protobuf-java 4.33.6.
+Source inspection used those artifacts' source jars, rather than the independently moving `latest` Java reference.
+The public proto links below pin googleapis/googleapis commit `64aa30b277168edd20efee0c9ceb4ca01248931d`; REST, release-note and gRPC pages were read on 2026-09-06.
+Where they disagree, this record retains the disagreement instead of choosing the longest duration.
+
+| Surface | Evidence available locally or publicly | What remains unproved |
+|---|---|---|
+| v2beta3 administrative client | The 2.96.0 client contains `CloudTasksClient.getQueue(GetQueueRequest)` and `updateQueue(UpdateQueueRequest)`; the matching proto exposes `Queue.task_ttl` and `tombstone_ttl` as duration fields, with builder setters and presence accessors. | Successful service readback and enforcement are not implied by Java method availability. |
+| `GetQueue` | [The method][ct-g0-get] requires `cloudtasks.queues.get`. An omitted read mask returns all fields except statistics; an explicit proto mask can request `name,state,task_ttl,tombstone_ttl,purge_time`. | A present duration describes current configuration, not the history of existing task names. An absent field is not a measured default. |
+| `UpdateQueue` | The [2021-01-14 release note][ct-g0-release] explicitly made both TTL fields configurable. The [request][ct-g0-beta-rpc] accepts an update mask; an empty mask updates all fields. [The method][ct-g0-update] can create a missing queue. | Read-after-update propagation, effects on existing tasks/tombstones, and cross-version enforcement require confirmation. The connector must not use update as a prerequisite check. |
+| v2 `CreateTask` | [The request][ct-g0-v2-rpc] contains the parent, task and response view. The current adapter invokes `createTaskCallable().futureCall(request)`. | There is no absolute create-expiry or queue-generation precondition in that request. `Task.dispatch_deadline` bounds handler dispatch, not task creation. |
+| Client timing | In 2.96.0 `CloudTasksStubSettings`, `createTaskSettings` selects the empty `no_retry_1_codes` set and `no_retry_1_params`, whose initial/max RPC timeout and total timeout are 20 seconds. | An empty gax retry set does not establish a service-side effect bound or rule out gRPC transparent retry. It also does not replace the sink's own retry loop. |
+
+#### Queue and removal matrix
+
+The [v2beta3 Queue contract][ct-g0-beta-queue] specifies tombstone retention after deletion or execution, with a configurable range of one hour to nine days and a one-hour default for Cloud Tasks-created queues.
+That is stronger wording than the v2 name-release estimates, but the cited sources do not settle all lifecycle and cross-version questions required by G0.
+The matrix's unknowns are not claims that the service omits protection.
+
+| Queue origin and v2 task target | Published evidence | G0 disposition |
+|---|---|---|
+| Cloud Tasks-created, HTTP | [v2 REST creation][ct-g0-create] gives a name-release delay of up to 24 hours; the pinned [v2 proto][ct-g0-v2-rpc] gives approximately one hour. The beta Queue fields apply at queue level. | Neither v2 estimate supplies an exact positive lower bound. Verify an explicit three-day beta setting with v2 HTTP creation. |
+| Cloud Tasks-created, App Engine | The same v2 collision text applies; beta `app_engine_http_queue` settings concern this target arm. [App Engine queue access][ct-g0-beta-resource] also requires `appengine.applications.get`. | Verify independently with v2 App Engine tasks; do not transfer HTTP observations. |
+| queue.yaml/xml-created, HTTP | v2 collision text distinguishes queue origin, while beta target-specific settings distinguish target type. The cited material does not establish this combination's configuration/enforcement behavior. | Record creation acceptance or exact rejection before any retention inference; an unsupported combination is not a passing cell. |
+| queue.yaml/xml-created, App Engine | REST gives up to nine days for name release; the v2 proto says approximately nine days. Beta Queue documents a fixed maximum task TTL for these queues. [Mixed management][ct-g0-yaml] can disable other queues. | Preserve origin as a separate arm. Confirm whether tombstone TTL updates apply; use an isolated project for legacy configuration uploads. |
+
+| Removal or update | Documented behavior | Retention obligation and current evidence gap |
+|---|---|---|
+| Task remains live | Same-name creation returns `ALREADY_EXISTS` under both v2 and beta creation contracts. | The result identifies a name collision, not equal payloads. Queue namespace ownership and immutable persisted identity are prerequisites for interpreting it as this task's prior creation. |
+| Successful execution | [Task lifecycle][ct-g0-v2-rpc] deletes a task after a successful response; beta Queue describes a tombstone after execution. | Confirm the configured duration for each target and v2-created task. Duplicate handler dispatch is not duplicate physical creation. |
+| Manual `DeleteTask` | The [v2 method][ct-g0-v2-rpc] permits deletion of scheduled or dispatched tasks; beta Queue describes a tombstone after deletion. | Confirm the same duration on both task states. Client response time is not the exact deletion timestamp. |
+| `PurgeQueue` | [Purge][ct-g0-purge] removes tasks and can take up to one minute; dispatch can occur before it takes effect. | The purge method does not separately specify tombstone creation, treatment of existing tombstones, or a lower bound. The generic deletion wording needs confirmation for this bulk path. `purge_time` alone does not answer it. |
+| Retry exhaustion | [RetryConfig][ct-g0-v2-queue] deletes the task when the applicable attempt and duration conditions are exhausted. | Configure both conditions explicitly and observe actual removal; `max_attempts` alone is not the removal-time oracle. Confirm tombstone behavior independently of successful execution. |
+| Task TTL expiry | Beta Queue documents deletion regardless of dispatch, a minimum task TTL of ten days, a maximum of ten years and a 31-day default for Cloud Tasks-created queues. Legacy-created queues have a fixed maximum. | Automatic expiry needs its own retention evidence. The UpdateQueue method's blanket 31-day creation statement also needs reconciliation with the field contract. A short emulator test cannot establish this path. |
+| Lower or raise `task_ttl` | Configurability is documented for beta queues; legacy task TTL is documented as fixed. | The applicability to existing tasks, the expiry origin and the tombstone when an existing task becomes overdue are unspecified in the inspected field/update text. Raising TTL must not be assumed to restore a deleted task. |
+| Lower or raise `tombstone_ttl` | The field is configurable within its documented range. | The inspected text does not say whether old tombstones retain their original expiry, shrink, or extend. Raising the current value cannot prove that an earlier shortening did not already release a name. |
+| Delete and recreate the queue | [REST deletion][ct-g0-delete] describes a possible queue-name exclusion of up to three days and requires GetQueue confirmation after apparent recreation; the pinned v2 proto instead says seven days. | Queue-name exclusion is not task-name retention across queue generations. No persistence contract was found for old task tombstones. Exclude recreation throughout recovery and stale-request lifetime; do not derive H from either delay. |
+
+The exact documented collision outcome for a live or remembered task name is `google.rpc.Code.ALREADY_EXISTS` (numeric code 6).
+No different outcome was observed, because no service calls were made.
+`NOT_FOUND`, `FAILED_PRECONDITION`, `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `UNKNOWN` cannot be promoted to prior-creation success from the cited contracts.
+Nor does an absent `GetTask` result show that a task never existed or never ran.
+
+#### Recovery inequality and the stale-request counterexample
+
+For one immutable task identity, let `t0` be its persisted deadline origin, established before any create, and let `t` be its last local deadline authorization check.
+All incarnations must preserve `t0` and the same queue and task bytes.
+Let **H** be the minimum tombstone lifetime, in real elapsed time, over every permitted removal path and administrative history; **E** the maximum underestimation of elapsed time relevant to that lifetime; **S** the maximum real time from that last check to the last possible create effect; and **R** the authorized replay budget.
+If measured age at the check is at most `R`, the last effect must occur by `t0 + R + E + S`.
+For a task first created at `c` and removed at `d`, `t0 <= c <= d`, so a valid minimum H protects its name at least until `d + H >= t0 + H`.
+Consequently, `R + E + S < H` is a sufficient timing condition for no same-identity recreation, conditional on live-name exclusion and the namespace/lifecycle prerequisites below.
+Equality leaves no strict margin and is not accepted.
+
+Clock uncertainty must be derived across the actual machines and recovery interval.
+Write an endpoint wall-clock reading as real time plus clock error `e` and timestamp representation error `q`.
+The measured age is `(t - t0) + e_check - e_origin + q_check - q_origin`, so its underestimation is `e_origin - e_check + q_origin - q_check`.
+Absolute endpoint error bounds give the conservative sum `b_origin + b_check + q_bound_origin + q_bound_check`, but only if those bounds cover drift, clock steps, suspension and restart for the whole deployment.
+Twice one clock bound is a special case requiring equal established bounds, not an assumption.
+If the vendor's TTL clock does not already guarantee H in real elapsed time, its conversion error must also be bounded and counted once in E, or H must be reduced accordingly.
+A process-local monotonic clock cannot be compared across restarts or hosts, and a [new task][ct-g0-v2-task]'s output-only, second-truncated `create_time` neither preserves `t0` nor authorizes a retry that must be safe before creation.
+No deployment clock bound was supplied or measured, so this investigation assigns no numerical E.
+
+Even assuming `E = 0` and a perfectly enforced three-day H, a local deadline check alone admits this trace:
+
+1. An old incarnation passes its final check for the persisted identity, then suspends before issuing its request.
+2. A replacement restores the completed checkpoint, creates that identity within R, and the task is executed and deleted.
+3. After its tombstone expires, the old incarnation resumes and issues the already-authorized request with a fresh relative RPC timeout. The name is available again.
+
+This is a counterexample to that client-only protocol, not a real-GCP observation.
+Installing an absolute local RPC deadline before the pause closes some pre-dispatch cases, but does not supply a server effect bound for an already-sent or buffered request.
+In the pinned grpc-core source, `ClientCallImpl.startInternal` checks its effective deadline and `AbstractClientStream.setDeadline` encodes remaining time in the timeout header; these are client transport mechanisms, not an atomic Cloud Tasks create-expiry check.
+[gRPC deadlines][ct-g0-deadlines] and [cancellation][ct-g0-cancel] leave stopping application work to the server application.
+[Transparent retry][ct-g0-retry] can occur even without an explicit retry policy; this does not imply duplicate service handling, but its reconnect and scheduling delay belongs in S.
+The inspected Cloud Tasks request and method contracts provide neither a server-enforced absolute creation expiry nor a finite bound from client cancellation to the last possible create effect.
+Thus no finite S is justified for the proposed failure and suspension scope, even if a retention probe later supports the candidate H.
+
+#### Prerequisites and an operational objective
+
+The following are candidate requirements for reopening the gate, not features enforced by today's stateless writer.
+
+| Requirement | Checkable fact | Deployment obligation |
+|---|---|---|
+| Retention history | Beta GetQueue exposes current TTLs and purge time. | Establish applicable policy before the first possible create and preserve it through all pending replay and old-request lifetimes. Current readback is insufficient; do not assume an audit-log sample proves complete history or per-tombstone expiry. |
+| Removal policy and task lifetime | Current task TTL and retry settings can be read. | Cover automatic expiry and retry exhaustion even if manual deletion/purge is forbidden. If a permitted path lacks protection, H is zero; if its protection is unknown, no positive H is justified. |
+| Queue and namespace | Read the fixed pre-provisioned queue and check task-name construction. | Preserve queue generation and exclusive identity ownership. Ban deletion/recreation, historical rollback and concurrent forks throughout the applicable lifetime. Persist queue, task bytes, origin and retention assumptions unchanged. |
+| Elapsed time | Read configured clock-health signals and the persisted origin. | Supply bounds that remain valid across machines, clock steps and outages. A health observation at startup alone does not bound E. |
+| Late effects | Inspect client deadlines, retry settings and cancellation paths. | Supply a bounded pause/transport/service-effect contract, or an externally enforced mechanism that also covers requests already admitted to the service. Killing the old process or revoking its future egress alone does not recall those requests. |
+| Recoverability | Check checkpoint mode and retained externalized state in the later protocol work. | Retain pending state on terminal failure and stop unsafe replay after expiry; neither a plain exception nor a restart loop establishes this. |
+
+The operational objective is to finish every pending identity's creation, including catch-up after an incident, before its original deadline while retaining unresolved state if that cannot be done safely.
+Choose the required budget from non-overlapping worst-case intervals: age of the oldest pending origin at outage onset, outage duration, additional diagnosis/restore time not included in the outage, and post-restore backlog/checkpoint/commit drain time.
+Call their sum `R_required`; a useful choice requires `R_required <= R < H - E - S`.
+The task's execution backlog after successful creation is not creation recovery work, but its TTL still introduces a removal path.
+No existing numerical recovery objective was provided; the investigation was asked to determine the feasible range first.
+Because H across the full scope and a finite S remain unjustified, no supported numerical range is established, not a one-hour or 24-hour default.
+One hour and three days below are experimental settings, not product correctness defaults.
+
+For a future prerequisite reader, the additional administrative permission is `cloudtasks.queues.get`; the [Enqueuer role][ct-g0-iam] does not include it.
+`cloudtasks.queues.update` belongs to a separate administrator/probe principal, not the sink.
+The [RPC permission reference][ct-g0-beta-permissions] and IAM inventory also identify `cloudtasks.queues.create/delete/purge/pause/resume` for disposable queue management, and `cloudtasks.tasks.create/get/list/delete` for probe work.
+`cloudtasks.tasks.fullView` is needed only when a FULL view is requested; creation status and BASIC metadata suffice for these probes.
+App Engine access additionally needs `appengine.applications.get`; deploying or starting a target fixture and reading administrative history require their own narrowly scoped permissions and approvals.
+
+#### Preregistered service probes
+
+The following plan is frozen before any service results.
+Its purpose is to falsify retention assumptions and collect vendor-reproducible observations; passing samples cannot establish an undocumented minimum or a universal upper bound on S.
+Resolve the missing service-effect contract before paying for the long-lived arms unless a separately approved diagnostic run has a stated purpose.
+Use v2 for every task creation and v2beta3 for TTL administration; record both API versions.
+Use three independently named cohorts per applicable queue-origin/target/removal combination, with random, uniformly distributed task names and synthetic content only.
+Each observation time gets an independent task identity: a successful boundary probe must not create a new tombstone that contaminates a later observation of the original one.
+
+| Probe | Setup and observations | Observable result |
+|---|---|---|
+| Configuration and controls | Get an existing isolated queue, update only `tombstone_ttl` to `259200s` (three days), then Get with and without an explicit read mask. Keep separate default/one-hour control queues. Exercise `3599s` and `777601s` on separate disposable controls. Read back task TTL independently. | Require present, exact intended durations before retention observations. Record exact rejection/status for invalid values; do not replace ignored/absent settings with defaults. A fresh-name v2 create must succeed and a second live-name create must return `ALREADY_EXISTS`. |
+| Successful execution and manual deletion | Run separate HTTP/App Engine success cohorts with a controlled 2xx handler. Delete separate scheduled and dispatched cohorts. Record the deletion interval between last confirmed live and first confirmed absent observations, alongside handler evidence. | Test same-name creation immediately, at two hours, near the one-day point, and around the three-day boundary. Any successful create definitely before the assumed expiry falsifies that arm. Handler receipts alone do not count physical creations. |
+| Purge and retry exhaustion | Purge both a live cohort and a queue containing existing tombstones; keep an unpurged control. For a separate always-failing handler set both `max_attempts = 2` and positive `max_retry_duration = 60s`, with a bounded observation period. | Record purge response and actual disappearance separately. Do not assume two dispatches prove exhaustion. If disappearance is not observed, classify removal timing as inconclusive. Compare collisions with the unpurged/deletion controls. |
+| Tombstone updates | Use independent queues and cohorts removed before and after `3600s -> 259200s` and `259200s -> 3600s`. Include a cohort whose original short tombstone has already expired before raising the value. | Observe at two hours and around three days against unchanged controls. Record whether old names release under the old or new setting. An expired name remaining available after a raise disproves using current readback as retention history. |
+| Task TTL and its updates | For Cloud Tasks-created queues, use paused tasks and an explicit ten-day TTL; compare independent old/new cohorts under `31d -> 10d` and `10d -> 31d`, including tasks already older than ten days at a lowering. | Observe expiry independently and test the resulting name protection. Do not shorten the test with an emulator or a past schedule time. If a legacy-created queue retains its documented fixed maximum, mark natural expiry unmeasured and seek a contract; do not wait ten years or treat manual deletion as the same path. |
+| Queue recreation | In an isolated lifecycle arm, delete a queue containing live names and existing tombstones. Poll recreation only within a preregistered observation limit; confirm every apparent recreation with GetQueue before replaying old names. | Failure to recreate within the limit is inconclusive, not proof of task retention. If recreation succeeds, record old-name collision outcomes and new queue readback. Never infer task protection from the queue-name exclusion delay. |
+| Lost responses and late requests | Separate response suppression after an admitted create from a pre-send suspension. Also exercise restart/failover with an old incarnation, a broken connection and reconnect, with identifiable attempts and explicit local deadlines. | Track API creation responses, live-task observations and same-name outcomes separately. A demonstrable second physical creation falsifies the candidate. An ambiguous timeout or duplicate handler dispatch does not. Failure to reproduce a late effect cannot bound S. |
+
+Before service execution, add an approved run manifest naming the exact project, locations, disposable queues, HTTP/App Engine targets, identities/principals, retention arms, start/stop times, and cleanup owner.
+Include numeric caps on created tasks, API calls, observed dispatches, fixture instance-hours, total lifetime and cost, with the concrete monitoring and stop actions for each; a billing alert is not a hard cost cap.
+The legacy upload arm requires an isolated project or an already verified isolated fixture because queue.yaml/xml administration can affect queues omitted from the upload.
+Keep App Engine compute stopped during multi-day retention waits and start it only for the dispatch observations that need it.
+Approve short, retention-boundary, task-expiry and legacy/lifecycle arms separately; extending an observation limit requires approval before extending resource lifetime.
+No resource names, budget, fixture deployment or real-GCP execution is authorized by this document.
+
+For each arm record the preregistration revision, client/proto versions, UTC and monotonic attempt timestamps, clock uncertainty, opaque cohort/attempt IDs, configuration before and after updates, gRPC status numbers/names, BASIC task metadata and control outcomes.
+Keep credentials, authorization headers, payloads and environment files out of the public artifact; publish sanitized raw observations rather than only averages.
+For boundary classification, use deletion and attempt time intervals widened by clock uncertainty: a collision definitely before expiry is expected, a successful create definitely before expiry is a failure, and overlap with the boundary is inconclusive.
+A fresh-name success control distinguishes a collision from general inability to create; a same-name success definitely after expiry is the required falsifying control showing the probe can detect recreation.
+If the latter never occurs before the approved stop time, report it as inconclusive rather than extending the run silently.
+Cleanup must enumerate exact owned queues, delete them and confirm absence, then stop any started App Engine fixture and confirm zero instances; record partial cleanup failures and leave the arm incomplete until resolved.
+
+#### Conditions for reopening G0
+
+A vendor inquiry would ask whether configured beta tombstone TTL is a minimum for v2-created tasks across the matrix, exactly which removal paths create tombstones, and how TTL changes affect existing tasks and tombstones.
+It would also ask for the queue-origin/target combinations, queue-generation behavior, retention-clock semantics and any finite last-effect bound or server-enforced absolute expiry for CreateTask after a client timeout, cancellation, delayed delivery or reconnect.
+These are prepared questions, not external communication already performed.
+Reopen only with evidence that resolves the required contracts and an explicit deployment mechanism/assumption set yielding finite E and S and positive `H - E - S`.
+The existing bounded named-task behavior remains available; this investigation neither supersedes its runtime design nor approves the proposed checkpointed mode.
+
+[ct-g0-beta-resource]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues
+[ct-g0-get]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues/get
+[ct-g0-update]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues/patch
+[ct-g0-release]: https://docs.cloud.google.com/tasks/docs/release-notes#January_14_2021
+[ct-g0-beta-queue]: https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/cloud/tasks/v2beta3/queue.proto
+[ct-g0-beta-rpc]: https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/cloud/tasks/v2beta3/cloudtasks.proto
+[ct-g0-v2-rpc]: https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/cloud/tasks/v2/cloudtasks.proto
+[ct-g0-v2-task]: https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/cloud/tasks/v2/task.proto
+[ct-g0-v2-queue]: https://github.com/googleapis/googleapis/blob/64aa30b277168edd20efee0c9ceb4ca01248931d/google/cloud/tasks/v2/queue.proto
+[ct-g0-create]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create
+[ct-g0-purge]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues/purge
+[ct-g0-delete]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues/delete
+[ct-g0-yaml]: https://docs.cloud.google.com/tasks/docs/queue-yaml
+[ct-g0-iam]: https://docs.cloud.google.com/tasks/docs/access-control
+[ct-g0-beta-permissions]: https://docs.cloud.google.com/tasks/docs/reference/rpc/google.cloud.tasks.v2beta3
+[ct-g0-deadlines]: https://grpc.io/docs/guides/deadlines/
+[ct-g0-cancel]: https://grpc.io/docs/guides/cancellation/
+[ct-g0-retry]: https://grpc.io/docs/guides/retry/
+
 ## Alternatives declined
 
 - **Add `SupportsCommitter` to every sink** — a committer around an eager API cannot hide or
@@ -385,8 +566,9 @@ to the issue.
 - BigQuery's BUFFERED-stream implementation is documented as related to, but not a copy of, the
   official COMMITTED-stream example.
 - Pub/Sub has no connector-only implementation issue to pursue.
-- Cloud Tasks keeps its existing bounded creation guarantee through both connector APIs, and no
-  broader mode or repeat is planned.
+- Cloud Tasks keeps its existing bounded creation guarantee through both connector APIs.
+  The proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238) is blocked at G0;
+  its dependent implementation and performance repeat remain gated by the [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) no-go.
 - Bigtable and Spanner keep their current keyed write shapes and their documented replay and
   ordering boundaries.
   Bigtable's next step is the committer-based mode planned under
