@@ -172,7 +172,7 @@ limitations under the License.
         <!-- The optional Parquet staging path (#284). `provided` everywhere: a deployment that
              selects StagingFormat.PARQUET places these on its own runtime classpath, guided by the
              docs, so no user pays for a format they did not ask for. -->
-        <parquet.version>1.18.0</parquet.version>
+        <parquet.version>1.18.1</parquet.version>
         <hadoop.version>3.5.0</hadoop.version>
         <!-- JSONObject is the parameter type of the Storage Write API client's
              JsonToProtoMessage, so this has to stay compatible with whatever
