@@ -228,6 +228,11 @@ It includes the commit timestamp, transaction and partition counts, record seque
 Every output collected from the same data-change record carries that record's commit timestamp as its Flink event timestamp.
 The collector is valid only during that deserializer call; emit synchronously and do not retain it.
 
+When constructing a `DataChangeRecord`, the `columnTypes` and `mods` builder methods accept empty lists and immutable lists such as those returned by `List.of(...)` and `List.copyOf(...)`.
+A null list throws `NullPointerException`; a null element throws `IllegalArgumentException`.
+Both methods defensively copy their inputs while preserving order and duplicates, so subsequent changes to the supplied lists or reuse of the builder do not alter a built record.
+The record exposes unmodifiable list views.
+
 Each `Mod` exposes keys, new values, and old values as normalized JSON with object members sorted recursively.
 An empty optional means that Spanner omitted that member, while a present `"null"` means that the member was present as JSON `null`.
 This distinction matters because value-capture modes deliberately omit different halves of a change.

@@ -343,27 +343,34 @@ public final class DataChangeRecord implements Serializable {
         /**
          * Sets the record's column descriptors.
          *
+         * <p>The list may be empty or immutable. A defensive copy preserves its order and
+         * duplicates.
+         *
          * @param columnTypes the column descriptors, none of them null
          * @return this builder
          */
         public Builder columnTypes(List<ColumnType> columnTypes) {
             Preconditions.checkNotNull(columnTypes, "columnTypes must not be null");
-            Preconditions.checkArgument(
-                    !columnTypes.contains(null), "columnTypes must not contain null");
-            this.columnTypes = new ArrayList<>(columnTypes);
+            List<ColumnType> copy = new ArrayList<>(columnTypes);
+            Preconditions.checkArgument(!copy.contains(null), "columnTypes must not contain null");
+            this.columnTypes = copy;
             return this;
         }
 
         /**
          * Sets the row modifications this record reports.
          *
+         * <p>The list may be empty or immutable. A defensive copy preserves its order and
+         * duplicates.
+         *
          * @param mods the modifications, none of them null
          * @return this builder
          */
         public Builder mods(List<Mod> mods) {
             Preconditions.checkNotNull(mods, "mods must not be null");
-            Preconditions.checkArgument(!mods.contains(null), "mods must not contain null");
-            this.mods = new ArrayList<>(mods);
+            List<Mod> copy = new ArrayList<>(mods);
+            Preconditions.checkArgument(!copy.contains(null), "mods must not contain null");
+            this.mods = copy;
             return this;
         }
 
