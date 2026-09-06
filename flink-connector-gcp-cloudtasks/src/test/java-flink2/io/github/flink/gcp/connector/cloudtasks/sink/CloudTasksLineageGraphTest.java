@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.lineage.LineageGraph;
@@ -33,10 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class CloudTasksLineageGraphTest {
     @ParameterizedTest
-    @CsvSource({"false", "true"})
-    void dataStreamExtractsTheSerializedBuilderResultWithoutOpeningIt(boolean dynamic)
+    @CsvSource({"false,false", "true,false", "false,true"})
+    void dataStreamExtractsTheSerializedBuilderResultWithoutOpeningIt(
+            boolean dynamic, boolean staged)
             throws Exception {
         CloudTasksSinkBuilder<String> builder = builder().queue(QUEUE);
+        if (staged) {
+            builder.deliveryGuarantee(CloudTasksDeliveryGuarantee.EXACTLY_ONCE);
+        }
         if (dynamic) {
             builder.destinationResolver(new CloudTasksLineageTest.ThrowingResolver());
         }
@@ -45,6 +50,10 @@ class CloudTasksLineageGraphTest {
                         InstantiationUtil.serializeObject(builder.build()),
                         getClass().getClassLoader());
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        if (staged) {
+            env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+            env.enableCheckpointing(1000);
+        }
         env.fromData("never serialized").sinkTo(sink);
         LineageGraph graph = env.getStreamGraph().getLineageGraph();
         assertThat(graph.sinks())

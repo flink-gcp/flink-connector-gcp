@@ -27,7 +27,7 @@ Every option the Cloud Tasks sink and App Engine target builder take. What each 
 forms of the Default column are explained
 [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
-This is the shortest reference of the three, and deliberately so: **there are no rate knobs here.**
+**There are no rate knobs here.**
 `maxDispatchesPerSecond`, `maxConcurrentDispatches` and the retry policy are *queue* configuration,
 applied by whoever creates the queue — the sink writes tasks and the queue decides how fast they
 execute. That inversion is the connector's whole reason for existing, and it is set out under
@@ -40,10 +40,12 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 | `queue` | **required**, unless `destinationResolver` is set | Writes every task to one fixed queue |
 | `destinationResolver` | — | Resolves the queue per record. One client serves every queue, so routing allocates no per-queue service-client state |
 | `serializer` | **required** | Builds the `Task` — HTTP URL or App Engine relative URI/routing, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
-| `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
+| `taskIdExtractor` | — | Selects the SHA-256 stable-key identity. Without it, at-least-once creates unnamed tasks and exactly-once persists a random identity for each accepted record |
+| `deliveryGuarantee` | `AT_LEAST_ONCE` | Selects eager creation or `EXACTLY_ONCE` checkpointed named creation within its documented recovery window; the latter requires a fixed queue and `failJob()` |
+| `stagedOptions` | *unset ⇒ default staged settings in `EXACTLY_ONCE`* | The staging and recovery settings below; specifying this object in `AT_LEAST_ONCE` is rejected |
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap, the transport channel pool and the two retry budgets |
 | `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
-| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key on each TaskManager when the writer starts. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/cloudtasks" >}}#credential-file-deployment) |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key on each TaskManager when the writer or committer starts. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/cloudtasks" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
 
 **The task itself is configured outside the sink builder.** `httpTarget(url)` starts the immutable
@@ -54,6 +56,33 @@ HTTP schema chain (`withBody`, `withMethod`, `withUrl`, `withHeaders`, `withOidc
 option above. The APIs are described under
 [API notes]({{< relref "docs/connectors/datastream/cloudtasks" >}}#api-notes) and typed in the
 [Java API reference]({{< api-docs-url >}}).
+
+## `CloudTasksStagedOptions`
+
+Set through `stagedOptions(...)` with `deliveryGuarantee(EXACTLY_ONCE)`.
+Build immutable settings with `CloudTasksStagedOptions.builder().build()`.
+The new delivery-guarantee enum and staging options are experimental APIs; their recovery and performance release gates remain pending.
+The [checkpointed-creation guide]({{< relref "docs/connectors/datastream/cloudtasks" >}}#checkpointed-task-creation) describes the guarantee, deployment requirements and recovery decisions.
+
+| Option | Default | What it does |
+|---|---|---|
+| `nameRetention` | 1 h | Assumed queue name retention H; configure the queue and this value together |
+| `clockSkewAllowance` | 5 min | Relative writer/committer clock error E; a deployment convention, not a service guarantee |
+| `requestTimeout` | 20 s | Client-side upper budget S for each create; the absolute deadline is fixed at authorization |
+| `maxStagedTasks` | 100,000 | Maximum accepted records in one writer batch |
+| `maxStagedBytes` | 64 MiB | Maximum named Task wire bytes plus 256 bytes per envelope in one writer batch |
+| `verifyQueueRetention` | `true` | Reads v2beta3 `GetQueue` before committing and requires retention at least H; skipped for emulators |
+| `expiredEnvelopePolicy` | `FAIL` | Explicit expired-state decision: `FAIL`, `ASSUME_COMMITTED`, `CREATE_ANYWAY` or `DROP`; the overrides accept loss or duplicate risk |
+
+Durations cannot exceed `Duration.ofNanos(Long.MAX_VALUE)` (about 292 years).
+Retention and request timeout must be positive; clock skew may be zero.
+`nameRetention - clockSkewAllowance - requestTimeout`, rounded down to milliseconds, must remain at least one millisecond.
+The runtime revalidates these settings after job-graph deserialization.
+The task wire-size limit is 100,000 bytes including its assigned name, independently of the configurable batch caps.
+An overflowing batch fails immediately with a sizing diagnostic; it never waits for a checkpoint barrier behind the blocked record.
+
+The buffer caps bound one batch, not the number of batches retained by Flink, and the checkpoint timeout must account for every pending batch and request wave.
+See [heap and checkpoint sizing]({{< relref "docs/connectors/datastream/cloudtasks" >}}#heap-and-checkpoint-sizing).
 
 ## `AppEngineTargetBuilder`
 
@@ -68,7 +97,7 @@ serialization schema.
 | `withHeaders` | — | Resolves request headers per record; reserved App Engine and transport headers are rejected |
 | `withRouting` | *unset ⇒ App Engine default service and version* | Sets fixed routing, or resolves service/version/instance routing per record. Queue-level `appEngineRoutingOverride` takes precedence |
 
-Naming is off by default because Google documents deduplication as costing *"significantly increased
+In the default at-least-once mode, naming is off because Google documents deduplication as costing *"significantly increased
 latency"*, and the id is hashed because sequential ids raise latency and error rates across the
 whole queue — see
 [Task naming and deduplication]({{< relref "docs/connectors/datastream/cloudtasks" >}}#task-naming-and-deduplication).
@@ -87,7 +116,7 @@ is under [Delivery guarantees and state]({{< relref "docs/connectors/datastream/
 
 | Option | Default | What it does |
 |---|---|---|
-| `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap `write()` yields to the task mailbox |
+| `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap the eager writer yields to its mailbox; the staged committer waits for an in-flight slot |
 | `channelPoolSize` | *unset ⇒ the client's single channel* | Sizes the client's gRPC channel pool, which bounds how much of the in-flight cap the transport actually carries; the sizing rule and ramp caution are under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning). Rejected beside `emulatorEndpoint` |
 | `recoveryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
 | `recoveryMaxBackoff` | 10 s | Cap that backoff doubles up to, before ±25% jitter |
@@ -95,7 +124,7 @@ is under [Delivery guarantees and state]({{< relref "docs/connectors/datastream/
 | `notFoundRecoveryInitialBackoff` | 500 ms | First backoff of the separate `NOT_FOUND` budget |
 | `notFoundRecoveryMaxBackoff` | 2 s | Cap of that backoff, before jitter |
 | `notFoundRecoveryMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose, so a mistyped queue name fails quickly |
-| `perDestinationMetrics` | `false` | Registers per-queue `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with a per-record `destinationResolver` every queue the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/cloudtasks" >}}#metrics) |
+| `perDestinationMetrics` | `false` | Registers per-queue `recordsSend` and `sendErrors` counters on the writer, or the staged committer for `EXACTLY_ONCE`. The staged counts cover first submission per commit invocation and terminal RPC failure, respectively; restored submissions can count again. Off by default: Flink cannot unregister a metric, so with a per-record `destinationResolver` every queue the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/cloudtasks" >}}#metrics) |
 
 `NOT_FOUND` has its own short budget because a queue idle for 30 days takes a few minutes to
 reactivate and may answer `NOT_FOUND` meanwhile — so it is not proof of a misconfigured queue, but a

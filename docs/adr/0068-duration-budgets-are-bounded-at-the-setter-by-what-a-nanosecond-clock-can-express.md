@@ -87,6 +87,13 @@ below, and it is also what showed the raw `Duration` to be unreadable on its own
 [ADR-0133] the mapper renames such a rejection to its option key before `FactoryUtil` wraps it;
 the bound itself still lives only at the setter, which is this record's decision.)
 
+### Cloud Tasks staged recovery (2026-09-07)
+
+`CloudTasksStagedOptions` bounds `nameRetention`, `clockSkewAllowance` and `requestTimeout` at the same nanosecond ceiling.
+The public setters reject invalid values, and `toStagingConfig()` revalidates the serialized settings whenever a writer or committer is created, before deadline arithmetic or client creation.
+This follows the existing internal staging configuration's runtime checks: recovery settings authorize externally visible task creation, so a forged or incompatible serialized options object must fail before it can choose an expiry override.
+The recovery window must remain at least one whole millisecond; adding it to the stored origin rejects overflow, and restored envelopes use the minimum of their durable and current-settings deadlines (ADR-0158).
+
 ## Alternatives declined
 
 - **Saturating instead of rejecting** (`Long.MAX_VALUE` nanoseconds is 292 years; nothing

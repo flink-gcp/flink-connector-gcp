@@ -107,4 +107,19 @@ public final class CloudTasksStagingConfig implements Serializable {
     public long getMaxStagedBytes() {
         return maxStagedBytes;
     }
+
+    /** Returns the configured queue retention assumption. */
+    public Duration getNameRetention() {
+        return nameRetention;
+    }
+
+    /** Returns the configured relative clock error allowance. */
+    public Duration getClockSkewAllowance() {
+        return clockSkewAllowance;
+    }
+
+    /** Returns the configured absolute RPC budget. */
+    public Duration getRequestTimeout() {
+        return requestTimeout;
+    }
 }

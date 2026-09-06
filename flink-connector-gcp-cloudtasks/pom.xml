@@ -82,6 +82,11 @@ limitations under the License.
             <artifactId>proto-google-cloud-tasks-v2</artifactId>
         </dependency>
         <dependency>
+            <!-- The v2beta3 Queue retention field is read before checkpointed task creation. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-cloud-tasks-v2beta3</artifactId>
+        </dependency>
+        <dependency>
             <!-- ByteString on the serialization schema's body path.
                  Version managed by the libraries BOM. -->
             <groupId>com.google.protobuf</groupId>

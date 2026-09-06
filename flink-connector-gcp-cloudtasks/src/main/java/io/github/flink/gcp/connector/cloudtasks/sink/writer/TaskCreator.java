@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import com.google.api.core.ApiFuture;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
+import io.grpc.Deadline;
 
 /**
  * Creates Cloud Tasks tasks, one RPC per task.
@@ -45,6 +46,15 @@ public interface TaskCreator extends AutoCloseable {
      * @return a future completing with the created task, or exceptionally when the creation fails
      */
     ApiFuture<Task> createTask(CreateTaskRequest request);
+
+    /**
+     * Creates a task with the absolute client deadline computed at authorization.
+     *
+     * @param request the unchanged named task request
+     * @param deadline the absolute deadline; dispatch must not restart its budget
+     * @return the creation result
+     */
+    ApiFuture<Task> createTask(CreateTaskRequest request, Deadline deadline);
 
     /** Shuts the underlying client down, waiting a bounded time for termination. */
     @Override

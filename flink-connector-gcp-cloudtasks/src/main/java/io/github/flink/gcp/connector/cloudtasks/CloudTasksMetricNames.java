@@ -40,13 +40,23 @@ public final class CloudTasksMetricNames {
     // Registered by the sink writer (CloudTasksWriterMetrics).
     public static final String IN_FLIGHT_TASKS = "inFlightTasks";
     public static final String PARKED_TASKS = "parkedTasks";
+
+    // Registered by CloudTasksWriterMetrics and CloudTasksStagedCommitter.
     public static final String TASKS_DEDUPLICATED = "tasksDeduplicated";
 
+    // Registered by CloudTasksWriterMetrics and CloudTasksStagedWriter.
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
     // Registered by the internal staged writer (CloudTasksStagedWriter).
     public static final String STAGED_TASKS = "stagedTasks";
     public static final String STAGED_BYTES = "stagedBytes";
+
+    // Registered by CloudTasksStagedCommitter.
+    public static final String EXPIRED_ENVELOPES_ASSUMED_COMMITTED =
+            "expiredEnvelopesAssumedCommitted";
+    public static final String EXPIRED_ENVELOPES_DROPPED = "expiredEnvelopesDropped";
+    public static final String EXPIRED_ENVELOPE_CREATES_AUTHORIZED =
+            "expiredEnvelopeCreatesAuthorized";
 
     private CloudTasksMetricNames() {}
 }

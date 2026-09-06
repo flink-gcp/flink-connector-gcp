@@ -102,7 +102,7 @@ service settings from the writer options.
   queues in several regions.
 - `serviceAccountKeyFile(path)` selects a service-account JSON key when application-default
   credentials cannot select the required identity.
-  The writer reads and scopes the file when it starts, so the path itself, rather than parsed
+  The eager writer or staged committer reads and scopes the file when it starts, so the path itself, rather than parsed
   credentials, is the only credential setting serialized in the job graph.
   The setter accepts a file path only, not raw or Base64-encoded JSON, access tokens, user
   credentials or custom provider classes.
@@ -116,7 +116,7 @@ service settings from the writer options.
 
 The service account used to create a task is separate from any OIDC or OAuth identity configured
 on that task.
-The first authenticates the Flink writer to the Cloud Tasks API; the second is a token that Cloud
+The first authenticates the Flink writer or committer to the Cloud Tasks API; the second is a token that Cloud
 Tasks attaches when it later calls the task's HTTP target.
 
 ### Credential file deployment
@@ -125,13 +125,13 @@ Tasks attaches when it later calls the task's HTTP target.
 > Prefer keyless application-default credentials from an attached service account or Workload Identity over a service-account key file.
 > Use `serviceAccountKeyFile(path)` only when the job must select an explicit service account that the process environment cannot provide.
 >
-> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may run the sink writer.
+> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may run the sink writer or committer.
 > This path is inside the container, not a path that merely exists on the Kubernetes node.
 > Do not store credential material in a `ConfigMap` or a connector option.
 > Mount the Secret directory rather than one file through `subPath` when in-place rotation is expected, because Kubernetes does not update a Secret mounted with `subPath`.
 >
 > On a session cluster, the same path must remain readable by every eligible TaskManager process, including replacement or newly allocated TaskManagers.
-> Each writer reads the file once when it starts.
+> The eager writer loads credentials when it starts; the staged committer loads them for retention readback and task creation when it starts.
 > Replacing or rotating the mounted file does not hot-reload credentials.
 > Wait until a normally projected Secret has updated in every eligible pod before restarting the affected job; with a `subPath` mount, recreate the affected pods or cluster first.
 > Replace the key in every workload that uses it and validate those workloads before disabling the replaced key.
@@ -175,8 +175,8 @@ acceptance fixture in [#632]({{< param BookRepo >}}/issues/632) provides.
 
 Queue configuration wins over the record: if `appEngineRoutingOverride` is present, Cloud Tasks
 uses it for every task regardless of the task-level routing above.
-The v2 client can read this queue field, unlike the REST-only HTTP `uriOverride`, but the sink does
-not add a queue read before writes because the queue remains independently managed configuration.
+The v2 client can read this queue field, unlike HTTP `uriOverride`, which requires REST or v2beta3.
+The sink does not validate routing overrides; the staged mode's queue read checks name retention only.
 
 App Engine handlers may be secure, unsecure, or restricted to `login: admin`; tasks do not run as
 a user and therefore cannot reach `login: required` handlers.
@@ -221,20 +221,19 @@ anywhere.
 
 Detecting it is harder than it looks: `httpTarget` exists in the **REST** `Queue` resource and in
 `v2beta3`, but **not in the v2 proto** — `com.google.cloud.tasks.v2.Queue` has no `getHttpTarget`,
-so a `GetQueue` through the client this sink uses returns an object that cannot carry the field at
-all. A preflight check would mean pulling in the v2beta3 client or calling REST directly. v1
-therefore documents the interaction rather than guarding it, and the cost of guarding it later is
-recorded here so it is not rediscovered as "just one extra call".
+so a v2 `GetQueue` returns an object that cannot carry the field at all.
+The staged mode uses v2beta3 for retention readback, but neither mode validates `httpTarget` routing overrides.
+Configure those independently; successful retention verification does not establish which URL receives a task.
 
 ### Task naming and deduplication
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
 for the Table and DataStream API comparison.
 
-**The default is unnamed tasks.** Cloud Tasks assigns the name, task creation runs at full speed,
+**The default at-least-once mode uses unnamed tasks.** Cloud Tasks assigns the name, task creation runs at full speed,
 and a task that Flink replays after a failure is created twice.
 
-Naming is opt-in through the **sink builder**, not the serializer:
+Stable-key naming is opt-in through the **sink builder**, not the serializer:
 
 This intentionally abbreviated chain assumes concrete `queue` and `serializer` values and omits
 the final `build()` call.
@@ -269,11 +268,13 @@ The [v2beta3 Queue reference](https://docs.cloud.google.com/tasks/docs/reference
 The sink creates tasks through v2; `tombstoneTtl` is configured through the v2beta3 queue-administration API and is not a sink option or a field on the v2 Queue resource.
 The live task also occupies its name.
 A replay after the name is released can create another task.
-Queue retention is administered outside the sink; the sink does not read or update those settings and does not enforce a bounded recovery protocol.
+Queue retention is administered outside the sink and is never updated by it.
+The default at-least-once mode does not read retention or enforce a bounded recovery protocol.
+The [checkpointed mode](#checkpointed-task-creation) checks retention by default and enforces its recovery deadline.
 The connector's [support boundary]({{< relref "docs/connectors/delivery-guarantees" >}}#support-boundary) is the published specification for the API and configuration in use.
 Refer to the official references above for service limits.
 
-This is off by default because it is expensive, and the cost is Google's rather than this
+Naming is off in the default at-least-once mode because it is expensive, and the cost is Google's rather than this
 connector's. From the `tasks.create` reference: *"Because there is an extra lookup cost to identify
 duplicate task names, these `tasks.create` calls have significantly increased latency."* No
 official number is published for how much — the "1 QPS" figure that circulates is not in Google's
@@ -289,8 +290,8 @@ sink derives the actual task id as its SHA-256 digest. The footgun is closed off
 warned about, deduplication is unaffected (the same key always hashes the same way), and the digest
 is 64 characters from `[0-9a-f]`, well inside the 500-character limit for the `[A-Za-z0-9_-]` id.
 
-Because the serializer never sets a name, there is no second path around the hashing — the
-extractor is the only way to name a task, and every name the sink writes is a digest.
+An extracted key always becomes a digest; the serializer cannot supply a name that bypasses hashing.
+The checkpointed mode also names tasks without an extractor, using persisted random identities instead.
 
 The consequence to know: task names are not human-meaningful, so a task cannot be located in the
 console from its business key. Passing a caller-chosen name through unhashed — the only thing that
@@ -339,10 +340,11 @@ configures no method with gax batching — there is no `BatchingSettings` in `Cl
 `CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
 are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.
 
-What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on outstanding
+The at-least-once writer provides the same mailbox-based bound the Pub/Sub sink uses: a cap on outstanding
 creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
 completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
 write at the cap yielding until completions bring the count down.
+The staged committer uses the same in-flight cap in a blocking loop; it has no mailbox context.
 Create throughput is then bounded by sink parallelism × min(the in-flight cap, `channelPoolSize`
 × ~100) concurrent creates, against a per-RPC latency that naming increases. The transport term is
 the one the [#937]({{< param BookRepo >}}/issues/937) measurement surfaced: a single gRPC channel
@@ -359,7 +361,7 @@ What the sink does **not** provide is pacing. Two numbers bound the queue instea
 
 Neither is a limit this connector can raise, and neither matters to the pipeline this connector
 exists for — one that is throttling *down* to a third-party limit never approaches them.
-A DataStream pipeline that needs more aggregate throughput can shard across queues with
+A DataStream pipeline in at-least-once mode that needs more aggregate throughput can shard across queues with
 `destinationResolver`.
 A Table sink has one fixed queue, so a Table job must route rows explicitly to separately declared
 sink tables to shard across queues.
@@ -380,6 +382,13 @@ grows. `DISABLED` is the rarer of the two — a queue cannot be disabled directl
 a `queue.yaml`/`queue.xml` that omits it.
 
 ## Delivery guarantees and state
+
+The default is `AT_LEAST_ONCE`, with eager task creation.
+The opt-in DataStream `EXACTLY_ONCE` mode stages named tasks and commits them after checkpoint completion, as described below.
+Both modes leave handler execution at-least-once.
+The Table API currently exposes the default mode only; its staged-mode entry point is tracked in [#1244]({{< param BookRepo >}}/issues/1244).
+
+### At-least-once mode
 
 See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
 cross-connector comparison.
@@ -436,7 +445,128 @@ do — and a `write()` at the cap with everything parked waits out the earliest 
 spinning. And parked creates are **dropped when the writer closes**: they are not covered by a
 completed checkpoint, so the restart replays their records.
 
+### Checkpointed task creation
+
+Select `CloudTasksDeliveryGuarantee.EXACTLY_ONCE` for **exactly-once task creation per staged envelope within the documented scope and recovery window**.
+The writer creates no tasks: it serializes each accepted record into immutable named Task bytes, and Flink checkpoints those envelopes in its committer operator.
+After the owning checkpoint completes, the committer creates one task per envelope with bounded concurrency.
+Tasks become visible incrementally during that commit; a completed checkpoint is not an atomic visibility transaction across tasks or other sinks.
+
+{{< java-snippet file="CloudTasksCheckpointedCreation.java" tag="cloud-tasks-checkpointed-creation" >}}
+
+A configured `taskIdExtractor(...)` retains the existing SHA-256 naming and collapse behavior: the winning task is neither compared nor updated.
+Without an extractor, each accepted record receives a fresh persisted 128-bit random identity, so identical payloads can be distinct tasks.
+Retries, restore and rescaling reuse the original queue, name, bytes and staging origin without calling the serializer, resolver or extractor again.
+A serializer returning `null` still skips and increments `recordsSkipped`.
+
+The committer treats `ALREADY_EXISTS` as collision success.
+It owns the same transient and separate `NOT_FOUND` retry budgets as the eager writer; the GAPIC client's `CreateTask` retries remain disabled.
+An exhausted retry budget or terminal failure throws, leaving the checkpoint's envelopes available for recovery, including tasks whose creation already succeeded.
+The next incarnation replays those names and receives collision success for the tasks the service remembers.
+
+Four exclusions constrain this guarantee:
+
+- **Handler execution:** Cloud Tasks may dispatch a task more than once; the handler needs its own idempotency or durable deduplication protocol.
+- **Logical duplicates without a stable key:** two separately accepted records receive two identities even if they describe one event.
+- **Unbounded service effects and administrative history:** client cancellation and deadlines do not exclude late service-side effects, including requests sent by an old process; purge, queue deletion/recreation and shortened name retention can remove replay protection.
+- **Stop-with-savepoint without FINISHED:** a synchronous savepoint can create tasks before an unrelated operator or the commit itself fails; the job fails without automatic recovery; an external restart from an older checkpoint can stage those records under fresh random names.
+
+The DataStream implementation is available for validation, but release of the mode still requires [#1245]({{< param BookRepo >}}/issues/1245)'s real-service recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance verdict.
+The earlier primitive measurements remain inconclusive; implementing this mode does not change that result.
+
+### Recovery window and prerequisites
+
+The send authorization rule is strict:
+
+```text
+deadline = origin + nameRetention - clockSkewAllowance - requestTimeout
+send only while now < min(persistedDeadline, deadlineWithCurrentOptions)
+```
+
+Every first attempt and retry checks this rule immediately before sending, including work that waited for a slot or was restored.
+The absolute gRPC request deadline is computed at that check, so a local delay before dispatch cannot restart the client budget.
+The client deadline bounds client waiting, not the service's final effect.
+Increasing retention or reducing the safety allowances on restore never extends a persisted envelope's deadline.
+The defaults leave 54 minutes 40 seconds from staging, and time spent awaiting the checkpoint consumes that same window.
+
+Configure an explicit STREAMING runtime, enabled exactly-once checkpoints and checkpoints after tasks finish; graph construction rejects other settings.
+Bounded input in streaming mode is supported, with the final batch committed after a completed checkpoint.
+Use one pre-provisioned fixed `queue(...)` and the built-in `FailureHandler.failJob()`; dynamic destination resolvers and dropping/dead-lettering handlers are rejected in this mode.
+
+By default the committer reads the queue's v2beta3 `tombstoneTtl` and requires it to cover `nameRetention`.
+An absent field uses the published one-hour default, so a larger assumption requires an explicit sufficient readback.
+This requires `cloudtasks.queues.get` in addition to task-creation permissions and uses the same credentials as creation.
+Readback RPC failures report the status code, or `UNCLASSIFIED` when none is available, without retaining vendor messages or exception causes.
+An emulator endpoint skips this check because the emulator implements v2 only.
+Setting `verifyQueueRetention(false)` leaves validation to the deployment operator; it does not remove the retention prerequisite.
+The connector never creates queues or changes queue policy, and a current readback cannot prove historical retention.
+
+The following are deployment requirements, not runtime guarantees a sink can enforce:
+
+- Retain externalized checkpoints on failure and cancellation and use a restart strategy with a finite attempt limit.
+- Recover from the latest completed checkpoint, preserve the sink UID and all mapped state, and never fork concurrent jobs from one checkpoint.
+- Do not purge the queue, delete/recreate it or shorten retention while any staged or checkpoint-owned envelope can still be replayed; maintain clocks within the configured relative error allowance.
+
+An at-least-once checkpoint can initialize the staged sink with no pending envelopes.
+A downgrade with committer state fails state assignment; `allowNonRestoredState` bypasses that failure by losing the owned pending records and is outside the guarantee.
+Restoring an envelope against a different fixed queue fails instead of redirecting its tasks.
+
+### Heap and checkpoint sizing
+
+The writer caps cover one batch: named Task bytes plus 256 bytes per envelope, up to 100,000 records or 64 MiB by default.
+A full batch fails with a diagnostic recommending a shorter checkpoint interval, larger caps and heap, or less parallelism per host.
+It never blocks `write()` waiting for a barrier that cannot pass that write.
+The complete named task is capped at 100,000 wire bytes before staging.
+
+Flink's committer holds one batch for every writer barrier since the last notified completion, including ordinary savepoints and failed checkpoints.
+Neither checkpoint concurrency nor tolerable failures gives this batch count a ceiling.
+Size and alert from each committer subtask's peak `pendingCommittables`, per-task size and representation copies, with headroom for state-backend buffers and parsed in-flight requests.
+The existing four-representation probe observed up to 7x accounted bytes; this is an observation, not a runtime heap bound.
+
+The blocking commit delays the committer's next barrier.
+For each pending batch, budget all waves of `maxInFlightTasks`, all request attempts and the worst-case backoffs including jitter; sum across every batch released by the notification and add scheduling/checkpoint overhead.
+A task can spend both retry budgets, so a conservative mixed-status attempt bound is `recoveryMaxAttempts + notFoundRecoveryMaxAttempts - 1`.
+At the defaults that is ten 20-second requests plus up to 17.75 seconds of combined backoff, about 218 seconds per full worst-case wave.
+Set `execution.checkpointing.timeout` above the resulting residence time while keeping recovery inside the authorization window.
+If the workload and retry budget cannot fit both limits, reduce the staged workload/budgets or increase actual queue retention and the configured assumption together.
+A timeout/restart loop is not a way to extend the durable authorization deadline.
+
+### Recovery runbook
+
+On terminal failure or expiry, stop bounded automatic retries and locate the latest retained externalized checkpoint.
+Verify that its metadata and referenced state remain readable before recovery; keep an untouched copy of the recovery point and the original job settings.
+The expiry error names the queue, staging origin, effective deadline, observed clock and `expiredEnvelopePolicy`.
+Corrupt state, unknown deadlines, failed retention verification and incompatible destinations fail independently of that policy.
+
+Within the window, repair the queue permissions/configuration or other failure cause, then restore the latest checkpoint under the same sink UID and queue.
+A poison envelope is retried unchanged: changing the serializer cannot repair its already checkpointed bytes.
+Do not edit checkpoint bytes or use an expiry policy as a poison-state handler; retain the state and repair the service-side rejection, or make an explicit out-of-guarantee recovery decision using the application's records.
+
+After expiry, an operator can choose one of these explicit policies in `CloudTasksStagedOptions`:
+
+| Policy | Effect and operator decision |
+|---|---|
+| `FAIL` | Sends nothing for the expired envelope and fails; keep the checkpoint for investigation |
+| `ASSUME_COMMITTED` | Completes expired envelopes without sending; justified for resuming a stop-with-savepoint that demonstrably reached FINISHED |
+| `CREATE_ANYWAY` | Sends the original named bytes despite expiry, accepting possible duplicate tasks |
+| `DROP` | Discards expired envelopes without sending, accepting possible lost tasks or relying on handler records proving completion |
+
+These overrides are explicit loss/duplicate-risk decisions outside the guarantee and apply to expired envelopes, not arbitrary failures.
+Monitor the [expiry override counters](#checkpointed-creation-metrics) to see which decisions actually run.
+Return to `FAIL` after the chosen recovery operation; leaving an override configured also affects later expired work.
+
+A successful stop-with-savepoint reaches FINISHED only after commit completes, yet its saved committer state still contains the pre-commit requests.
+Resume it normally within the window; after the window, `ASSUME_COMMITTED` is the documented override for this completed-stop case.
+If a savepoint was created but the stop never reaches FINISHED, Flink 1.20.4 and 2.2.1 fail the job with a non-recoverable `StopWithSavepointStoppingException`, even with a restart strategy.
+Find the savepoint path in that exception and resume from it rather than the older completed checkpoint.
+Prevent deployment automation from restarting the job from an older checkpoint; if it has already done so, cancel that replacement before its next checkpoint completes.
+The savepoint replays the same names, including its partially completed creates; letting a job restored from the older checkpoint commit can create duplicate tasks under new random names.
+Stable application keys avoid that fresh-name hazard but do not make handler execution exactly once.
+
 ## Error handling
+
+The policy and callback descriptions in this section apply to the default at-least-once writer.
+Checkpointed creation requires `failJob()` and throws from the committer on every terminal creation failure; use the [recovery runbook](#recovery-runbook).
 
 Terminal failures fail the job. Failures captured by completion callbacks are rethrown on the task
 thread from the next `write()`/`flush()`, and `flush()` awaits every outstanding create, so a
@@ -586,7 +716,7 @@ many tasks were dead-lettered in the first place is [`numRecordsSendErrors`](#me
 
 One limit is worth stating because the documentation contradicts itself: the maximum task size is
 given as **100 KB** by the `CreateTask` API reference and the proto, and as **1 MiB** by the quotas
-page. The sink does not validate against either; an oversized task is rejected by the service.
+page. The at-least-once writer leaves this validation to the service; the staged writer caps the complete named Task at 100,000 wire bytes before checkpointing.
 Bodies should be sized against the smaller number until this is verified empirically.
 
 ## Metrics
@@ -637,13 +767,11 @@ Because the registry entries cannot be removed, a queue seen again resumes its o
 
 `currentSendTime` is deliberately **not** set: a creation may sit parked through several backoffs,
 so the interval this writer could measure would describe its own retry budget rather than the
-service's response time. There is no committer either (the sink is single-phase), so Flink's
-committer metrics do not apply.
+service's response time. The at-least-once writer has no committer, so Flink committer metrics apply only to the staged mode below.
 
-### Internal staging metrics
+### Checkpointed creation metrics
 
-The internal checkpoint-staging writer developed in [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) registers the gauges below and retains `recordsSkipped`.
-It is not selectable through the public builder; the supported sink behavior and metrics above remain at-least-once.
+The `EXACTLY_ONCE` writer registers the gauges below and retains `recordsSkipped`.
 Its `numRecordsSendErrors` counts staging serialization failures and extractor exceptions, which fail the job, while it never increments send or sent-byte counters.
 
 | Metric | Type | Meaning |
@@ -653,12 +781,33 @@ Its `numRecordsSendErrors` counts staging serialization failures and extractor e
 
 Both gauges reset when the writer transfers its batch and exclude committables already held by Flink's collector.
 They therefore describe one writer batch, not the total pending checkpoint backlog or actual live heap.
-The state format, copy measurements and collector sizing rule are recorded in ADR-0158; public activation and its operational guidance belong to [#1243](https://github.com/flink-gcp/flink-connector-gcp/issues/1243).
+
+The committer reports explicit expiry decisions separately:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `expiredEnvelopesAssumedCommitted` | counter | expired envelopes completed by `ASSUME_COMMITTED` without sending |
+| `expiredEnvelopesDropped` | counter | expired envelopes discarded by `DROP` without sending |
+| `expiredEnvelopeCreatesAuthorized` | counter | expired create attempts authorized by `CREATE_ANYWAY`, including retries |
+
+These counters report decisions in the current committer incarnation, not unique physical tasks.
+Restore can count an envelope again, and an authorized create may still fail or never reach the service.
+Flink's successful-committables counter also includes `DROP`, so use `expiredEnvelopesDropped` to distinguish that outcome.
+
+The committer registers `tasksDeduplicated` for actual `ALREADY_EXISTS` responses.
+Its `errorClass.CODE.errors` counts failed creation attempts, including client timeouts, excluding collisions and stale callbacks.
+With `perDestinationMetrics(true)`, its `destination.QUEUE.recordsSend` counts envelopes first submitted during each commit invocation and `destination.QUEUE.sendErrors` counts terminal RPC failures.
+Restore can count an envelope again; those counters are not unique task counts, and expiry before sending increments neither.
+Flink supplies `pendingCommittables`, `totalCommittables`, `successfulCommittables`, `alreadyCommittedCommittables`, `failedCommittables` and `retriedCommittables` per committer subtask.
+`signalAlreadyCommitted()` feeds `alreadyCommittedCommittables`, including the explicit `ASSUME_COMMITTED` override; the connector collision counter only counts service collision responses.
+The connector throws on terminal failure and owns retrying internally, so Flink's failed/retried committable counters do not measure the RPC failures or attempts.
+Use the exception and job status to diagnose terminal failures and alert on pending committable growth.
+See [heap and checkpoint sizing](#heap-and-checkpoint-sizing) for the backlog these gauges do not cover.
 
 ## Tuning
 
 `CloudTasksWriterOptions` (nested-options pattern, every knob defaulted, set through
-`writerOptions(...)`) is the whole surface, and every knob with its default is in the
+`writerOptions(...)`) tunes both creation paths; `stagedOptions(...)` adds the checkpointed mode's staging and recovery limits. Every knob with its default is in the
 [configuration reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtaskswriteroptions).
 There are deliberately no rate knobs among them — that is the queue's job.
 
@@ -782,12 +931,12 @@ Limits of this coverage:
 |---|---|
 | Targets | HTTP and App Engine; fixed and per-record request routing |
 | Authorization | HTTP: OIDC and OAuth tokens; App Engine: internal dispatch identity |
-| Destinations | Fixed queue or per-record resolver |
-| Deduplication | Opt-in named tasks, id hashed by the sink |
+| Destinations | Fixed queue; per-record resolvers in at-least-once mode |
+| Deduplication | Stable-key hashes when configured; checkpointed mode otherwise persists random names |
 | Queue management | None — the queue must exist and be configured |
 | Pacing | None in the sink; owned by the queue |
-| Delivery | At-least-once, flush on checkpoint, stateless writer |
-| Failure policy | Job failure by default; pluggable per-task handler ([#207]({{< param BookRepo >}}/issues/207)) |
+| Delivery | At-least-once by default; DataStream checkpointed creation within its documented scope and recovery window |
+| Failure policy | Job failure by default and required for checkpointed creation; at-least-once supports pluggable per-task handlers ([#207]({{< param BookRepo >}}/issues/207)) |
 | Table API / SQL | HTTP implemented in [#605]({{< param BookRepo >}}/issues/605); App Engine implemented in [#634]({{< param BookRepo >}}/issues/634) |
 
 ## Provenance and attribution

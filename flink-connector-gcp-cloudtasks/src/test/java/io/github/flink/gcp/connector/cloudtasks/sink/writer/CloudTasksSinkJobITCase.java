@@ -27,6 +27,7 @@ import org.apache.flink.connector.datagen.source.DataGeneratorSource;
 import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksDeliveryGuarantee;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
@@ -42,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * through the public {@code CloudTasksSink.builder()...emulatorEndpoint(...)} path — no test seams.
  * They cover the serializer's {@code open(...)} and the writer's construction by the runtime.
  *
- * <p>Both jobs run on the MiniCluster with a rate-limited source, so the streaming one checkpoints
+ * <p>The jobs run on the MiniCluster with a rate-limited source, so the streaming one checkpoints
  * several times while records are still arriving and the batch one has nothing but the end-of-input
  * flush. Delivery is asserted at the target the emulator dispatches to; a lost flush shows up as a
  * missing record.
@@ -54,16 +55,37 @@ class CloudTasksSinkJobITCase extends AbstractCloudTasksEmulatorITCase {
 
     @Test
     void streamingJobDispatchesEveryRecord() throws Exception {
-        runJob(RuntimeExecutionMode.STREAMING, "streaming", "/streaming");
+        runJob(
+                RuntimeExecutionMode.STREAMING,
+                "streaming",
+                "/streaming",
+                CloudTasksDeliveryGuarantee.AT_LEAST_ONCE);
     }
 
     @Test
     void batchJobDispatchesEveryRecord() throws Exception {
         // Batch has no checkpoints, so everything rides the end-of-input flush.
-        runJob(RuntimeExecutionMode.BATCH, "batch", "/batch");
+        runJob(
+                RuntimeExecutionMode.BATCH,
+                "batch",
+                "/batch",
+                CloudTasksDeliveryGuarantee.AT_LEAST_ONCE);
     }
 
-    private static void runJob(RuntimeExecutionMode mode, String queueId, String path)
+    @Test
+    void checkpointedCreationDispatchesEveryRecordIncludingTheBoundedFinalBatch() throws Exception {
+        runJob(
+                RuntimeExecutionMode.STREAMING,
+                "checkpointed",
+                "/checkpointed",
+                CloudTasksDeliveryGuarantee.EXACTLY_ONCE);
+    }
+
+    private static void runJob(
+            RuntimeExecutionMode mode,
+            String queueId,
+            String path,
+            CloudTasksDeliveryGuarantee guarantee)
             throws Exception {
         QueueDestination queue = createQueue(queueId);
 
@@ -97,6 +119,7 @@ class CloudTasksSinkJobITCase extends AbstractCloudTasksEmulatorITCase {
                 .sinkTo(
                         CloudTasksSink.<String>builder()
                                 .queue(queue)
+                                .deliveryGuarantee(guarantee)
                                 .serializer(
                                         CloudTasksSerializationSchema.httpTarget(url)
                                                 .withBody(new SimpleStringSchema()))

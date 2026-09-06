@@ -105,6 +105,16 @@ are 12 `@PublicEvolving` (change streams) and 12 `@Experimental` (CDC). The clos
 re-verified over the compiled classes after the flips, by the same `javap` procedure as the
 census.
 
+### Cloud Tasks staged-creation closure stops (2026-09-07)
+
+Issue #1243 adds `CloudTasksDeliveryGuarantee` and `CloudTasksStagedOptions` as `@Experimental` closure stops on the existing `@Public CloudTasksSinkBuilder.deliveryGuarantee` and `stagedOptions` signatures.
+The nested staging builder and expiry-policy enum share that tier.
+The mode has not passed its real-service and final performance release gates, and later committer-side failure routing or dynamic destinations can reshape validation.
+ADR-0158 initially chose `@PublicEvolving` for these new types, but its outside frozen builder referrer makes that inconsistent with this signature closure and ADR-0141.
+The implementation therefore corrects the adoption tier rather than introducing a mixed-tier exception.
+As with the existing CDC closure stops, removing or renaming a parameter type still changes the frozen builder signature and needs a deliberate compatibility decision; the annotation does not exempt that signature.
+These types are newly introduced after 1.0.0, so this is not a demotion of a released API.
+
 **The tiers now promise:** `@Public` does not break within a major version; `@PublicEvolving` may
 break at a minor release with a release-notes entry, and must not break at a patch release;
 `@Experimental` and `@Internal` may change in any release.
