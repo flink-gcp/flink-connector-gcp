@@ -270,7 +270,7 @@ Pub/Sub source acknowledgements and Cloud Tasks creation remain independently at
 
 ## Change Streams
 
-Before either example runs, enable Change Streams on the physical `profiles` table and create the single-cluster routing application profile named `single-cluster-profile`.
+Before these examples run, enable Change Streams on the physical `profiles` table and create the single-cluster routing application profile named `single-cluster-profile`.
 The SQL DDL registers a Flink table but does not provision either prerequisite.
 
 ### Consuming Change Streams with SQL
@@ -283,6 +283,53 @@ The physical columns carry the row key and ordered mutation entries, while virtu
 The `entries` array preserves the service order, and `entry_index` preserves that position after `UNNEST`.
 The envelope is a mutation record rather than a reconstructed current row, so deletes also arrive as inserted envelope rows.
 It declares no primary key and cannot feed a keyed upsert sink without a stateful transformation that owns row reconstruction.
+
+### Producing a selected cell with keep-latest
+
+Store the complete non-key part of each logical profile as a JSON object in `state:current`.
+The producer's `state` family has one string qualifier, `current`; the consumer's flat `name` and `tier` columns are decoded from its JSON contents.
+Writing `name` and `tier` as separate qualifiers would require a different row-reconstruction protocol.
+
+Create the ordinary `state` family without a garbage-collection rule and enable Change Streams before writing any example data.
+The selected-cell source rejects GC mutations affecting its cell, and SQL table auto-creation requires a GC rule, so provision this table separately.
+Supply the Flink JSON format jar as described in [Table setup]({{< relref "docs/connectors/table/bigtable" >}}#getting-the-connector-onto-the-classpath).
+Use the same single-cluster application profile for both jobs, and replace `cluster-a` below with that profile's actual cluster ID.
+
+Choose an epoch-millisecond startup timestamp after Change Streams was enabled and before the first write.
+Replace the example timestamp in the consumer DDL with that value, still within the table's retained history.
+A fresh timestamp-based consumer can then read these writes even if it starts after the producer finishes; it does not take a snapshot of older rows.
+
+Run this producer statement and wait for its job to finish:
+
+{{< sql-snippet file="flink/BigtableSelectedCellInterop.sql" tag="producer" >}}
+
+`keep-latest` deletes all versions of `state:current` and sets the JSON replacement in the same row entry.
+Run the next statement only after the first job has completed, then wait for this job too:
+
+{{< sql-snippet file="flink/BigtableSelectedCellInterop.sql" tag="replacement" >}}
+
+`NULL ON NULL` retains the `name` field with a JSON null value.
+The JSON object still contains every non-key field, so the source can decode the complete replacement without consulting an earlier row.
+Submitting this replacement again writes another mutation and can produce another identical `UPDATE_AFTER`.
+Separate same-row entries remain unordered; these completed jobs demonstrate sequential application, not event-time arbitration or exactly-once effects.
+
+Register and query the consumer in another SQL session:
+
+{{< sql-snippet file="flink/BigtableSelectedCellInterop.sql" tag="consumer" >}}
+
+The source emits keyed `UPDATE_AFTER` values `('profile#1', 'Alice', 'gold')` and `('profile#1', NULL, 'silver')` for the two writes.
+SQL result collection can normalize that changelog into an initial insert, before/after updates and deletes carrying the previous value, and omit identical replacements.
+Interpret the displayed operations according to the SQL client's result mode.
+The JSON format rejects missing fields and malformed values instead of silently dropping an incomplete replacement.
+The source keeps consuming until the job is cancelled or a bounded end timestamp is configured.
+
+To remove the logical value, the producer protocol requires a full selected-column or selected-family delete without a following set, which the source emits as a key-only `DELETE`.
+A whole-cell SQL NULL is not that operation: the sink writes its null-string encoding and still emits delete-then-set.
+Use JSON null fields inside a complete object for nullable values.
+A null family skips that family; a row with no non-null family fails serialization.
+`sink.insert-only-input-mode = insert-only` applies only when a statement's input contains inserts alone; it does not forbid updating queries.
+If an upstream changelog supplies a `DELETE`, this keep-latest sink deletes the entire Bigtable row, including unrelated cells.
+See the [selected-cell protocol]({{< relref "docs/connectors/table/bigtable" >}}#selected-cell-upserts) for the accepted mutation forms and failure conditions.
 
 ### Replicating a selected cell into BigQuery
 

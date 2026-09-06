@@ -69,6 +69,23 @@ The source fails on a standalone, repeated, or out-of-order selected `SetCell`; 
 It does not invent `INSERT`, perform a lookup, reconstruct an old value, or bootstrap a snapshot before the configured Change Streams start position.
 This restriction is the state-and-bootstrap design: correctness comes from the producer replacing or deleting the complete logical value atomically, not from state hidden inside the source.
 
+### Full-column timestamp bounds (2026-09-06 refinement)
+
+The [RPC `TimestampRange` specification](https://docs.cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#timestamprange) defines the default inclusive lower bound as zero and the default exclusive upper bound as infinity.
+The original entry-model decision above used client 2.80.0; this refinement checks the upgraded 2.82.0 client.
+Bigtable client 2.82.0's `ChangeStreamStateMachine` passes both protobuf numeric fields to `Range.TimestampRange.create`, which exposes `CLOSED(0)` and `OPEN(0)` for an omitted range.
+A real-service run of `BigtableTableSourceRealGcpITCase.readsKeepLatestJsonThroughSelectedCellChangeStreams` on 2026-09-06 reproduced that exact pair after the SQL keep-latest sink submitted a full-column delete followed by a set.
+The previous classifier rejected it because it required two `UNBOUNDED` tags; synthetic tests constructed those tags directly and missed the SDK's received representation.
+
+Selected-cell classification now interprets an inclusive zero lower bound and the zero sentinel for an infinite upper bound as a full-column delete, accepting either bound's explicit `UNBOUNDED` form too.
+Positive lower bounds, finite upper bounds, and invalid bound types remain rejected with or without a following set.
+The interpretation stays in the selected-cell classifier so the public mutation model and envelope retain the SDK's exact bound types and numeric values.
+The keep-latest interoperability test wraps the sink's serialized mutations in a synthetic complete Change Streams response and feeds the pinned SDK's `ChangeStreamRecordMerger`, exercising its received-range conversion directly.
+This test-only use of the SDK's internal merger makes a changed conversion visible during a client upgrade; the service test owns RPC acceptance.
+The invalid-JSON assertions require a format diagnostic so an earlier protocol failure cannot satisfy them.
+
+### Source position and table validation
+
 Continuation tokens and partition ranges remain internal to the FLIP-27 source protocol.
 The estimated low watermark belongs to the partition that produced the mutation and is readable data, not a Flink source watermark.
 A stream-wide watermark requires a coordinated frontier across active, queued, and unassigned partitions.
@@ -122,5 +139,14 @@ The scan and lookup options a sink cannot act on stay accepted, because one tabl
 - Gated real-GCP Table API acceptance uses the existing ephemeral-instance harness to exercise the
   envelope through SQL with timestamp bounds, a binary row key, binary qualifier and value, ordered
   user writes and deletes, and readable metadata.
+  A selected-cell case writes complete JSON replacements through the SQL keep-latest sink, reapplies
+  the nullable replacement, deletes the full selected column with the data client, and requires
+  three `UPDATE_AFTER` rows followed by a key-only `DELETE` through the SQL source and an explicit
+  upsert changelog stream.
+  Ordinary SQL result collection normalized the first upsert into an insert, reconstructed an
+  update-before row and the deleted value, and suppressed the identical replacement in the
+  2026-09-06 service run; it cannot establish the original source changelog boundary.
+  Reapplication submits a fresh completed job; it does not inject checkpoint failure or validate a
+  downstream BigQuery materialization.
   Service-timed garbage collection and retention expiry remain outside that acceptance because
   neither is deterministic.

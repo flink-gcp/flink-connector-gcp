@@ -16,13 +16,21 @@
 
 package io.github.flink.gcp.connector.bigtable.table;
 
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
+import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.models.Mutation;
+import com.google.cloud.bigtable.data.v2.models.RowMutation;
+import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -45,17 +53,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The table source against real Cloud Bigtable, driven through SQL with <b>no</b> {@code
  * emulator-endpoint} option.
  *
- * <p>Four things run nowhere else (ADR-0080). Split planning: the emulator models no tablets, so
- * only a pre-split real table makes a SQL scan actually plan several splits. {@code
- * scan.app-profile-id}: the emulator ignores profiles, so only the service can say whether the
- * option reached the wire. And the family filter's server-side answer: a declared family the table
- * lacks fails the read with {@code NOT_FOUND} rather than answering empty, while a row-key-only
- * projection — whose keys-only chain names no family — reads the same table fine, which is what
- * shows the pruning is served by the server and not by the converter. Filter pushdown: the emulator
- * can exercise the same filter proto, but only this suite proves that the service accepts the
- * conditional cell-existence filter composed with SQL row-key bounds and projection. Change
- * Streams: the emulator implements no Change Streams RPC, so only the service can exercise the SQL
- * mutation envelope, its metadata, and its timestamp bounds end to end.
+ * <p>These service boundaries are not established by the emulator (ADR-0080). Split planning: the
+ * emulator models no tablets, so only a pre-split real table makes a SQL scan actually plan several
+ * splits. {@code scan.app-profile-id}: the emulator ignores profiles, so only the service can say
+ * whether the option reached the wire. And the family filter's server-side answer: a declared
+ * family the table lacks fails the read with {@code NOT_FOUND} rather than answering empty, while a
+ * row-key-only projection — whose keys-only chain names no family — reads the same table fine,
+ * which is what shows the pruning is served by the server and not by the converter. Filter
+ * pushdown: the emulator can exercise the same filter proto, but only this suite proves that the
+ * service accepts the conditional cell-existence filter composed with SQL row-key bounds and
+ * projection. Change Streams: the emulator implements no Change Streams RPC, so only the service
+ * can exercise the SQL mutation envelope, its metadata, its timestamp bounds, and keep-latest JSON
+ * writes decoded as a selected-cell changelog end to end.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
@@ -283,6 +292,111 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                             assertThat(row.getField(9)).isInstanceOf(Integer.class);
                             assertThat(row.getField(10)).isInstanceOf(Instant.class);
                         });
+    }
+
+    @Test
+    void readsKeepLatestJsonThroughSelectedCellChangeStreams() throws Exception {
+        TableDestination table = createChangeStreamTable("table-selected-cell-keep-latest");
+        String profile = "flink-selected-cell-it";
+        String sourceCluster = createSingleClusterAppProfile(profile);
+        Instant start = writeServerTimeMarker(table, "start-marker");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv =
+                StreamTableEnvironment.create(env, EnvironmentSettings.inStreamingMode());
+        tEnv.executeSql(
+                ddl(
+                        "profile_writes",
+                        "rowkey STRING, " + FAMILY + " ROW<`current` STRING>",
+                        table.getTable(),
+                        "sink.app-profile-id",
+                        profile,
+                        "sink.write-mode",
+                        "keep-latest",
+                        "sink.insert-only-input-mode",
+                        "insert-only"));
+        tEnv.executeSql(
+                        "INSERT INTO profile_writes VALUES ('profile#1', "
+                                + "ROW(JSON_OBJECT('name' VALUE 'Alice', "
+                                + "'tier' VALUE 'gold' NULL ON NULL)))")
+                .await();
+        String replacement =
+                "INSERT INTO profile_writes VALUES ('profile#1', "
+                        + "ROW(JSON_OBJECT('name' VALUE CAST(NULL AS STRING), "
+                        + "'tier' VALUE 'silver' NULL ON NULL)))";
+        // Each completed job serializes a fresh entry; this does not inject checkpoint recovery.
+        tEnv.executeSql(replacement).await();
+        tEnv.executeSql(replacement).await();
+        mutateRow(
+                table,
+                ByteString.copyFromUtf8("profile#1"),
+                mutation -> mutation.deleteCells(FAMILY, "current"));
+        Instant end = writeServerTimeMarker(table, "end-marker").plusSeconds(120);
+
+        tEnv.executeSql(
+                ddl(
+                        "profile_changes",
+                        "rowkey STRING, name STRING, tier STRING",
+                        table.getTable(),
+                        "scan.mode",
+                        "change-stream",
+                        "scan.change-stream.changelog-mode",
+                        "selected-cell",
+                        "scan.app-profile-id",
+                        profile,
+                        "scan.change-stream.selected-cell.family",
+                        FAMILY,
+                        "scan.change-stream.selected-cell.qualifier-base64",
+                        "Y3VycmVudA==",
+                        "scan.change-stream.selected-cell.source-cluster-id",
+                        sourceCluster,
+                        "scan.startup.mode",
+                        "timestamp",
+                        "scan.startup.timestamp-millis",
+                        Long.toString(start.toEpochMilli()),
+                        "scan.bounded.timestamp-millis",
+                        Long.toString(end.toEpochMilli()),
+                        "value.format",
+                        "json",
+                        "value.json.fail-on-missing-field",
+                        "true",
+                        "value.json.ignore-parse-errors",
+                        "false"));
+
+        List<Row> changes = new ArrayList<>();
+        // Request an upsert stream: SQL result collection normalizes updates into retractions
+        // and can suppress the repeated replacement, hiding the source's actual changelog.
+        try (CloseableIterator<Row> rows =
+                tEnv.toChangelogStream(
+                                tEnv.sqlQuery("SELECT rowkey, name, tier FROM profile_changes"),
+                                Schema.newBuilder().primaryKey("rowkey").build(),
+                                ChangelogMode.upsert())
+                        .executeAndCollect()) {
+            rows.forEachRemaining(changes::add);
+        }
+        assertThat(changes)
+                .containsExactly(
+                        Row.ofKind(RowKind.UPDATE_AFTER, "profile#1", "Alice", "gold"),
+                        Row.ofKind(RowKind.UPDATE_AFTER, "profile#1", null, "silver"),
+                        Row.ofKind(RowKind.UPDATE_AFTER, "profile#1", null, "silver"),
+                        Row.ofKind(RowKind.DELETE, "profile#1", null, null));
+    }
+
+    private static Instant writeServerTimeMarker(TableDestination table, String rowKey)
+            throws Exception {
+        try (BigtableDataClient client = BigtableDataClient.create(PROJECT, table.getInstance())) {
+            // The timestamp-free SDK overload stamps client time. Explicit -1 asks Bigtable
+            // for server time; repeated marker versions are harmless on this unrelated cell.
+            client.mutateRow(
+                    RowMutation.create(
+                            TableId.of(table.getTable()),
+                            rowKey,
+                            Mutation.createUnsafe().setCell(FAMILY, "marker", -1L, "time")));
+            var marker = client.readRow(TableId.of(table.getTable()), rowKey);
+            assertThat(marker).isNotNull();
+            return instantFromMicros(marker.getCells(FAMILY, "marker").get(0).getTimestamp());
+        }
     }
 
     private static void assertRawValue(Row value, ByteString expected) {
