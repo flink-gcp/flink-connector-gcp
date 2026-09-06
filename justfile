@@ -83,7 +83,7 @@ verify-flink version *extra:
 # -Drelease activates two profiles at once: the connector parent's `release` (GPG
 # signing, javadoc jar, enforcer) and this project's `central-release` (sources jar,
 # compiler re-pin, Central Portal upload with autoPublish=false — the deployment stops
-# at VALIDATED and Publish or Drop is a click in the Portal UI; issue #724, ADR-0147).
+# at VALIDATED; the release workflow publishes only after both lines validate).
 # Signing reads MAVEN_GPG_KEY and MAVEN_GPG_PASSPHRASE; the upload reads the `central`
 # server credentials from ~/.m2/settings.xml. -Djapicmp.skip=true is unconditional:
 # every verify lane already runs the real check, and for a release whose version
@@ -111,7 +111,7 @@ verify-flink version *extra:
 # non-glob pathspec that misses the root pom, and a tree left at the release version
 # arms the japicmp reactor-self-reference trap the root pom documents). Extra
 # arguments go to the deploy step: `-DskipPublishing=true` builds and signs the
-# bundle without uploading it.
+# artifacts without uploading them.
 #
 # Stage <version> on the Central Portal, e.g. `just stage-release 1.0.0`.
 [positional-arguments]
@@ -119,6 +119,11 @@ stage-release version *extra:
     mise x uv -- uv run --locked scripts/stage-release-guard.py "$@"
     {{ mvn }} versions:set -DnewVersion="$1" -DgenerateBackupPoms=false
     {{ mvn }} clean deploy -Drelease -DskipTests -Djapicmp.skip=true {{ if version =~ '-1\.20$' { '-Dflink.compat=flink1' } else { '' } }} "${@:2}"
+
+# Capture staging IDs, inspect their state, or publish/drop them (ADR-0147).
+[positional-arguments]
+central-portal +args:
+    python3 scripts/central-portal.py "$@"
 
 # The opt-in module is outside the ordinary reactor so its dependency on every connector does not
 # widen connector-only builds. `-am` is still load-bearing here: the snippets must compile against
@@ -211,7 +216,8 @@ ci-maven-args *args:
 # check-skill-frontmatter.py declares PyYAML in PEP 723 metadata of its own and
 # runs through `uv run --no-project`; because the tests load every script by
 # file path, that import has to resolve here too, which is why pyyaml is in the
-# dev group and not in the project's dependencies.
+# dev group and not in the project's dependencies. Release workflow tests also
+# use PyYAML to parse the workflow program before exercising its shell commands.
 #
 # Run the scripts/tests suite with pytest.
 test-scripts:

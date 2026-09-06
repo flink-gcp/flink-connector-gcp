@@ -15,13 +15,13 @@
 # limitations under the License.
 #
 # Collects one version line's five shaded SQL uber-jars and their .asc
-# signatures for the draft GitHub Release (issue #724, ADR-0147). The glob
+# signatures for the GitHub Release (issue #724, ADR-0147). The glob
 # shape is load-bearing: the module-directory anchor keeps the unshaded
 # original-*.jar out, the exact -<version>.jar suffix keeps -sources/-javadoc
 # and the other version line out, and the signatures sit beside the jars in
 # target/ (measured on maven-gpg-plugin 3.2.8's bc signer, 2026-08-31 — not in
 # its ascDirectory default target/gpg/). The count assertion is what turns a
-# renamed module or a moved signature into a red step instead of a draft
+# renamed module or a moved signature into a red step instead of a
 # Release quietly missing artifacts. The destination must lie OUTSIDE the
 # working tree (the release workflow uses $RUNNER_TEMP): the second staging
 # build runs apache-rat over the whole tree, and a collected .asc is exactly
