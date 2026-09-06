@@ -297,6 +297,25 @@ console from its business key. Passing a caller-chosen name through unhashed —
 would allow deduplication against tasks created by another system — is deferred until someone needs
 it.
 
+### Lineage
+
+The sink returned by `CloudTasksSink.builder().build()` implements Flink's `LineageVertexProvider`.
+A fixed `QueueDestination` contributes one dataset with namespace `cloudtasks://{project}/{location}` and name `{queue}`.
+This is the project's naming convention.
+Its `gcp` physical-resource facet has kind `cloudtasks-queue` and retains the configured `project`, `location` and `queue`.
+HTTP and App Engine targets, named and unnamed tasks, and writer concurrency or retry settings use the same queue identity.
+
+Extraction inspects the final configured resolver without invoking it.
+A `FixedDestinationResolver` supplies its queue; a user-defined resolver returns a non-null vertex with an empty dataset list, even if the resolver would always choose one queue.
+The last call to `queue(...)` or `destinationResolver(...)` determines which case applies.
+Extraction does not open a client, resolve credentials, issue RPCs, invoke serialization or extract a task ID.
+Individual tasks, HTTP URLs, App Engine handler routes, authentication subjects and payloads are not additional datasets.
+Queue lineage does not prove task dispatch, handler execution or downstream business effects.
+
+Flink 2.x extracts the sink metadata through its native lineage path.
+Flink 1.20 supports the same direct metadata inspection, but has no automatic listener delivery.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for listener integration, the version contract and the limits of the custom `gcp` facet.
+
 ## Queues, rate limits and sink concurrency
 
 This queue and runtime behavior applies to both DataStream and Table jobs.

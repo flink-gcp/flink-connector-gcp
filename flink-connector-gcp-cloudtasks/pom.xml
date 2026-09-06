@@ -43,6 +43,12 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <!-- Public lineage interfaces live in runtime on Flink 2.x. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-base</artifactId>
             <scope>provided</scope>

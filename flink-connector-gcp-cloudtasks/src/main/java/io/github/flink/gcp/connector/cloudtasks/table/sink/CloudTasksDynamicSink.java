@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.cloudtasks.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.SerializationSchema;
-import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -29,6 +28,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
@@ -47,6 +47,7 @@ import java.util.Objects;
 @Internal
 public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
 
+    private final String logicalTableName;
     private final DataType physicalDataType;
     private final EncodingFormat<SerializationSchema<RowData>> encodingFormat;
     private final QueueDestination queue;
@@ -60,6 +61,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
     private List<String> metadataKeys = Collections.emptyList();
 
     public CloudTasksDynamicSink(
+            String logicalTableName,
             DataType physicalDataType,
             EncodingFormat<SerializationSchema<RowData>> encodingFormat,
             QueueDestination queue,
@@ -69,6 +71,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
+        this.logicalTableName =
+                Preconditions.checkNotNull(logicalTableName, "logicalTableName must not be null");
         this.physicalDataType =
                 Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
         this.encodingFormat =
@@ -153,8 +157,10 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
-        Sink<RowData> sink = builder.build();
-        return SinkV2Provider.of(sink, parallelism);
+        CloudTasksCreateTaskSink<RowData> sink =
+                (CloudTasksCreateTaskSink<RowData>) builder.build();
+        return SinkV2Provider.of(
+                new CloudTasksCreateTaskSink<>(sink.getConfig(), logicalTableName), parallelism);
     }
 
     /**
@@ -193,6 +199,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
     public DynamicTableSink copy() {
         CloudTasksDynamicSink copy =
                 new CloudTasksDynamicSink(
+                        logicalTableName,
                         physicalDataType,
                         encodingFormat,
                         queue,
@@ -220,7 +227,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
             return false;
         }
         CloudTasksDynamicSink that = (CloudTasksDynamicSink) o;
-        return physicalDataType.equals(that.physicalDataType)
+        return logicalTableName.equals(that.logicalTableName)
+                && physicalDataType.equals(that.physicalDataType)
                 && encodingFormat.equals(that.encodingFormat)
                 && queue.equals(that.queue)
                 && target.equals(that.target)
@@ -235,6 +243,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
     @Override
     public int hashCode() {
         return Objects.hash(
+                logicalTableName,
                 physicalDataType,
                 encodingFormat,
                 queue,

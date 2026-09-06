@@ -124,6 +124,7 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         ? HttpTargetSpec.from(config, contentType)
                         : AppEngineTargetSpec.from(config, contentType);
         return new CloudTasksDynamicSink(
+                context.getObjectIdentifier().asSummaryString(),
                 context.getPhysicalRowDataType(),
                 format,
                 QueueDestination.of(
