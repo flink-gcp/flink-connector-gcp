@@ -32,6 +32,16 @@ import org.apache.flink.annotation.Public;
  * record up to the barrier was either durably accepted, skipped by the serializer, or handed to
  * that handler.
  *
+ * <p>The returned sink implements {@link
+ * org.apache.flink.streaming.api.lineage.LineageVertexProvider}. A fixed queue contributes one
+ * dataset with namespace {@code cloudtasks://PROJECT/LOCATION}, name {@code QUEUE}, and a {@code
+ * gcp} physical-resource facet containing the project, location and queue. This naming is a project
+ * convention. A user-defined destination resolver contributes no dataset and is never evaluated
+ * during extraction. Task URLs, payloads, authentication subjects and task IDs are not datasets;
+ * queue lineage does not prove dispatch or handler execution. Extraction performs no
+ * authentication, client creation, RPC or serializer call. Flink 2.x extracts this metadata
+ * automatically; Flink 1.20 supports direct metadata inspection but not native listener delivery.
+ *
  * <p>Example:
  * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="sink" -->
  *

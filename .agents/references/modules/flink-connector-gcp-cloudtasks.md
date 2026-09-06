@@ -59,6 +59,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   proto contracts. Queue-level `appEngineRoutingOverride` remains authoritative over task-level
   routing.
 
+## Lineage (`docs/adr/0160`)
+
+- Report only the effective `FixedDestinationResolver` queue through `LineageVertexProvider`.
+  Never evaluate a user resolver, serializer or task-ID extractor, or enter client/credential code
+  during extraction. Unknown DataStream queues have an empty dataset list in a non-null vertex.
+- Pass the catalog identity through the Table sink's copy/runtime path and use the shared Table
+  adapter to retain the physical queue facet. HTTP/App Engine targets and task naming do not add
+  datasets. Keep Flink 2.x graph/listener tests in `src/test/java-flink2`; direct inspection and
+  serialization tests also run on 1.20.
+
 ## Failure policy and metrics (`docs/adr/0049`)
 
 - **Exactly three failures are routed**: serializer rejection, extractor throw, creation

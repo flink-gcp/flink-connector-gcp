@@ -40,8 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * End-to-end integration tests against the Cloud Tasks emulator, driving the sink exclusively
  * through the public {@code CloudTasksSink.builder()...emulatorEndpoint(...)} path — no test seams.
- * These are the only tests that build the sink through {@code CloudTasksCreateTaskSink}, so they
- * are what covers the serializer's {@code open(...)} and the writer's construction by the runtime.
+ * They cover the serializer's {@code open(...)} and the writer's construction by the runtime.
  *
  * <p>Both jobs run on the MiniCluster with a rate-limited source, so the streaming one checkpoints
  * several times while records are still arriving and the batch one has nothing but the end-of-input

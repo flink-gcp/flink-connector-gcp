@@ -64,7 +64,7 @@ generated `META-INF/NOTICE` enumerates every bundled artifact, with pinned permi
 under `META-INF/licenses/`.
 
 The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
-See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and listener contract.
 
 Keep sibling SQL connector jars as separate files in `lib/` or add each with its own `ADD JAR`.
 Merging them into another fat jar without merging service descriptors can silently discard one of
@@ -317,6 +317,20 @@ OIDC and OAuth are mutually exclusive because the Cloud Tasks request stores the
 App Engine targets do not accept the `http.oidc.*` or `http.oauth.*` options.
 Cloud Tasks dispatches them through the same-project, same-region App Engine integration instead
 of attaching an external HTTP authorization token.
+
+### Lineage
+
+A Cloud Tasks table reports its configured queue in the `gcp` physical-resource facet.
+Flink owns the logical SQL dataset name, such as `default_catalog.default_database.tasks`.
+The dataset namespace is `cloudtasks://{project}/{location}`; the facet separately retains the physical queue name, kind `cloudtasks-queue`, and configured `project`, `location` and `queue`.
+The queue naming is a project convention.
+The internal Table adapter preserves this distinction without changing the insert-only contract or writable metadata.
+
+HTTP and App Engine tables report the same queue identity, whether task IDs or target addresses come from options or row metadata.
+Extraction performs no authentication, client creation, RPC, row serialization or task-ID extraction.
+Individual tasks, target URLs or routes, authentication subjects and payloads do not add datasets, and queue lineage does not prove dispatch, handler execution or downstream business effects.
+Flink 2.x extracts this metadata during planning; Flink 1.20 supports direct connector metadata inspection without native listener delivery.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the custom facet and listener requirements.
 
 ## Options
 

@@ -33,6 +33,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
@@ -113,12 +114,13 @@ class CloudTasksDynamicSinkTest {
             DataTypes.ROW(DataTypes.FIELD("other", DataTypes.INT()));
 
     /**
-     * The nine constructor arguments as named setters, so an identity case reads as "this field
-     * varied" rather than as one more nine-argument call whose changed position has to be counted.
-     * Test-local on purpose: the production type takes its arguments positionally.
+     * The constructor arguments as named setters, so an identity case reads as "this field varied"
+     * rather than as one more positional call whose changed position has to be counted. Test-local
+     * on purpose: the production type takes its arguments positionally.
      */
     private static final class SinkArgs {
 
+        private String logicalTableName = "catalog.db.tasks";
         private DataType physicalDataType = PHYSICAL_TYPE;
         private EncodingFormat<SerializationSchema<RowData>> encodingFormat =
                 new ConstantEncodingFormat();
@@ -131,6 +133,11 @@ class CloudTasksDynamicSinkTest {
         private String serviceAccountKeyFile;
         private String emulatorEndpoint;
         private Integer parallelism;
+
+        private SinkArgs logicalTableName(String name) {
+            this.logicalTableName = name;
+            return this;
+        }
 
         private SinkArgs physicalDataType(DataType physicalDataType) {
             this.physicalDataType = physicalDataType;
@@ -180,6 +187,7 @@ class CloudTasksDynamicSinkTest {
 
         private CloudTasksDynamicSink build() {
             return new CloudTasksDynamicSink(
+                    logicalTableName,
                     physicalDataType,
                     encodingFormat,
                     queue,
@@ -210,6 +218,7 @@ class CloudTasksDynamicSinkTest {
 
     private static CloudTasksDynamicSink sink(String url, boolean urlMetadataNotNull) {
         return new CloudTasksDynamicSink(
+                "catalog.db.tasks",
                 PHYSICAL_TYPE,
                 new ConstantEncodingFormat(),
                 QueueDestination.of("project", "location", "queue"),
@@ -228,6 +237,7 @@ class CloudTasksDynamicSinkTest {
             config.set(CloudTasksConnectorOptions.APP_ENGINE_RELATIVE_URI, relativeUri);
         }
         return new CloudTasksDynamicSink(
+                "catalog.db.tasks",
                 PHYSICAL_TYPE,
                 new ConstantEncodingFormat(),
                 QueueDestination.of("project", "location", "queue"),
@@ -451,11 +461,64 @@ class CloudTasksDynamicSinkTest {
     }
 
     @Test
+    void tableLineageSurvivesCopyAndRuntimeSerialization() throws Exception {
+        CloudTasksDynamicSink original =
+                variedSink(builder -> builder.logicalTableName("custom.db.orders").parallelism(3));
+        CloudTasksDynamicSink copied = (CloudTasksDynamicSink) original.copy();
+        assertThat(copied).isEqualTo(original).hasSameHashCodeAs(original);
+        SinkV2Provider provider =
+                (SinkV2Provider)
+                        copied.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+        assertThat(provider.getParallelism()).contains(3);
+        CloudTasksCreateTaskSink<RowData> runtime = runtimeOf(copied);
+        byte[] bytes = InstantiationUtil.serializeObject(runtime);
+        assertThat(new String(bytes, StandardCharsets.ISO_8859_1))
+                .doesNotContain("java.lang.invoke.SerializedLambda");
+        CloudTasksCreateTaskSink<RowData> restored =
+                InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
+        for (CloudTasksCreateTaskSink<RowData> sink : Arrays.asList(runtime, restored)) {
+            assertThat(sink.getLineageVertex().datasets())
+                    .singleElement()
+                    .satisfies(
+                            dataset -> {
+                                assertThat(dataset.name()).isEqualTo("custom.db.orders");
+                                assertThat(dataset.namespace())
+                                        .isEqualTo("cloudtasks://project/location");
+                                assertThat(dataset.facets()).containsOnlyKeys("gcp");
+                                assertThat(
+                                                ((PhysicalResourceFacet)
+                                                                dataset.facets().get("gcp"))
+                                                        .resources())
+                                        .singleElement()
+                                        .satisfies(
+                                                resource -> {
+                                                    assertThat(resource.kind())
+                                                            .isEqualTo("cloudtasks-queue");
+                                                    assertThat(resource.namespace())
+                                                            .isEqualTo(
+                                                                    "cloudtasks://project/location");
+                                                    assertThat(resource.name()).isEqualTo("queue");
+                                                    assertThat(resource.identity())
+                                                            .containsExactlyInAnyOrderEntriesOf(
+                                                                    java.util.Map.of(
+                                                                            "project",
+                                                                            "project",
+                                                                            "location",
+                                                                            "location",
+                                                                            "queue",
+                                                                            "queue"));
+                                                });
+                            });
+        }
+    }
+
+    @Test
     void everyFieldOfTheSinkIsPartOfItsIdentity() {
         // One variation per constructor argument, because the equal pair above holds however many
         // fields equals forgets: Flink hashes and compares the sink inside a DynamicTableSinkSpec,
         // where two sinks the connector considers the same are one entry.
         assertThat(sink("https://example.com"))
+                .isNotEqualTo(variedSink(builder -> builder.logicalTableName("catalog.db.other")))
                 .isNotEqualTo(variedSink(builder -> builder.physicalDataType(OTHER_PHYSICAL_TYPE)))
                 .isNotEqualTo(
                         variedSink(

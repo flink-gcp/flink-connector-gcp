@@ -12,6 +12,7 @@ service executes later, paced by the queue's rate limit.
 | Per-task failure policy (fail, drop or dead-letter) | Implemented ([#207](https://github.com/flink-gcp/flink-connector-gcp/issues/207)) |
 | Table API / SQL sink, generic body formats and writable request metadata | Implemented ([#605](https://github.com/flink-gcp/flink-connector-gcp/issues/605)) |
 | Form-encoded SQL body format | Implemented ([#606](https://github.com/flink-gcp/flink-connector-gcp/issues/606)) |
+| Fixed-queue lineage for DataStream and Table/SQL | Implemented ([#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274)) |
 | Shaded SQL connector jar | Implemented ([#607](https://github.com/flink-gcp/flink-connector-gcp/issues/607)) |
 
 <!-- readme-example file="CloudTasksReadmeOverview.java" tag="cloud-tasks-readme-overview" -->

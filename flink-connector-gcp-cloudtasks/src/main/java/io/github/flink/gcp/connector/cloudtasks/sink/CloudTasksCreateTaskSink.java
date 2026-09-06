@@ -22,15 +22,23 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreatorFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.List;
 
 /**
  * At-least-once sink creating one Cloud Tasks task per record through the {@code CreateTask} RPC,
@@ -39,11 +47,12 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
+public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
     private final CloudTasksSinkConfig<T> config;
+    @Nullable private final String logicalTableName;
 
     /**
      * Creates the sink; called by {@link CloudTasksSinkBuilder}.
@@ -51,7 +60,38 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
      * @param config the sink configuration
      */
     public CloudTasksCreateTaskSink(CloudTasksSinkConfig<T> config) {
+        this(config, null);
+    }
+
+    /**
+     * Creates a sink with the Table planner's logical identity, or DataStream metadata when absent.
+     *
+     * @param config the validated sink configuration
+     * @param logicalTableName the catalog identifier, or null for a DataStream sink
+     */
+    public CloudTasksCreateTaskSink(
+            CloudTasksSinkConfig<T> config, @Nullable String logicalTableName) {
         this.config = config;
+        this.logicalTableName = logicalTableName;
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        List<ResourceIdentifier> resources = List.of();
+        if (config.getDestinationResolver() instanceof FixedDestinationResolver) {
+            QueueDestination queue =
+                    ((FixedDestinationResolver) config.getDestinationResolver()).getDestination();
+            resources =
+                    List.of(
+                            LineageIdentifiers.cloudTasksQueue(
+                                    queue.getProject(), queue.getLocation(), queue.getQueue()));
+        }
+        return logicalTableName == null
+                ? Lineage.sink(resources)
+                : Lineage.tableSink(
+                        logicalTableName,
+                        resources.isEmpty() ? "cloudtasks" : resources.get(0).namespace(),
+                        resources);
     }
 
     /** Returns the sink configuration. */

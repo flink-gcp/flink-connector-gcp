@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06)
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)
-- Modules: base, test-utils, pubsub, all SQL connector artifacts
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)
+- Modules: base, test-utils, pubsub, cloudtasks, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
 
@@ -129,6 +129,18 @@ This establishes the current release's shared API, not arbitrary compatibility b
 `TableLineageTest` checks catalog names plus the complete facet, including an unadapted multi-dataset control that loses the facet, and a lookup provider whose lineage method is not called.
 The fixture imports the public `JobCreatedEvent`; it does not manufacture an event or call the capture factory directly.
 The required clean reactor, 1.20, binary compatibility and packaging measurements are recorded against the PR's tested commits.
+
+### Cloud Tasks adoption
+
+[#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274) adopts the shared contract in `CloudTasksCreateTaskSink`.
+The effective `FixedDestinationResolver` supplies the queue through its accessor; extraction never evaluates a user resolver.
+The Table factory carries its catalog identifier through `CloudTasksDynamicSink` into the runtime sink, which uses `Lineage.tableSink` with the queue's namespace and complete physical-resource facet.
+The internal sink stores only the optional logical name alongside its existing serializable configuration and constructs the vertex on demand.
+No builder option or manual dataset declaration API is added.
+
+Cloud Tasks tests cover the actual builder result, both destination setter orders, target and task-naming independence, serialization without connector-minted lambdas, and extraction without user-code or client-factory calls.
+Flink 2.x graph and planner tests check the logical/physical distinction, and an emulator-backed job verifies the production sink's metadata reaches the configured listener while its task is dispatched.
+These tests do not claim real-service dispatch acceptance or add lineage for handler execution.
 
 ## Alternatives and limits
 
