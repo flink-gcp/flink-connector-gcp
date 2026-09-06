@@ -56,9 +56,12 @@ External deletion of markers, family/table recreation, and concurrent deployment
 
 A stop-with-savepoint that fails to reach FINISHED is also outside the guarantee.
 As recorded and source-inspected on both Flink lines in [ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md#flink-lifecycle-on-the-supported-lines-2026-09-06), Flink notifies that savepoint complete but does not put it in the completed-checkpoint store.
-Failover can therefore select the preceding checkpoint after the savepoint's mutations have committed, and source replay then receives new envelope identities.
-Operators must resume from the completed savepoint after such a failed stop, instead of treating an automatic restart from the earlier checkpoint as protected recovery.
-The local test simulates those notifications and replay; a MiniCluster test of the actual coordinator and stop lifecycle remains an implementation acceptance requirement.
+Selecting the preceding checkpoint after the savepoint's mutations have committed gives replayed inputs new envelope identities.
+Operators must resume from the completed savepoint after such a failed stop to preserve those identities.
+The local writer-close failure reports a non-recoverable `StopWithSavepointStoppingException`; it does not demonstrate automatic fallback to the preceding checkpoint.
+The operator probe simulates those notifications and replay.
+The [local MiniCluster harness](evidence/0163-bigtable-local-staged-harness.md) now exercises a writer-close failure after the stop savepoint is created and contrasts explicit recovery from that savepoint with recovery from the preceding retained checkpoint.
+It does not claim to have observed automatic fallback; production-runtime acceptance remains pending.
 
 ## Staging and checkpoint ownership
 
@@ -156,7 +159,9 @@ The fake evaluates the emitted marker predicate and atomically applies its exerc
 The tests cover no sends before completion, distinct same-row inputs, response loss mid-commit, identical restored wire requests, repeated restoration, an uncompleted tail, aborted intervals, 2-to-1/3 rescaling, checkpointed end of input, state-discard loss, marker protection, staging caps and state-format rejection.
 They also show the absence of rollback and the fresh-identity replay hazard when completion is notified for a snapshot older-checkpoint recovery does not retain.
 All twelve cases passed on Flink 2.2.1 and 1.20.4 on 2026-09-07, without failures, errors or skips.
-The harness invokes checkpoint hooks explicitly; it does not exercise JobManager checkpoint selection, real transport, schema preflight, graph validation or production memory limits.
+The original operator harness invokes checkpoint hooks explicitly; it does not exercise JobManager checkpoint selection, real transport, schema preflight, graph validation or production memory limits.
+The subsequent [local MiniCluster harness](evidence/0163-bigtable-local-staged-harness.md) adds coordinator-driven checkpoint recovery, stop/rescale coverage, graph validation and SDK transport against an emulator.
+Its local calibration remains separate from service performance and production factory acceptance.
 
 The 2026-09-05 [#1210 measurement](https://github.com/flink-gcp/flink-connector-gcp/issues/1210) supplies the primitive baseline: conditional writes averaged 5,562 ops/s at 198 ms client p95, against bulk's 3,792 ops/s at 306 ms, under the same fresh-JVM condition.
 Its AddToCell probe read 1,000 rows with sum 9 and nine markers each; every tenth submission replayed the preceding event rather than contributing a tenth distinct event.

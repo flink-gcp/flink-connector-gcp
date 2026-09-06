@@ -54,8 +54,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   high-water mark. Preserve all earlier envelope markers on each row and reject whole-row deletes
   and mutations targeting the reserved family. Markers have no automatic GC.
 - Keep the normal-recovery guarantee distinct from rollback or replay from before a notified
-  synchronous savepoint. The probes simulate Flink operator hooks; they are not real-service or
-  MiniCluster coordinator acceptance.
+  synchronous savepoint. The original probes simulate Flink operator hooks. The subsequent local harness
+  exercises MiniCluster recovery and emulator transport; its evidence and remaining service gates
+  are in `docs/adr/evidence/0163-bigtable-local-staged-harness.md`. Neither is production acceptance.
 
 ## Single-row request runtime (`docs/adr/0148`)
 
