@@ -36,6 +36,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   users to the official creation and Queue references (`docs/adr/0154`).
   Do not require individual vendor confirmation or guarantees beyond the published specification;
   validate connector behavior within the supported configuration and recovery scope.
+  Use a stable logical-event key through `taskIdExtractor` or Table `task-id` for duplicate input;
+  do not claim per-record random identities collapse redeliveries. Read `docs/adr/0156` for the
+  staged-mode disposition and reopening requirements before proposing a new delivery mode.
   `httpTarget(url)` uses the existing two-stage immutable schema
   API. `appEngineTarget(relativeUri)` returns a mutable builder: `withBody(...)` binds the body
   type, optional settings stay on that builder, and `build()` produces the immutable serializer.

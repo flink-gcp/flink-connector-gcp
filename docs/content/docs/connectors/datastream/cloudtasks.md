@@ -238,12 +238,13 @@ Naming is opt-in through the **sink builder**, not the serializer:
 
 This intentionally abbreviated chain assumes concrete `queue` and `serializer` values and omits
 the final `build()` call.
+It assumes `OrderEvent.eventId()` identifies one immutable event and remains stable across its duplicate publications.
 
 ```java
 CloudTasksSink.<OrderEvent>builder()
         .queue(queue)
         .serializer(serializer)
-        .taskIdExtractor(OrderEvent::orderId)   // opt in to deduplication
+        .taskIdExtractor(OrderEvent::eventId)   // opt in to deduplication
 ```
 
 It belongs there because a `Task` has no task-id field — only `name`, the full
@@ -262,6 +263,18 @@ Cloud Tasks cannot update a task after creation, and the sink accepts `ALREADY_E
 comparing the existing task's payload or schedule with the replayed record.
 The extracted value must therefore identify an immutable logical task.
 Include a content or schedule version in that value when a changed record must create another task.
+
+This also suppresses duplicate input received during a healthy Flink run, provided both copies
+resolve to the same queue and key while the service remembers that name.
+For Pub/Sub redelivery, preserve the source message ID in the record and include the topic identity
+when records from several topics share a queue; message IDs are unique within a topic.
+To collapse separately published copies of a business event, use an event ID stable across those
+publications, since their message IDs can differ.
+An order or customer ID alone would also collapse distinct events for that entity.
+The [Pub/Sub delivery reference](https://docs.cloud.google.com/pubsub/docs/exactly-once-delivery)
+defines redelivery and describes publish-side duplicates in its "Things to know" section.
+A stable source ID does not make a time-dependent serializer stable: the key must still identify
+the intended immutable task definition described above.
 
 The window follows Google's published service specification.
 The [v2 task-creation reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create) describes name collisions and reuse, including the distinction for queues created from `queue.yaml` or `queue.xml`.

@@ -33,6 +33,8 @@ limitations under the License.
 
 [ADR-0154](0154-support-follows-published-google-cloud-specifications.md) supersedes only the blanket Cloud Tasks G0 stop and its mandatory investigation prerequisites.
 The original stronger recovery claim remains unproved; every other decision, correctness requirement, measurement and performance gate in this record remains in force.
+[ADR-0156](0156-cloud-tasks-input-deduplication-uses-stable-event-keys.md) records [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240)'s subsequent decision to use existing stable event keys for duplicate input and defer the proposed random-identity staged mode.
+That disposition does not pass G1 or change the independent performance gates.
 
 ## Context
 
@@ -81,7 +83,7 @@ A committer-based Bigtable mode — a connector-specific committer whose pre-com
 the target table, not the common layer declined above — is planned under
 [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) and will be settled by its
 own ADR.
-Cloud Tasks checkpointed creation is proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238).
+ADR-0156 defers the Cloud Tasks random-identity staged mode proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238); the independent performance repeat remains tracked in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241).
 Other non-BigQuery exactly-once implementations or additional performance stages require a concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
 
 The connector documentation distinguishes four boundaries:
@@ -104,8 +106,8 @@ The connector-specific decisions are:
   and `ALREADY_EXISTS` is successful creation within the service's name-retention window.
   A repeated ID neither compares nor updates the existing task.
   The handler remains at least once, and no broader guarantee is claimed.
-  The checkpointed-creation proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238)
-  must define its supported scope from Google's published specification and validate the connector protocol within it.
+  ADR-0156 defers the random-identity staged mode proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238); stable event keys address its motivating duplicate-input use case.
+  A future checkpointed-creation proposal must define its supported scope from Google's published specification and validate the connector protocol within it.
   The [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) analysis below identifies the limits of a stronger recovery claim; it does not require individual vendor confirmation before work on documented semantics can proceed.
   ADR-0154 records this distinction.
 - **The Bigtable same-row conditional write passed Stage 1 on 2026-09-05, and the eager marker
@@ -134,7 +136,7 @@ Cloud Tasks already exposes its useful replay primitive through both connector A
 exposes no publisher-side replay primitive to add.
 
 If such a requirement reopens the Spanner candidate, it must first repeat Stage 1 with evenly distributed keys.
-For the Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), the repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) must first produce a stable run-to-run result under its own resource and cost approval.
+The independent Cloud Tasks performance repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) must first produce a stable run-to-run result under its own resource and cost approval.
 Passing Stage 1 permits Stage 2 measurement, not implementation.
 Stage 2 would require separate resource and cost approval and would cover 64 KiB payloads, hot
 keys, concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals of 1, 10, and 60
@@ -352,8 +354,9 @@ The superseded reopening condition required evidence resolving those contracts, 
 The [original G0 decision and unexecuted probe plan](https://github.com/flink-gcp/flink-connector-gcp/blob/89b6a72e2ac5215659dabe2817120ce3d9513649/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md#cloud-tasks-recovery-feasibility-gate-2026-09-06) preserve the full matrix, prerequisites and reopening questions at the revision this decision replaces.
 [ADR-0154](0154-support-follows-published-google-cloud-specifications.md) clarifies that published Google specifications are the service assumptions the connector may rely on.
 The analysis does not establish the original stronger claim, but individual vendor confirmation and coverage of undocumented service behavior are not prerequisites for implementing a mode within published semantics.
-The protocol work in [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) must select and validate that supported scope; the performance repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) retains this ADR's measurement gates.
-Neither is held for a private service guarantee.
+The protocol investigation in [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) subsequently deferred the proposed random-identity staged mode in ADR-0156 because existing stable event keys address the motivating duplicate-input use case.
+The performance repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) retains this ADR's measurement gates independently of that deferral.
+Neither investigation requires a private service guarantee.
 No checkpointed Cloud Tasks mode or numerical recovery window is approved by this clarification.
 
 The audit was based on documentation and local source inspection.
@@ -495,7 +498,7 @@ Correctness and performance review of a future checkpointed mode remain necessar
   the record holds a compliant measurement rather than a deviation; the Flink-level measurement
   inside [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)'s design work is
   planned under that issue's own approval, not under this rule.
-  The Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238) likewise has a planned Stage 1 repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), subject to its own resource and cost approval.
+  Cloud Tasks likewise retains an independent Stage 1 repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), subject to its own resource and cost approval.
 - **Match the "Exactly Once out of the box" of the
   [google/flink-connector-gcp Bigtable sink](https://github.com/google/flink-connector-gcp/blob/main/connectors/bigtable/README.md#exactly-once)**
   — compared 2026-09-05: that sink is a plain `Sink` and `SinkWriter` that flushes a bulk-mutation
@@ -518,7 +521,8 @@ Correctness and performance review of a future checkpointed mode remain necessar
   official COMMITTED-stream example.
 - Pub/Sub has no connector-only implementation issue to pursue.
 - Cloud Tasks keeps its existing bounded creation guarantee through both connector APIs.
-  The proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238) proceeds through a protocol scoped to published service semantics and the existing performance gates, as clarified by ADR-0154.
+  ADR-0156 defers the proposed random-identity staged mode under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238); its protocol gate has not passed.
+  Any future proposal must be scoped to published service semantics and pass the existing protocol and performance gates.
   Individual vendor confirmation is not a prerequisite; an unsupported stronger guarantee is outside the implementation scope.
 - Bigtable and Spanner keep their current keyed write shapes and their documented replay and
   ordering boundaries.

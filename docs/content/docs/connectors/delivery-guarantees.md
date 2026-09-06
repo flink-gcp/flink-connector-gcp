@@ -176,6 +176,14 @@ Consult that field and the [v2 task-creation reference](https://docs.cloud.googl
 The existing sink does not verify queue retention or enforce a bounded recovery protocol.
 Once the service releases a name, replay can create another task.
 
+Stable names also suppress separately received copies of the same logical event within that
+protection, including copies received without a Flink restart.
+Both copies must map to the same queue and key; a fresh random ID per input record would create
+distinct tasks instead.
+See [task naming and deduplication]({{< relref "docs/connectors/datastream/cloudtasks" >}}#task-naming-and-deduplication)
+for choosing an event key, including Pub/Sub message redelivery and duplicate business publications.
+The sink still creates eagerly: stable-key deduplication does not delay visibility until checkpoint completion.
+
 Cloud Tasks [delivers the task handler at least once](https://cloud.google.com/tasks/docs/dual-overview)
 even when task creation was deduplicated.
 The handler must therefore be idempotent or maintain its own durable event ledger.
@@ -314,8 +322,8 @@ more the same day under an amended protocol with every repetition in its own JVM
 These results measure the service primitives, not end-to-end Flink jobs, and none of the
 not-yet-implemented modes below is currently available through a connector builder.
 Apart from the committer-based Bigtable mode planned under
-[#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks checkpointed-creation proposal in
-[#1238]({{< param BookRepo >}}/issues/1238), no non-BigQuery exactly-once implementation or
+[#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks performance repeat in
+[#1241]({{< param BookRepo >}}/issues/1241), no non-BigQuery exactly-once implementation or
 additional performance stage is planned without a concrete non-idempotent requirement that the
 existing write shapes cannot satisfy.
 
@@ -323,7 +331,7 @@ existing write shapes cannot satisfy.
 |---|---|---|
 | Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
-| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | The existing bounded task-creation behavior remains available. The checkpointed-creation proposal in [#1238]({{< param BookRepo >}}/issues/1238) requires a protocol scoped to published Google semantics and a compliant performance repeat. No checkpointed mode is implemented. |
+| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Existing stable event keys provide bounded duplicate-input suppression. The protocol investigation in [#1240]({{< param BookRepo >}}/issues/1240) deferred the proposed random-identity staged mode; no checkpointed mode is implemented. The independent performance repeat remains tracked in [#1241]({{< param BookRepo >}}/issues/1241). |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in
