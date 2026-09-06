@@ -157,9 +157,9 @@ response as success.
 This mechanism does not need a Flink committer because eager task creation is idempotent during the
 window.
 It is deliberately described as bounded effectively-once task creation.
-The pinned v2 protocol says a deleted or executed task name remains unavailable for about one hour,
-while the current REST reference says up to 24 hours, so applications must design against the
-shorter statement.
+The pinned v2 protocol gives about one hour after deletion or execution, while the REST reference gives up to 24 hours.
+Neither statement establishes a precise minimum retention period for a correctness deadline.
+The existing sink does not verify queue retention or enforce a bounded recovery protocol.
 
 Cloud Tasks [delivers the task handler at least once](https://cloud.google.com/tasks/docs/dual-overview)
 even when task creation was deduplicated.
@@ -307,7 +307,7 @@ existing write shapes cannot satisfy.
 |---|---|---|
 | Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
-| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Keep the existing bounded task-creation guarantee; no broader mode or repeat is planned |
+| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Keep the existing bounded task-creation behavior. The checkpointed-creation proposal in [#1238]({{< param BookRepo >}}/issues/1238) is blocked by the service-contract no-go in [#1239]({{< param BookRepo >}}/issues/1239); its dependent implementation and performance repeat remain gated. |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in

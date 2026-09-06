@@ -252,10 +252,10 @@ which the destination resolver produces and the serializer never sees. Keeping t
 builder also separates *what to send* (the serializer) from *how to deduplicate* (a sink policy),
 and means the serializer's `Task` is always returned without a name.
 
-With an extractor supplied, a repeated create for an id Cloud Tasks has already seen fails with
-`ALREADY_EXISTS`, **which the sink treats as success**. A replayed record still sends a create
-request, but Cloud Tasks does not dispatch a second task to the endpoint. This is as close to
-exactly-once as this service reaches.
+With an extractor supplied, a repeated create for an id Cloud Tasks still remembers fails with
+`ALREADY_EXISTS`, **which the sink treats as success**.
+A replayed record still sends a create request; name retention suppresses another physical task creation.
+It does not suppress duplicate execution of the task handler.
 
 Task creation is not an upsert.
 Cloud Tasks cannot update a task after creation, and the sink accepts `ALREADY_EXISTS` without
@@ -265,10 +265,14 @@ Include a content or schedule version in that value when a changed record must c
 
 The window is bounded, but by how much is **contradicted between Google's own sources**: the REST
 reference says an id takes "up to 24 hours" to be released, while the v2 proto comment for the same
-field says "~1 hour" (both agree on ~9 days for queues created from a `queue.yaml` or `queue.xml`).
-Design against the shorter one. The window also starts when the task is **deleted or executed**,
-not when it is created, so a task scheduled far ahead holds its id for its whole lifetime plus the
-window. A replay after that duplicates.
+field says "~1 hour".
+For queues created from a `queue.yaml` or `queue.xml`, REST gives up to nine days and the proto gives approximately nine days.
+These estimates do not establish a precise minimum retention period for a correctness deadline.
+The documented name-retention period starts after deletion or execution; the live task also occupies its name.
+A replay after the name is released can create another task.
+The sink does not verify queue retention settings or their administrative history and does not enforce a bounded recovery protocol.
+The checkpointed-creation investigation and its unresolved retention and late-request bounds are recorded in
+[ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md#cloud-tasks-recovery-feasibility-gate-2026-09-06).
 
 This is off by default because it is expensive, and the cost is Google's rather than this
 connector's. From the `tasks.create` reference: *"Because there is an extra lookup cost to identify
@@ -345,9 +349,11 @@ sink tables to shard across queues.
 **Queues are not created by the sink.** Unlike Pub/Sub topics and BigQuery tables, there is no
 `CreateDisposition` here, for two reasons. An auto-created queue would carry Cloud Tasks' default
 rate limits, silently discarding the pacing that is the entire reason to use the service — the sink
-would be helpfully creating exactly the wrong thing. And queue creation is a one-way door: a deleted
-queue name cannot be reused for 3 days, so a mistake is expensive to undo. The queue is a piece of
-infrastructure the pipeline points at, like a Kafka topic with a retention policy.
+would be helpfully creating exactly the wrong thing.
+A deleted queue name can also remain temporarily unavailable for reuse.
+The [DeleteQueue reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues/delete)
+requires confirming an apparently successful recreation with `GetQueue`.
+The queue is infrastructure the pipeline points at, like a Kafka topic with a retention policy.
 
 Two queue states to be aware of, because neither produces an error at the sink: a **paused** queue
 "will stop delivering tasks from it, but more tasks can still be added to it", and a **disabled**

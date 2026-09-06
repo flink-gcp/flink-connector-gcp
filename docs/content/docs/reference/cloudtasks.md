@@ -75,8 +75,8 @@ whole queue — see
 
 **The sink never creates a queue**, so there is no create disposition and no creation-options object,
 unlike the BigQuery and Pub/Sub sinks. An auto-created queue would carry Cloud Tasks' default rate
-limits, silently discarding the pacing that is the reason to use the service, and queue creation is
-a one-way door — a deleted queue name cannot be reused for three days.
+limits, silently discarding the pacing that is the reason to use the service.
+A deleted queue name can also remain temporarily unavailable for reuse.
 
 ## `CloudTasksWriterOptions`
 
