@@ -210,13 +210,13 @@ Separate entries can execute in any order, including for the same row, and repla
 Neither a batch size of one nor `maxVersions(1)` GC establishes application order or an immediate ordered-upsert guarantee.
 See the [aggregate update]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) and [column replacement]({{< relref "docs/examples/bigtable" >}}#replacing-a-column-immediately) examples, and ADR-0093.
 
-A stronger opt-in design is feasible for effects contained in one row.
+A caller-managed eager marker protocol can protect effects contained in one row.
 [`CheckAndMutateRow`](https://cloud.google.com/bigtable/docs/writes#conditional) can test for an
 event marker and, only when it is absent, atomically write both the data mutations and the marker in
 that row.
 Recovery can submit the same request again and observe the marker without repeating the effect.
 
-Such a mode would require all of the following:
+Such a caller-managed protocol requires all of the following:
 
 - a stable event ID supplied by the application;
 - the marker and every protected mutation in the same row;
@@ -247,9 +247,15 @@ append again. Both are at-least-once, and a failure that ends a request before t
 (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED`, `CANCELLED`) fails the job saying so rather than
 retrying a request the service may already have applied.
 
-What is now planned is not that eager marker mode but a committer-based one
-([#1211]({{< param BookRepo >}}/issues/1211)): staged records applied at checkpoint completion
-through `CheckAndMutateRow`, under a predicate that issue's design ADR settles.
+The planned committer-based mode ([#1211]({{< param BookRepo >}}/issues/1211)) is defined by
+[ADR-0163]({{< param BookRepo >}}/blob/main/docs/adr/0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
+It stages immutable mutation envelopes in Flink checkpoint state and applies each through
+`CheckAndMutateRow` after completion, guarded by its own retained marker in the target row.
+Completion authorizes individual row commits; it does not make all rows visible atomically or
+roll back later committed data when an older snapshot is selected.
+The design requires a reserved family without automatic marker deletion and preserved Flink state;
+its savepoint limitations, storage cost and required service evaluation are recorded in the ADR.
+No new Bigtable delivery mode is available yet; the existing sink guarantees above remain current.
 
 ### Spanner
 

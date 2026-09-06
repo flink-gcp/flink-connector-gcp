@@ -36,6 +36,8 @@ limitations under the License.
 The original stronger recovery claim remains unproved; every other decision, correctness requirement, measurement and performance gate in this record remains in force.
 [ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md) supersedes only the Cloud Tasks decision below: it defines the checkpointed-creation mode [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) was asked for, scoped to published service semantics, and leaves this record's evidence and performance gates in force.
 [ADR-0162](0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) subsequently supersedes only the Cloud Tasks requirement for a separate primitive performance pass before implementation, connector-level evaluation or release; final performance acceptance retains the thresholds below.
+[ADR-0163](0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md) settles the Bigtable staged-mode design: Flink committer state owns immutable mutation envelopes, and permanent same-row envelope markers absorb repeated commits.
+It supersedes the application-event-identity requirement for that mode, while retaining the Bigtable performance gates below; the runtime is not implemented.
 
 ## Context
 
@@ -81,9 +83,9 @@ two-phase commit.
 
 **BigQuery remains the only connector with a supported exactly-once sink mode.**
 A committer-based Bigtable mode — a connector-specific committer whose pre-commit never reaches
-the target table, not the common layer declined above — is planned under
-[#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) and will be settled by its
-own ADR.
+the target table, not the common layer declined above — is defined by ADR-0163 under
+[#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+Its local protocol probes do not constitute production or real-service acceptance.
 Cloud Tasks checkpointed creation, proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), is defined by ADR-0158 and may proceed to implementation under ADR-0162's delivery order, with final correctness and performance acceptance required before release.
 The [#1241 repeat](evidence/0104-cloudtasks-stage1-1241.md#result-on-2026-09-06) remains inconclusive and supplies no primitive performance pass.
 Other non-BigQuery exactly-once implementations or additional performance stages require a concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
@@ -119,8 +121,9 @@ The connector-specific decisions are:
   The eager mode is not built: the direction chosen on
   [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) is a mode that rides
   Flink's two-phase commit and uses the same conditional write as its commit path, and that
-  issue's design ADR settles the identity the commit binds, the cost it pays, and whether the
-  exactly-once name is reserved for such modes (evidence below).
+  issue's ADR-0163 binds a persisted envelope identity and records its operational costs and
+  recovery scope. The new Bigtable mode uses checkpoint-coordinated commit; this does not redefine
+  exactly-once for the other connectors (evidence below).
 - **Only the Spanner 100-record ledger-transaction shape remains correctness-feasible, but its
   performance result is inconclusive and it is not a supported connector mode.**
   The ledger and effects must share a database and a short read-write transaction.

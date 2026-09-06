@@ -46,6 +46,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   state-independence definition and AIP-194, never the plausibility of what a code names. The
   routing condition takes both halves, reading the chain differently (`docs/adr/0042`).
 
+## Staged exactly-once design (`docs/adr/0163`)
+
+- The staged mode is designed, not implemented; #1211 retains its Stage 2 and production acceptance
+  obligations. Read ADR-0163 and its local sizing evidence before implementing either API surface.
+- Stage immutable per-envelope identities in Flink committer state, never a row-wide checkpoint
+  high-water mark. Preserve all earlier envelope markers on each row and reject whole-row deletes
+  and mutations targeting the reserved family. Markers have no automatic GC.
+- Keep the normal-recovery guarantee distinct from rollback or replay from before a notified
+  synchronous savepoint. The probes simulate Flink operator hooks; they are not real-service or
+  MiniCluster coordinator acceptance.
+
 ## Single-row request runtime (`docs/adr/0148`)
 
 - `CheckAndMutateRow` and `ReadModifyWriteRow` run on their own runtime under `sink.singlerow`,
