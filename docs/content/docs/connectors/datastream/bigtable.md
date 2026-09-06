@@ -726,9 +726,15 @@ permits a conditional write or a read-modify-write only through an application p
 transactions enabled; a single-cluster instance's default profile has them, and a multi-cluster
 instance's default profile never allows them, so a job writing to a replicated instance needs a
 profile of its own; both surfaces take a profile id, as the batching sink's `appProfileId(...)`
-does. The service account needs `bigtable.tables.checkAndMutateRow` and
-`bigtable.tables.readModifyWriteRow` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)
-carries both, beside `bigtable.tables.mutateRows`); a permission denial is a fatal failure
+does.
+
+**IAM permissions for table-targeted requests.** The service account's permissions depend on the RPC:
+
+- [`CheckAndMutateRowRequest.table_name`](https://docs.cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#checkandmutaterowrequest) requires `bigtable.tables.mutateRows` on the specified table.
+- [`ReadModifyWriteRowRequest.table_name`](https://docs.cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#readmodifywriterowrequest) lists `bigtable.tables.readRows` and `bigtable.tables.mutateRows`, with authorization requiring "one or more" of those permissions on the specified table.
+
+The predefined [`roles/bigtable.user`](https://docs.cloud.google.com/bigtable/docs/access-control#predefined_roles) role includes `bigtable.tables.readRows` and `bigtable.tables.mutateRows`.
+A permission denial is a fatal failure
 [below](#delivery-guarantees-and-state), not a row-level one, because every request to that table
 would fail the same way.
 
