@@ -34,6 +34,7 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder;
+import io.github.flink.gcp.connector.bigquery.source.BigQueryStorageReadSource;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
 import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
@@ -61,6 +62,7 @@ public final class BigQueryDynamicSource
 
     private final RowType physicalRowType;
     private final DataType physicalDataType;
+    @Nullable private final String lineageTableName;
     @Nullable private final TableDestination table;
     @Nullable private final String query;
     private final String parentProject;
@@ -86,6 +88,7 @@ public final class BigQueryDynamicSource
 
     private BigQueryDynamicSource(Builder builder) {
         this.physicalDataType = builder.physicalDataType;
+        this.lineageTableName = builder.lineageTableName;
         this.producedDataType =
                 builder.producedDataType == null ? physicalDataType : builder.producedDataType;
         this.physicalRowType = (RowType) physicalDataType.getLogicalType();
@@ -216,6 +219,11 @@ public final class BigQueryDynamicSource
             builder.emulatorRestEndpoint(emulatorRestEndpoint);
         }
         Source<RowData, ?, ?> source = builder.build();
+        if (lineageTableName != null) {
+            source =
+                    ((BigQueryStorageReadSource<RowData>) source)
+                            .withTableLineage(lineageTableName);
+        }
         return SourceProvider.of(source, parallelism);
     }
 
@@ -245,6 +253,7 @@ public final class BigQueryDynamicSource
     public DynamicTableSource copy() {
         return builder()
                 .physicalDataType(physicalDataType)
+                .lineageTableName(lineageTableName)
                 .table(table)
                 .query(query)
                 .parentProject(parentProject)
@@ -284,6 +293,7 @@ public final class BigQueryDynamicSource
         }
         BigQueryDynamicSource that = (BigQueryDynamicSource) o;
         return materializeViews == that.materializeViews
+                && Objects.equals(lineageTableName, that.lineageTableName)
                 && physicalRowType.equals(that.physicalRowType)
                 && Objects.equals(table, that.table)
                 && Objects.equals(query, that.query)
@@ -311,6 +321,7 @@ public final class BigQueryDynamicSource
     public int hashCode() {
         return Objects.hash(
                 physicalRowType,
+                lineageTableName,
                 table,
                 query,
                 parentProject,
@@ -351,6 +362,7 @@ public final class BigQueryDynamicSource
     public static final class Builder {
 
         private DataType physicalDataType;
+        @Nullable private String lineageTableName;
         @Nullable private TableDestination table;
         @Nullable private String query;
         private String parentProject;
@@ -374,6 +386,12 @@ public final class BigQueryDynamicSource
         private BigQueryFilterPushDown.State filterState = BigQueryFilterPushDown.State.empty();
 
         private Builder() {}
+
+        /** Supplies the factory's SQL catalog identity, or null outside a catalog. */
+        public Builder lineageTableName(@Nullable String logicalName) {
+            this.lineageTableName = logicalName;
+            return this;
+        }
 
         /**
          * Sets the physical columns of the table. Required.

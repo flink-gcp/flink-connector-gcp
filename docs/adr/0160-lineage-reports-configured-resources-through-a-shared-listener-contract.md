@@ -142,6 +142,25 @@ Cloud Tasks tests cover the actual builder result, both destination setter order
 Flink 2.x graph and planner tests check the logical/physical distinction, and an emulator-backed job verifies the production sink's metadata reaches the configured listener while its task is dispatched.
 These tests do not claim real-service dispatch acceptance or add lineage for handler execution.
 
+## BigQuery adoption
+
+[Issue #1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270) adopts the shared contract merged in [PR #1276](https://github.com/flink-gcp/flink-connector-gcp/pull/1276).
+The public builder returns a lineage provider for the Storage Read source and each of the three sink write methods.
+The source uses its configured `TableDestination`, including with view materialization; arbitrary queries have no known physical input.
+Sinks inspect the effective `FixedDestinationResolver.getDestination()` without evaluating any resolver.
+The same identity covers default-stream CDC, buffered streams and FILE_LOADS.
+BigQuery resource components retain their configured syntax, including project qualification and table decorators; no metadata lookup or new identifier parser is introduced.
+
+The SQL factory carries its catalog identifier through the Dynamic Source/Sink's copy and identity methods.
+The runtime Source/Sink has an optional immutable logical name and constructs its vertex on demand using `Lineage.tableSource` or `tableSink`.
+The internal `BigQueryLineageSink` handoff returns the same concrete sink class, preserving writer-state, committer and pre-commit topology interfaces.
+It is not a public builder setting or a manual physical-dataset declaration API.
+SQL query sources retain a logical dataset with an empty physical-resource list.
+
+Connector tests inspect the actual public-builder outputs before and after Java serialization, with forbidden callbacks and absent credential files.
+Flink 2.x graph/planner tests cover table, view, query and projected/filtered paths, all three write methods, and default-stream CDC.
+The common prerequisite's listener and classloader measurements remain the shared evidence; BigQuery adoption does not claim additional service semantics or require real-GCP execution.
+
 ## Alternatives and limits
 
 Flink's internal `Default*Lineage*` implementations and 2.3-only APIs are not production dependencies.

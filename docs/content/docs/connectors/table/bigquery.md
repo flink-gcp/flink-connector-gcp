@@ -136,6 +136,23 @@ verifies, offline, that what is checked in still matches the bundle and the pins
 licence-name URLs (`opensource.org`, `spdx.org`) are rejected as sources: they serve HTML pages or
 bare templates, and the copyright holder is part of a BSD or MIT text.
 
+## Lineage
+
+The scan source and all three write methods expose FLIP-314 metadata, including a CDC sink on the default-stream path.
+Flink owns the dataset's SQL catalog name.
+The `gcp` facet separately identifies the configured BigQuery resource as `bigquery` / `{project}.{dataset}.{table}`, retaining those components with resource kind `bigquery-table`.
+Projection and filter pushdown preserve that identity.
+
+A direct scan reports the configured table.
+With `scan.materialize-views`, it reports the explicitly named input table or view, without discovering underlying tables or reporting a materialized result.
+A `scan.query` source retains its logical catalog dataset but has an empty physical-resource list, including when `scan.query-result-dataset` specifies where the query result lands.
+Sink lineage names the output table, without adding internal streams, staging objects, temporary tables or jobs.
+Extraction performs no authentication, client creation or RPC.
+
+Flink 2.2 and 2.3 retain the physical-resource facet beside the planner's catalog name.
+Flink 1.20 supports the connector metadata API, but does not automatically deliver it to FLIP-314 listeners.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for listener configuration and the distinction from OpenLineage-specific integration.
+
 ## Schema and type mapping
 
 ### Type mapping

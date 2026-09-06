@@ -21,9 +21,13 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
+import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -34,7 +38,10 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.Objects;
 
 /**
  * At-least-once sink appending to Storage Write API default streams with dynamic per-record table
@@ -43,11 +50,12 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
+public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T>, BigQueryLineageSink<T> {
 
     private static final long serialVersionUID = 1L;
 
     private final BigQuerySinkConfig<T> config;
+    @Nullable private final String lineageTableName;
     private final DefaultStreamOptions options;
 
     /**
@@ -58,8 +66,32 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
      * @param options the default-stream options
      */
     public BigQueryDefaultStreamSink(BigQuerySinkConfig<T> config, DefaultStreamOptions options) {
+        this(config, options, null);
+    }
+
+    private BigQueryDefaultStreamSink(
+            BigQuerySinkConfig<T> config,
+            DefaultStreamOptions options,
+            @Nullable String lineageTableName) {
         this.config = config;
         this.options = options;
+        this.lineageTableName = lineageTableName;
+    }
+
+    @Override
+    public BigQueryDefaultStreamSink<T> withTableLineage(String logicalName) {
+        return new BigQueryDefaultStreamSink<>(
+                config, options, Objects.requireNonNull(logicalName));
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        return lineageTableName == null
+                ? Lineage.sink(BigQueryLineage.resources(config.getDestinationResolver()))
+                : Lineage.tableSink(
+                        lineageTableName,
+                        "bigquery",
+                        BigQueryLineage.resources(config.getDestinationResolver()));
     }
 
     /** Returns the sink configuration. */

@@ -34,9 +34,13 @@ import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo
 import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
+import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -49,8 +53,11 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStora
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Objects;
 
 /**
  * The {@link WriteMethod#FILE_LOADS} sink: writers stage per-destination files on Cloud Storage in
@@ -81,6 +88,7 @@ import java.time.Duration;
 @Internal
 public class BigQueryFileLoadsSink<T>
         implements CrossVersionSink<T>,
+                BigQueryLineageSink<T>,
                 SupportsCommitter<FileLoadsCommittable>,
                 SupportsPreCommitTopology<FileLoadsCommittable, FileLoadsCommittable> {
 
@@ -92,6 +100,7 @@ public class BigQueryFileLoadsSink<T>
     private static final Duration QUOTA_WARN_CHECKPOINT_INTERVAL = Duration.ofMinutes(5);
 
     private final BigQuerySinkConfig<T> config;
+    @Nullable private final String lineageTableName;
     private final FileLoadsOptions options;
     private final StagingStorage storage;
 
@@ -109,9 +118,34 @@ public class BigQueryFileLoadsSink<T>
     @VisibleForTesting
     BigQueryFileLoadsSink(
             BigQuerySinkConfig<T> config, FileLoadsOptions options, StagingStorage storage) {
+        this(config, options, storage, null);
+    }
+
+    private BigQueryFileLoadsSink(
+            BigQuerySinkConfig<T> config,
+            FileLoadsOptions options,
+            StagingStorage storage,
+            @Nullable String lineageTableName) {
         this.config = config;
         this.options = options;
         this.storage = storage;
+        this.lineageTableName = lineageTableName;
+    }
+
+    @Override
+    public BigQueryFileLoadsSink<T> withTableLineage(String logicalName) {
+        return new BigQueryFileLoadsSink<>(
+                config, options, storage, Objects.requireNonNull(logicalName));
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        return lineageTableName == null
+                ? Lineage.sink(BigQueryLineage.resources(config.getDestinationResolver()))
+                : Lineage.tableSink(
+                        lineageTableName,
+                        "bigquery",
+                        BigQueryLineage.resources(config.getDestinationResolver()));
     }
 
     /** Returns the staging storage wired from this sink's configuration. */
