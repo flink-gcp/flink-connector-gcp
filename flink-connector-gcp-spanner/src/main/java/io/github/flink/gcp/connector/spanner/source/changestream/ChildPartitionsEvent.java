@@ -73,15 +73,15 @@ public final class ChildPartitionsEvent implements SourceEvent {
             this.token = Preconditions.checkNotNull(token, "token must not be null");
             Preconditions.checkArgument(!token.isEmpty(), "token must not be empty");
             Preconditions.checkNotNull(parentPartitionIds, "parentPartitionIds must not be null");
-            Preconditions.checkArgument(
-                    !parentPartitionIds.isEmpty(), "parentPartitionIds must not be empty");
-            Preconditions.checkArgument(
-                    !parentPartitionIds.contains(null), "parentPartitionIds must not contain null");
-            Preconditions.checkArgument(
-                    !parentPartitionIds.contains(""),
-                    "parentPartitionIds must not contain empty ids");
             List<String> normalizedParents =
                     new ArrayList<>(new LinkedHashSet<>(parentPartitionIds));
+            Preconditions.checkArgument(
+                    !normalizedParents.isEmpty(), "parentPartitionIds must not be empty");
+            Preconditions.checkArgument(
+                    !normalizedParents.contains(null), "parentPartitionIds must not contain null");
+            Preconditions.checkArgument(
+                    !normalizedParents.contains(""),
+                    "parentPartitionIds must not contain empty ids");
             Collections.sort(normalizedParents);
             this.parentPartitionIds = Collections.unmodifiableList(normalizedParents);
         }

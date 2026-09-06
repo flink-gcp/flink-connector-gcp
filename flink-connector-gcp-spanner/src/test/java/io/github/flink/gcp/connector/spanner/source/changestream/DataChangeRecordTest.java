@@ -23,19 +23,146 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DataChangeRecordTest {
+
+    @ParameterizedTest
+    @MethodSource("columnLists")
+    void acceptsColumnListsAndPreservesTheirValues(List<DataChangeRecord.ColumnType> columns)
+            throws Exception {
+        DataChangeRecord record = record().toBuilder().columnTypes(columns).build();
+
+        assertThat(record.getColumnTypes()).containsExactlyElementsOf(columns);
+        assertThat(record)
+                .isEqualTo(record().toBuilder().columnTypes(new ArrayList<>(columns)).build());
+        assertThat(record.hashCode())
+                .isEqualTo(
+                        record().toBuilder()
+                                .columnTypes(new ArrayList<>(columns))
+                                .build()
+                                .hashCode());
+        assertRecordEquals(record, deserialize(serialize(record)));
+        assertThatThrownBy(() -> record.getColumnTypes().add(record().getColumnTypes().get(0)))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @ParameterizedTest
+    @MethodSource("modLists")
+    void acceptsModListsAndPreservesTheirValues(List<Mod> mods) throws Exception {
+        DataChangeRecord record = record().toBuilder().mods(mods).build();
+
+        assertThat(record.getMods()).containsExactlyElementsOf(mods);
+        assertThat(record).isEqualTo(record().toBuilder().mods(new ArrayList<>(mods)).build());
+        assertThat(record.hashCode())
+                .isEqualTo(record().toBuilder().mods(new ArrayList<>(mods)).build().hashCode());
+        assertRecordEquals(record, deserialize(serialize(record)));
+        assertThatThrownBy(() -> record.getMods().add(record().getMods().get(0)))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void settersCopyInputsBeforeBuildAndDoNotChangePreviouslyBuiltRecords() {
+        DataChangeRecord expected = record();
+        List<DataChangeRecord.ColumnType> columns = new ArrayList<>(expected.getColumnTypes());
+        List<Mod> mods = new ArrayList<>(expected.getMods());
+        DataChangeRecord.Builder builder = expected.toBuilder().columnTypes(columns).mods(mods);
+        columns.clear();
+        mods.clear();
+        DataChangeRecord first = builder.build();
+        assertRecordEquals(expected, first);
+
+        builder.columnTypes(columns).mods(mods);
+        columns.add(expected.getColumnTypes().get(0));
+        mods.add(expected.getMods().get(0));
+        DataChangeRecord second = builder.build();
+        assertThat(second.getColumnTypes()).isEmpty();
+        assertThat(second.getMods()).isEmpty();
+        assertRecordEquals(expected, first);
+    }
+
+    @Test
+    void invalidListsKeepTheirExceptionsAndLeaveTheBuilderUnchanged() {
+        DataChangeRecord expected = record();
+        DataChangeRecord.Builder builder = expected.toBuilder();
+
+        assertThatThrownBy(() -> builder.columnTypes(null))
+                .isExactlyInstanceOf(NullPointerException.class)
+                .hasMessage("columnTypes must not be null");
+        assertThatThrownBy(() -> builder.mods(null))
+                .isExactlyInstanceOf(NullPointerException.class)
+                .hasMessage("mods must not be null");
+        for (List<DataChangeRecord.ColumnType> columns :
+                Arrays.asList(
+                        Collections.<DataChangeRecord.ColumnType>singletonList(null),
+                        Arrays.asList(expected.getColumnTypes().get(0), null))) {
+            assertThatThrownBy(() -> builder.columnTypes(columns))
+                    .isExactlyInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("columnTypes must not contain null");
+            assertRecordEquals(expected, builder.build());
+        }
+        for (List<Mod> mods :
+                Arrays.asList(
+                        Collections.<Mod>singletonList(null),
+                        Arrays.asList(expected.getMods().get(0), null))) {
+            assertThatThrownBy(() -> builder.mods(mods))
+                    .isExactlyInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("mods must not contain null");
+            assertRecordEquals(expected, builder.build());
+        }
+    }
+
+    private static Stream<List<DataChangeRecord.ColumnType>> columnLists() {
+        DataChangeRecord.ColumnType first = record().getColumnTypes().get(0);
+        DataChangeRecord.ColumnType second = record().getColumnTypes().get(1);
+        return Stream.of(
+                        List.<DataChangeRecord.ColumnType>of(),
+                        List.of(first),
+                        List.of(second, first),
+                        List.of(second, first, second))
+                .flatMap(
+                        values ->
+                                Stream.of(
+                                        values,
+                                        List.copyOf(new ArrayList<>(values)),
+                                        new ArrayList<>(values)));
+    }
+
+    private static Stream<List<Mod>> modLists() {
+        Mod first = record().getMods().get(0);
+        Mod second = record().getMods().get(1);
+        return Stream.of(
+                        List.<Mod>of(),
+                        List.of(first),
+                        List.of(second, first),
+                        List.of(second, first, second))
+                .flatMap(
+                        values ->
+                                Stream.of(
+                                        values,
+                                        List.copyOf(new ArrayList<>(values)),
+                                        new ArrayList<>(values)));
+    }
+
+    private static DataOutputSerializer serialize(DataChangeRecord record) throws IOException {
+        DataOutputSerializer output = new DataOutputSerializer(256);
+        serializer().serialize(record, output);
+        return output;
+    }
 
     @Test
     void genericFlinkSerializerRoundTripsCollectionFields() throws Exception {
