@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09
 - Issues: [#431]
-- Modules: bigtable (`sink.writer`)
+- Modules: bigtable (`sink.mutaterows.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Tuning
 
 ## Context / Evidence

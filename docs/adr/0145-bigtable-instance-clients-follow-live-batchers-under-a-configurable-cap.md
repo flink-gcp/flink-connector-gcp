@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-29
 - Issues: [#1133]
-- Modules: bigtable (`sink`, `sink.writer`, `table.sink`)
+- Modules: bigtable (`sink`, `sink.mutaterows.writer`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Per-record destinations
 
 ## Context

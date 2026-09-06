@@ -92,11 +92,12 @@ is a mechanical move — the two layers [#119] removed held nothing public, thou
 layer generally may (BigQuery's `BufferedStreamOptions` and `FileLoadsOptions` are
 `@Public` in theirs since [ADR-0124]). The rule is a **test, not a count**. Bigtable met the
 test on 2026-09-03 (ADR-0148, [#1178]): its second write family, the single-row request RPCs,
-arrived in `sink.singlerow`, and the move of the first family's `sink.writer` into
-`sink.mutaterows.writer` is deferred to its own change so it does not race the milestone's
-other edits of those files. This ADR is the canonical
-record behind the "[#119] layer test" that ADR-0005, ADR-0009, ADR-0039, ADR-0041 and
-ADR-0049 cite in passing.
+arrived in `sink.singlerow`.
+The first family's move was deferred to avoid racing the milestone's functional changes.
+**Refined by [#1204] (2026-09-06):** its writer stages and tests now use `sink.mutaterows.writer`.
+Both write families now have a runtime layer.
+This ADR defines the "[#119] layer test".
+ADR-0005, ADR-0009, ADR-0039, ADR-0041 and ADR-0049 cite that test in passing.
 
 **The family layer is spelled the way Google spells it in code, with no `api` suffix**
 ([#121]): `sink.storage` mirrors `com.google.cloud.bigquery.storage.v1` and the
@@ -158,3 +159,4 @@ share one FQCN on purpose.
 [#280]: https://github.com/flink-gcp/flink-connector-gcp/issues/280
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md
 [#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178
+[#1204]: https://github.com/flink-gcp/flink-connector-gcp/issues/1204

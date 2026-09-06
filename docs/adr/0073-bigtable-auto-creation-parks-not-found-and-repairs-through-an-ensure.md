@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11, and its description match corrected against the service by [#948] on 2026-08-17)
 - Issues: [#233], [#414], [#432], [#948]
-- Modules: bigtable (`sink`, `sink.tables`, `sink.writer`)
+- Modules: bigtable (`sink`, `sink.tables`, `sink.mutaterows.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Table auto-creation
 
 ## Context / Evidence

@@ -21,8 +21,8 @@ import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.BigtableErrorClassifier;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
-import io.github.flink.gcp.connector.bigtable.sink.writer.BigtableErrorClassifier;
 
 import javax.annotation.Nullable;
 

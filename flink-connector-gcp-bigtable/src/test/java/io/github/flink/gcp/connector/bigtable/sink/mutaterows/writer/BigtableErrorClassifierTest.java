@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.sink.writer;
+package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
@@ -28,7 +28,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 
-import static io.github.flink.gcp.connector.bigtable.sink.writer.FakeMutationBatcher.apiException;
+import static io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.FakeMutationBatcher.apiException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link BigtableErrorClassifier}. */

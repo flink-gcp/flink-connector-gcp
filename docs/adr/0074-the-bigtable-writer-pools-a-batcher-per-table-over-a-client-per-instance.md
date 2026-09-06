@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Superseded by ADR-0145
 - Date: 2026-08-09, revised by [#436] (2026-08-10, the flow controller's figures)
 - Issues: [#232], [#436]
-- Modules: bigtable (`sink`, `sink.writer`)
+- Modules: bigtable (`sink`, `sink.mutaterows.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Per-record destinations
 
 ## Context / Evidence

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0148: Bigtable single-row requests run on a request-response runtime beside the batcher
 
 - Status: Accepted
-- Date: 2026-09-03; refined 2026-09-05 ([#1203])
-- Issues: [#1178], [#1174], [#1203]
-- Modules: bigtable (`sink.singlerow`, `sink.singlerow.writer`, module root), base (`metrics`)
+- Date: 2026-09-03; refined 2026-09-05 ([#1203]), 2026-09-06 ([#1204])
+- Issues: [#1178], [#1174], [#1203], [#1204]
+- Modules: bigtable (`sink.mutaterows.writer`, `sink.singlerow`, `sink.singlerow.writer`, module root), base (`metrics`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Single-row request
   writes
 
@@ -63,15 +63,13 @@ Flink 2.2.1 and Flink 1.20.4:
 
 ## Decision
 
-**The new code is a family layer, and only the new code moves into one.** ADR-0055's rule is
-that a second write family costs the module the layer [#119] removed. The layer is `sink.singlerow`
-— Google's own name for these two RPCs is *single-row transactions*, and `unary` is a gRPC shape
-`MutateRow` also has. The mechanical move of the existing `sink.writer` into `sink.mutaterows.writer`
-is deferred to its own change: the Lane B pull requests planned on [#1174] each edit those files,
-and a rename racing three functional changes would cost each of them a rebase for no behavioral
-gain.
-ADR-0055 and ADR-0041 carry dated notes recording that the module is, for now, half-layered on
-purpose.
+**The two write families have separate runtime layers.**
+ADR-0055's rule is that a second write family costs the module the layer [#119] removed.
+The batching writer stages live in `sink.mutaterows.writer` and the request-response stages in `sink.singlerow.writer`.
+The single-row family takes its name from Google's *single-row transactions*; `unary` is a gRPC shape that `MutateRow` also has.
+The mechanical move of the existing `sink.writer` into `sink.mutaterows.writer` was deferred because the Lane B pull requests planned on [#1174] each edited those files.
+A rename racing three functional changes would have cost each of them a rebase for no behavioral gain.
+[#1204] completes that move after Lane B, with dated notes on ADR-0055 and ADR-0041 recording both runtime layers.
 
 **One request seam, and the table is resolved at start time.** A `RowRequest<R>` names its
 operation and row key and builds the SDK request only inside `start(client, destination)`, using
@@ -180,7 +178,8 @@ writer; the request ledger here is a count and an identity set — on the async 
 identity-keyed map, so the operator's timeout finds its request by the `ResultFuture` it was
 handed — and the async surface needs a thread-safe one.
 
-**Moving `sink.writer` now.** See the first decision: it would collide with every Lane B change.
+**Moving the batching runtime with the initial single-row runtime.** See the first decision: it would have collided with every Lane B change.
+[#1204] performs the move after those changes.
 
 **Routing a failure handler from gax threads on the async surface.** The handler contract is
 task-thread; the built-in handlers write files and Bigtable rows and are not safe to call
@@ -271,10 +270,27 @@ backoff and a 1 s operator timeout, fails with the connector's message; before t
 succeeded, the forced end-of-input attempt having answered. The DataStream page's async-surface
 section carries the semantics.
 
+## Refinement (2026-09-06): the batching runtime's family layer
+
+[#1204] moves the six `@Internal` batching runtime classes and their 21 test, fake and probe sources into `sink.mutaterows.writer`.
+The sink entry points, options and serializer interfaces keep their packages.
+This move covers writer stages; it does not reconsider the existing entry-point layout.
+The single-row runtime continues to use `BigtableErrorClassifier` from the batching runtime for its status-chain walk.
+No write behavior or public API changes, and the internal moves need no japicmp exclusion or release-notes entry under ADR-0124.
+
+The two client factories retain separate pool implementations after comparing their lifecycle methods.
+Together, `clientState`, `release`, `activeClientCount`, `awaitReleasedClients`, `clientReaper` and `close` total 69 lines per factory, counting each signature and brace.
+That count excludes comments, blank lines and method annotations.
+Four methods match exactly; `release` and `clientReaper` match after normalizing the lease-counter and options field names and the missing-lease diagnostic.
+The batcher factory increments the lease only after creating a table batcher and closes an orphan client if that creation fails.
+The single-row factory holds one adapter per instance and returns it for every table lease.
+Those differences would remain in a shared pool's interface, while `BigtableClientReaper` already owns the slot bound, asynchronous close and refused-handoff fallback for both factories.
+This change keeps those existing boundaries and records the comparison rather than introducing another pool abstraction during the package move.
+
 ## Consequences
 
-The module has two write families with one layered and one not until the deferred move lands. The
-per-operation sinks and functions of [#1179] and [#1180] are thin over this runtime: a serializer
+The module has two write families with runtimes in `sink.mutaterows.writer` and `sink.singlerow.writer`.
+The per-operation sinks and functions of [#1179] and [#1180] are thin over this runtime: a serializer
 SPI, a `RowRequest` implementation, a result wrapper and a builder each. Users of the async surface
 own the capacity and timeout relationship until the wiring helper arrives, and a replayed
 `ReadModifyWriteRow` after a restore is a documented at-least-once cost, not a defect.
@@ -296,4 +312,5 @@ The helper supplies operator capacity and validates its outer timeout.
 [#1181]: https://github.com/flink-gcp/flink-connector-gcp/issues/1181
 [#1201]: https://github.com/flink-gcp/flink-connector-gcp/pull/1201
 [#1203]: https://github.com/flink-gcp/flink-connector-gcp/issues/1203
+[#1204]: https://github.com/flink-gcp/flink-connector-gcp/issues/1204
 [#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119

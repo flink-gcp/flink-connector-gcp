@@ -25,9 +25,9 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcher;
+import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcherFactory;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
-import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcher;
-import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 
