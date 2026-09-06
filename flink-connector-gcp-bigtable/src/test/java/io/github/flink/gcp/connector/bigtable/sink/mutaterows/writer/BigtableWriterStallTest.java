@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.sink.writer;
+package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;

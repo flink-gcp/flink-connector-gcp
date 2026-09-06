@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.sink.writer;
+package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 
 import com.google.bigtable.v2.Mutation;
 import org.junit.jupiter.api.Test;

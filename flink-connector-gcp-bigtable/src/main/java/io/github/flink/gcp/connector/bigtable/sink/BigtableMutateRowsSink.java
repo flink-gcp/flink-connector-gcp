@@ -29,11 +29,11 @@ import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.BigtableWriter;
+import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.DefaultMutationBatcherFactory;
+import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcherFactory;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
-import io.github.flink.gcp.connector.bigtable.sink.writer.BigtableWriter;
-import io.github.flink.gcp.connector.bigtable.sink.writer.DefaultMutationBatcherFactory;
-import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
 
 import javax.annotation.Nullable;
 

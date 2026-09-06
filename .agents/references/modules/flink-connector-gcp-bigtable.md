@@ -49,9 +49,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Single-row request runtime (`docs/adr/0148`)
 
 - `CheckAndMutateRow` and `ReadModifyWriteRow` run on their own runtime under `sink.singlerow`,
-  the module's second write family. **Only the new family is layered**: the mechanical move of
-  `sink.writer` into a `MutateRows` family layer is deferred to its own change so it does not
-  race every Lane B pull request of milestone v1.1.0; do not fold it into a functional change.
+  the module's second write family. The batching runtime lives in `sink.mutaterows.writer`;
+  tests mirror each runtime's package. Keep the two client factories' pool lifecycles separate
+  under ADR-0148's measured consolidation decision.
   `BigtableClientReaper` sits at the module root because both client factories take permits
   from it (`docs/adr/0145`).
 - A `RowRequest<R>` builds the SDK request only inside `start(client, destination)`, from the

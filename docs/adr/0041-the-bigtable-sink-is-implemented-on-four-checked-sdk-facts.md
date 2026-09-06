@@ -110,7 +110,10 @@ Further design decisions of the same cluster:
   `BigtableMutateRowsSink` sits beside its facade and `FailedMutation` at the `sink` root (the
   post-[#213] placement rule). **Refined by ADR-0148** ([#1178], 2026-09-03): the sibling
   arrived — exactly those two request-response primitives — and lives in its own family layer,
-  `sink.singlerow`, while `sink.writer` stays where it is until a separate mechanical move.
+  `sink.singlerow`.
+  The batching runtime initially stayed in `sink.writer` to avoid racing functional changes.
+  **Refined by [#1204] (2026-09-06):** its writer stages now live in `sink.mutaterows.writer`.
+  Their tests moved with them, completing the two runtime layers.
 
 ## Evidence
 
@@ -292,3 +295,4 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436
 [#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178
 [#1175]: https://github.com/flink-gcp/flink-connector-gcp/issues/1175
+[#1204]: https://github.com/flink-gcp/flink-connector-gcp/issues/1204
