@@ -14,6 +14,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   deadline checked before every send, expiry fails before the send, the writer holds no Flink
   state). Its two lifecycle probes in the `sink` test package (`CloudTasksStagedCommitLifecycleTest`,
   `StagedCommitTestSink`) pin Flink operator facts, not sink behavior.
+- Use `docs/adr/0162` for the delivery order: implementation can start from ADR-0158 without a
+  separate primitive performance pass; correctness and final performance acceptance still govern
+  release. Keep #1241's inconclusive result distinct from that sequencing decision.
 - **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
   (`docs/adr/0129`) — do not adopt a batch create without superseding that record.
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
