@@ -44,6 +44,12 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
  * BigtableSinkBuilder#tableCreateOptions(TableCreateOptions)} opts into creating them, from one
  * schema that serves every table the sink creates.
  *
+ * <p>The builder-returned sink implements {@code LineageVertexProvider}. Its effective fixed
+ * destination reports namespace {@code bigtable://{project}/{instance}}, name {@code {table}} and a
+ * {@code gcp} physical-resource facet. Dynamic destinations produce an empty dataset list, without
+ * resolver evaluation. Extraction calls no user schema and opens no client. The supported Flink 2.x
+ * versions extract the metadata automatically; Flink 1.20 supports direct inspection only.
+ *
  * <p>Example:
  * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="sink" -->
  *

@@ -28,13 +28,15 @@ import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.util.Preconditions;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
+import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
@@ -48,6 +50,7 @@ import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeser
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -60,11 +63,14 @@ import java.util.function.Supplier;
  */
 @Internal
 public final class BigtableScanSource<T>
-        implements Source<T, RowRangeSplit, BigtableScanEnumeratorState>, ResultTypeQueryable<T> {
+        implements Source<T, RowRangeSplit, BigtableScanEnumeratorState>,
+                ResultTypeQueryable<T>,
+                LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
     private final BigtableSourceConfig<T> config;
+    @Nullable private final String lineageTableName;
 
     /**
      * Creates the source.
@@ -72,7 +78,23 @@ public final class BigtableScanSource<T>
      * @param config the configuration the builder assembled
      */
     public BigtableScanSource(BigtableSourceConfig<T> config) {
-        this.config = Preconditions.checkNotNull(config, "config must not be null");
+        this(config, null);
+    }
+
+    private BigtableScanSource(BigtableSourceConfig<T> config, @Nullable String lineageTableName) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.lineageTableName = lineageTableName;
+    }
+
+    /** Returns a copy carrying the logical Table identity with the same source configuration. */
+    @Internal
+    public BigtableScanSource<T> withTableLineage(String logicalName) {
+        return new BigtableScanSource<>(config, Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    @Override
+    public SourceLineageVertex getLineageVertex() {
+        return BigtableLineage.source(config.getTable(), getBoundedness(), lineageTableName);
     }
 
     /** Returns the configuration, for the source's own tests. */

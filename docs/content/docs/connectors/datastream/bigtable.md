@@ -78,6 +78,24 @@ ADR-0093 records the measurement and decision.
 > Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
 > Prefer an application or per-job cluster with Workload Identity when jobs require separate identities.
 
+## Lineage
+
+The scan and Change Streams sources report their configured Bigtable table through Flink's `LineageVertexProvider`.
+The MutateRows, Conditional and ReadModifyWrite sinks report the table held by their effective fixed destination resolver.
+A dynamic resolver produces an empty dataset list and is never evaluated for lineage; the last destination setter still decides which resolver the sink uses.
+
+The dataset namespace is `bigtable://{project}/{instance}` and its name is `{table}`, following this project's naming convention.
+Its `gcp` physical-resource facet contains kind `bigtable-table` and the configured project, instance and table.
+App profiles, column families, row ranges, filters and projections do not create additional datasets.
+Change Streams reports the data table, with no external metadata table, and retains its actual boundedness: an end timestamp makes the source bounded.
+Conditional predicate outcomes and RPC results do not affect the configured identity.
+
+Extraction reads configuration without loading credentials, opening clients, issuing RPCs or calling user serialization/deserialization code.
+The supported Flink 2.x versions extract this metadata during graph construction; Flink 1.20 supports direct inspection through the provider without automatic listener delivery.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for listener setup and SQL class loader configuration.
+Lookup joins and the Conditional/ReadModifyWrite Async I/O and Async SQL functions are outside this Source/Sink extraction path.
+Runtime resource discovery and manual dataset declarations are not supported.
+
 ## Source
 
 Reads the rows of a table into a `DataStream`.

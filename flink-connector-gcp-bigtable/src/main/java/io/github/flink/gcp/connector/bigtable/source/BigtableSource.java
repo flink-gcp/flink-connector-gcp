@@ -31,6 +31,12 @@ import org.apache.flink.annotation.Public;
  *                 .build();
  * }</pre>
  *
+ * <p>The builder-returned source implements {@code LineageVertexProvider}. It reports the
+ * configured table with namespace {@code bigtable://{project}/{instance}}, name {@code {table}} and
+ * a {@code gcp} physical-resource facet. Ranges, filters and app profiles do not create separate
+ * datasets. Extraction calls no user schema and opens no client. The supported Flink 2.x versions
+ * extract the metadata automatically; Flink 1.20 supports direct inspection only.
+ *
  * <p>The scan is bounded: the source reads the configured ranges and finishes. That is not the same
  * as batch-only — a bounded source runs inside a streaming pipeline and simply ends, which is what
  * makes reading a Bigtable table and joining it against an unbounded stream work.

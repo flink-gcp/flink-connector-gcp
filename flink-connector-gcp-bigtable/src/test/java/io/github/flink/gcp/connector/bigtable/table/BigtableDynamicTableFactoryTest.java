@@ -763,6 +763,7 @@ class BigtableDynamicTableFactoryTest {
      */
     private static BigtableChangeStreamDynamicSource.Builder expectedEnvelopeSource() {
         return BigtableChangeStreamDynamicSource.builder()
+                .lineageTableName(FactoryMocks.IDENTIFIER.asSummaryString())
                 .destination(DESTINATION)
                 .appProfileId("single-cluster-profile")
                 .physicalDataType(BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull());

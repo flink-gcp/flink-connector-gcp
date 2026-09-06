@@ -104,8 +104,10 @@ class BigtableMutateRowsSinkTest {
                 .isEqualTo(BigtableWriterOptions.builder().build());
     }
 
-    @Test
-    void aStartupTypeMismatchClosesTheOpenedHandlerAndFactoryBeforeAnyWrite() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void aStartupTypeMismatchClosesTheOpenedHandlerAndFactoryBeforeAnyWrite(boolean tableLineage)
+            throws Exception {
         io.grpc.MethodDescriptor<
                         com.google.bigtable.admin.v2.GetTableRequest,
                         com.google.bigtable.admin.v2.Table>
@@ -173,7 +175,9 @@ class BigtableMutateRowsSinkTest {
                             TableCreateOptions.builder()
                                     .columnFamily("cf", ColumnFamilyType.INT64_SUM, null)
                                     .build());
-            assertThatThrownBy(() -> aggregate.createWriter(new StubWriterInitContext(0), factory))
+            BigtableMutateRowsSink<String> runtime =
+                    tableLineage ? aggregate.withTableLineage("catalog.db.aggregates") : aggregate;
+            assertThatThrownBy(() -> runtime.createWriter(new StubWriterInitContext(0), factory))
                     .hasMessageContaining(
                             "column family 'cf' has value type raw; expected int64-sum");
             assertThat(handler.opens).isEqualTo(1);

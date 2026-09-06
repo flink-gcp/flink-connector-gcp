@@ -10,6 +10,7 @@ checkpoints the service's moving partition topology and continuation tokens.
 
 | Feature | Status |
 |---|---|
+| Configured-table Source/Sink lineage, including bounded Change Streams and fixed destinations | Implemented ([#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272)) |
 | SinkV2 at-least-once sink over the bulk mutation batcher; `RowMutationEntry` serialization SPI | Implemented ([#33](https://github.com/flink-gcp/flink-connector-gcp/issues/33)) |
 | Conditional sink and async helpers over `CheckAndMutateRow`; connector-owned request and result types | Implemented ([#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179)) |
 | Read-modify-write sink and async helpers over `ReadModifyWriteRow`; ordered append/increment rules and changed-cell results | Implemented ([#1180](https://github.com/flink-gcp/flink-connector-gcp/issues/1180)) |
@@ -53,6 +54,7 @@ Source<OrderEvent, ?, ?> source =
 
 | Table API / SQL feature | Status |
 |---|---|
+| Physical table lineage for ordinary/Change Streams scans and all sink write modes (Flink 2.x extraction) | Implemented ([#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272)) |
 | Typed raw and INT64 SUM/MIN/MAX/HLL family provisioning; INSERT-only SQL aggregate contributions | Implemented ([#1176](https://github.com/flink-gcp/flink-connector-gcp/issues/1176)) |
 | Result-emitting async SQL functions for conditional writes and mixed append/increment (Flink 2.x streaming only) | Implemented ([#1181](https://github.com/flink-gcp/flink-connector-gcp/issues/1181)) |
 | `bigtable` table connector; the HBase-compatible DDL model, the cell codec, an upsert `DynamicTableSink` and table auto-creation | Implemented ([#458](https://github.com/flink-gcp/flink-connector-gcp/issues/458)) |

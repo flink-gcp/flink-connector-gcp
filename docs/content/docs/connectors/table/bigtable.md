@@ -119,6 +119,21 @@ sha256, so a text that changes upstream fails the build instead of being shipped
 update-notice <module>` regenerates both after a dependency change; `just check-notice <module>`
 verifies, offline, that what is checked in still matches the bundle and the pins.
 
+## Lineage
+
+Ordinary scans, Change Streams scans in both changelog modes, and every sink write mode expose the configured physical table to the supported Flink 2.x planner.
+Flink uses the SQL catalog identifier as the dataset name and retains namespace `bigtable://{project}/{instance}` with a `gcp` facet containing the physical project, instance and table (kind `bigtable-table`).
+The physical table name can differ from the SQL catalog name.
+
+The `upsert`, `keep-latest` and `aggregate` modes report their MutateRows destination; `insert-if-absent` reports its Conditional destination; `append` and `increment` report their ReadModifyWrite destination.
+Metadata inspection does not start aggregate family validation, evaluate a conditional predicate or infer whether an RPC changed a row.
+Projection, filtering, row ranges, app profiles and column families retain the same table identity.
+Change Streams names only the configured data table, and its lineage boundedness follows the configured end timestamp.
+
+Lookup joins and the result-emitting Async SQL functions do not contribute Bigtable Source/Sink lineage through FLIP-314.
+Flink 1.20 provides connector metadata for direct inspection, without automatic listener extraction.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for listener configuration, physical-resource facet access and class loader requirements.
+
 ## The schema
 
 The DDL model is Flink's HBase connector's, so a table definition moves between the two with its

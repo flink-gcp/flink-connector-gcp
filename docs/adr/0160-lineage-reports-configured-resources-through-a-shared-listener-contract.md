@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0160: Lineage reports configured resources through a shared listener contract
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06)
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)
-- Modules: base, test-utils, pubsub, cloudtasks, all SQL connector artifacts
+- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Bigtable adoption (2026-09-07)
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272)
+- Modules: base, test-utils, pubsub, cloudtasks, bigtable, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
 
@@ -207,3 +207,16 @@ DataStream batch configuration has no dialect, so it does not infer that default
 `SpannerTableLineageTest` covers factory runtime objects, copies, quoted/default/named schemas, deferred pushdown, and table-plus-stream provenance.
 `SpannerLineageGraphTest` exercises Flink 2.x DataStream extraction and the actual Spanner SQL factory, including the unsupported lookup path.
 The shared listener-delivery and class-loader evidence above remains the foundation; the Spanner PR records its focused version and packaging measurements.
+
+## Bigtable adoption
+
+The existing sources and three sink families adopt lineage in [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), using `LineageIdentifiers.bigtableTable` and the DataStream/Table vertex helpers from [PR #1276](https://github.com/flink-gcp/flink-connector-gcp/pull/1276).
+Each source reads its configured table and its own boundedness.
+The sinks inspect the effective `FixedDestinationResolver`, including the resolver retained by `SingleRowRequestConfig`, without invoking it.
+The writer's per-record resolution path remains independent of this metadata inspection.
+
+The Table factory supplies its catalog identifier, retained by copies of all three Dynamic Table implementations and the concrete runtime objects.
+The MutateRows copy also retains the aggregate mode's initial destination and expected families, so adding lineage does not remove startup type validation.
+All six write modes keep their existing `SinkV2Provider` routing, and both scan families keep `SourceProvider`.
+The Change Streams envelope and selected-cell modes identify only the data table; coordinator state stays in Flink checkpoints under ADR-0097.
+Lookup joins and result-emitting Async I/O/SQL functions remain outside this Source/Sink contract.
