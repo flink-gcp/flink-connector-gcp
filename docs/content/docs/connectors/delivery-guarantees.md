@@ -312,6 +312,7 @@ cross-service comparison consistent.
 Stage 1 ran against the real services on 2026-08-13 with the repository's pinned Google Cloud
 clients; the Bigtable candidate ran again on 2026-09-05 with evenly distributed keys, and once
 more the same day under an amended protocol with every repetition in its own JVM.
+The Cloud Tasks task-identity candidate ran again on 2026-09-06.
 These results measure the service primitives, not end-to-end Flink jobs, and none of the
 not-yet-implemented modes below is currently available through a connector builder.
 Apart from the committer-based Bigtable mode planned under
@@ -324,12 +325,15 @@ existing write shapes cannot satisfy.
 |---|---|---|
 | Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
-| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | The existing bounded task-creation behavior remains available. The checkpointed-creation protocol for [#1238]({{< param BookRepo >}}/issues/1238) is defined in [ADR-0158]({{< param BookRepo >}}/blob/main/docs/adr/0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md); its implementation waits for a compliant performance repeat in [#1241]({{< param BookRepo >}}/issues/1241). No checkpointed mode is implemented. |
+| Cloud Tasks task identity | All four planned comparisons in the 2026-09-06 repeat were inconclusive: the one-channel replay warm-up stopped before required repetitions and controls finished; the eight-channel configuration never ran | The existing bounded task-creation behavior remains available. The checkpointed-creation protocol for [#1238]({{< param BookRepo >}}/issues/1238) is defined in [ADR-0158]({{< param BookRepo >}}/blob/main/docs/adr/0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md); its implementation still requires an applicable primitive performance pass, which [#1241]({{< param BookRepo >}}/issues/1241) did not supply. No checkpointed mode is implemented. |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in
 [ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md),
 [issue #591]({{< param BookRepo >}}/issues/591), and, for the 2026-09-05 Bigtable runs,
 [#1208]({{< param BookRepo >}}/issues/1208) and [#1210]({{< param BookRepo >}}/issues/1210).
+The Cloud Tasks [repeat record]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0104-cloudtasks-stage1-1241.md#result-on-2026-09-06) preserves the three completed measured observations, the stopped replay warm-up and verified queue cleanup.
+Two concurrent requests returned successful responses with the same task name, violating that experiment's one-success/one-collision oracle; this does not establish two persisted tasks or Flink recovery behavior.
+The observed admission-limiter waiting also excludes a capacity gate pass under the preregistered rule.
 The current support decision is tracked by
 [#596]({{< param BookRepo >}}/issues/596).

@@ -58,6 +58,12 @@ ADRs, not 360.
 
 ## Lifecycle
 
+Supporting measurement protocols and result records may live under `evidence/`, named
+`NNNN-topic.md` for the ADR they support and linked from that ADR.
+They do not allocate another ADR number or represent a separate decision in the index.
+Keep the protocol, observed results and pending work distinct; the containing PR remains the
+review boundary for an unfinished investigation.
+
 - **The statuses are `Accepted` and `Superseded by ADR-NNNN` — two, deliberately.** An ADR is
   written in the pull request that lands the decision, so by the time it merges the decision is
   accepted; the "proposed" state is the unmerged pull request itself, where the ADR text is
