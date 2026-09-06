@@ -26,7 +26,11 @@ public enum WriteMode {
     /** Atomically writes input cells only when the entire stored row has no cell. */
     INSERT_IF_ABSENT("insert-if-absent"),
     /** Atomically deletes all versions of each written cell before setting its replacement. */
-    KEEP_LATEST("keep-latest");
+    KEEP_LATEST("keep-latest"),
+    /** Atomically appends each nonnull input cell to its latest stored value. */
+    APPEND("append"),
+    /** Atomically adds each nonnull BIGINT input cell to its latest stored integer. */
+    INCREMENT("increment");
 
     private final String value;
 

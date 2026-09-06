@@ -165,9 +165,9 @@ public final class RequestFailures {
     }
 
     static String routingHint(RowOperation operation) {
-        return operation == RowOperation.CHECK_AND_MUTATE_ROW
-                ? " CheckAndMutateRow requires an app profile with single-cluster routing and single-row transactions enabled; inspect the service cause for the rejection reason."
-                : "";
+        return " "
+                + operation.getRpcName()
+                + " requires an app profile with single-cluster routing and single-row transactions enabled; inspect the service cause for the rejection reason.";
     }
 
     private static String describeStatus(Throwable throwable) {

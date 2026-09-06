@@ -23,7 +23,7 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOpti
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
-/** Maps conditional runtime options, leaving absent values at their builder defaults. */
+/** Maps single-row runtime options, leaving absent values at their builder defaults. */
 @Internal
 public final class RequestOptionsMapper {
     private RequestOptionsMapper() {}
