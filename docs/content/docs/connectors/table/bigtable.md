@@ -130,6 +130,9 @@ A `PRIMARY KEY` is optional, exactly as it is in the HBase connector — a Bigta
 the row key whether or not the DDL says so. If one is declared it must be the row-key column and
 nothing else.
 
+The updating-query discussion below applies to ordinary `upsert` and `keep-latest` writes.
+Aggregate, insert-if-absent, append and increment modes accept only INSERT input.
+
 **Declaring it makes an updating query cheaper.** A delete has to reach the sink carrying the row
 key, and which of two ways that is arranged depends on the primary key. With one declared, the sink
 tells the planner a delete may carry the upsert key alone — that key *is* the row key, so nothing
@@ -170,13 +173,15 @@ connector cannot encode is accepted and the first `INSERT INTO` over it fails. T
 wrapped in Flink's own "Unable to create a sink for writing table ..." — the actionable sentence is
 in the cause.
 Per-record checks, such as an empty append operand or an input whose cells are all null, run in the sink on the TaskManager.
+Aggregate family existence and type checks inspect live Bigtable metadata during writer creation on the TaskManager.
 
 ## Type mapping
 
-A Bigtable cell is an uninterpreted byte string, so a convention has to be picked. This connector
+For ordinary cell writes and reads, a byte encoding convention has to be picked. This connector
 uses the HBase ecosystem's — `org.apache.hadoop.hbase.util.Bytes` as Flink's HBase connector applies
 it — reproduced here rather than depended on, since `hbase-common` drags in Hadoop. The row key
 takes the same encodings.
+Aggregate writes use integer contributions and skip nulls as described in [Aggregate contributions](#aggregate-contributions); the cell byte encodings below apply to ordinary write modes and state reads.
 
 | Flink type | Cell bytes |
 |---|---|
@@ -376,6 +381,43 @@ An empty intersection returns no rows rather than widening back to the configure
 whole table.
 
 ## Sink
+
+### Aggregate contributions
+
+Set `sink.write-mode = aggregate` to contribute integer inputs to Bigtable aggregate cells.
+The required `sink.aggregate.column-family-types` map assigns each physical family one of `int64-sum`, `int64-min`, `int64-max`, or `int64-hll`.
+Every qualifier must be `TINYINT`, `SMALLINT`, `INT`, or `BIGINT`; inputs widen losslessly to INT64 and all four types use `AddToCell`.
+HLL accepts an integer to count, without a client-side sketch library.
+Raw families, missing or extra family declarations, and unsupported input types fail when the statement is planned.
+
+The mode accepts INSERT-only input, including repeated inputs for the same row key with or without a declared PRIMARY KEY.
+An updating `GROUP BY` is rejected because its running totals are replacement values, while each input here contributes again.
+The mode does not retract earlier contributions or keep per-input aggregation state.
+Explicit `sink.insert-only-input-mode`, `null-string-literal`, and conditional-write options are rejected.
+The ordinary batch writer still owns buffering, flow control, failure isolation, and checkpoint draining.
+
+A null family or scalar contributes nothing; an input with no non-null cells fails serialization.
+The row-key checks and writable [timestamp metadata](#cell-timestamps) remain in force.
+An absent or null timestamp uses the millisecond-aligned writer clock, read per written cell.
+Provide a stable bucket timestamp when multiple inputs must address the same cell version.
+The [aggregate example]({{< relref "docs/examples/bigtable" >}}#sql-aggregate-contributions) demonstrates all four types and a separate read schema.
+
+Each writer validates the destination before accepting records.
+With `sink.create-disposition = create-if-needed`, it creates the table or adds missing typed families; the existing GC-rule requirement still applies.
+With the default `create-never`, the table and every declared family must already exist with compatible types.
+This check requires `bigtable.tables.get`, in addition to the selected data-write and creation permissions.
+A type mismatch fails the job naming the destination, family, actual type and expected type; it never converts a family or enters the row failure handler.
+Existing GC rules are neither compared nor changed, and undeclared stored families are untouched.
+
+Aggregate input DDL is sink-only: scan and lookup planning reject it.
+Read the same table through a separate DDL without aggregate options, using `BIGINT` for SUM/MIN/MAX state and `BYTES` for HLL sketch state.
+The connector does not extract cardinality from an HLL sketch; Bigtable SQL provides [HLL_COUNT.EXTRACT](https://docs.cloud.google.com/bigtable/docs/reference/sql/hll_functions).
+
+Delivery remains at-least-once.
+A stable timestamp selects a cell but does not deduplicate a SUM contribution: replaying `3, 5, 3` changes SUM from `11` to `22`.
+Repeating those values at the same timestamp leaves MIN `3`, MAX `5`, and the HLL result unchanged, provided no deletion or GC intervenes.
+A regenerated timestamp can create another aggregate version, including for those three types.
+Neither batching retries nor a completed checkpoint establish exactly-once aggregation.
 
 ### Insert-if-absent
 
@@ -816,7 +858,7 @@ They do not change point lookups or FULL-cache reloads, whose loader and memory 
 They are rejected when `scan.mode = change-stream`.
 
 `scan.mode`, `null-string-literal`, `decode.trailing-bytes`, `scan.row-key-encoding`,
-`lookup.async`, `sink.cell-timestamp.truncate-to-millis`, `sink.insert-only-input-mode` and `sink.write-mode` belong to
+`lookup.async`, `sink.cell-timestamp.truncate-to-millis`, `sink.insert-only-input-mode`, `sink.write-mode` and `sink.aggregate.column-family-types` belong to
 the table layer because they configure its codec, runtime shape or planner contract rather than a
 DataStream builder.
 
@@ -829,7 +871,7 @@ DataStream builder.
 | `table` | String | The table part of `table(...)`. One SQL table writes to one Bigtable table: per-record routing has no SQL surface and stays on the DataStream API |
 | `service-account-key-file` | String | Shared credential path mapped to `serviceAccountKeyFile(...)` for the sink, the scan and change-stream sources, and every lookup cache mode. Unset keeps ADC. Every eligible TaskManager must see the path; either source also needs it on the JobManager. The option is rejected beside `emulator-endpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client for every direction — whether the table is written to, scanned, or joined as a lookup dimension. The rejection names `emulator-endpoint`, the key written in the DDL. Under `scan.mode = 'change-stream'` the option is refused outright, before its shape is looked at |
-| `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies, in both directions. Every other type writes a null as an empty cell |
+| `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. It configures the ordinary read codec and the cell serializer used by `upsert`, `keep-latest`, and `insert-if-absent`; those writes encode other null scalars as empty cells. Aggregate mode skips nulls and rejects this option; append and increment also skip nulls |
 | `decode.trailing-bytes` | Enum | What a read does with a fixed-width cell or row key longer than the declared type's layout: `ignore` (default) decodes the declared width and discards the rest, HBase's own rule; `reject` fails the read instead. Not a builder setter, for the same reason as `null-string-literal`. Governs scans, lookups and the selected-cell primary key; refused in the envelope Change Streams mode, which decodes no cell. See [what a read produces](#what-a-read-produces) |
 
 ### Scan
@@ -879,7 +921,8 @@ DataStream builder.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, `keep-latest` for atomic replacement of each written cell, `append` or `increment` |
+| `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, `keep-latest` for atomic replacement of each written cell, `append`, `increment`, or `aggregate` for INSERT-only integer contributions |
+| `sink.aggregate.column-family-types` | Map of String to String | Required in aggregate mode; maps every physical family to `int64-sum`, `int64-min`, `int64-max`, or `int64-hll`. No default; rejected in other modes |
 | `sink.conditional.empty-branch-policy` | Enum | `emptyBranchPolicy(...)`; `ignore` or `fail`, conditional mode only |
 | `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional and read-modify-write modes, at least 1 ms |
 | `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional and read-modify-write modes |

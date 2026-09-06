@@ -29,7 +29,8 @@ import java.util.Objects;
 
 /**
  * The settings for the table the sink creates under {@link CreateDisposition#CREATE_IF_NEEDED}: its
- * column families and, per family, an optional {@link GcRule garbage-collection rule}.
+ * column families, their {@link ColumnFamilyType value types} and optional {@link GcRule
+ * garbage-collection rules}.
  *
  * <p>Unlike the Pub/Sub sink's topic settings, this object is <em>required</em> beside {@code
  * CREATE_IF_NEEDED} rather than additive: a topic can meaningfully be created with defaults, but a
@@ -38,11 +39,12 @@ import java.util.Objects;
  * with {@link CreateDisposition#CREATE_NEVER} is rejected at {@code build()}, and so is {@code
  * CREATE_IF_NEEDED} without options.
  *
- * <p><b>Creation only, per family.</b> A table that already exists is written to as it is: the
- * families declared here that it lacks are added — with their rules — but an existing family's
- * garbage-collection rule is neither compared nor updated. A family declared without a rule keeps
- * Bigtable's default of collecting nothing; see {@link GcRule} for why that choice matters for an
- * at-least-once sink.
+ * <p><b>Add-only, per family.</b> Missing declared families are added with their types and rules.
+ * Options containing aggregate types require every existing declared type to match and inspect them
+ * before a destination first receives data, requiring {@code bigtable.tables.get}. Raw-only options
+ * retain name-only reconciliation of existing families. An existing family's garbage-collection
+ * rule is neither compared nor updated. A family declared without a rule keeps Bigtable's default
+ * of collecting nothing; see {@link GcRule} for why that choice matters for an at-least-once sink.
  *
  * <p>Validation stops at what would otherwise fail obscurely (a blank name, an empty family set);
  * Bigtable's own name grammar and limits are left to the service, whose rejection names the field
@@ -56,8 +58,11 @@ public final class TableCreateOptions implements Serializable {
     /** Family name to garbage-collection rule; a {@code null} value is a family without one. */
     private final LinkedHashMap<String, GcRule> columnFamilies;
 
+    @Nullable private final Map<String, ColumnFamilyType> columnFamilyTypes;
+
     private TableCreateOptions(Builder builder) {
         this.columnFamilies = new LinkedHashMap<>(builder.columnFamilies);
+        this.columnFamilyTypes = new LinkedHashMap<>(builder.columnFamilyTypes);
     }
 
     /**
@@ -77,6 +82,24 @@ public final class TableCreateOptions implements Serializable {
         return Collections.unmodifiableMap(columnFamilies);
     }
 
+    /**
+     * Returns the value type of every declared family, in declaration order. Families restored from
+     * job graphs predating typed creation are raw.
+     *
+     * @return an immutable family-to-type map
+     */
+    public Map<String, ColumnFamilyType> getColumnFamilyTypes() {
+        Map<String, ColumnFamilyType> types = new LinkedHashMap<>();
+        for (String name : columnFamilies.keySet()) {
+            types.put(
+                    name,
+                    columnFamilyTypes == null
+                            ? ColumnFamilyType.RAW
+                            : columnFamilyTypes.getOrDefault(name, ColumnFamilyType.RAW));
+        }
+        return Collections.unmodifiableMap(types);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -86,17 +109,22 @@ public final class TableCreateOptions implements Serializable {
             return false;
         }
         TableCreateOptions that = (TableCreateOptions) o;
-        return columnFamilies.equals(that.columnFamilies);
+        return columnFamilies.equals(that.columnFamilies)
+                && getColumnFamilyTypes().equals(that.getColumnFamilyTypes());
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(columnFamilies);
+        return Objects.hash(columnFamilies, getColumnFamilyTypes());
     }
 
     @Override
     public String toString() {
-        return "TableCreateOptions{columnFamilies=" + columnFamilies + "}";
+        return "TableCreateOptions{columnFamilies="
+                + columnFamilies
+                + ", columnFamilyTypes="
+                + getColumnFamilyTypes()
+                + "}";
     }
 
     /** Builder for {@link TableCreateOptions}. */
@@ -104,6 +132,7 @@ public final class TableCreateOptions implements Serializable {
     public static final class Builder {
 
         private final LinkedHashMap<String, GcRule> columnFamilies = new LinkedHashMap<>();
+        private final Map<String, ColumnFamilyType> columnFamilyTypes = new LinkedHashMap<>();
 
         private Builder() {}
 
@@ -115,7 +144,7 @@ public final class TableCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder columnFamily(String name) {
-            return put(name, null);
+            return put(name, ColumnFamilyType.RAW, null);
         }
 
         /**
@@ -127,14 +156,30 @@ public final class TableCreateOptions implements Serializable {
          */
         public Builder columnFamily(String name, GcRule rule) {
             Preconditions.checkNotNull(rule, "rule must not be null");
-            return put(name, rule);
+            return put(name, ColumnFamilyType.RAW, rule);
         }
 
-        private Builder put(String name, @Nullable GcRule rule) {
+        /**
+         * Declares a column family with an explicit value type and optional retention rule.
+         * Repeating a family name replaces both its type and rule.
+         *
+         * @param name the family name, non-blank
+         * @param valueType the value type, not null
+         * @param rule the garbage-collection rule, or null for no automatic collection
+         * @return this builder
+         */
+        public Builder columnFamily(
+                String name, ColumnFamilyType valueType, @Nullable GcRule rule) {
+            return put(name, valueType, rule);
+        }
+
+        private Builder put(String name, ColumnFamilyType valueType, @Nullable GcRule rule) {
             Preconditions.checkNotNull(name, "name must not be null");
             Preconditions.checkArgument(!name.isBlank(), "name must not be blank");
             // Last writer wins on a repeated name, as this project's builders do by design.
+            Preconditions.checkNotNull(valueType, "valueType must not be null");
             columnFamilies.put(name, rule);
+            columnFamilyTypes.put(name, valueType);
             return this;
         }
 

@@ -120,4 +120,46 @@ class TableCreateOptionsTest {
         assertThat(copy).isEqualTo(options);
         assertThat(copy.getColumnFamilies().keySet()).containsExactly("plain", "kept");
     }
+
+    @Test
+    void typedFamiliesAreImmutableSerializableAndLastWriterWins() throws Exception {
+        TableCreateOptions options =
+                TableCreateOptions.builder()
+                        .columnFamily("cf", ColumnFamilyType.INT64_HLL, null)
+                        .columnFamily("raw")
+                        .build();
+        TableCreateOptions copy =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(options), getClass().getClassLoader());
+        assertThat(copy).isEqualTo(options).hasSameHashCodeAs(options);
+        assertThat(copy.getColumnFamilyTypes())
+                .containsEntry("cf", ColumnFamilyType.INT64_HLL)
+                .containsEntry("raw", ColumnFamilyType.RAW);
+        assertThatThrownBy(() -> copy.getColumnFamilyTypes().put("x", ColumnFamilyType.RAW))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(
+                        TableCreateOptions.builder()
+                                .columnFamily("cf", ColumnFamilyType.INT64_HLL, null)
+                                .columnFamily("cf")
+                                .build()
+                                .getColumnFamilyTypes())
+                .containsEntry("cf", ColumnFamilyType.RAW);
+        assertThatThrownBy(() -> TableCreateOptions.builder().columnFamily("cf", null, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("valueType");
+    }
+
+    @Test
+    void absentTypesFromOlderGraphsMeanRaw() throws Exception {
+        TableCreateOptions old = TableCreateOptions.builder().columnFamily("cf").build();
+        java.lang.reflect.Field types =
+                TableCreateOptions.class.getDeclaredField("columnFamilyTypes");
+        types.setAccessible(true);
+        types.set(old, null);
+        TableCreateOptions restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(old), getClass().getClassLoader());
+        assertThat(restored).isEqualTo(TableCreateOptions.builder().columnFamily("cf").build());
+        assertThat(restored.getColumnFamilyTypes()).containsEntry("cf", ColumnFamilyType.RAW);
+    }
 }

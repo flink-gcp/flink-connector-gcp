@@ -38,9 +38,11 @@ import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
+import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -157,6 +159,10 @@ import java.util.stream.Collectors;
  *
  * <h2>Table auto-creation</h2>
  *
+ * <p>Aggregate SQL destinations are prepared during writer creation. DataStream creation options
+ * containing aggregate types inspect existing families before opening each destination's batcher.
+ * These checks fail directly, before the reactive repair below admits data for that destination.
+ *
  * <p>Under {@code CreateDisposition.CREATE_IF_NEEDED} a mutation failing {@code NOT_FOUND} — the
  * table or one of its column families does not exist — is <em>parked</em> into {@code
  * pendingRepair} rather than failing the job, and {@link #runRepair()} repairs the incident from
@@ -169,8 +175,8 @@ import java.util.stream.Collectors;
  * disposition): this writer has no ordering keys and no cascades, so under {@code CREATE_NEVER} a
  * {@code NOT_FOUND} is simply fatal, with the disposition named in the failure. {@code
  * tablesMissing} carries the repair's reason — added to only where a {@code NOT_FOUND} is parked,
- * consumed per table per attempt, so the admin is called only for a table that actually reported
- * itself missing, and not again once its ensure has succeeded.
+ * consumed per table per attempt, so a repair ensure runs only for a table that actually reported
+ * itself missing, and not again once that ensure has succeeded.
  *
  * <p>One repair covers every table parked at the time, and its budget is shared. A mutation naming
  * a column family {@code tableCreateOptions} does not declare can never be repaired; once the
@@ -214,6 +220,8 @@ import java.util.stream.Collectors;
  */
 @Internal
 public class BigtableWriter<T> implements SinkWriter<T> {
+
+    @Nullable private TableDestination preparedDestination;
 
     private static final Logger LOG = LoggerFactory.getLogger(BigtableWriter.class);
 
@@ -552,6 +560,28 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         submit(state, entry, serializedSize, true, false);
     }
 
+    /** Checks a fixed aggregate Table destination before the writer admits any records. */
+    public void prepareTable(TableDestination destination, TableCreateOptions expected)
+            throws IOException {
+        if (config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED) {
+            TableAdmin.EnsureResult result =
+                    tableAdmin.ensureTable(destination, config.getTableCreateOptions());
+            recordCreation(result);
+        } else {
+            tableAdmin.validateFamilies(destination, expected.getColumnFamilyTypes(), false);
+        }
+        preparedDestination = destination;
+    }
+
+    private void recordCreation(TableAdmin.EnsureResult result) {
+        if (result.tableCreated()) {
+            metrics.tableCreated();
+        }
+        if (result.columnFamiliesAdded() > 0) {
+            metrics.columnFamiliesAdded(result.columnFamiliesAdded());
+        }
+    }
+
     /**
      * Returns the destination's state, building its batcher on first use.
      *
@@ -567,6 +597,13 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             // shared instance recent even though the destination state itself was already found.
             instanceDestinations.get(state.instanceKey);
             return state;
+        }
+        TableCreateOptions creation = config.getTableCreateOptions();
+        if (creation != null
+                && !destination.equals(preparedDestination)
+                && creation.getColumnFamilyTypes().values().stream()
+                        .anyMatch(type -> type != ColumnFamilyType.RAW)) {
+            tableAdmin.validateFamilies(destination, creation.getColumnFamilyTypes(), true);
         }
         String instanceKey = BigtableDataClients.instanceKey(destination);
         Set<TableDestination> destinations = instanceDestinations.get(instanceKey);
@@ -793,12 +830,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                         Thread.sleep(ensureBackoffMs);
                         break;
                     }
-                    if (result.tableCreated()) {
-                        metrics.tableCreated();
-                    }
-                    if (result.columnFamiliesAdded() > 0) {
-                        metrics.columnFamiliesAdded(result.columnFamiliesAdded());
-                    }
+                    recordCreation(result);
                     familiesAfterEnsure.put(table, result.existingColumnFamilies());
                 }
                 if (!tablesMissing.isEmpty()) {

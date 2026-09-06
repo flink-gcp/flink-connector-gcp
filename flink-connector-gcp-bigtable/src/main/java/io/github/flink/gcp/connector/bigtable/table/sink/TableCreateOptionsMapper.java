@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
@@ -33,15 +34,17 @@ import javax.annotation.Nullable;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
  * Builds {@link TableCreateOptions} from the table options and the DDL's column families.
  *
- * <p><b>The families come from the DDL, never from a key.</b> A {@code ROW<...>} column already
- * says a family exists and what is written into it, so naming the same families again in the {@code
- * WITH} clause would only create a way for the two lists to disagree.
+ * <p>The physical DDL determines which families are created. Aggregate mode also names those
+ * families in its value-type map; {@link AggregateOptionsMapper} checks that the map matches the
+ * DDL before this mapper applies the types.
  *
  * <p><b>The garbage-collection rule does not.</b> {@link GcRule} is a tree — unions and
  * intersections of version and age limits, to any depth — and a flat {@code WITH} namespace cannot
@@ -75,6 +78,15 @@ public final class TableCreateOptionsMapper {
      */
     @Nullable
     public static TableCreateOptions map(ReadableConfig config, BigtableTableSchema schema) {
+        return map(config, schema, Collections.emptyMap());
+    }
+
+    /** Maps creation settings with the aggregate mode's independently declared value types. */
+    @Nullable
+    public static TableCreateOptions map(
+            ReadableConfig config,
+            BigtableTableSchema schema,
+            Map<String, ColumnFamilyType> types) {
         if (config.getOptional(BigtableConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null)
                 != CreateDisposition.CREATE_IF_NEEDED) {
             rejectUnusedCreationKeys(config);
@@ -83,7 +95,10 @@ public final class TableCreateOptionsMapper {
         GcRule rule = gcRule(config);
         TableCreateOptions.Builder builder = TableCreateOptions.builder();
         for (BigtableTableSchema.Family family : schema.getFamilies()) {
-            builder.columnFamily(family.getName(), rule);
+            builder.columnFamily(
+                    family.getName(),
+                    types.getOrDefault(family.getName(), ColumnFamilyType.RAW),
+                    rule);
         }
         return builder.build();
     }

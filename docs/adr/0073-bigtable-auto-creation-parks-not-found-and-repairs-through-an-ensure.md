@@ -210,3 +210,14 @@ same way.
 [#432]: https://github.com/flink-gcp/flink-connector-gcp/issues/432
 [#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948
 [#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196
+
+## Refinement: typed family validation (2026-09-06, #1176)
+
+[ADR-0156](0156-aggregate-table-writes-add-integer-contributions.md) adds raw and INT64 aggregate type declarations to the creation schema.
+When options declare any aggregate type, the bounded reconciliation checks every declared existing type on each read, including raw declarations and after a lost creation race, and fails a mismatch without retry or row-level routing.
+GC remains creation-only.
+DataStream aggregate declarations inspect existing types before sending to a newly opened destination, allowing absent tables and families to reach this reactive repair.
+Raw-only options retain their lazy admin path and reconcile existing families by name only.
+SQL aggregate mode knows its fixed destination and validates it at writer startup; CREATE_IF_NEEDED ensures it there, while CREATE_NEVER only reads it.
+Both validation paths require tables.get permission.
+This refines the previous assumption that no admin call occurs until NOT_FOUND; the mutation repair and its bounded schedule remain unchanged.

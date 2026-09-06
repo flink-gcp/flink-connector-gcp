@@ -231,6 +231,9 @@ class BigtableOptionParityTest {
     private static Map<String, String> notASetter() {
         Map<String, String> map = new LinkedHashMap<>();
         map.put(
+                BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES.key(),
+                "declares the input contract and the per-family value types used by table creation");
+        map.put(
                 BigtableConnectorOptions.SINK_WRITE_MODE.key(),
                 "selects the destination-side write runtime");
         map.put(

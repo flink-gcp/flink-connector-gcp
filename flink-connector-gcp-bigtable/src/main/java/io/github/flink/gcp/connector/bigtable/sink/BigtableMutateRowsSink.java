@@ -22,11 +22,13 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.writer.BigtableWriter;
@@ -49,6 +51,8 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
     private static final long serialVersionUID = 1L;
 
     private final BigtableSinkConfig<T> config;
+    @Nullable private final TableDestination initialDestination;
+    @Nullable private final TableCreateOptions expectedFamilies;
 
     /**
      * Creates the sink; called by {@link BigtableSinkBuilder}.
@@ -56,7 +60,23 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
      * @param config the sink configuration
      */
     public BigtableMutateRowsSink(BigtableSinkConfig<T> config) {
+        this(config, null, null);
+    }
+
+    /**
+     * Creates a Table sink that validates its fixed destination when its writer starts. The
+     * destination and expected families must either both be supplied or both be absent.
+     */
+    public BigtableMutateRowsSink(
+            BigtableSinkConfig<T> config,
+            @Nullable TableDestination initialDestination,
+            @Nullable TableCreateOptions expectedFamilies) {
+        Preconditions.checkArgument(
+                (initialDestination == null) == (expectedFamilies == null),
+                "initialDestination and expectedFamilies must both be supplied or both be absent");
         this.config = config;
+        this.initialDestination = initialDestination;
+        this.expectedFamilies = expectedFamilies;
     }
 
     /** Returns the sink configuration. */
@@ -109,18 +129,25 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
         config.getFailedMutationHandler().open(DefaultFailureHandlerContext.of(context));
         // Both constructed unconditionally, and neither opens a connection: the factory builds a
         // client per instance on the first record routed there, and the admin's client is per-call,
-        // built only when a repair actually creates something.
+        // built for schema validation or a creation repair.
         TableAdmin tableAdmin = new BigtableTableAdmin(config.getEmulatorEndpoint(), credentials);
         try {
-            return createWriter(
-                    factory, tableAdmin, context.getMailboxExecutor(), context.metricGroup());
+            BigtableWriter<T> writer =
+                    (BigtableWriter<T>)
+                            createWriter(
+                                    factory,
+                                    tableAdmin,
+                                    context.getMailboxExecutor(),
+                                    context.metricGroup());
+            if (initialDestination != null) {
+                writer.prepareTable(initialDestination, expectedFamilies);
+            }
+            return writer;
         } catch (Throwable e) {
-            // Nothing downstream will ever close these: no writer exists to do it, and the failure
-            // handler's contract promises a close on the failure path too — a restart would
-            // otherwise open one more per attempt. All are released, because the writer's
-            // constructor can fail (its precondition on a deserialized options object is exactly
-            // that case). Neither the factory nor the admin holds anything yet at this point, but
-            // the guard is against what an implementation may hold, not what this one does.
+            // No writer is returned to Flink when construction or startup validation fails, so
+            // this path releases its resources. The failure handler's contract promises a close
+            // here too — a restart would otherwise open one more per attempt. This also covers
+            // constructor preconditions on deserialized options.
             //
             // Throwable, not Exception: a client's first classload can fail with a
             // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
@@ -135,7 +162,9 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
     /**
      * Creates the writer against an injected batcher factory and table admin. Deliberately does
      * <b>not</b> open the failure handler — that belongs to the production path above, so writer
-     * tests injecting fakes need no {@link WriterInitContext}.
+     * tests injecting fakes need no {@link WriterInitContext}. Table-specific startup validation
+     * also belongs to the production lifecycle above; writer tests may call {@link
+     * BigtableWriter#prepareTable(TableDestination, TableCreateOptions)} explicitly.
      */
     @VisibleForTesting
     public SinkWriter<T> createWriter(

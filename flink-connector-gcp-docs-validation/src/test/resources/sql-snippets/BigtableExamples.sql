@@ -275,3 +275,46 @@ CREATE TABLE analytics_profiles (
 INSERT INTO analytics_profiles
 SELECT profile_id, name, tier FROM current_profiles;
 -- end::selected-cell-bigquery-cdc[]
+
+-- tag::aggregate-contributions[]
+CREATE TABLE aggregate_inputs (
+    rowkey STRING,
+    totals ROW<q BIGINT>,
+    minimums ROW<q BIGINT>,
+    maximums ROW<q BIGINT>,
+    users ROW<q BIGINT>,
+    bucket_ts TIMESTAMP_LTZ(6) METADATA FROM 'timestamp',
+    PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+    'connector' = 'bigtable',
+    'project' = 'my-project',
+    'instance' = 'my-instance',
+    'table' = 'aggregate-counters',
+    'sink.write-mode' = 'aggregate',
+    'sink.aggregate.column-family-types' = 'totals:int64-sum,minimums:int64-min,maximums:int64-max,users:int64-hll',
+    'sink.create-disposition' = 'create-if-needed',
+    'sink.table-create.gc-rule.max-versions' = '2'
+);
+
+INSERT INTO aggregate_inputs
+SELECT 'account-a', ROW(n), ROW(n), ROW(n), ROW(n),
+       TO_TIMESTAMP_LTZ(1788652800000, 3)
+FROM (VALUES (CAST(3 AS BIGINT)), (CAST(5 AS BIGINT)), (CAST(3 AS BIGINT))) AS inputs(n);
+-- end::aggregate-contributions[]
+
+-- tag::aggregate-read-state[]
+CREATE TABLE aggregate_state (
+    rowkey STRING,
+    totals ROW<q BIGINT>,
+    minimums ROW<q BIGINT>,
+    maximums ROW<q BIGINT>,
+    users ROW<q BYTES>
+) WITH (
+    'connector' = 'bigtable',
+    'project' = 'my-project',
+    'instance' = 'my-instance',
+    'table' = 'aggregate-counters'
+);
+
+SELECT rowkey, totals.q, minimums.q, maximums.q, users.q FROM aggregate_state;
+-- end::aggregate-read-state[]

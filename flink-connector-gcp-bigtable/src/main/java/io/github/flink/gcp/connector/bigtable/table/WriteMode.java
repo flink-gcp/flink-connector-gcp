@@ -30,7 +30,9 @@ public enum WriteMode {
     /** Atomically appends each nonnull input cell to its latest stored value. */
     APPEND("append"),
     /** Atomically adds each nonnull BIGINT input cell to its latest stored integer. */
-    INCREMENT("increment");
+    INCREMENT("increment"),
+    /** Adds integer contributions to aggregate column families. */
+    AGGREGATE("aggregate");
 
     private final String value;
 

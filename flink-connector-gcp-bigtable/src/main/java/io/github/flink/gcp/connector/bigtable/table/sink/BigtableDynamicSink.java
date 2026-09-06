@@ -30,9 +30,11 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSink;
@@ -80,6 +82,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     @Nullable private final String serviceAccountKeyFile;
     private final BigtableWriterOptions writerOptions;
     private final WriteMode writeMode;
+    private final Map<String, ColumnFamilyType> aggregateTypes;
     private final BigtableRequestOptions requestOptions;
     @Nullable private final EmptyBranchPolicy emptyBranchPolicy;
     @Nullable private final CreateDisposition createDisposition;
@@ -105,6 +108,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         this.writerOptions =
                 Preconditions.checkNotNull(builder.writerOptions, "writerOptions must not be null");
         this.writeMode = builder.writeMode;
+        this.aggregateTypes =
+                Collections.unmodifiableMap(new java.util.LinkedHashMap<>(builder.aggregateTypes));
         this.requestOptions = builder.requestOptions;
         this.emptyBranchPolicy = builder.emptyBranchPolicy;
         this.createDisposition = builder.createDisposition;
@@ -240,12 +245,15 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 BigtableSink.<RowData>builder()
                         .table(destination)
                         .serializer(
-                                new RowDataSerializationSchema(
-                                        schema,
-                                        nullStringLiteral,
-                                        selected,
-                                        truncateCellTimestampToMillis,
-                                        writeMode == WriteMode.KEEP_LATEST))
+                                writeMode == WriteMode.AGGREGATE
+                                        ? new RowDataAggregateSerializationSchema(
+                                                schema, selected, truncateCellTimestampToMillis)
+                                        : new RowDataSerializationSchema(
+                                                schema,
+                                                nullStringLiteral,
+                                                selected,
+                                                truncateCellTimestampToMillis,
+                                                writeMode == WriteMode.KEEP_LATEST))
                         .writerOptions(writerOptions);
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
@@ -263,6 +271,15 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
             builder.emulatorEndpoint(emulatorEndpoint);
         }
         Sink<RowData> sink = builder.build();
+        if (writeMode == WriteMode.AGGREGATE) {
+            TableCreateOptions.Builder expected = TableCreateOptions.builder();
+            aggregateTypes.forEach((name, type) -> expected.columnFamily(name, type, null));
+            sink =
+                    new BigtableMutateRowsSink<>(
+                            ((BigtableMutateRowsSink<RowData>) sink).getConfig(),
+                            destination,
+                            expected.build());
+        }
         return SinkV2Provider.of(sink, parallelism);
     }
 
@@ -276,6 +293,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .writerOptions(writerOptions)
                 .writeMode(writeMode)
+                .aggregateTypes(aggregateTypes)
                 .requestOptions(requestOptions)
                 .emptyBranchPolicy(emptyBranchPolicy)
                 .createDisposition(createDisposition)
@@ -310,6 +328,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && writerOptions.equals(that.writerOptions)
                 && writeMode == that.writeMode
+                && aggregateTypes.equals(that.aggregateTypes)
                 && requestOptions.equals(that.requestOptions)
                 && emptyBranchPolicy == that.emptyBranchPolicy
                 && createDisposition == that.createDisposition
@@ -332,6 +351,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 serviceAccountKeyFile,
                 writerOptions,
                 writeMode,
+                aggregateTypes,
                 requestOptions,
                 emptyBranchPolicy,
                 createDisposition,
@@ -354,6 +374,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private String serviceAccountKeyFile;
         private BigtableWriterOptions writerOptions;
         private WriteMode writeMode = WriteMode.UPSERT;
+        private Map<String, ColumnFamilyType> aggregateTypes = Collections.emptyMap();
         private BigtableRequestOptions requestOptions = BigtableRequestOptions.builder().build();
         @Nullable private EmptyBranchPolicy emptyBranchPolicy;
         @Nullable private CreateDisposition createDisposition;
@@ -373,6 +394,12 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder writeMode(WriteMode value) {
             this.writeMode = value;
+            return this;
+        }
+
+        /** Sets the aggregate families and their value types. */
+        public Builder aggregateTypes(Map<String, ColumnFamilyType> value) {
+            this.aggregateTypes = value;
             return this;
         }
 

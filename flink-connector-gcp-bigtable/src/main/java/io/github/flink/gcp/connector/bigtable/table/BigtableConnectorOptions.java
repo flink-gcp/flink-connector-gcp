@@ -459,16 +459,26 @@ public final class BigtableConnectorOptions {
     //  Sink
     // ------------------------------------------------------------------------
 
+    /** Maps each aggregate column family to int64-sum, int64-min, int64-max or int64-hll. */
+    public static final ConfigOption<java.util.Map<String, String>>
+            SINK_AGGREGATE_COLUMN_FAMILY_TYPES =
+                    ConfigOptions.key("sink.aggregate.column-family-types")
+                            .mapType()
+                            .noDefaultValue()
+                            .withDescription(
+                                    "Maps each aggregate column family to int64-sum, int64-min, int64-max or int64-hll.");
+
     /**
      * The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', atomic
-     * replacement of written cells with 'keep-latest', 'append' or 'increment'.
+     * replacement of written cells with 'keep-latest', 'append', 'increment', or integer
+     * contributions with 'aggregate'.
      */
     public static final ConfigOption<WriteMode> SINK_WRITE_MODE =
             ConfigOptions.key("sink.write-mode")
                     .enumType(WriteMode.class)
                     .defaultValue(WriteMode.UPSERT)
                     .withDescription(
-                            "The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', atomic replacement of written cells with 'keep-latest', 'append' or 'increment'.");
+                            "The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', atomic replacement of written cells with 'keep-latest', 'append', 'increment', or integer contributions with 'aggregate'.");
 
     /**
      * The policy when a successful conditional request selects an empty mutation branch: 'ignore'

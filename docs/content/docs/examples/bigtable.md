@@ -73,8 +73,9 @@ columns should build one entry rather than be split upstream:
 ### Updating aggregate cells
 
 Bigtable can combine inputs inside an [aggregate column family](https://cloud.google.com/bigtable/docs/aggregates).
-For these examples, provision a table named `counters` with an Int64 Sum family named `totals` before submitting the job, using the [Bigtable admin tools](https://cloud.google.com/bigtable/docs/managing-tables).
-The connector's table auto-creation options do not configure aggregate families; [#1176]({{< param BookRepo >}}/issues/1176) owns that addition.
+The first example opts into creation of `counters` with an Int64 Sum family named `totals` and retains two bucket versions.
+An existing `totals` family must have the same aggregate type; its GC rule is left unchanged.
+The merge example below uses that same provisioned table.
 
 `CounterUpdate` carries a row key, a bucket start in epoch milliseconds, and a signed delta.
 All updates for one counter bucket use the same row key, qualifier and bucket timestamp, so they address the same aggregate cell:
@@ -186,6 +187,28 @@ The family projection is pushed down separately.
 Selecting any field from `profile` reads that whole family; the connector discards undeclared or unselected qualifiers after the row arrives.
 
 ## Table sink
+
+### SQL aggregate contributions
+
+This sink contributes each input to four Bigtable aggregate families at an explicit bucket timestamp.
+All four columns take integers, including the HLL input.
+Repeated row keys remain separate INSERT contributions; the primary key does not deduplicate them.
+
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="aggregate-contributions" >}}
+
+After these three contributions, SUM is `11`, MIN is `3`, MAX is `5`, and HLL represents the distinct integer inputs `3` and `5`.
+Submitting the same inputs again at the same timestamp doubles SUM; the other three aggregate results remain unchanged unless GC or deletion removed state.
+Omitting the metadata column or supplying null uses the writer clock per written cell, which can produce different versions rather than one shared bucket.
+Supply event bucket timestamps when contributions must combine, and account for at-least-once replay.
+
+The input DDL is sink-only because aggregate input and stored state have different types.
+Use a separate read DDL with numeric states declared as `BIGINT` and HLL state as `BYTES`:
+
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="aggregate-read-state" >}}
+
+The read returns HLL sketch bytes, not cardinality.
+Use Bigtable SQL's [HLL_COUNT.EXTRACT](https://docs.cloud.google.com/bigtable/docs/reference/sql/hll_functions) to estimate the distinct count.
+See the [aggregate mode contract]({{< relref "docs/connectors/table/bigtable" >}}#aggregate-contributions) for nulls, validation, provisioning permissions, and accepted input types.
 
 ### Writing a bounded aggregate as upserts
 

@@ -41,7 +41,9 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.table.sink.AggregateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.ReadModifyWriteSchemaChecks;
 import io.github.flink.gcp.connector.bigtable.table.sink.RequestOptionsMapper;
@@ -61,6 +63,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -153,6 +156,7 @@ public class BigtableDynamicTableFactory
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
                         BigtableConnectorOptions.SINK_WRITE_MODE,
+                        BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES,
                         BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
                         BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
                         BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS,
@@ -198,6 +202,7 @@ public class BigtableDynamicTableFactory
         checkPrimaryKeyIsTheRowKey(context, schema);
         checkSinkHasSomewhereToWrite(schema);
         ReadModifyWriteSchemaChecks.validate(schema, writeMode);
+        Map<String, ColumnFamilyType> aggregateTypes = AggregateOptionsMapper.map(config, schema);
 
         return BigtableDynamicSink.builder()
                 .schema(schema)
@@ -213,12 +218,13 @@ public class BigtableDynamicTableFactory
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .writerOptions(
-                        writeMode == WriteMode.UPSERT || writeMode == WriteMode.KEEP_LATEST
+                        WriteModeOptionChecks.usesBatchWriter(writeMode)
                                 ? WriterOptionsMapper.map(config)
                                 : BigtableWriterOptions.builder().build())
                 .writeMode(writeMode)
+                .aggregateTypes(aggregateTypes)
                 .requestOptions(
-                        writeMode != WriteMode.UPSERT && writeMode != WriteMode.KEEP_LATEST
+                        !WriteModeOptionChecks.usesBatchWriter(writeMode)
                                 ? RequestOptionsMapper.map(config)
                                 : BigtableRequestOptions.builder().build())
                 .emptyBranchPolicy(
@@ -233,7 +239,7 @@ public class BigtableDynamicTableFactory
                         config.get(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE))
                 .truncateCellTimestampToMillis(
                         config.get(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS))
-                .tableCreateOptions(TableCreateOptionsMapper.map(config, schema))
+                .tableCreateOptions(TableCreateOptionsMapper.map(config, schema, aggregateTypes))
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
@@ -645,6 +651,13 @@ public class BigtableDynamicTableFactory
                             BigtableConnectorOptions.VALUE_FORMAT);
         }
         helper.validate();
+
+        if (config.get(BigtableConnectorOptions.SINK_WRITE_MODE) == WriteMode.AGGREGATE
+                || config.getOptional(BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES)
+                        .isPresent()) {
+            throw new ValidationException(
+                    "Aggregate input tables are sink-only. Declare a separate read table with BIGINT numeric state and BYTES HLL state.");
+        }
 
         validateCredentialsMode(config);
         DataType physicalDataType = context.getPhysicalRowDataType();

@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
@@ -437,6 +438,95 @@ class BigtableWriterAutoCreationTest {
         assertThatThrownBy(writer::close).isSameAs(batcher.closeFailure);
 
         assertThat(admin.closeCalls).isEqualTo(1);
+    }
+
+    @Test
+    void typedDestinationsAreValidatedBeforeSubmissionOncePerActiveDestination() throws Exception {
+        TableCreateOptions types =
+                TableCreateOptions.builder()
+                        .columnFamily("cf", ColumnFamilyType.INT64_SUM, null)
+                        .build();
+        RecordingHandler handler = new RecordingHandler();
+        try (BigtableWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().build(),
+                        handler,
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        types,
+                        (element, context) -> element.startsWith("events/") ? OTHER_TABLE : TABLE,
+                        FAST_SCHEDULE)) {
+            writer.write("orders/1", TestContexts.NO_OP);
+            writer.write("orders/2", TestContexts.NO_OP);
+            admin.validationFailure = new IllegalStateException("column family type mismatch");
+            assertThatThrownBy(() -> writer.write("events/3", TestContexts.NO_OP))
+                    .isSameAs(admin.validationFailure);
+            assertThat(admin.validated).containsExactly(TABLE, OTHER_TABLE);
+            assertThat(admin.expectedTypes).containsOnly(types.getColumnFamilyTypes());
+            assertThat(admin.allowedMissing).containsOnly(true);
+            assertThat(factory.batcherFor(OTHER_TABLE).sentRowKeys()).isEmpty();
+            assertThat(writer.getInFlightEntries()).isEqualTo(2);
+            assertThat(handler.handled).isEmpty();
+            assertThat(admin.ensured).isEmpty();
+            writer.flush(false);
+            assertThat(batcher.sentRowKeys()).containsExactly(List.of("orders/1", "orders/2"));
+        }
+    }
+
+    @Test
+    void aggregateStartupCreatesBeforeAnyRecordAndCountsItsResult() throws Exception {
+        TableCreateOptions types =
+                TableCreateOptions.builder()
+                        .columnFamily("cf", ColumnFamilyType.INT64_SUM, null)
+                        .build();
+        admin.result = TableAdmin.EnsureResult.familiesAdded(1, Set.of("cf"));
+        try (BigtableWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().build(),
+                        FailureHandler.failJob(),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        types)) {
+            writer.prepareTable(TABLE, types);
+            assertThat(admin.ensured).containsExactly(TABLE);
+            assertThat(metricGroup.counterValue("columnFamiliesAdded")).isEqualTo(1);
+            assertThat(metricGroup.counterValue("tablesCreated")).isZero();
+            assertThat(writer.getInFlightEntries()).isZero();
+            writer.write("r", TestContexts.NO_OP);
+            writer.flush(false);
+            assertThat(admin.validated).isEmpty();
+            assertThat(batcher.sentRowKeys()).containsExactly(List.of("r"));
+        }
+    }
+
+    @Test
+    void aggregateStartupWithCreateNeverRequiresEveryFamilyWithoutCreating() throws Exception {
+        TableCreateOptions types =
+                TableCreateOptions.builder()
+                        .columnFamily("cf", ColumnFamilyType.INT64_SUM, null)
+                        .build();
+        try (BigtableWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().build(),
+                        FailureHandler.failJob(),
+                        CreateDisposition.CREATE_NEVER,
+                        null)) {
+            admin.validationFailure = new IllegalStateException("missing cf");
+            assertThatThrownBy(() -> writer.prepareTable(TABLE, types))
+                    .isSameAs(admin.validationFailure);
+            assertThat(admin.validated).containsExactly(TABLE);
+            assertThat(admin.allowedMissing).containsExactly(false);
+            assertThat(admin.ensured).isEmpty();
+            assertThat(writer.getInFlightEntries()).isZero();
+        }
+    }
+
+    @Test
+    void ordinaryRawWritesDoNotReadSchemaBeforeSending() throws Exception {
+        try (BigtableWriter<String> writer = writer(FailureHandler.failJob())) {
+            writer.write("r", TestContexts.NO_OP);
+            writer.flush(false);
+            assertThat(admin.validated).isEmpty();
+            assertThat(admin.ensured).isEmpty();
+        }
     }
 
     private BigtableWriter<String> writer(FailureHandler<? super FailedMutation> handler) {

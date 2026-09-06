@@ -45,6 +45,24 @@ class BigtableMutateRowsSinkTest {
             (element, context) -> RowMutationEntry.create(element).setCell("cf", "q", element);
 
     @Test
+    void rejectsAnIncompleteStartupValidationConfiguration() {
+        BigtableMutateRowsSink<String> ordinary =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder().table(TABLE).serializer(SERIALIZER).build();
+        TableCreateOptions expected =
+                TableCreateOptions.builder()
+                        .columnFamily("cf", ColumnFamilyType.INT64_SUM, null)
+                        .build();
+
+        assertThatThrownBy(() -> new BigtableMutateRowsSink<>(ordinary.getConfig(), TABLE, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("initialDestination and expectedFamilies");
+        assertThatThrownBy(() -> new BigtableMutateRowsSink<>(ordinary.getConfig(), null, expected))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("initialDestination and expectedFamilies");
+    }
+
+    @Test
     void closesTheHandlerAndTheFactoryWhenTheWriterCannotBeCreated() throws Exception {
         LifecycleRecordingHandler handler = new LifecycleRecordingHandler();
         // The writer's own precondition is what fails here, after the handler has been opened and
@@ -84,6 +102,87 @@ class BigtableMutateRowsSinkTest {
         // so a regression fails deterministically rather than in whichever class the fork ran next.
         assertThat(BigtableWriterOptions.defaults())
                 .isEqualTo(BigtableWriterOptions.builder().build());
+    }
+
+    @Test
+    void aStartupTypeMismatchClosesTheOpenedHandlerAndFactoryBeforeAnyWrite() throws Exception {
+        io.grpc.MethodDescriptor<
+                        com.google.bigtable.admin.v2.GetTableRequest,
+                        com.google.bigtable.admin.v2.Table>
+                getTable =
+                        io.grpc.MethodDescriptor
+                                .<com.google.bigtable.admin.v2.GetTableRequest,
+                                        com.google.bigtable.admin.v2.Table>
+                                        newBuilder()
+                                .setType(io.grpc.MethodDescriptor.MethodType.UNARY)
+                                .setFullMethodName(
+                                        "google.bigtable.admin.v2.BigtableTableAdmin/GetTable")
+                                .setRequestMarshaller(
+                                        io.grpc.protobuf.ProtoUtils.marshaller(
+                                                com.google.bigtable.admin.v2.GetTableRequest
+                                                        .getDefaultInstance()))
+                                .setResponseMarshaller(
+                                        io.grpc.protobuf.ProtoUtils.marshaller(
+                                                com.google.bigtable.admin.v2.Table
+                                                        .getDefaultInstance()))
+                                .build();
+        io.grpc.Server server =
+                io.grpc.ServerBuilder.forPort(0)
+                        .addService(
+                                io.grpc.ServerServiceDefinition.builder(
+                                                "google.bigtable.admin.v2.BigtableTableAdmin")
+                                        .addMethod(
+                                                getTable,
+                                                io.grpc.stub.ServerCalls.asyncUnaryCall(
+                                                        (request, observer) -> {
+                                                            observer.onNext(
+                                                                    com.google.bigtable.admin.v2
+                                                                            .Table.newBuilder()
+                                                                            .setName(
+                                                                                    request
+                                                                                            .getName())
+                                                                            .putColumnFamilies(
+                                                                                    "cf",
+                                                                                    com.google
+                                                                                            .bigtable
+                                                                                            .admin
+                                                                                            .v2
+                                                                                            .ColumnFamily
+                                                                                            .getDefaultInstance())
+                                                                            .build());
+                                                            observer.onCompleted();
+                                                        }))
+                                        .build())
+                        .build()
+                        .start();
+        try {
+            LifecycleRecordingHandler handler = new LifecycleRecordingHandler();
+            RecordingMutationBatcherFactory factory = new RecordingMutationBatcherFactory();
+            BigtableMutateRowsSink<String> ordinary =
+                    (BigtableMutateRowsSink<String>)
+                            BigtableSink.<String>builder()
+                                    .table(TABLE)
+                                    .serializer(SERIALIZER)
+                                    .failedMutationHandler(handler)
+                                    .emulatorEndpoint("localhost:" + server.getPort())
+                                    .build();
+            BigtableMutateRowsSink<String> aggregate =
+                    new BigtableMutateRowsSink<>(
+                            ordinary.getConfig(),
+                            TABLE,
+                            TableCreateOptions.builder()
+                                    .columnFamily("cf", ColumnFamilyType.INT64_SUM, null)
+                                    .build());
+            assertThatThrownBy(() -> aggregate.createWriter(new StubWriterInitContext(0), factory))
+                    .hasMessageContaining(
+                            "column family 'cf' has value type raw; expected int64-sum");
+            assertThat(handler.opens).isEqualTo(1);
+            assertThat(handler.closes).isEqualTo(1);
+            assertThat(factory.closes).isEqualTo(1);
+        } finally {
+            server.shutdownNow();
+            assertThat(server.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     /** A factory that records its close, so the client half of the guard is observable. */

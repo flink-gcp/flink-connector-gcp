@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 
@@ -27,6 +28,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -49,7 +51,24 @@ final class FakeTableAdmin implements TableAdmin {
     /** Runs after a successful ensure, before the result is returned. */
     @Nullable Runnable onEnsure;
 
+    final List<TableDestination> validated = new ArrayList<>();
+    final List<Map<String, ColumnFamilyType>> expectedTypes = new ArrayList<>();
+    final List<Boolean> allowedMissing = new ArrayList<>();
+    @Nullable RuntimeException validationFailure;
     int closeCalls;
+
+    @Override
+    public void validateFamilies(
+            TableDestination destination,
+            Map<String, ColumnFamilyType> expected,
+            boolean allowMissing) {
+        validated.add(destination);
+        expectedTypes.add(expected);
+        allowedMissing.add(allowMissing);
+        if (validationFailure != null) {
+            throw validationFailure;
+        }
+    }
 
     @Override
     public EnsureResult ensureTable(TableDestination destination, TableCreateOptions options)

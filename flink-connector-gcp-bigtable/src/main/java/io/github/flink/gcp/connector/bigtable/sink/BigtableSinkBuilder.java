@@ -213,9 +213,12 @@ public class BigtableSinkBuilder<T> {
     }
 
     /**
-     * Sets the column families — and, per family, an optional garbage-collection rule — for the
-     * table the sink creates under {@link CreateDisposition#CREATE_IF_NEEDED}. Creation only: an
-     * existing table is used as it is, except that families declared here which it lacks are added.
+     * Sets column family names, value types and optional garbage-collection rules for {@link
+     * CreateDisposition#CREATE_IF_NEEDED}. Missing declared families are added and existing GC
+     * rules remain unchanged. Options containing aggregate types require every existing declared
+     * type to match and inspect them before a destination first receives data, requiring {@code
+     * bigtable.tables.get}. Raw-only options retain name-only reconciliation of existing families;
+     * see {@link TableCreateOptions}.
      *
      * @param tableCreateOptions the creation settings
      * @return this builder
