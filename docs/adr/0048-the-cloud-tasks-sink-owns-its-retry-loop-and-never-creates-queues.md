@@ -21,8 +21,9 @@ limitations under the License.
   [#107](https://github.com/flink-gcp/flink-connector-gcp/pull/107)); revised 2026-08-12
   ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
   updated 2026-08-22 ([#937], see ADR-0129); retention interpretation clarified 2026-09-06
-  ([#1239], see ADR-0104 and ADR-0154)
-- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239]
+  ([#1239], see ADR-0104 and ADR-0154); scoped to the default delivery mode 2026-09-06 ([#1240],
+  see ADR-0158)
+- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239], [#1240]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -100,7 +101,10 @@ limitations under the License.
   rejects configuring both modes. The loader stays internal to the Cloud Tasks module: its scope
   and failure identify this client family, while a shared public provider surface would admit
   credential forms outside the connector contract.
-- At-least-once, stateless writer, flush on checkpoint.
+- At-least-once, stateless writer, flush on checkpoint. These are the properties of the default
+  delivery mode. The opt-in checkpointed-creation mode defined by ADR-0158 stages named tasks as
+  committables in the committer's checkpoint state and creates them from that committer, where the
+  retry loop then runs.
 
 [#23]: https://github.com/flink-gcp/flink-connector-gcp/issues/23
 [#24]: https://github.com/flink-gcp/flink-connector-gcp/issues/24
@@ -111,3 +115,4 @@ limitations under the License.
 [#632]: https://github.com/flink-gcp/flink-connector-gcp/issues/632
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#1239]: https://github.com/flink-gcp/flink-connector-gcp/issues/1239
+[#1240]: https://github.com/flink-gcp/flink-connector-gcp/issues/1240
