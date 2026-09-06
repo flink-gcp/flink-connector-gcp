@@ -27,6 +27,8 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.ReadModifyWriteRowRequest.Rule;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,22 +48,23 @@ class ReadModifyWriteRowRequestTest {
     private static final ByteString KEY = ByteString.copyFromUtf8("row-1");
     private static final ByteString QUALIFIER = ByteString.copyFromUtf8("q");
 
-    @Test
-    void appliesTheRulesInOrderAgainstTheDestinationItIsStartedFor() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void appliesImmutableRulesInOrderAgainstTheDestinationItIsStartedFor(boolean copyOf) {
         FakeSingleRowClient client = new FakeSingleRowClient("p/i");
+        Rule appendRule = Rule.append("cf", QUALIFIER, ByteString.copyFromUtf8("-tail"));
+        Rule incrementRule = Rule.increment("counters", QUALIFIER, 5L);
+        List<Rule> rules = List.of(appendRule, incrementRule, incrementRule);
         ReadModifyWriteRowRequest request =
                 new ReadModifyWriteRowRequest(
-                        KEY,
-                        Arrays.asList(
-                                Rule.append("cf", QUALIFIER, ByteString.copyFromUtf8("-tail")),
-                                Rule.increment("counters", QUALIFIER, 5L)));
+                        KEY, copyOf ? List.copyOf(new ArrayList<>(rules)) : rules);
 
         request.start(client, TABLE);
 
         com.google.bigtable.v2.ReadModifyWriteRowRequest proto = sent(client, 0);
         assertThat(proto.getTableName()).isEqualTo("projects/p/instances/i/tables/orders");
         assertThat(proto.getRowKey()).isEqualTo(KEY);
-        assertThat(proto.getRulesList()).hasSize(2);
+        assertThat(proto.getRulesList()).hasSize(3);
         ReadModifyWriteRule append = proto.getRules(0);
         assertThat(append.getFamilyName()).isEqualTo("cf");
         assertThat(append.getColumnQualifier()).isEqualTo(QUALIFIER);
@@ -69,8 +72,49 @@ class ReadModifyWriteRowRequestTest {
         ReadModifyWriteRule increment = proto.getRules(1);
         assertThat(increment.getFamilyName()).isEqualTo("counters");
         assertThat(increment.getIncrementAmount()).isEqualTo(5L);
+        assertThat(proto.getRules(2)).isEqualTo(increment);
         assertThat(request.operation()).isEqualTo(RowOperation.READ_MODIFY_WRITE_ROW);
         assertThat(request.rowKey()).isEqualTo(KEY);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void acceptsASingleImmutableRule(boolean copyOf) {
+        List<Rule> rules = List.of(Rule.increment("cf", QUALIFIER, 1L));
+        ReadModifyWriteRowRequest request =
+                new ReadModifyWriteRowRequest(
+                        KEY, copyOf ? List.copyOf(new ArrayList<>(rules)) : rules);
+        FakeSingleRowClient client = new FakeSingleRowClient("p/i");
+
+        request.start(client, TABLE);
+
+        assertThat(sent(client, 0).getRulesList()).hasSize(1);
+        assertThat(sent(client, 0).getRules(0).getIncrementAmount()).isEqualTo(1L);
+    }
+
+    @Test
+    void rejectsNullAndEmptyRuleLists() {
+        assertThatThrownBy(() -> new ReadModifyWriteRowRequest(KEY, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("rules must not be null");
+        for (List<Rule> rules :
+                List.of(List.<Rule>of(), List.<Rule>copyOf(new ArrayList<Rule>()))) {
+            assertThatThrownBy(() -> new ReadModifyWriteRowRequest(KEY, rules))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("A ReadModifyWriteRow request needs at least one rule");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void rejectsNullRulesAtEveryPosition(int position) {
+        Rule rule = Rule.increment("cf", QUALIFIER, 1L);
+        List<Rule> rules = new ArrayList<>(Arrays.asList(rule, rule, rule));
+        rules.set(position, null);
+
+        assertThatThrownBy(() -> new ReadModifyWriteRowRequest(KEY, rules))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("rules must not contain null");
     }
 
     @Test

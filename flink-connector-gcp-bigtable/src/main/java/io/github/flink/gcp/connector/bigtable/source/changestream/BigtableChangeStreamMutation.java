@@ -96,8 +96,9 @@ public final class BigtableChangeStreamMutation implements Serializable {
                 Preconditions.checkNotNull(
                         estimatedLowWatermarkTime, "estimatedLowWatermarkTime must not be null");
         Preconditions.checkNotNull(entries, "entries must not be null");
-        Preconditions.checkArgument(!entries.contains(null), "entries must not contain null");
-        this.entries = Collections.unmodifiableList(new ArrayList<>(entries));
+        List<Entry> copy = new ArrayList<>(entries);
+        Preconditions.checkArgument(!copy.contains(null), "entries must not contain null");
+        this.entries = Collections.unmodifiableList(copy);
     }
 
     /** Returns the key of the row every entry in this mutation applies to. */

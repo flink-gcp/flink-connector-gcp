@@ -18,14 +18,19 @@ package io.github.flink.gcp.connector.bigtable.source.changestream;
 
 import com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigtableChangeStreamMutationTest {
 
@@ -40,6 +45,59 @@ class BigtableChangeStreamMutationTest {
     private static final String TOKEN = "token";
     private static final Instant WATERMARK = Instant.parse("2026-08-11T23:59:00.987654321Z");
     private static final List<BigtableChangeStreamMutation.Entry> ENTRIES = entries("value");
+
+    @ParameterizedTest
+    @CsvSource({"false, 0", "false, 1", "false, 3", "true, 0", "true, 1", "true, 3"})
+    void acceptsImmutableEntriesInOrder(boolean copyOf, int size) {
+        BigtableChangeStreamMutation.Entry first = ENTRIES.get(0);
+        BigtableChangeStreamMutation.Entry second =
+                new BigtableChangeStreamMutation.DeleteFamilyEntry("other");
+        List<BigtableChangeStreamMutation.Entry> expected =
+                new ArrayList<>(Arrays.asList(first, second, second).subList(0, size));
+        List<BigtableChangeStreamMutation.Entry> entries =
+                copyOf
+                        ? List.copyOf(expected)
+                        : List.of(expected.toArray(new BigtableChangeStreamMutation.Entry[0]));
+
+        BigtableChangeStreamMutation mutation = mutation(entries);
+
+        assertThat(mutation.getEntries()).containsExactlyElementsOf(expected);
+        assertThat(mutation).isEqualTo(mutation(expected)).hasSameHashCodeAs(mutation(expected));
+        assertThatThrownBy(() -> mutation.getEntries().add(first))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void copiesMutableEntries() {
+        List<BigtableChangeStreamMutation.Entry> entries = new ArrayList<>(ENTRIES);
+        BigtableChangeStreamMutation mutation = mutation(entries);
+
+        entries.clear();
+
+        assertThat(mutation.getEntries()).containsExactlyElementsOf(ENTRIES);
+        assertThatThrownBy(() -> mutation.getEntries().clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void rejectsANullEntryList() {
+        assertThatThrownBy(() -> mutation(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("entries must not be null");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void rejectsNullEntriesAtEveryPosition(int position) {
+        BigtableChangeStreamMutation.Entry entry = ENTRIES.get(0);
+        List<BigtableChangeStreamMutation.Entry> entries =
+                new ArrayList<>(Arrays.asList(entry, entry, entry));
+        entries.set(position, null);
+
+        assertThatThrownBy(() -> mutation(entries))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("entries must not contain null");
+    }
 
     @Test
     void equalityCoversEveryValue() {
@@ -195,8 +253,13 @@ class BigtableChangeStreamMutationTest {
     }
 
     private static BigtableChangeStreamMutation mutation() {
+        return mutation(ENTRIES);
+    }
+
+    private static BigtableChangeStreamMutation mutation(
+            List<BigtableChangeStreamMutation.Entry> entries) {
         return new BigtableChangeStreamMutation(
-                ROW_KEY, TYPE, CLUSTER, COMMIT, TIE_BREAKER, TOKEN, WATERMARK, ENTRIES);
+                ROW_KEY, TYPE, CLUSTER, COMMIT, TIE_BREAKER, TOKEN, WATERMARK, entries);
     }
 
     private static List<BigtableChangeStreamMutation.Entry> entries(String value) {

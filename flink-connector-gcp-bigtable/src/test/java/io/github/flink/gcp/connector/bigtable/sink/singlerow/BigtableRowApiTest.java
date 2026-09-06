@@ -19,6 +19,9 @@ package io.github.flink.gcp.connector.bigtable.sink.singlerow;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -29,12 +32,83 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the public surface of the single-row building blocks: what a user's program links
  * against must be connector-owned, so a client upgrade cannot change a public signature.
  */
 class BigtableRowApiTest {
+
+    @ParameterizedTest
+    @CsvSource({"false, 0", "false, 1", "false, 3", "true, 0", "true, 1", "true, 3"})
+    void acceptsImmutableCellsInOrder(boolean copyOf, int size) {
+        BigtableRow.Cell first = cell("first", Collections.emptyList());
+        BigtableRow.Cell second = cell("second", Collections.emptyList());
+        List<BigtableRow.Cell> expected =
+                new ArrayList<>(Arrays.asList(first, second, second).subList(0, size));
+        List<BigtableRow.Cell> cells =
+                copyOf ? List.copyOf(expected) : List.of(expected.toArray(new BigtableRow.Cell[0]));
+
+        BigtableRow row = new BigtableRow(ByteString.EMPTY, cells);
+
+        assertThat(row.getCells()).containsExactlyElementsOf(expected);
+        assertThat(row)
+                .isEqualTo(new BigtableRow(ByteString.EMPTY, expected))
+                .hasSameHashCodeAs(new BigtableRow(ByteString.EMPTY, expected));
+        assertThatThrownBy(() -> row.getCells().add(first))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, 0", "false, 1", "false, 3", "true, 0", "true, 1", "true, 3"})
+    void acceptsImmutableLabelsInOrder(boolean copyOf, int size) {
+        List<String> expected =
+                new ArrayList<>(Arrays.asList("first", "second", "second").subList(0, size));
+        List<String> labels =
+                copyOf ? List.copyOf(expected) : List.of(expected.toArray(new String[0]));
+
+        BigtableRow.Cell cell = cell("value", labels);
+
+        assertThat(cell.getLabels()).containsExactlyElementsOf(expected);
+        assertThat(cell)
+                .isEqualTo(cell("value", expected))
+                .hasSameHashCodeAs(cell("value", expected));
+        assertThatThrownBy(() -> cell.getLabels().add("later"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void rejectsNullListsWithTheirParameterNames() {
+        assertThatThrownBy(() -> new BigtableRow(ByteString.EMPTY, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("cells must not be null");
+        assertThatThrownBy(() -> cell("value", null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("labels must not be null");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void rejectsNullElementsAtEveryPosition(int position) {
+        BigtableRow.Cell cell = cell("value", Collections.emptyList());
+        List<BigtableRow.Cell> cells = new ArrayList<>(Arrays.asList(cell, cell, cell));
+        cells.set(position, null);
+        assertThatThrownBy(() -> new BigtableRow(ByteString.EMPTY, cells))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("cells must not contain null");
+
+        List<String> labels = new ArrayList<>(Arrays.asList("first", "second", "third"));
+        labels.set(position, null);
+        assertThatThrownBy(() -> cell("value", labels))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("labels must not contain null");
+    }
+
+    private static BigtableRow.Cell cell(String value, List<String> labels) {
+        return new BigtableRow.Cell(
+                "cf", ByteString.EMPTY, 1L, ByteString.copyFromUtf8(value), labels);
+    }
 
     @Test
     void noPublicSignatureOfTheRowMentionsTheClientsModels() {

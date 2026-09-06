@@ -57,8 +57,8 @@ public final class ReadModifyWriteRowRequest implements RowRequest<BigtableRow> 
         Preconditions.checkNotNull(rules, "rules must not be null");
         Preconditions.checkArgument(
                 !rules.isEmpty(), "A ReadModifyWriteRow request needs at least one rule");
-        Preconditions.checkArgument(!rules.contains(null), "rules must not contain null");
         this.rules = new ArrayList<>(rules);
+        Preconditions.checkArgument(!this.rules.contains(null), "rules must not contain null");
     }
 
     @Override
