@@ -16,13 +16,17 @@
 
 package io.github.flink.gcp.connector.bigquery.table;
 
+import org.apache.flink.table.api.ApiExpression;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Expressions;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.TableEnvironment;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.regex.Pattern;
 
@@ -30,6 +34,38 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Planner-level coverage for BigQuery source abilities. */
 class BigQueryTablePlanTest {
+
+    @ParameterizedTest
+    @ValueSource(strings = {"AND", "OR", "mixed"})
+    void nestedSqlAndTableApiFiltersReachTheSourceAndRemainResiduals(String shape) {
+        TableEnvironment table = tableEnvironment();
+        StringBuilder ddl = new StringBuilder("CREATE TABLE events (");
+        StringBuilder sql = new StringBuilder("(".repeat(31)).append("c0 = 'a'");
+        ApiExpression predicate = Expressions.$("c0").isEqual("a");
+        for (int i = 0; i < 32; i++) {
+            if (i > 0) {
+                ddl.append(", ");
+                boolean and = shape.equals("AND") || (shape.equals("mixed") && i % 2 == 0);
+                sql.append(and ? " AND " : " OR ").append('c').append(i).append(" = 'a')");
+                ApiExpression leaf = Expressions.$("c" + i).isEqual("a");
+                predicate = and ? predicate.and(leaf) : predicate.or(leaf);
+            }
+            ddl.append('c').append(i).append(" STRING");
+        }
+        ddl.append(") WITH ('connector'='bigquery', 'project'='p', 'dataset'='d', 'table'='t')");
+        table.executeSql(ddl.toString());
+
+        String sqlPlan = table.explainSql("SELECT c0 FROM events WHERE " + sql);
+        String tablePlan =
+                table.from("events").filter(predicate).select(Expressions.$("c0")).explain();
+
+        for (String plan : new String[] {sqlPlan, tablePlan}) {
+            assertThat(plan)
+                    .containsPattern("filter=\\[[^\\]]*" + Pattern.quote("=(c0"))
+                    .containsPattern("where=\\[[^\\]]*" + Pattern.quote("=(c0"))
+                    .contains("=(c31");
+        }
+    }
 
     @Test
     void aSafeFilterIsPushedAndAlsoRetainedAboveTheSource() {

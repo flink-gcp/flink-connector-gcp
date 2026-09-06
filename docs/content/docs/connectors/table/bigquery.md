@@ -320,6 +320,12 @@ The connector selects the restriction before rendering its large literals, escap
 It counts UTF-8 bytes, escaping, operators, separators, and wrappers before allocating the final generated-text buffer.
 The generated-text buffer uses space proportional to the admitted byte budget.
 This does not impose a 1 MB heap limit on Flink's input expressions, traversal metadata, scalar conversion, or residual-filter lists.
+
+Boolean condition selection and SQL text generation use iterative traversal, so their Java call-stack usage does not grow with predicate nesting.
+Traversal state occupies heap space, and the UTF-8 budget still controls which conditions are pushed.
+This does not guarantee arbitrary-depth SQL or Table API planning: Flink can fail while parsing or resolving an expression before it reaches the connector.
+The measured planning boundaries and normalization behavior are recorded in [ADR-0100]({{< param BookRepo >}}/blob/main/docs/adr/0100-the-bigquery-table-source-maps-ddl-rows-onto-the-bounded-source.md#predicate-depth).
+
 For `scan.query`, the configured query text is never rewritten; both explicit and generated
 restrictions apply only when Storage Read reads the materialized result table.
 
