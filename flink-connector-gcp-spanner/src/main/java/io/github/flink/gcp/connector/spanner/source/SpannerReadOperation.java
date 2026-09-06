@@ -47,6 +47,10 @@ import java.util.Objects;
  * is what lets the builder take a single option rather than five that only make sense in two
  * combinations.
  *
+ * <p>Lineage reports the configured base table for explicit reads, including index reads. An index
+ * is only an access path. Query dependencies are unknown: the source neither parses SQL nor submits
+ * it to discover lineage, and returns an empty dataset list for a query.
+ *
  * <p><b>Not every query can be read this way.</b> Spanner partitions a query only when its
  * execution plan begins with a distributed union — in practice a scan of one table, with predicates
  * and projections but no aggregate, no {@code ORDER BY} and no {@code LIMIT}. A query that is not

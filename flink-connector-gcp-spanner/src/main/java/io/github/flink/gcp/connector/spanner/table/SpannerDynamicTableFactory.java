@@ -155,7 +155,9 @@ public final class SpannerDynamicTableFactory
                         config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
-                .build();
+                .build(
+                        SpannerTableLineage.from(
+                                context.getObjectIdentifier().asSummaryString(), config));
     }
 
     @Override
@@ -171,7 +173,12 @@ public final class SpannerDynamicTableFactory
         validateEmulatorEndpoint(config);
         if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
             return SpannerChangeStreamDynamicSource.from(
-                    schema, physicalType, config, tableName(config));
+                    schema,
+                    physicalType,
+                    config,
+                    tableName(config),
+                    SpannerTableLineage.from(
+                            context.getObjectIdentifier().asSummaryString(), config));
         }
         return new SpannerDynamicSource(
                 schema,
@@ -181,7 +188,8 @@ public final class SpannerDynamicTableFactory
                         config.get(SpannerConnectorOptions.DATABASE)),
                 config.get(SpannerConnectorOptions.TABLE),
                 physicalType,
-                config);
+                config,
+                SpannerTableLineage.from(context.getObjectIdentifier().asSummaryString(), config));
     }
 
     private static void validateSourceMode(

@@ -47,6 +47,29 @@ Restart and restore load the mounted file again instead of retaining credential 
 Prefer an attached service account or Workload Identity over a long-lived key where the deployment supports one.
 The option accepts service-account JSON only, and a loading failure is sanitized so neither the path nor credential contents enter the exception.
 
+## Lineage
+
+The batch source, Change Streams source, and mutations sink implement Flink's `LineageVertexProvider`.
+Extraction reads configured identities without loading credentials, opening clients, issuing RPCs, inspecting records, or invoking a serializer, deserializer, or read resolver.
+Source vertices retain their actual boundedness.
+
+| DataStream path | Physical dataset |
+| --- | --- |
+| Explicit table read or index read | The configured base table; the index is not another dataset |
+| Arbitrary SQL | Empty dataset list |
+| Change Streams | The configured Change Stream, not its watched tables |
+| Mutations sink | Empty dataset list; each serialized mutation chooses its own table |
+
+The namespace is `spanner://{project}:{instance}`.
+A table's name is `{database}.{native-table-name}`, preserving any schema qualification and case already present in the native API name.
+DataStream batch reads carry no dialect setting, so lineage does not infer a PostgreSQL default schema.
+A Change Stream's name is `{database}/changeStreams/{stream}`.
+Its `gcp` facet uses resource kind `spanner-change-stream`; table include/exclude regexes do not establish a complete watched-table set.
+Unknown physical resources do not prevent a job from running.
+
+Flink 2.x automatically extracts Source/Sink lineage; Flink 1.20 supports the connector interfaces and direct metadata inspection but does not deliver this metadata through a native FLIP-314 listener.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the `gcp` facet, listener integration, and SQL jar class loader requirements.
+
 ## Source
 
 The source reads a Spanner database at one snapshot and finishes.

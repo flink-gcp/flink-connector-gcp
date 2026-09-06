@@ -51,6 +51,15 @@ public final class SpannerSource {
     /**
      * Returns a builder for a Spanner batch source.
      *
+     * <p>The source returned by the builder implements {@link
+     * org.apache.flink.streaming.api.lineage.LineageVertexProvider}. Explicit table and index reads
+     * identify the base table in namespace {@code spanner://project:instance}, with name {@code
+     * database.table}; a native API name already containing its schema retains that qualification.
+     * Arbitrary SQL has an empty dataset list. Extraction uses configuration only and never
+     * evaluates a read resolver or deserializer, loads credentials, or opens a client. Flink 2.x
+     * extracts this metadata automatically; Flink 1.20 supports direct inspection but not native
+     * listener delivery.
+     *
      * @param <T> the record type produced
      * @return the builder
      */

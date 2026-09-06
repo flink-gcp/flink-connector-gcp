@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner.table.source;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -41,6 +42,7 @@ import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamStartPositionMapper;
 import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
+import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
@@ -59,6 +61,7 @@ public final class SpannerChangeStreamDynamicSource
     private final SpannerTableSchemaConverter schema;
     private final DatabaseDestination database;
     private final SpannerTableName table;
+    @Nullable private final SpannerTableLineage lineage;
     private final String changeStreamName;
     private final ChangeStreamChangelogMode changelogMode;
     private final StartPosition startPosition;
@@ -79,6 +82,15 @@ public final class SpannerChangeStreamDynamicSource
             DataType producedDataType,
             ReadableConfig config,
             SpannerTableName table) {
+        return from(schema, producedDataType, config, table, null);
+    }
+
+    public static SpannerChangeStreamDynamicSource from(
+            SpannerTableSchemaConverter schema,
+            DataType producedDataType,
+            ReadableConfig config,
+            SpannerTableName table,
+            @Nullable SpannerTableLineage lineage) {
         return new SpannerChangeStreamDynamicSource(
                 schema,
                 DatabaseDestination.of(
@@ -98,7 +110,8 @@ public final class SpannerChangeStreamDynamicSource
                 config.get(SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK),
                 config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
-                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
+                lineage);
     }
 
     private SpannerChangeStreamDynamicSource(
@@ -117,7 +130,8 @@ public final class SpannerChangeStreamDynamicSource
             int maxConcurrentQueriesPerSubtask,
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile,
-            @Nullable Integer parallelism) {
+            @Nullable Integer parallelism,
+            @Nullable SpannerTableLineage lineage) {
         this.schema = schema;
         this.database = database;
         this.table = table;
@@ -138,6 +152,7 @@ public final class SpannerChangeStreamDynamicSource
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
+        this.lineage = lineage;
     }
 
     @Override
@@ -218,7 +233,9 @@ public final class SpannerChangeStreamDynamicSource
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
-        return SourceProvider.of(builder.build(), parallelism);
+        Source<RowData, ?, ?> source = builder.build();
+        return SourceProvider.of(
+                lineage == null ? source : lineage.source(source, producedType), parallelism);
     }
 
     @Override
@@ -239,7 +256,8 @@ public final class SpannerChangeStreamDynamicSource
                 maxConcurrentQueriesPerSubtask,
                 emulatorEndpoint,
                 serviceAccountKeyFile,
-                parallelism);
+                parallelism,
+                lineage);
     }
 
     @Override
@@ -257,6 +275,7 @@ public final class SpannerChangeStreamDynamicSource
         }
         SpannerChangeStreamDynamicSource that = (SpannerChangeStreamDynamicSource) other;
         return maxConcurrentQueriesPerSubtask == that.maxConcurrentQueriesPerSubtask
+                && Objects.equals(lineage, that.lineage)
                 && schema.equals(that.schema)
                 && database.equals(that.database)
                 && table.equals(that.table)
@@ -292,6 +311,7 @@ public final class SpannerChangeStreamDynamicSource
                 maxConcurrentQueriesPerSubtask,
                 emulatorEndpoint,
                 serviceAccountKeyFile,
-                parallelism);
+                parallelism,
+                lineage);
     }
 }

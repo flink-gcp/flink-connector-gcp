@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
@@ -42,12 +43,14 @@ public final class SpannerDynamicSink implements DynamicTableSink {
     private final SpannerTableSchemaConverter schema;
     private final DatabaseDestination database;
     private final String table;
+    @Nullable private final SpannerTableLineage lineage;
     private final SpannerWriterOptions writerOptions;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
 
-    private SpannerDynamicSink(Builder builder) {
+    private SpannerDynamicSink(Builder builder, @Nullable SpannerTableLineage lineage) {
+        this.lineage = lineage;
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
         this.database = Preconditions.checkNotNull(builder.database, "database must not be null");
         this.table = Preconditions.checkNotNull(builder.table, "table must not be null");
@@ -84,7 +87,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
         Sink<RowData> sink = builder.build();
-        return SinkV2Provider.of(sink, parallelism);
+        return SinkV2Provider.of(lineage == null ? sink : lineage.sink(sink), parallelism);
     }
 
     @Override
@@ -97,7 +100,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 .emulatorEndpoint(emulatorEndpoint)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .parallelism(parallelism)
-                .build();
+                .build(lineage);
     }
 
     @Override
@@ -114,7 +117,8 @@ public final class SpannerDynamicSink implements DynamicTableSink {
             return false;
         }
         SpannerDynamicSink that = (SpannerDynamicSink) o;
-        return schema.equals(that.schema)
+        return Objects.equals(lineage, that.lineage)
+                && schema.equals(that.schema)
                 && database.equals(that.database)
                 && table.equals(that.table)
                 && writerOptions.equals(that.writerOptions)
@@ -132,7 +136,8 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 writerOptions,
                 emulatorEndpoint,
                 serviceAccountKeyFile,
-                parallelism);
+                parallelism,
+                lineage);
     }
 
     /** Collects values for the immutable sink. */
@@ -183,7 +188,11 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         }
 
         public SpannerDynamicSink build() {
-            return new SpannerDynamicSink(this);
+            return build(null);
+        }
+
+        public SpannerDynamicSink build(@Nullable SpannerTableLineage lineage) {
+            return new SpannerDynamicSink(this, lineage);
         }
     }
 }

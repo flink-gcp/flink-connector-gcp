@@ -21,10 +21,13 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
@@ -33,6 +36,7 @@ import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccessFa
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerWriter;
 
 import java.io.IOException;
+import java.util.List;
 
 /**
  * At-least-once sink applying one mutation per record through {@code batchWriteAtLeastOnce} of
@@ -41,7 +45,7 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class SpannerMutationsSink<T> implements CrossVersionSink<T> {
+public class SpannerMutationsSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
@@ -59,6 +63,11 @@ public class SpannerMutationsSink<T> implements CrossVersionSink<T> {
     /** Returns the sink configuration. */
     public SpannerSinkConfig<T> getConfig() {
         return config;
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        return Lineage.sink(List.of());
     }
 
     @Override
