@@ -79,21 +79,21 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
             Instant watermark) {
         this.partitionToken = partitionToken;
         Preconditions.checkNotNull(parentPartitionIds, "parentPartitionIds must not be null");
-        Preconditions.checkArgument(
-                !parentPartitionIds.contains(null), "parentPartitionIds must not contain null");
-        Preconditions.checkArgument(
-                !parentPartitionIds.contains(""), "parentPartitionIds must not contain empty ids");
         List<String> normalizedParents = new ArrayList<>(new LinkedHashSet<>(parentPartitionIds));
+        Preconditions.checkArgument(
+                !normalizedParents.contains(null), "parentPartitionIds must not contain null");
+        Preconditions.checkArgument(
+                !normalizedParents.contains(""), "parentPartitionIds must not contain empty ids");
         Collections.sort(normalizedParents);
         this.parentPartitionIds = Collections.unmodifiableList(normalizedParents);
         if (partitionToken == null) {
             Preconditions.checkArgument(
-                    parentPartitionIds.isEmpty(), "the initial split must not have parents");
+                    normalizedParents.isEmpty(), "the initial split must not have parents");
         } else {
             Preconditions.checkArgument(
                     !partitionToken.isEmpty(), "partitionToken must not be empty");
             Preconditions.checkArgument(
-                    !parentPartitionIds.isEmpty(),
+                    !normalizedParents.isEmpty(),
                     "a token partition must have at least one parent");
         }
         this.startTimestamp =

@@ -240,8 +240,9 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
 
     private static List<Pattern> immutableCopy(List<Pattern> patterns, String name) {
         Preconditions.checkNotNull(patterns, name + " must not be null");
-        Preconditions.checkArgument(!patterns.contains(null), name + " must not contain null");
-        return Collections.unmodifiableList(new ArrayList<>(patterns));
+        List<Pattern> copy = new ArrayList<>(patterns);
+        Preconditions.checkArgument(!copy.contains(null), name + " must not contain null");
+        return Collections.unmodifiableList(copy);
     }
 
     /** Result of applying table and column filters to one data-change record. */

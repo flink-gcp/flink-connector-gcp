@@ -17,16 +17,115 @@
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SpannerChangeStreamRecordFilterTest {
+
+    @ParameterizedTest
+    @MethodSource("patternLists")
+    void acceptsListFactoriesForEveryFilterScope(List<Pattern> patterns) {
+        DataChangeRecord record = filterRecord();
+        for (int scope = 0; scope < 4; scope++) {
+            SpannerChangeStreamRecordFilter filter = filter(scope, patterns);
+            SpannerChangeStreamRecordFilter reference = filter(scope, new ArrayList<>(patterns));
+            assertThat(filter.hasFilters()).isEqualTo(!patterns.isEmpty());
+            assertSameResult(reference.filter(record), filter.filter(record));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void copiesEachFilterInput(int scope) {
+        List<Pattern> patterns = new ArrayList<>();
+        patterns.add(Pattern.compile("orders(?:\\.status)?"));
+        SpannerChangeStreamRecordFilter filter = filter(scope, patterns);
+        DataChangeRecord record = filterRecord();
+        SpannerChangeStreamRecordFilter.Result expected = filter.filter(record);
+
+        patterns.clear();
+        assertThat(filter.hasFilters()).isTrue();
+        assertSameResult(expected, filter.filter(record));
+        patterns.add(Pattern.compile("archive|orders\\.secret"));
+        assertSameResult(expected, filter.filter(record));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void rejectsNullListsAndElementsWithTheScopeName(int scope) {
+        String name =
+                List.of(
+                                "tableIncludeList",
+                                "tableExcludeList",
+                                "columnIncludeList",
+                                "columnExcludeList")
+                        .get(scope);
+        assertThatThrownBy(() -> filter(scope, null))
+                .isExactlyInstanceOf(NullPointerException.class)
+                .hasMessage(name + " must not be null");
+        assertThatThrownBy(() -> filter(scope, Arrays.asList(Pattern.compile("orders"), null)))
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessage(name + " must not contain null");
+    }
+
+    private static Stream<List<Pattern>> patternLists() {
+        Pattern match = Pattern.compile("orders(?:\\.status)?");
+        Pattern other = Pattern.compile("archive");
+        return Stream.of(
+                        List.<Pattern>of(),
+                        List.of(match),
+                        List.of(other, match),
+                        List.of(other, match, other))
+                .flatMap(
+                        values ->
+                                Stream.of(
+                                        values,
+                                        List.copyOf(new ArrayList<>(values)),
+                                        new ArrayList<>(values)));
+    }
+
+    private static SpannerChangeStreamRecordFilter filter(int scope, List<Pattern> patterns) {
+        return new SpannerChangeStreamRecordFilter(
+                scope == 0 ? patterns : Collections.emptyList(),
+                scope == 1 ? patterns : Collections.emptyList(),
+                scope == 2 ? patterns : Collections.emptyList(),
+                scope == 3 ? patterns : Collections.emptyList(),
+                false);
+    }
+
+    private static DataChangeRecord filterRecord() {
+        return record(
+                "orders",
+                columns(
+                        id(),
+                        column("status", "{\"code\":\"STRING\"}", false, 2),
+                        column("secret", "{\"code\":\"STRING\"}", false, 3)),
+                mods("{\"status\":\"open\",\"secret\":\"value\"}"));
+    }
+
+    private static void assertSameResult(
+            SpannerChangeStreamRecordFilter.Result expected,
+            SpannerChangeStreamRecordFilter.Result actual) {
+        assertThat(actual.getDisposition()).isEqualTo(expected.getDisposition());
+        if (expected.getDisposition()
+                == SpannerChangeStreamRecordFilter.Result.Disposition.DELIVER) {
+            assertThat(actual.getRecord()).isEqualTo(expected.getRecord());
+        }
+        assertThat(actual.getRemovedColumnOccurrences())
+                .isEqualTo(expected.getRemovedColumnOccurrences());
+    }
 
     @Test
     void onlyConfiguredTableOrColumnPatternsActivateFiltering() {
