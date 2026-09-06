@@ -44,5 +44,9 @@ public final class CloudTasksMetricNames {
 
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
+    // Registered by the internal staged writer (CloudTasksStagedWriter).
+    public static final String STAGED_TASKS = "stagedTasks";
+    public static final String STAGED_BYTES = "stagedBytes";
+
     private CloudTasksMetricNames() {}
 }

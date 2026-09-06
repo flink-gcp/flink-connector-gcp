@@ -7,13 +7,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Sink (`docs/adr/0048`, `docs/adr/0129`, `docs/adr/0134`, `docs/adr/0158`)
 
-- **The eager, stateless writer is the default delivery mode.** The opt-in checkpointed-creation
-  mode is defined by `docs/adr/0158` and not yet implemented; read it before adding a committer,
-  writer state, a delivery-mode option or a staged-task format to this module, and keep its
+- **The eager, stateless writer is the default delivery mode.** The internal staging writer,
+  immutable envelope, v1 committable serializer and abstract sink seam implement the first part of
+  `docs/adr/0158`; the production committer and public mode remain in
+  [#1243](https://github.com/flink-gcp/flink-connector-gcp/issues/1243).
+  Read that ADR before extending staging or adding a committer or delivery-mode option, and keep its
   invariants (every staged task named, nothing sent before checkpoint completion, the authorization
   deadline checked before every send, expiry fails before the send, the writer holds no Flink
-  state). Its two lifecycle probes in the `sink` test package (`CloudTasksStagedCommitLifecycleTest`,
-  `StagedCommitTestSink`) pin Flink operator facts, not sink behavior.
+  state). `CloudTasksStagedCommitLifecycleTest` and `StagedCommitTestSink` pin Flink operator facts.
+  `CloudTasksStagedWriterLifecycleTest` and `StagedTaskTestSink` exercise the production writer and
+  envelope through those operators, with a recording-only committer; they do not establish service
+  creation or recovery acceptance. Extend the existing `CloudTasksCommittableSerializer` format under
+  its versioned compatibility contract rather than introducing a second staging format.
 - Use `docs/adr/0162` for the delivery order: implementation can start from ADR-0158 without a
   separate primitive performance pass; correctness and final performance acceptance still govern
   release. Keep #1241's inconclusive result distinct from that sequencing decision.

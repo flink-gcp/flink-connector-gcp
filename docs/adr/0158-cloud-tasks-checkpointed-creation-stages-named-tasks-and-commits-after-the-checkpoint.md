@@ -83,7 +83,7 @@ It is the correct identity for "this accepted record, staged once" and nothing m
 
 ### The envelope
 
-A `StagedTaskEnvelope` is immutable after staging and carries:
+A `CloudTasksCommittable` is immutable after staging and carries:
 
 | Field | Content | Why it is in the envelope |
 |---|---|---|
@@ -217,7 +217,7 @@ The graph-construction check is therefore the enforcement point, not a runtime g
 ### Heap
 
 Staged envelopes live on the heap until their checkpoint completes, and the same bytes exist more than once: in the writer's list, as a copy on the chained writer-to-committer edge, in the committer's collector, in the collector copy the committer snapshots at every checkpoint and the serialized form the state backend writes, on restore as raw state and deserialized objects, and at commit as up to `maxInFlightTasks` parsed requests.
-This record estimates the peak at three to four times the staged bytes per writer subtask for one checkpoint's batch; the implementation measures its own multiplier and prints that one.
+The implementation's four-representation probe below measured about 2.51–6.99 times the accounted bytes, depending on task and queue size; the overflow diagnostic reports the rounded 7x observation and explicitly says it is not a runtime heap bound.
 
 The writer's caps bound one batch, not what the committer holds.
 `prepareCommit()` clears the writer's list at every barrier, a savepoint's included, and Flink keeps a batch in the committer until a checkpoint at or above its own id completes **and is notified**.
@@ -295,7 +295,7 @@ Names are settled at implementation through the metric inventory and its checker
 
 The staged mode is a second write method of the one `CreateTask` family: same RPC, same serializer SPI, same client, same failure classification.
 [ADR-0055](0055-connector-packages-follow-one-skeleton-and-a-layer-exists-only-where-a-sibling-can-arrive.md)'s test yields no family layer, and its `sink.committer` stage is admitted "as the topology requires".
-The classes land as `sink/CloudTasksStagedCreateTaskSink` (`@Internal`; `CrossVersionSink`, `SupportsCommitter`, and `SupportsPreCommitTopology` for the graph check), `sink/StagedTaskEnvelope` and its serializer (`@Internal`, at the sink root because both stages import them), `sink/CloudTasksStagedOptions` and `sink/CloudTasksDeliveryGuarantee` (`@PublicEvolving`), `sink/writer/CloudTasksStagedWriter` (`@Internal`), and `sink/committer/` for `CloudTasksStagedCommitter`, the deadline arithmetic and the blocking creation loop (`@Internal`).
+The classes land as `sink/CloudTasksStagedCreateTaskSink` (`@Internal`; `CrossVersionSink`, `SupportsCommitter`, and `SupportsPreCommitTopology` for the graph check), `sink/CloudTasksCommittable` and its serializer (`@Internal`, at the sink root because both stages import them), `sink/CloudTasksStagedOptions` and `sink/CloudTasksDeliveryGuarantee` (`@PublicEvolving`), `sink/writer/CloudTasksStagedWriter` (`@Internal`), and `sink/committer/` for `CloudTasksStagedCommitter`, the deadline arithmetic and the blocking creation loop (`@Internal`).
 The `TaskCreatorFactory` seam moves to the committer in this mode, and `TaskCreator.createTask` gains the absolute deadline as a parameter.
 `CloudTasksSinkBuilder.build()` keeps returning `Sink<T>` and dispatches on the mode.
 No cross-major source root is needed: `SupportsCommitter`, `SupportsPreCommitTopology` and `CommitterInitContext` are shared by both supported Flink lines, and the graph check does not read a committable's checkpoint id.
@@ -328,6 +328,58 @@ Those are the test designs below.
 ### Service contract
 
 The service facts are ADR-0104's G0 record and ADR-0154's reading of it, and this record adds none: the collision outcome, the retention field and its range, the client's timeout, and the limits of a client deadline are cited there.
+
+### Internal staging implementation (2026-09-06)
+
+[#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) implements the envelope, writer and internal construction seam.
+The envelope class is named `CloudTasksCommittable`, matching BigQuery's `BufferedStreamCommittable` and `FileLoadsCommittable`: it carries work from the writer to the committer, while a `WriterState` carries the writer's own recovery position.
+Its serializer is `CloudTasksCommittableSerializer`; this naming refinement leaves the version-1 wire format unchanged.
+`CloudTasksStagedCreateTaskSink` is abstract, with a package-private constructor; only the test adapter supplies a committer.
+The public builder still constructs `CloudTasksCreateTaskSink`.
+No new mode, public options or writer-state serializer is enabled.
+`CloudTasksStagingConfig` carries the internal settings separately from the existing serialized sink configuration, and the writer revalidates them after deserialization.
+The authorization window is rounded down to whole milliseconds, must be at least one millisecond, and its addition to the origin rejects overflow.
+The writer admits only the built-in `failJob()` handler; staging failures throw sanitized exceptions without user or protobuf exception causes.
+
+The envelope serializer's external version is 1.
+Its big-endian frame is `magic:int32, queueLength:int32, queueUtf8, origin:int64, deadline:int64, taskLength:int32, taskBytes, crc32c:int32`.
+The magic is `0x43545345` (`CTSE`); CRC32C covers everything before the checksum.
+The task limit is 100,000 wire bytes, including the assigned name, a conservative decimal interpretation of the creation reference's 100 KB limit.
+Queue UTF-8 is bounded by the same number, since a valid named task must already contain that queue.
+The complete frame is at most 200,032 bytes.
+The decoder rejects unsupported versions, malformed framing, invalid UTF-8, invalid queue structure, a deadline not after its origin, a checksum mismatch, and trailing bytes.
+It checks lengths against both fixed caps and remaining input before making a task-byte copy.
+There is no connector-owned batch count in this format: each invocation decodes one envelope.
+Flink has already allocated the input byte array, and its collector owns the surrounding counts and state allocation; these decoder limits do not bound Flink's total restore heap.
+
+The writer validates its generated name, complete named-task size and the target constraints already owned by the HTTP/App Engine serializers before creating an envelope.
+It stores immutable `ByteString` bytes and releases the protobuf object graph after staging.
+Decoding the frame preserves those bytes without parsing or reserializing the Task; `parseTask()` parses and validates it at the eventual commit boundary.
+No restore reruns the serializer, resolver, extractor or random identity generator.
+The existing at-least-once writer retains its original naming, validation and failure behavior.
+
+The production writer/envelope operator tests supplement the original string probes.
+They exercise serialized sink deployment, pre-barrier emission, empty writer state, collector snapshots, restoration before `open()`, loss before and after emission and after an uncompleted collector snapshot followed by explicit replay input, retention across three unnotified barriers, checkpointed end of input, and repartitioning two collector subtasks into one and three.
+The recording committer checks envelope ownership, not RPC success, expiry enforcement or service deduplication.
+The existing checkpoint-disabled negative control still demonstrates why the graph rejection must accompany the real committer in #1243; the abstract construction seam does not expose that unsupported path as a public mode.
+
+A local Java 17 instrumentation probe measured the retained size of four simultaneously held representations: the staged envelope list, a serializer-round-tripped edge copy, serialized snapshot frames, and a decoded restore list.
+It traversed object identity, counted each reachable object once with `Instrumentation.getObjectSize`, and included lists, arrays, strings and immutable protobuf bytes.
+It used one JVM with `-Xmx768m`, no service and no load workers.
+The normal queue was `projects/p/locations/l/queues/q`; a separate adversarial case appended 95,000 ASCII characters to the queue component to exercise the connector's allocation boundary, not to claim that such a queue exists in Cloud Tasks.
+
+| Body bytes | Records | Accounted bytes | Retained bytes, four representations | Ratio |
+|---|---:|---:|---:|---:|
+| 0 | 100,000 | 35,800,000 | 89,707,648 | 2.5058 |
+| 1,024 | 10,000 | 13,860,000 | 50,305,152 | 3.6295 |
+| 65,536 | 500 | 32,950,000 | 131,537,088 | 3.9920 |
+| 99,000 | 500 | 49,682,000 | 198,465,088 | 3.9947 |
+| 0, long queue | 500 | 47,680,000 | 333,044,088 | 6.9850 |
+
+The overflow diagnostic rounds the largest observed ratio up to 7x and calls it a four-representation measurement, not a runtime heap bound.
+The probe does not include Flink collector bookkeeping, its additional state-backend buffers, transient serialization allocations or parsed in-flight requests.
+It is not a TaskManager peak or #1246's performance acceptance.
+The pending-committables observation and heap-sizing rule above still governs the whole collector, whose number of retained batches has no configuration-derived ceiling.
 
 ### Deterministic fault tests the implementation owes
 
