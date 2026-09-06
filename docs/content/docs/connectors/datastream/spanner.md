@@ -718,6 +718,8 @@ The connector exposes these capacity signals but does not change operator parall
 
 ## Testing
 
+Coordinator-event unit tests reject null child entries at construction, accept immutable child lists, and verify that defensive copying preserves child order and duplicates.
+
 Functional coverage runs against the [Cloud Spanner emulator](https://github.com/GoogleCloudPlatform/cloud-spanner-emulator) in testcontainers over both dialects.
 The sink tests drive the production writer-creation path, so the client, schema read, and batch write are the real ones.
 The Change Streams tests run the production source through a MiniCluster across schema and value-capture changes, and separate failover jobs require complete at-least-once output after recovery in both dialects.

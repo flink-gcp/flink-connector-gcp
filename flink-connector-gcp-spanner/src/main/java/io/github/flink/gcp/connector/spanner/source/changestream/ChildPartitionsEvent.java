@@ -37,6 +37,15 @@ public final class ChildPartitionsEvent implements SourceEvent {
     private final Instant startTimestamp;
     private final List<ChildPartition> children;
 
+    /**
+     * Creates a discovery event with an immutable copy of the children in encounter order.
+     *
+     * @param parentSplitId the reporting parent split identity
+     * @param startTimestamp the children's start timestamp
+     * @param children a non-empty list of non-null child partitions; duplicates are preserved
+     * @throws NullPointerException if any argument is null
+     * @throws IllegalArgumentException if children is empty or contains a null element
+     */
     public ChildPartitionsEvent(
             String parentSplitId, Instant startTimestamp, List<ChildPartition> children) {
         this.parentSplitId =
@@ -44,8 +53,10 @@ public final class ChildPartitionsEvent implements SourceEvent {
         this.startTimestamp =
                 Preconditions.checkNotNull(startTimestamp, "startTimestamp must not be null");
         Preconditions.checkNotNull(children, "children must not be null");
-        Preconditions.checkArgument(!children.isEmpty(), "children must not be empty");
-        this.children = Collections.unmodifiableList(new ArrayList<>(children));
+        List<ChildPartition> childrenCopy = new ArrayList<>(children);
+        Preconditions.checkArgument(!childrenCopy.isEmpty(), "children must not be empty");
+        Preconditions.checkArgument(!childrenCopy.contains(null), "children must not contain null");
+        this.children = Collections.unmodifiableList(childrenCopy);
     }
 
     public String getParentSplitId() {
