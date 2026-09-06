@@ -572,7 +572,7 @@ Bodies should be sized against the smaller number until this is verified empiric
 
 ## Metrics
 
-Registered on the sink writer's metric group, one set per subtask:
+Registered on the current at-least-once sink writer's metric group, one set per subtask:
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -620,6 +620,21 @@ Because the registry entries cannot be removed, a queue seen again resumes its o
 so the interval this writer could measure would describe its own retry budget rather than the
 service's response time. There is no committer either (the sink is single-phase), so Flink's
 committer metrics do not apply.
+
+### Internal staging metrics
+
+The internal checkpoint-staging writer developed in [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) registers the gauges below and retains `recordsSkipped`.
+It is not selectable through the public builder; the supported sink behavior and metrics above remain at-least-once.
+Its `numRecordsSendErrors` counts staging serialization failures and extractor exceptions, which fail the job, while it never increments send or sent-byte counters.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `stagedTasks` | gauge | tasks still owned by the writer before `prepareCommit()` |
+| `stagedBytes` | gauge | their named Task wire bytes plus 256 bytes per task |
+
+Both gauges reset when the writer transfers its batch and exclude committables already held by Flink's collector.
+They therefore describe one writer batch, not the total pending checkpoint backlog or actual live heap.
+The state format, copy measurements and collector sizing rule are recorded in ADR-0158; public activation and its operational guidance belong to [#1243](https://github.com/flink-gcp/flink-connector-gcp/issues/1243).
 
 ## Tuning
 

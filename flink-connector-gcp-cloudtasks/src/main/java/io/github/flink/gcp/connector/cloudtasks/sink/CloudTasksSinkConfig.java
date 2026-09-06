@@ -71,9 +71,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
         return serializer;
     }
 
-    /**
-     * Returns the deduplication-key extractor, or {@code null} when the sink creates unnamed tasks.
-     */
+    /** Returns the deduplication-key extractor, or {@code null} when none was configured. */
     @Nullable
     public TaskIdExtractor<? super T> getTaskIdExtractor() {
         return taskIdExtractor;
