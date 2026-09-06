@@ -23,7 +23,8 @@ limitations under the License.
   [#566](https://github.com/flink-gcp/flink-connector-gcp/issues/566),
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047),
   [#1233](https://github.com/flink-gcp/flink-connector-gcp/issues/1233),
-  [#1234](https://github.com/flink-gcp/flink-connector-gcp/issues/1234)
+  [#1234](https://github.com/flink-gcp/flink-connector-gcp/issues/1234),
+  [#1252](https://github.com/flink-gcp/flink-connector-gcp/issues/1252)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -167,6 +168,12 @@ An `OR` requires a necessary condition from every branch, allowing a partial `AN
 A failed `OR` releases its tentative conditions and budget; it does not retry earlier branches with fewer conjuncts.
 This preserves fitting restrictions and can admit a partial `AND` whose combined translation previously exceeded the limit.
 All original filters remain residuals so that fallback does not change the result.
+Boolean selection and deferred rendering both use explicit traversal stacks on the heap.
+A traversal frame retains the next child and its parent's tentative byte charge; completing or rejecting a branch returns its result to that parent without a recursive Java call.
+Rendering walks the selected fragment structure in the same order into one final buffer, without recursively invoking a compound fragment's writer.
+The connector imposes no separate predicate-depth limit: a conservative guard would discard some fitting restrictions and tie their selection to an additional policy boundary.
+Heap use still depends on input and traversal size, and Flink's own expression processing remains outside this guarantee.
+
 A query source leaves the configured query untouched and applies both restrictions to the Storage
 Read session over its materialized result.
 
@@ -196,6 +203,61 @@ Read session over its materialized result.
   connector's rejection.
 - The underlying DataStream source suites remain the evidence for read-session restore, query-job
   reuse, retry, and real-BigQuery behavior.
+
+### Predicate depth
+
+Measured for [#1252](https://github.com/flink-gcp/flink-connector-gcp/issues/1252) on 2026-09-06 with Temurin 17.0.20 on arm64 macOS.
+Each direct or planner case ran in an isolated JVM with `-Xss1m -Xmx512m`.
+These are sampled outcomes under that stack setting, not portable maximum supported depths.
+
+The direct translator control used the source at `acabe0d47498673eac38cce03cd36db6c7021649`, after the allocation repair.
+Starting with `value = 'a'` on a Flink `STRING` field, it constructed a left-associated binary tree with `CallExpression.permanent`, reusing the equality leaf at each occurrence.
+Both AND and OR completed at 1,024 leaves and failed in recursive translation at 2,048 leaves.
+Their 1,024-leaf restrictions occupied 22,523 and 21,500 UTF-8 bytes, respectively, below the byte budget.
+
+`BigQueryFilterPushDownStackBoundaryTest` retains that direct boundary independently of Flink's planner.
+The iterative implementation completes left- and right-associated AND, OR, and alternating AND/OR trees at 2,048, 8,192, and 32,768 leaves, checking the exact generated text and the identity and order of the original residuals.
+Further cases exercise partial ANDs inside an OR, late OR rejection, recovery of its tentative budget, deep mixed rejection, and an exact combined UTF-8 boundary with a multibyte explicit restriction.
+At 65,536 leaves, the AND still contributes a fitting necessary condition and the OR is rejected without consuming the next filter's budget.
+The regression probe fails against the baseline translator; independently restoring recursive rendering also makes it fail in rendering.
+Allowing a partial OR or omitting a child's byte charge makes the corresponding assertion fail.
+
+The planner probe used Flink 1.20.4, 2.2.1, and 2.3.0, a batch `TableEnvironment`, and a BigQuery table with `STRING` columns, without executing a job or contacting GCP.
+One arm repeated `c0 = 'a'`; another used one distinct column per leaf so duplicate elimination could not erase the predicate.
+The nested SQL arm parenthesized each left-associated binary operation; the Table API arm built the corresponding chain with `ApiExpression.and` and `or`.
+A further SQL arm omitted the parentheses for homogeneous AND and OR chains.
+A temporary observation at `BigQueryDynamicSource.applyFilters` counted entries and traversed the received expressions iteratively before invoking the translator.
+The following outcomes agreed across all three versions and both column arms:
+
+| Planning input | Leaf occurrences | Observation |
+| --- | --- | --- |
+| Parenthesized SQL, AND / OR / alternating | 32 | Reached the connector and completed the plan |
+| Table API, AND / OR / alternating | 32 | Reached the connector and completed the plan |
+| Parenthesized SQL, AND / OR / alternating | 2,048 | Failed before connector entry with `NullPointerException` in `CalciteParser.parseSqlList` |
+| Table API, AND / OR / alternating | 2,048 | Failed before connector entry with `StackOverflowError` during expression resolution |
+| Unparenthesized SQL, AND / OR | 256 | Reached the connector and completed the plan |
+| Unparenthesized SQL, AND / OR | 1,024 and 2,048 | Failed before connector entry with `StackOverflowError` during SQL validation |
+
+Successful repeated-column cases reached the connector as one equality.
+Distinct-column ANDs became separate top-level equality filters, whereas OR and alternating chains retained binary nesting.
+For example, the 32-leaf nested OR and alternating cases arrived as one filter with 127 expression nodes, maximum depth 33, and maximum child count 2, counting the equality's field and literal children.
+The 256-leaf unparenthesized OR arrived with 1,023 nodes and depth 257.
+`BigQueryTablePlanTest` keeps the successful 32-leaf distinct-column SQL and Table API cases as regression coverage, including the retained residual.
+No failing sampled planner case reached this connector, so this evidence does not establish a connector stack failure on those planning paths or promise arbitrary-depth SQL support after the repair.
+
+The iterative traversal keeps the allocation repair's deferred-text behavior while adding heap-resident traversal state.
+A comparison with the post-allocation baseline used the allocation counter, sampling method, and inputs described below, with the stack and heap settings above.
+Generated byte counts and acceptance agreed in all 22 sampled cases.
+The following median per-translation allocations include traversal metadata and final text, but exclude input construction:
+
+| Expression | Leaves | Recursive baseline allocated bytes | Iterative candidate allocated bytes | Generated restriction bytes |
+| --- | --- | --- | --- | --- |
+| Wide AND, 200,000-character ASCII literal | 32 | 1,630,208 | 1,631,440 | 800,075 |
+| Wide OR, 200,000-character ASCII literal | 32 | 6,032 | 6,592 | 0 |
+| OR over the same wide OR and an unsupported NOT | 32 | 6,088 | 6,664 | 0 |
+| Nested AND, one-character ASCII literal | 1,024 | 1,528,160 | 1,721,840 | 22,523 |
+
+The deeper case shows the cost of replacing stack frames with explicit traversal state; the byte limit remains a generated-text boundary, not an allocation or heap ceiling.
 
 ### Compound construction allocation
 

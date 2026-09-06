@@ -41,7 +41,9 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -99,34 +101,55 @@ final class BigQueryFilterPushDown {
 
     private static Optional<Sql> translate(
             RowType physicalRowType, ResolvedExpression expression, long remaining) {
+        ArrayDeque<TranslationFrame> parents = new ArrayDeque<>();
+        traversal:
+        while (true) {
+            if (remaining > 0 && expression instanceof CallExpression) {
+                CallExpression call = (CallExpression) expression;
+                FunctionDefinition function = call.getFunctionDefinition();
+                if ((function.equals(BuiltInFunctionDefinitions.AND)
+                                || function.equals(BuiltInFunctionDefinitions.OR))
+                        && !call.getResolvedChildren().isEmpty()) {
+                    TranslationFrame frame = new TranslationFrame(call, remaining);
+                    parents.push(frame);
+                    expression = frame.nextChild();
+                    remaining = frame.remainingForChild();
+                    continue;
+                }
+            }
+            Optional<Sql> branch = translateLeaf(physicalRowType, expression, remaining);
+            while (!parents.isEmpty()) {
+                TranslationFrame parent = parents.peek();
+                if (branch.isPresent()) {
+                    parent.add(branch.get());
+                } else if (!parent.conjunction) {
+                    // A failed OR contributes neither a condition nor a charge to its parent.
+                    parents.pop();
+                    continue;
+                }
+                if (parent.nextChild < parent.children.size()) {
+                    expression = parent.nextChild();
+                    remaining = parent.remainingForChild();
+                    continue traversal;
+                }
+                parents.pop();
+                branch =
+                        parent.translated.isEmpty()
+                                ? Optional.empty()
+                                : Optional.of(join(parent.operator, parent.translated));
+            }
+            return branch;
+        }
+    }
+
+    private static Optional<Sql> translateLeaf(
+            RowType physicalRowType, ResolvedExpression expression, long remaining) {
         if (remaining <= 0 || !(expression instanceof CallExpression)) {
             return Optional.empty();
         }
         CallExpression call = (CallExpression) expression;
         FunctionDefinition function = call.getFunctionDefinition();
         List<ResolvedExpression> children = call.getResolvedChildren();
-        boolean conjunction = function.equals(BuiltInFunctionDefinitions.AND);
-        if (conjunction || function.equals(BuiltInFunctionDefinitions.OR)) {
-            String operator = conjunction ? "AND" : "OR";
-            List<Sql> translated = new ArrayList<>();
-            long used = 2;
-            for (ResolvedExpression child : children) {
-                int separatorBytes = translated.isEmpty() ? 0 : operator.length() + 2;
-                Optional<Sql> branch =
-                        translate(physicalRowType, child, remaining - used - separatorBytes);
-                if (!branch.isPresent()) {
-                    if (!conjunction) {
-                        return Optional.empty();
-                    }
-                    continue;
-                }
-                translated.add(branch.get());
-                used += separatorBytes + branch.get().bytes;
-            }
-            return translated.isEmpty()
-                    ? Optional.empty()
-                    : Optional.of(join(operator, translated));
-        }
         if (function.equals(BuiltInFunctionDefinitions.IS_NULL)
                 || function.equals(BuiltInFunctionDefinitions.IS_NOT_NULL)) {
             if (children.size() != 1 || !(children.get(0) instanceof FieldReferenceExpression)) {
@@ -637,18 +660,7 @@ final class BigQueryFilterPushDown {
         for (Sql expression : expressions) {
             bytes += expression.bytes;
         }
-        return new Sql(
-                bytes,
-                output -> {
-                    output.append('(');
-                    for (int i = 0; i < expressions.size(); i++) {
-                        if (i > 0) {
-                            output.append(separator);
-                        }
-                        expressions.get(i).appendTo(output);
-                    }
-                    output.append(')');
-                });
+        return new Sql(bytes, expressions, separator, true);
     }
 
     private static Sql quoteIdentifier(String identifier) {
@@ -706,33 +718,111 @@ final class BigQueryFilterPushDown {
         for (Sql part : parts) {
             bytes += part.bytes;
         }
-        return new Sql(
-                bytes,
-                output -> {
-                    for (Sql part : parts) {
-                        part.appendTo(output);
-                    }
-                });
+        return new Sql(bytes, Arrays.asList(parts), "", false);
+    }
+
+    /** The unfinished children and tentative byte charge of one Boolean expression. */
+    private static final class TranslationFrame {
+        private final List<ResolvedExpression> children;
+        private final boolean conjunction;
+        private final String operator;
+        private final long remaining;
+        private final List<Sql> translated = new ArrayList<>();
+        private int nextChild;
+        private long used = 2;
+
+        private TranslationFrame(CallExpression call, long remaining) {
+            this.children = call.getResolvedChildren();
+            this.conjunction = call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.AND);
+            this.operator = conjunction ? "AND" : "OR";
+            this.remaining = remaining;
+        }
+
+        private ResolvedExpression nextChild() {
+            return children.get(nextChild++);
+        }
+
+        private int separatorBytes() {
+            return translated.isEmpty() ? 0 : operator.length() + 2;
+        }
+
+        private long remainingForChild() {
+            return remaining - used - separatorBytes();
+        }
+
+        private void add(Sql branch) {
+            used += separatorBytes() + branch.bytes;
+            translated.add(branch);
+        }
     }
 
     /** A measured SQL fragment whose potentially large text is emitted only after selection. */
     private static final class Sql {
         private final long bytes;
-        private final Consumer<StringBuilder> writer;
+        @Nullable private final Consumer<StringBuilder> writer;
+        private final List<Sql> children;
+        private final String separator;
+        private final boolean parenthesized;
 
         private Sql(long bytes, Consumer<StringBuilder> writer) {
             this.bytes = bytes;
             this.writer = writer;
+            this.children = Collections.emptyList();
+            this.separator = "";
+            this.parenthesized = false;
         }
 
-        private void appendTo(StringBuilder output) {
-            writer.accept(output);
+        private Sql(long bytes, List<Sql> children, String separator, boolean parenthesized) {
+            this.bytes = bytes;
+            this.writer = null;
+            this.children = children;
+            this.separator = separator;
+            this.parenthesized = parenthesized;
         }
 
         private String render() {
             StringBuilder output = new StringBuilder((int) bytes);
-            appendTo(output);
+            ArrayDeque<RenderFrame> stack = new ArrayDeque<>();
+            stack.push(new RenderFrame(this));
+            while (!stack.isEmpty()) {
+                RenderFrame frame = stack.peek();
+                Sql fragment = frame.fragment;
+                if (fragment.writer != null) {
+                    fragment.writer.accept(output);
+                    stack.pop();
+                    continue;
+                }
+                if (frame.nextChild == 0 && fragment.parenthesized) {
+                    output.append('(');
+                }
+                if (frame.nextChild < fragment.children.size()) {
+                    if (frame.nextChild > 0) {
+                        output.append(fragment.separator);
+                    }
+                    Sql child = fragment.children.get(frame.nextChild++);
+                    if (child.writer != null) {
+                        child.writer.accept(output);
+                    } else {
+                        stack.push(new RenderFrame(child));
+                    }
+                } else {
+                    if (fragment.parenthesized) {
+                        output.append(')');
+                    }
+                    stack.pop();
+                }
+            }
             return output.toString();
+        }
+    }
+
+    /** The next child to render from one selected SQL fragment. */
+    private static final class RenderFrame {
+        private final Sql fragment;
+        private int nextChild;
+
+        private RenderFrame(Sql fragment) {
+            this.fragment = fragment;
         }
     }
 
