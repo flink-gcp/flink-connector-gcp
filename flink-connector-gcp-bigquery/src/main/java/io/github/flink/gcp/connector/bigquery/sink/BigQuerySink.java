@@ -41,6 +41,17 @@ import org.apache.flink.annotation.Public;
  * <p>Write methods that are not implemented yet are rejected by {@link BigQuerySinkBuilder#build()}
  * with an {@link UnsupportedOperationException}.
  *
+ * <p>Every built write method implements {@link
+ * org.apache.flink.streaming.api.lineage.LineageVertexProvider}. A fixed table reports namespace
+ * {@code bigquery} and name {@code project.dataset.table}, with its original resource components in
+ * the {@code gcp} facet; default-stream CDC uses the same identity. The last table or destination
+ * resolver setter wins. A user resolver reports an empty dataset list even if it always returns a
+ * constant. Internal streams, staging objects, temporary tables and jobs are not output datasets.
+ *
+ * <p>Lineage extraction reads configuration only: it performs no authentication, client creation,
+ * RPC, serialization or destination resolution. Flink 2.2 and 2.3 extract it into lineage graphs;
+ * Flink 1.20 supports direct metadata inspection but not automatic FLIP-314 listener delivery.
+ *
  * <p>Example:
  * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="sink" -->
  *

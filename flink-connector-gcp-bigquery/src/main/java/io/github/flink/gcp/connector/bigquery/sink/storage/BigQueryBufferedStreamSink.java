@@ -35,9 +35,13 @@ import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
+import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.FixedDestinationResolver;
@@ -53,9 +57,12 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -86,6 +93,7 @@ import java.util.function.Supplier;
 @Internal
 public class BigQueryBufferedStreamSink<T>
         implements CrossVersionSink<T>,
+                BigQueryLineageSink<T>,
                 SupportsCommitter<BufferedStreamCommittable>,
                 SupportsWriterState<T, BufferedStreamWriterState>,
                 SupportsPreCommitTopology<BufferedStreamCommittable, BufferedStreamCommittable> {
@@ -93,6 +101,7 @@ public class BigQueryBufferedStreamSink<T>
     private static final long serialVersionUID = 1L;
 
     private final BigQuerySinkConfig<T> config;
+    @Nullable private final String lineageTableName;
     private final BufferedStreamOptions options;
     private final BufferedStreamServiceFactory serviceFactory;
 
@@ -116,9 +125,34 @@ public class BigQueryBufferedStreamSink<T>
             BigQuerySinkConfig<T> config,
             BufferedStreamOptions options,
             BufferedStreamServiceFactory serviceFactory) {
+        this(config, options, serviceFactory, null);
+    }
+
+    private BigQueryBufferedStreamSink(
+            BigQuerySinkConfig<T> config,
+            BufferedStreamOptions options,
+            BufferedStreamServiceFactory serviceFactory,
+            @Nullable String lineageTableName) {
         this.config = config;
         this.options = options;
         this.serviceFactory = serviceFactory;
+        this.lineageTableName = lineageTableName;
+    }
+
+    @Override
+    public BigQueryBufferedStreamSink<T> withTableLineage(String logicalName) {
+        return new BigQueryBufferedStreamSink<>(
+                config, options, serviceFactory, Objects.requireNonNull(logicalName));
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        return lineageTableName == null
+                ? Lineage.sink(BigQueryLineage.resources(config.getDestinationResolver()))
+                : Lineage.tableSink(
+                        lineageTableName,
+                        "bigquery",
+                        BigQueryLineage.resources(config.getDestinationResolver()));
     }
 
     @Override

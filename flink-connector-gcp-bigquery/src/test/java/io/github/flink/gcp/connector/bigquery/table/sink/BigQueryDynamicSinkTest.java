@@ -204,6 +204,7 @@ class BigQueryDynamicSinkTest {
                                 RowDataSchemaOptions.builder()
                                         .jsonFieldPaths(Collections.singletonList("id"))
                                         .build()));
+        varied.put("lineageTableName", a -> a.lineageTableName("catalog.db.output"));
         varied.put("cdcEnabled", a -> a.cdcEnabled(true));
         varied.put(
                 "debeziumMySqlSourceUuids",

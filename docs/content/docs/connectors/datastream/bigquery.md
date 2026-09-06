@@ -32,6 +32,26 @@ One builder dispatches to a write-method implementation at job-graph constructio
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
 
+## Lineage
+
+The Source and all three Sink implementations returned by the public builders implement Flink's `LineageVertexProvider`.
+A configured table has namespace `bigquery` and name `{project}.{dataset}.{table}`.
+Its `gcp` facet retains the configured project, dataset and table components, including decorators and case, with resource kind `bigquery-table`.
+
+A `table(...)` source reports its configured input and boundedness.
+With `materializeViews()`, the input remains the explicitly named table or view; lineage does not discover the view's dependencies or report its materialized result.
+Projection, row restrictions and snapshot settings do not change the input identity.
+A `query(...)` source returns an empty dataset list: SQL text, query location, the billing project and `queryResultDataset(...)` do not establish its input tables.
+
+All write methods report the effective fixed table set with `table(...)`, including default-stream CDC.
+A later `destinationResolver(...)` with a user-defined resolver makes the destination unknown, even if the user resolver always returns the same table; a later `table(...)` restores the fixed identity.
+Unknown destinations produce an empty dataset list.
+Stream names, staging objects, temporary tables and load-job identifiers are not reported as output datasets.
+
+Metadata extraction reads configuration only and performs no authentication, client creation, RPC, serialization, deserialization or destination resolution.
+Flink 2.2 and 2.3 extract this metadata into lineage graphs; Flink 1.20 supports direct inspection through the same connector API but does not deliver it automatically to FLIP-314 listeners.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the listener API, SQL class loader configuration and coverage limits.
+
 ## Credentials
 
 By default every BigQuery and Cloud Storage client uses application-default credentials (ADC).

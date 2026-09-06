@@ -29,6 +29,7 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
@@ -84,6 +85,7 @@ import java.util.Objects;
 public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
 
     private final DataType physicalDataType;
+    @Nullable private final String lineageTableName;
     private final TableDestination destination;
     private final RowDataSchemaOptions schemaOptions;
     private final boolean cdcEnabled;
@@ -110,6 +112,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
 
     private BigQueryDynamicSink(Builder builder) {
         this.physicalDataType = builder.physicalDataType;
+        this.lineageTableName = builder.lineageTableName;
         this.destination = builder.destination;
         this.schemaOptions = builder.schemaOptions;
         this.cdcEnabled = builder.cdcEnabled;
@@ -257,6 +260,9 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
             builder.emulatorRestEndpoint(emulatorRestEndpoint);
         }
         Sink<RowData> sink = builder.build();
+        if (lineageTableName != null) {
+            sink = ((BigQueryLineageSink<RowData>) sink).withTableLineage(lineageTableName);
+        }
         return SinkV2Provider.of(sink, parallelism);
     }
 
@@ -264,6 +270,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     public DynamicTableSink copy() {
         return builder()
                 .physicalDataType(physicalDataType)
+                .lineageTableName(lineageTableName)
                 .destination(destination)
                 .schemaOptions(schemaOptions)
                 .cdcEnabled(cdcEnabled)
@@ -303,6 +310,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         }
         BigQueryDynamicSink that = (BigQueryDynamicSink) o;
         return physicalDataType.equals(that.physicalDataType)
+                && Objects.equals(lineageTableName, that.lineageTableName)
                 && destination.equals(that.destination)
                 && schemaOptions.equals(that.schemaOptions)
                 && cdcEnabled == that.cdcEnabled
@@ -331,6 +339,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         int result =
                 Objects.hash(
                         physicalDataType,
+                        lineageTableName,
                         destination,
                         schemaOptions,
                         cdcEnabled,
@@ -367,6 +376,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     public static final class Builder {
 
         private DataType physicalDataType;
+        @Nullable private String lineageTableName;
         private TableDestination destination;
         private RowDataSchemaOptions schemaOptions;
         private boolean cdcEnabled;
@@ -390,6 +400,12 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         private List<String> metadataKeys = Collections.emptyList();
 
         private Builder() {}
+
+        /** Supplies the factory's SQL catalog identity, or null outside a catalog. */
+        public Builder lineageTableName(@Nullable String logicalName) {
+            this.lineageTableName = logicalName;
+            return this;
+        }
 
         /**
          * Sets the physical columns of the table. Required.

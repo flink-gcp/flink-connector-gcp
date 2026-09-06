@@ -30,9 +30,13 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadSplitEnumerator;
@@ -49,6 +53,7 @@ import org.apache.avro.generic.GenericRecord;
 
 import javax.annotation.Nullable;
 
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -63,11 +68,14 @@ import java.util.function.Supplier;
  */
 @Internal
 public class BigQueryStorageReadSource<T>
-        implements Source<T, ReadStreamSplit, BigQueryReadEnumeratorState>, ResultTypeQueryable<T> {
+        implements Source<T, ReadStreamSplit, BigQueryReadEnumeratorState>,
+                ResultTypeQueryable<T>,
+                LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
     private final BigQuerySourceConfig<T> config;
+    @Nullable private final String lineageTableName;
 
     /**
      * Creates the source.
@@ -75,7 +83,29 @@ public class BigQueryStorageReadSource<T>
      * @param config the source configuration
      */
     public BigQueryStorageReadSource(BigQuerySourceConfig<T> config) {
+        this(config, null);
+    }
+
+    private BigQueryStorageReadSource(
+            BigQuerySourceConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
+        this.lineageTableName = lineageTableName;
+    }
+
+    /** Returns a copy carrying the SQL catalog identity for the internal Table adapter. */
+    public BigQueryStorageReadSource<T> withTableLineage(String logicalName) {
+        return new BigQueryStorageReadSource<>(config, Objects.requireNonNull(logicalName));
+    }
+
+    @Override
+    public SourceLineageVertex getLineageVertex() {
+        return lineageTableName == null
+                ? Lineage.source(getBoundedness(), BigQueryLineage.resources(config.getTable()))
+                : Lineage.tableSource(
+                        lineageTableName,
+                        "bigquery",
+                        getBoundedness(),
+                        BigQueryLineage.resources(config.getTable()));
     }
 
     @VisibleForTesting

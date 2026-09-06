@@ -236,6 +236,7 @@ class BigQueryDynamicSourceTest {
                     args.table = null;
                     args.query = "SELECT 1";
                 });
+        varied.put("lineageTableName", args -> args.lineageTableName = "catalog.db.input");
         varied.put("parentProject", args -> args.parentProject = "p2");
         varied.put("materializeViews", args -> args.materializeViews = true);
         varied.put("queryLocation", args -> args.queryLocation = "US");
@@ -276,6 +277,7 @@ class BigQueryDynamicSourceTest {
                         DataTypes.FIELD("name", DataTypes.STRING()));
         @Nullable TableDestination table = TableDestination.of("p", "d", "t");
         @Nullable String query;
+        @Nullable String lineageTableName;
         String parentProject = "p";
         boolean materializeViews;
         @Nullable String queryLocation;
@@ -299,6 +301,7 @@ class BigQueryDynamicSourceTest {
                     .table(table)
                     .query(query)
                     .parentProject(parentProject)
+                    .lineageTableName(lineageTableName)
                     .materializeViews(materializeViews)
                     .queryLocation(queryLocation)
                     .queryResultDataset(queryResultDataset)

@@ -248,6 +248,7 @@ public class BigQueryDynamicTableFactory
         DataType physicalDataType = context.getPhysicalRowDataType();
         return BigQueryDynamicSink.builder()
                 .physicalDataType(physicalDataType)
+                .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .destination(destination)
                 .schemaOptions(schemaOptions(config))
                 .cdcEnabled(cdcEnabled)
@@ -401,6 +402,7 @@ public class BigQueryDynamicTableFactory
 
         return BigQueryDynamicSource.builder()
                 .physicalDataType(physicalDataType)
+                .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .table(table)
                 .query(query.orElse(null))
                 .parentProject(parentProject)

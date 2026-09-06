@@ -30,6 +30,18 @@ import org.apache.flink.annotation.Public;
  * skips the row. Column projection and row filtering are applied by BigQuery when the read session
  * is created, so what they exclude is neither transferred nor billed.
  *
+ * <p>The built source implements {@link
+ * org.apache.flink.streaming.api.lineage.LineageVertexProvider}. A configured table reports
+ * namespace {@code bigquery} and name {@code project.dataset.table}, with its original resource
+ * components in the {@code gcp} facet. View materialization reports the explicitly named input,
+ * without discovering its dependencies or reporting the materialized result. An arbitrary query
+ * reports no physical datasets, regardless of query-result placement. The source vertex retains its
+ * boundedness.
+ *
+ * <p>Lineage extraction reads configuration only: it performs no authentication, client creation,
+ * RPC, deserialization or resource discovery. Flink 2.2 and 2.3 extract it into lineage graphs;
+ * Flink 1.20 supports direct metadata inspection but not automatic FLIP-314 listener delivery.
+ *
  * <p>A read through this API is charged for the bytes BigQuery scans to serve it, unlike the sink's
  * {@code FILE_LOADS} write path, which is free.
  * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="source" -->
