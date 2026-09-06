@@ -167,3 +167,38 @@ CREATE TABLE new_users (
 
 INSERT INTO new_users VALUES ('u1', ROW('Alice', 'alice@example.com'));
 -- end::insert-if-absent[]
+
+-- tag::keep-latest-versus-gc[]
+CREATE TABLE retained_profiles (
+  row_key STRING,
+  profile ROW<name STRING, email STRING>,
+  PRIMARY KEY (row_key) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'retained-profiles',
+  'sink.write-mode' = 'upsert',
+  'sink.insert-only-input-mode' = 'insert-only',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.table-create.gc-rule.max-versions' = '1'
+);
+
+CREATE TABLE latest_profiles (
+  row_key STRING,
+  profile ROW<name STRING, email STRING>,
+  PRIMARY KEY (row_key) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'latest-profiles',
+  'sink.write-mode' = 'keep-latest',
+  'sink.insert-only-input-mode' = 'insert-only',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.table-create.gc-rule.max-versions' = '1'
+);
+
+INSERT INTO retained_profiles VALUES ('u1', ROW('Alice', 'alice@example.com'));
+INSERT INTO latest_profiles VALUES ('u1', ROW('Alice', 'alice@example.com'));
+-- end::keep-latest-versus-gc[]

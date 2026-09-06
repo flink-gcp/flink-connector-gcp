@@ -143,6 +143,26 @@ class BigtableDynamicSinkTest {
     }
 
     @Test
+    void keepLatestPreservesBothPlannerModesAndKeyOnlyDeleteSafety() {
+        for (boolean primaryKey : new boolean[] {false, true}) {
+            ResolvedSchema schema = primaryKey ? withRowKeyAsPrimaryKey() : SCHEMA;
+            for (InsertOnlyInputMode inputMode : InsertOnlyInputMode.values()) {
+                Map<String, String> configured = options();
+                configured.put("sink.write-mode", "keep-latest");
+                configured.put("sink.insert-only-input-mode", inputMode.toString());
+                DynamicTableSink sink = FactoryMocks.createTableSink(schema, configured);
+                assertThat(sink.getChangelogMode(ChangelogMode.all()))
+                        .isEqualTo(CrossVersionChangelogMode.upsert(primaryKey));
+                assertThat(sink.getChangelogMode(ChangelogMode.insertOnly()))
+                        .isEqualTo(
+                                inputMode == InsertOnlyInputMode.INSERT_ONLY
+                                        ? ChangelogMode.insertOnly()
+                                        : CrossVersionChangelogMode.upsert(primaryKey));
+            }
+        }
+    }
+
+    @Test
     void listsTheCellTimestampMetadataAtMicrosecondPrecision() {
         assertThat(((SupportsWritingMetadata) sink(SCHEMA)).listWritableMetadata())
                 .containsExactly(entry("timestamp", DataTypes.TIMESTAMP_LTZ(6).nullable()));
