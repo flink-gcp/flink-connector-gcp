@@ -145,4 +145,4 @@ What each connector asks for:
 Pick a connector above. Afterwards, [Examples]({{< relref "docs/examples" >}}) covers dynamic
 per-record destinations, exactly-once, auto-creation and emulator-backed local runs, and
 [Connectors]({{< relref "docs/connectors" >}}) documents what every option does and why. Every type
-named on these pages is in the [Java API reference]({{< param ApiDocsURL >}}).
+named on these pages is in the [Java API reference]({{< api-docs-url >}}).

@@ -24,7 +24,7 @@ limitations under the License.
 
 Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the
-[Java API reference]({{< param ApiDocsURL >}}).
+[Java API reference]({{< api-docs-url >}}).
 
 **Create the queue first.** The sink will not create one, and that is deliberate: the queue's rate
 limits are the entire reason to use the service, and a queue created with defaults would carry

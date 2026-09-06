@@ -19,6 +19,8 @@ on:
       - v1.20
     paths:
       - 'scripts/**'
+      # Ruff also checks the documentation rendering tests.
+      - 'docs/tests/**'
       # actionlint lints every workflow, so every workflow is an input here —
       # not just this one.
       - '.github/workflows/**'

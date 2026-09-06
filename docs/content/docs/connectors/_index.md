@@ -44,7 +44,7 @@ checkpoint durability, replay behavior, or exactly-once delivery determines whic
 use.
 
 The connector types named on these pages are documented in the
-[Java API reference]({{< param ApiDocsURL >}}).
+[Java API reference]({{< api-docs-url >}}).
 
 ## What a builder checks
 

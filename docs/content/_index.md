@@ -85,7 +85,7 @@ the mechanism is documented). A 1.20 cluster does not need that build: the publi
 
 ## API reference
 
-The [Java API reference]({{< param ApiDocsURL >}}) is generated from the source of every module. It
+The [Java API reference]({{< api-docs-url >}}) is generated from the source of every module. It
 goes live with the rest of the site ([#93]({{< param BookRepo >}}/issues/93)).
 
 Flink's API stability annotations mark what is safe to depend on, and this project applies them to
@@ -99,9 +99,9 @@ release notes, and never at a patch release. `@Experimental` marks a type still 
 documents the internals rather than hiding them — the annotation appears on the class page, so a
 type's tier is visible at the point where someone is deciding whether to depend on it.
 
-It is generated from `main`, so it describes the current source rather than any release. References
-per released version arrive with artifact publishing
-([#39]({{< param BookRepo >}}/issues/39)).
+The API reference describes the same connector version as the selected documentation.
+Development follows the unreleased source on `main`.
+See [documentation versions]({{< relref "docs/versions" >}}) for the retention policy.
 
 The youngest surfaces sit below the frozen tier, each for a recorded reason
 ([ADR-0141]({{< param BookRepo >}}/blob/main/docs/adr/0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)):
