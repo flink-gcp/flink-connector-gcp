@@ -256,3 +256,37 @@ The linked result identifies every raw CSV and process/admin log by SHA-256; the
 This repeat supplies no applicable performance pass for the checkpointed-creation runtime under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238).
 Interpreting the concurrent response observation and designing another measurement require a separately scoped follow-up decision; this run does not change the accepted design or the replay oracle after seeing its outcome.
 End-to-end acceptance remains [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246).
+
+## Post-run local calibration (2026-09-06)
+
+The [diagnostic sources, wait repair and outputs](https://github.com/flink-gcp/flink-connector-gcp/issues/1241#issuecomment-5559502217) were recorded after the frozen real-service run.
+These diagnostics constructed no service client and made no network requests.
+They used the same locally installed Java 17 on the measurement host, immediately completed in-memory task futures, the frozen admission loop and CSV formatting, an in-flight cap of 1,000, and a minimum-spacing limiter set to 950 calls/s.
+Each reported trial contains 2,000 calls; a preceding 100-call preparation phase is excluded.
+The short sequential trials do not control all background host scheduling effects.
+
+| Clock | Trial 1 calls/s | Trial 2 calls/s |
+|---|---:|---:|
+| Original `TimeUnit.NANOSECONDS.sleep` | 415.79 | 401.11 |
+| `LockSupport.parkNanos` only | 759.02 | 751.20 |
+| Park followed by polling the final 500 microseconds | 926.16 | 949.31 |
+| Repaired harness clock, separate validation process | 942.20 | 949.07 |
+
+The limiter's wait counter surrounds local sleep calls before submission, so it is not a network-response latency counter.
+These service-free observations demonstrate that the original pacing path can limit offered load even with immediate responses.
+They do not assign the real run's latency or throughput to the network, service or client in any causal proportion.
+
+The fourth row was measured by a separate calibration driver using the repaired clock and the original offline suite: its log reports 17 suite checks plus two driver-owned interrupt checks.
+The clock parks for the coarse part of the delay and polls the remaining at most 500 microseconds against a monotonic deadline.
+It preserves the admission spacing and replay oracle; every adjacent admission in the driver's two validation trials was at least 1,053,125 ns, above the configured minimum of 1,052,632 ns.
+Those trials used about 0.75 seconds of admission-thread CPU each, about 35.5% of one core over their approximately 2.1-second durations.
+That CPU cost must be included when calibrating an eventual measurement host.
+A separately rebuilt harness copy incorporated the same clock repair and both interrupt checks into its offline suite, which passed 19 Java service-free checks and the unchanged 17 Python tests.
+The 19-check rebuild did not produce the table's calibration rates.
+
+The replay diagnostic accepted nine successes plus one `ALREADY_EXISTS` in ten submissions, and reproduced the recorded local validation stop when all ten returned success.
+Together with the existing callback-order test, these checks found no response-index or expected-collision handling defect; they do not explain the service's two successful same-name responses or establish their frequency.
+
+The original sources, manifest, results and preregistered verdict remain unchanged.
+No real-service run followed the repair, so the higher local rates are calibration observations only.
+[ADR-0162](../0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) records the separate decision to permit implementation with the existing evidence limits and retain final performance acceptance before release.

@@ -32,6 +32,7 @@ The connector can rely on that specification without obtaining an individual ven
 
 This ADR supersedes only the blanket stop on dependent Cloud Tasks work and the mandatory investigation prerequisites in ADR-0104's G0 decision.
 The original stronger recovery claim remains unproved; all other decisions, correctness requirements, measurements and performance gates in ADR-0104 remain accepted and are incorporated here by reference.
+[ADR-0162](0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) subsequently supersedes the separate Cloud Tasks primitive-pass prerequisite, allowing implementation before final performance acceptance while retaining the published-service scope and release thresholds.
 
 ## Decision
 
