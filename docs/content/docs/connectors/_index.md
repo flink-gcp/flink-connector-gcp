@@ -43,6 +43,9 @@ Start with [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees
 checkpoint durability, replay behavior, or exactly-once delivery determines which sink method to
 use.
 
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for configured physical-resource metadata,
+SQL catalog identities, listener deployment and Flink-version limits.
+
 The connector types named on these pages are documented in the
 [Java API reference]({{< api-docs-url >}}).
 

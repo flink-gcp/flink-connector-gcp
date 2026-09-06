@@ -34,9 +34,12 @@ or load it for one SQL Client session:
 {{< sql-snippet file="flink/SpannerTableReference.sql" tag="add-jar" >}}
 
 The artifact bundles the connector and its runtime dependencies while leaving Flink APIs provided
-by the cluster. Its bundled packages are relocated so it can coexist with other connector jars and
+by the cluster. Its bundled dependency implementations are relocated so it can coexist with other connector jars and
 with application dependencies. DataStream applications should depend on
 `flink-connector-gcp-spanner` instead of the SQL uber-jar.
+
+The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
 
 ## Credentials
 

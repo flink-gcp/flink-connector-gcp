@@ -53,7 +53,7 @@ uber-jar, so the `AvroRecordSerializationSchema` in it takes a relocated `Indexe
 cannot supply. None of that applies to SQL, where the connector supplies its own `RowData`
 serializer.
 
-### Everything bundled is relocated
+### Relocation and shared APIs
 
 Every bundled *third-party* package moves under `io.github.flink.gcp.connector.bigquery.shaded.`,
 so the versions of gRPC, protobuf, Guava, Jackson and Avro this connector needs cannot collide with
@@ -79,6 +79,9 @@ unrelocated, the jar would put a second `slf4j-api` on a classpath that already 
 transport it belongs to is not the one the Google clients use by default, and it is left
 unrelocated precisely so that a deployment that does reach it can supply commons-logging in `lib/`
 in the ordinary way.
+
+The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
 
 `io.grpc:grpc-netty-shaded` *is* relocated, which takes some care: gRPC ships it already relocated
 once, having renamed its `META-INF/native/` libraries to match, because netty derives the native

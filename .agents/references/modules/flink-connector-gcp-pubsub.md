@@ -211,7 +211,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## SQL uber-jar (`docs/adr/0015` — the record every later `flink-sql-connector-gcp-*` inherits)
 
-- Everything bundled is relocated, `grpc-netty-shaded` included (two `META-INF/native` path
+- Bundled implementation classes are relocated; ADR-0160 exempts only the two shared lineage
+  listener values. `grpc-netty-shaded` is relocated too (two `META-INF/native` path
   renames; the shaded prefix must not grow an underscore); `artifactSet` stays `*:*`; never
   declare a Google artifact at `test` scope in a SQL module; invoke the licence goal through a
   phase, never bare. Read `docs/adr/0015` before changing any SQL module's pom or adding a

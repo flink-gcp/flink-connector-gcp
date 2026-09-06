@@ -89,6 +89,11 @@ public abstract class AbstractSqlConnectorPackagingITCase {
                     "org/codehaus/mojo/animal_sniffer/",
                     "android/annotation/");
 
+    private static final Set<String> SHARED_LINEAGE_CLASSES =
+            Set.of(
+                    "io/github/flink/gcp/connector/base/lineage/PhysicalResourceFacet.class",
+                    "io/github/flink/gcp/connector/base/lineage/ResourceIdentifier.class");
+
     private static final String SERVICES = "META-INF/services/";
 
     private static final String FACTORY_SERVICE =
@@ -180,7 +185,9 @@ public abstract class AbstractSqlConnectorPackagingITCase {
                     // jar purely to win version mediation against guava.
                     continue;
                 }
-                boolean unrelocated = allowList.stream().anyMatch(sample::startsWith);
+                boolean unrelocated =
+                        SHARED_LINEAGE_CLASSES.contains(sample)
+                                || allowList.stream().anyMatch(sample::startsWith);
                 String expected = unrelocated ? sample : shadedJar().shadedPrefix() + sample;
                 if (!present.contains(expected)) {
                     missing.add(artifact.getFileName() + " (looked for " + expected + ")");
@@ -208,6 +215,7 @@ public abstract class AbstractSqlConnectorPackagingITCase {
             List<String> escaped =
                     classEntries(jar).stream()
                             .filter(name -> !name.startsWith(shadedJar().shadedPrefix()))
+                            .filter(name -> !SHARED_LINEAGE_CLASSES.contains(name))
                             .filter(name -> allowList.stream().noneMatch(name::startsWith))
                             .collect(Collectors.toList());
 
@@ -218,6 +226,36 @@ public abstract class AbstractSqlConnectorPackagingITCase {
                                     + " the bundle, which is the whole reason this jar relocates")
                     .isEmpty();
         }
+    }
+
+    @Test
+    void onlyThePublicLineageValuesEscapeBaseRelocation() throws Exception {
+        try (JarFile jar = open()) {
+            List<String> classes = classEntries(jar);
+            assertThat(
+                            classes.stream()
+                                    .filter(
+                                            name ->
+                                                    name.startsWith(
+                                                            "io/github/flink/gcp/connector/base/")))
+                    .containsExactlyInAnyOrderElementsOf(SHARED_LINEAGE_CLASSES);
+            assertThat(classes)
+                    .contains(
+                            shadedJar().shadedPrefix()
+                                    + "io/github/flink/gcp/connector/base/lineage/internal/Lineage.class");
+            assertThat(classes)
+                    .noneMatch(
+                            name ->
+                                    name.startsWith("org/apache/flink/")
+                                            || name.startsWith(
+                                                    shadedJar().shadedPrefix()
+                                                            + "org/apache/flink/"));
+        }
+    }
+
+    @Test
+    void relocatedLineageHelpersShareTheListenerApiAcrossSqlJars() throws Exception {
+        SqlLineageClassLoading.assertSharedApi(shadedJar());
     }
 
     /**

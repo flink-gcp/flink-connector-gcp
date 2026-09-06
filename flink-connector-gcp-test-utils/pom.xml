@@ -37,6 +37,18 @@ limitations under the License.
     </properties>
 
     <dependencies>
+        <!-- Lineage interfaces move from streaming-java in 1.20 to runtime in 2.x.
+             Both stay provided, including when base is bundled in a SQL jar. -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-streaming-java</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <!-- Everything here is provided: these utilities run on the classpath of a
              consumer's tests, which already carries whatever the consumer exercises.
              Provided is also non-transitive, so depending on this module at test scope

@@ -7,16 +7,20 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 - **Main-code shared infrastructure only** — test-support code stays in
   `flink-connector-gcp-test-utils`, whose detailed guidance records the mirror-image rule. Everything
-  here is `@Internal` **except `base.failure`** (a user-implemented SPI cannot be internal —
+  here is `@Internal` **except `base.lineage`'s two listener values** (ADR-0160), **`base.failure`** (a user-implemented SPI cannot be internal —
   `docs/adr/0036`) and `base.source.StartPosition` (the user-configured value shared by the
   Bigtable and Spanner change-stream sources — `docs/adr/0094`). **A type only moves in once it
   has multiple consumers.**
-- Dependencies are `flink-core` (provided) plus `gax`/`grpc-api`/`protobuf-java` (BOM-managed).
+- Lineage is the explicit shared-prerequisite exception to the multiple-consumer rule (ADR-0160).
+  Keep factories and vertices internal; only the two immutable listener values stay unrelocated
+  in SQL jars. No connector builder gains a manual lineage setter.
+- Dependencies are `flink-core`, `flink-runtime`, and `flink-streaming-java` (provided) plus `gax`/`grpc-api`/`protobuf-java` (BOM-managed).
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
   on the justfile `binary-compat`/`e2e` install lists for the reactor-resolution reason
   test-utils is (#181).
-- No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches a 1.x/2.x
+- The lineage graph/planner tests use `src/test/java-flink2` (ADR-0160).
+  No production compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches a 1.x/2.x
   API gap — **not only the `Sink` one**, since the roots hold whatever differs across the majors
   (BigQuery's `CrossVersionCheckpointId` is a `CommittableMessage` accessor, #404).
   `DefaultFailureHandlerContext.of(WriterInitContext)` is not a counter-example — the type and

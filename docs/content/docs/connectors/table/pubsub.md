@@ -44,20 +44,23 @@ The plain `flink-connector-gcp-pubsub` jar works too, where the deployment alrea
 transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle.
 For SQL it usually is not.
 
-### Everything bundled is relocated
+### Relocation and shared APIs
 
-Every bundled package moves under `io.github.flink.gcp.connector.pubsub.shaded.`, so the versions of
+Bundled dependencies and internal helpers move under `io.github.flink.gcp.connector.pubsub.shaded.`, so the versions of
 gRPC, protobuf and Guava this connector needs cannot collide with the ones a job, another connector,
 or Flink itself brings. That is the point of the artifact: without it, a Pub/Sub job that also
 touches any other Google Cloud library becomes a version-alignment exercise.
 
-Five packages are deliberately *not* relocated, and none of them can collide in a way that matters:
+Five third-party packages are deliberately *not* relocated, and none of them can collide in a way that matters:
 `org.conscrypt`, which gRPC picks up reflectively as an optional TLS provider and does without when
 it is unusable; and the annotation-only `javax.annotation`, `org.jspecify`,
 `org.codehaus.mojo.animal_sniffer` and `android.annotation`, where a duplicate class is inert
 because nothing ever invokes it. `javax.annotation` here is jsr305's classes only —
 `javax.annotation-api`, the other artifact publishing into that package, is not bundled
 ([#352]({{< param BookRepo >}}/issues/352)).
+
+The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
 
 `io.grpc:grpc-netty-shaded` *is* relocated, which takes some care: gRPC ships it already relocated
 once, having renamed its `META-INF/native/` libraries to match, because netty derives the native

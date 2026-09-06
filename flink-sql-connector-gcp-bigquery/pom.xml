@@ -199,6 +199,12 @@
                                 <relocation>
                                     <pattern>io.github.flink.gcp.connector.base</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.bigquery.shaded.io.github.flink.gcp.connector.base</shadedPattern>
+                                    <!-- Listener-facing values share one type identity across
+                                         SQL jars. Internal implementations remain relocated. -->
+                                    <excludes>
+                                        <exclude>io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet</exclude>
+                                        <exclude>io.github.flink.gcp.connector.base.lineage.ResourceIdentifier</exclude>
+                                    </excludes>
                                 </relocation>
                                 <!-- zstd-jni, the codec FILE_LOADS stages with (#283). Its
                                      per-platform native libraries live at the jar root under

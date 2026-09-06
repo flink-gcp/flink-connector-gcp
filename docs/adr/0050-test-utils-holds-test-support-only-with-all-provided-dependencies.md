@@ -129,8 +129,9 @@ limitations under the License.
   reach the behaviour (`AwaitsTest` — diagnosis code that runs only after a timeout;
   `LogCaptureTest` — failure modes indistinguishable from "the log was never emitted" in a
   consumer).
-- No compat source roots: nothing here implements `Sink` across the 1.x/2.x gap; a sink
-  test-double that does belongs in the module that needs it.
+- [ADR-0160](0160-lineage-reports-configured-resources-through-a-shared-listener-contract.md)
+  supersedes the absence of compat roots for the reusable Flink 2.x lineage listener fixture.
+  Test-utils still depends on no base class; a cross-major sink test-double belongs in its consumer.
 
 [#26]: https://github.com/flink-gcp/flink-connector-gcp/issues/26
 [#27]: https://github.com/flink-gcp/flink-connector-gcp/issues/27
