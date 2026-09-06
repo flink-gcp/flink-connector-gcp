@@ -20,8 +20,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -29,6 +31,55 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ChildPartitionsEventTest {
+
+    @ParameterizedTest
+    @MethodSource("childLists")
+    void acceptsChildListsInEncounterOrder(List<ChildPartitionsEvent.ChildPartition> children) {
+        ChildPartitionsEvent event = new ChildPartitionsEvent("parent", Instant.EPOCH, children);
+
+        assertThat(event.getParentSplitId()).isEqualTo("parent");
+        assertThat(event.getStartTimestamp()).isEqualTo(Instant.EPOCH);
+        assertThat(event.getChildren()).containsExactlyElementsOf(children);
+        assertThatThrownBy(() -> event.getChildren().add(child("other")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void copiesMutableChildren() {
+        ChildPartitionsEvent.ChildPartition first = child("b");
+        ChildPartitionsEvent.ChildPartition second = child("a");
+        List<ChildPartitionsEvent.ChildPartition> children =
+                new ArrayList<>(List.of(first, second, first));
+        ChildPartitionsEvent event = new ChildPartitionsEvent("parent", Instant.EPOCH, children);
+        children.clear();
+        children.add(null);
+
+        assertThat(event.getChildren()).containsExactly(first, second, first);
+    }
+
+    @ParameterizedTest
+    @MethodSource("childrenContainingNull")
+    void rejectsNullChildren(List<ChildPartitionsEvent.ChildPartition> children) {
+        assertThatThrownBy(() -> new ChildPartitionsEvent("parent", Instant.EPOCH, children))
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessage("children must not contain null");
+    }
+
+    @Test
+    void rejectsNullOrEmptyChildListsWithExistingMessages() {
+        assertThatThrownBy(() -> new ChildPartitionsEvent("parent", Instant.EPOCH, null))
+                .isExactlyInstanceOf(NullPointerException.class)
+                .hasMessage("children must not be null");
+        for (List<ChildPartitionsEvent.ChildPartition> empty :
+                Arrays.asList(
+                        List.<ChildPartitionsEvent.ChildPartition>of(),
+                        List.<ChildPartitionsEvent.ChildPartition>copyOf(new ArrayList<>()),
+                        new ArrayList<ChildPartitionsEvent.ChildPartition>())) {
+            assertThatThrownBy(() -> new ChildPartitionsEvent("parent", Instant.EPOCH, empty))
+                    .isExactlyInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("children must not be empty");
+        }
+    }
 
     @ParameterizedTest
     @MethodSource("parentLists")
@@ -80,6 +131,36 @@ class ChildPartitionsEventTest {
                                         "child", List.of("parent", "")))
                 .isExactlyInstanceOf(IllegalArgumentException.class)
                 .hasMessage("parentPartitionIds must not contain empty ids");
+    }
+
+    private static Stream<List<ChildPartitionsEvent.ChildPartition>> childLists() {
+        ChildPartitionsEvent.ChildPartition first = child("b");
+        ChildPartitionsEvent.ChildPartition second = child("a");
+        return Stream.of(List.of(first), List.of(first, second), List.of(first, second, first))
+                .flatMap(
+                        values ->
+                                Stream.of(
+                                        values,
+                                        List.copyOf(new ArrayList<>(values)),
+                                        new ArrayList<>(values)));
+    }
+
+    private static Stream<List<ChildPartitionsEvent.ChildPartition>> childrenContainingNull() {
+        ChildPartitionsEvent.ChildPartition child = child("child");
+        return Stream.of(
+                        Collections.<ChildPartitionsEvent.ChildPartition>singletonList(null),
+                        Arrays.asList(null, child),
+                        Arrays.asList(child, null),
+                        Arrays.asList(child, null, child))
+                .flatMap(
+                        values ->
+                                Stream.of(
+                                        new ArrayList<>(values),
+                                        Collections.unmodifiableList(new ArrayList<>(values))));
+    }
+
+    private static ChildPartitionsEvent.ChildPartition child(String token) {
+        return new ChildPartitionsEvent.ChildPartition(token, List.of("parent"));
     }
 
     private static Stream<List<String>> parentLists() {
