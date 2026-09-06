@@ -24,7 +24,9 @@ public enum WriteMode {
     /** Writes cells through the ordinary mutation batcher. */
     UPSERT("upsert"),
     /** Atomically writes input cells only when the entire stored row has no cell. */
-    INSERT_IF_ABSENT("insert-if-absent");
+    INSERT_IF_ABSENT("insert-if-absent"),
+    /** Atomically deletes all versions of each written cell before setting its replacement. */
+    KEEP_LATEST("keep-latest");
 
     private final String value;
 

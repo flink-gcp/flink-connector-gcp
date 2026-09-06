@@ -398,11 +398,43 @@ A checkpoint drains requests and does not make Bigtable writes transactional wit
 Tune `sink.request-timeout` and `sink.in-flight.max-requests` through `BigtableRequestOptions`.
 Idle-timeout, active-instance and per-destination-metrics options are shared with the ordinary sink.
 Explicit batching, in-flight entry/byte limits, automatic table creation/repair, rejection-limit and `sink.insert-only-input-mode` settings are rejected for this mode.
-Conditional-only options are rejected under `upsert`.
+Conditional-only options are rejected under `upsert` and `keep-latest`.
 The scan and lookup paths remain available for this ordinary schema.
 
 `ON CONFLICT` controls Flink planner/job behavior; it is not the destination's atomic existence test.
-The remaining upsert discussion applies to the default `sink.write-mode = upsert`.
+The planner and ordering discussion below applies to `upsert` and `keep-latest`.
+
+### Keep-latest
+
+Set `sink.write-mode` to `keep-latest` to replace all versions of each cell the input writes.
+For each target qualifier, the sink appends an unbounded column delete immediately followed by its replacement `SetCell` in one `RowMutationEntry`.
+Multiple qualifiers remain one atomic row operation, following Google's [delete-then-write recommendation](https://docs.cloud.google.com/bigtable/docs/keep-only-latest-value).
+
+A scalar null still writes the existing empty-byte or `null-string-literal` encoding and replaces that cell's history.
+A whole null family writes and deletes nothing; stored families and qualifiers absent from the DDL are untouched.
+A partial SQL INSERT that materializes a null scalar therefore replaces that cell, while an omitted family is preserved.
+A row with every family null remains invalid.
+INSERT and UPDATE_AFTER replace the targeted cells; DELETE still removes the entire stored row.
+
+GC settings are independent.
+`sink.table-create.gc-rule.max-versions = 1` configures eventual retention when a family is created; garbage collection is asynchronous and can leave multiple versions visible after a write.
+Keep-latest instead leaves one logical replacement per targeted cell when its entry completes, before another write or applicable GC changes it.
+It does not promise immediate physical storage reclamation.
+The following tables share the same GC policy but use different write operations:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="keep-latest-versus-gc" >}}
+
+Both use the ordinary batch writer and its batching, flow-control and table-creation settings.
+Table creation still requires a GC rule; selecting keep-latest does not invent one.
+The `sink.insert-only-input-mode` option retains its planner meaning; the example selects the compatibility mode so plain inserts work across the supported Flink versions.
+
+The [cell timestamp rules](#cell-timestamps) are unchanged: absent or null metadata selects the per-cell writer clock, and explicit metadata retains its value and optional truncation.
+Reapplying a record replaces the cells again, so a new writer timestamp does not accumulate another version.
+It can still change the stored timestamp, overwrite a newer event, and produce repeated Change Streams mutations.
+Keep-latest provides neither compare-and-set nor latest-event-time-wins, and it does not order separate entries for one row or change at-least-once delivery.
+Each written cell consumes two mutations; the SDK's mutation limits still apply, while batching and in-flight entry limits continue to count row entries.
+Age-based GC can remove a replacement carrying an old explicit timestamp.
+[ADR-0153]({{< param BookRepo >}}/blob/main/docs/adr/0153-the-table-keep-latest-mode-replaces-only-written-cells.md) records the decisions.
 
 ### Flink 2.3 may demand ON CONFLICT
 
@@ -445,7 +477,8 @@ The writer hands entries to the client's bulk-mutation batcher, and Bigtable's o
 `MutateRows` is that its entries "may be applied in arbitrary order (even between entries for the
 same row)". So when a job produces two changelog rows for the same key close enough together to
 share a request, which one lands last is not defined — and if they share a millisecond they also
-share a cell timestamp, so they collapse to one version rather than two.
+share a cell timestamp, so ordinary upserts collapse to one version rather than two.
+Keep-latest removes prior versions regardless of timestamp, but does not define the winner.
 
 **Separate requests are not the fix**, and setting `sink.batching.element-count-threshold` to `1`
 to force one entry per request is the shape that looks like it. The batcher sends each request
@@ -798,7 +831,7 @@ DataStream builder.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.write-mode` | Enum | Destination operation: `upsert` (default) or `insert-if-absent` |
+| `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, or `keep-latest` for atomic replacement of each written cell |
 | `sink.conditional.empty-branch-policy` | Enum | `emptyBranchPolicy(...)`; `ignore` or `fail`, conditional mode only |
 | `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional mode only, at least 1 ms |
 | `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional mode only |
@@ -837,8 +870,9 @@ which is what `create-never` is for.
 
 At least one of the two keys is **required** under `create-if-needed`, which the DataStream API
 does not require. A family created with no rule keeps every version of every cell forever, and this
-sink is at-least-once and upsert-shaped: each replay writes another version of the same cells, so a
-rule-less family created from a DDL would grow without bound with nothing reporting it.
+ordinary upsert path is at-least-once: a replay using a new timestamp can add another version.
+The requirement also applies to keep-latest, keeping retention independent of the selected write
+operation and covering cells that later writes omit.
 
 Setting either key without `sink.create-disposition` = `create-if-needed` is rejected rather than
 ignored. A table that declares no column family is rejected outright, whatever the disposition: a
@@ -859,10 +893,11 @@ Flink 1.20 has no such distinction and always completes the row first.
 
 An append-only row design must generate a unique row key for each logical event, because reusing a
 row key updates that row.
-An application that keeps cell history within one row must instead choose distinct qualifiers or
+An application that keeps cell history within one row must use ordinary `upsert` and choose distinct qualifiers or
 stable event timestamps deliberately.
-A stable timestamp makes a replay target the same cell version, while omitting the timestamp uses
+With ordinary `upsert`, a stable timestamp makes a replay target the same cell version, while omitting the timestamp uses
 the writer's wall clock and can create a new version after Flink recovery.
+With `keep-latest`, replay replaces all versions of the targeted cells again; the timestamp and winning value can still change.
 
 A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
 key, so "this key is gone" is what a delete means here; removing only the declared cells would leave
@@ -908,6 +943,11 @@ filter's server-side `NOT_FOUND` for a declared family the table lacks, which th
 with an empty result instead. The explicit-key path cannot accompany the emulator and does not need
 a service RPC to prove credential injection: unit and runtime-boundary tests parse a key file and
 inspect every affected client settings family.
+
+The gated suite also checks immediate keep-latest replacement and reapplication with writer-clock
+and explicit SQL timestamps, plus server timestamps supplied by a DataStream serializer.
+Those tests read all stored versions without a latest-version filter or GC rule, and check that
+SQL writes preserve omitted families and undeclared qualifiers.
 
 Change Streams metadata and `UNNEST(entries)` are covered without a service: converter tests use
 the connector-owned mutation model directly, planner tests select and cast metadata, and the

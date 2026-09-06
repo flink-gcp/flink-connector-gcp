@@ -118,9 +118,7 @@ class TableCreateOptionsMapperTest {
 
     @Test
     void creatingWithNoRuleIsRejected() {
-        // The DataStream API allows a rule-less family; this layer does not, because an
-        // at-least-once upsert sink writes another version of the same cells on every replay and
-        // nothing would ever collect them.
+        // The Table API requires an explicit retention rule independently of the write mode.
         assertThatThrownBy(
                         () ->
                                 TableCreateOptionsMapper.map(
@@ -129,7 +127,7 @@ class TableCreateOptionsMapperTest {
                                         TWO_FAMILIES))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("needs a garbage-collection rule")
-                .hasMessageContaining("at-least-once");
+                .hasMessageContaining("every write mode");
     }
 
     @Test

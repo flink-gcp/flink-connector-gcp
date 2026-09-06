@@ -51,10 +51,10 @@ import java.util.Optional;
  * DataStream API's {@code GcRule} changes.
  *
  * <p><b>At least one of the two rule keys is required</b>, which the DataStream API does not
- * require. A column family created with no rule keeps every version of every cell forever, and this
- * sink is at-least-once and upsert-shaped: each replay of a row writes another version of the same
- * cells, so a rule-less family created from a DDL grows without bound and nothing reports it. A
- * user who genuinely wants unbounded versions creates the family themselves.
+ * require. A family without a rule has no automatic version or age retention. The requirement
+ * applies to every write mode: keep-latest replaces only the cells it writes and does not establish
+ * retention for other writers or untouched cells. A user who wants no automatic retention creates
+ * the family out of band.
  */
 @Internal
 public final class TableCreateOptionsMapper {
@@ -141,9 +141,9 @@ public final class TableCreateOptionsMapper {
         throw new ValidationException(
                 String.format(
                         "'%s' = '%s' needs a garbage-collection rule for the families it creates:"
-                                + " set '%s', '%s', or both. A family created without one keeps"
-                                + " every version of every cell, and this sink is at-least-once,"
-                                + " so a replayed row writes another version of the same cells.",
+                                + " set '%s', '%s', or both. This requirement applies to every"
+                                + " write mode because a family without a rule has no automatic"
+                                + " version or age retention.",
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION.key(),
                         CreateDisposition.CREATE_IF_NEEDED,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS.key(),
