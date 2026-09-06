@@ -277,6 +277,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 
 ## Documentation (`docs/` vs module READMEs)
 
+- Base service-dependent behavior on Google's official specification for the API and configuration
+  in use, and link users to that specification for service limits and guarantees (`docs/adr/0154`).
+  Verify that the connector implements its documented behavior within that scope, including
+  failure and recovery paths. Do not require individual vendor confirmation of published behavior
+  or add service guarantees that Google does not publish. Keep unsupported cases explicit.
 - `docs/content/docs/connectors/datastream/<connector>.md` is **the design record**: API notes,
   design decisions, delivery guarantees, error handling and the testing strategy. Behavior or
   public API changed → update the docs page, not the README

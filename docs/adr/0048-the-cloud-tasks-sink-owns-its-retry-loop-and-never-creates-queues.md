@@ -21,7 +21,7 @@ limitations under the License.
   [#107](https://github.com/flink-gcp/flink-connector-gcp/pull/107)); revised 2026-08-12
   ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
   updated 2026-08-22 ([#937], see ADR-0129); retention interpretation clarified 2026-09-06
-  ([#1239], see ADR-0104)
+  ([#1239], see ADR-0104 and ADR-0154)
 - Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
@@ -32,8 +32,8 @@ limitations under the License.
   (`maxDispatchesPerSecond`, `maxConcurrentDispatches`, retry config), so the sink has no rate
   knobs and there is **no queue auto-creation** — an auto-created queue would carry default
   limits, discarding the throttling that is the reason to use the service. A deleted queue name
-  can be temporarily unavailable for reuse; ADR-0104 records the conflicting duration statements
-  and why this delay is not task-name retention across queue generations.
+  can be temporarily unavailable for reuse; ADR-0104 explains why this delay is not task-name
+  retention across queue generations.
 - The serializer supports both request-target arms of the task `oneof`: external HTTP and App
   Engine. HTTP targets need a publicly routable endpoint and choose OIDC or OAuth from what they
   call, so the builder rejects setting both tokens. App Engine targets use a relative URI and
@@ -46,10 +46,13 @@ limitations under the License.
   queue) opts into deduplication (`ALREADY_EXISTS` = success), and the sink **hashes the
   extracted key with SHA-256**, because Google documents that sequential ids raise latency *and*
   error rates. The serializer never sets a name, so there is no second path around the hashing.
-  The dedup window is contradicted in Google's own sources: REST says up to 24 h, the v2 proto
-  says ~1 h. The original advice to design against the shorter estimate is not a precise minimum
-  retention guarantee; ADR-0104's Cloud Tasks G0 evidence records why it cannot establish a
-  correctness deadline.
+  The deduplication scope follows Google's published specification: the
+  [v2 creation reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create)
+  describes name reuse, and the
+  [v2beta3 Queue reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues)
+  defines configured `tombstoneTtl` retention after deletion or execution.
+  The sink uses v2 task creation; this field belongs to v2beta3 queue administration and is absent from the v2 Queue resource.
+  ADR-0154 records the support boundary; the sink neither administers retention nor enforces a recovery deadline.
 - **Retries are the sink's responsibility**: the generated client gives `CreateTask` an empty
   retryable-code set and a 20 s timeout (verified in `CloudTasksStubSettings` 2.94.0, unchanged
   at 2.95.0), as it

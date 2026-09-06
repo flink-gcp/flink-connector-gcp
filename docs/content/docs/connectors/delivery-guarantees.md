@@ -31,6 +31,17 @@ Only BigQuery currently has checkpoint-coordinated exactly-once write methods.
 Some other sinks can make a replay harmless when the record supplies a stable identity, but that is
 not the same contract as a general-purpose exactly-once sink.
 
+## Support boundary
+
+These connectors rely on the behavior specified in Google's official documentation for the API and configuration in use.
+The project is responsible for implementing and testing the connector's documented behavior within that service specification, including request construction, retries, error handling, checkpointing and recovery.
+Service limits and guarantees remain those published by Google; this project does not extend them.
+Follow the official Google documentation linked in each connector section for service semantics and operational limits.
+
+A connector guarantee states its supported configuration and recovery conditions.
+Behavior outside that scope is not an additional service guarantee, and an ambiguous service response must be handled according to the documented API semantics.
+Tests verify the implementation against those semantics; successful samples do not establish a stronger service guarantee.
+
 ## Terms used here
 
 These terms describe different properties and should not be used interchangeably.
@@ -158,9 +169,11 @@ response as success.
 This mechanism does not need a Flink committer because eager task creation is idempotent during the
 window.
 It is deliberately described as bounded effectively-once task creation.
-The pinned v2 protocol gives about one hour after deletion or execution, while the REST reference gives up to 24 hours.
-Neither statement establishes a precise minimum retention period for a correctness deadline.
+Google's [v2beta3 Queue reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues) documents name protection after deletion or execution for the configured `tombstoneTtl`.
+The sink creates tasks through v2; this field belongs to v2beta3 queue administration and is not a sink option or a field on the v2 Queue resource.
+Consult that field and the [v2 task-creation reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create) for their respective configuration and name-reuse semantics.
 The existing sink does not verify queue retention or enforce a bounded recovery protocol.
+Once the service releases a name, replay can create another task.
 
 Cloud Tasks [delivers the task handler at least once](https://cloud.google.com/tasks/docs/dual-overview)
 even when task creation was deduplicated.
@@ -300,7 +313,8 @@ more the same day under an amended protocol with every repetition in its own JVM
 These results measure the service primitives, not end-to-end Flink jobs, and none of the
 not-yet-implemented modes below is currently available through a connector builder.
 Apart from the committer-based Bigtable mode planned under
-[#1211]({{< param BookRepo >}}/issues/1211), no non-BigQuery exactly-once implementation or
+[#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks checkpointed-creation proposal in
+[#1238]({{< param BookRepo >}}/issues/1238), no non-BigQuery exactly-once implementation or
 additional performance stage is planned without a concrete non-idempotent requirement that the
 existing write shapes cannot satisfy.
 
@@ -308,7 +322,7 @@ existing write shapes cannot satisfy.
 |---|---|---|
 | Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
-| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Keep the existing bounded task-creation behavior. The checkpointed-creation proposal in [#1238]({{< param BookRepo >}}/issues/1238) is blocked by the service-contract no-go in [#1239]({{< param BookRepo >}}/issues/1239); its dependent implementation and performance repeat remain gated. |
+| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | The existing bounded task-creation behavior remains available. The checkpointed-creation proposal in [#1238]({{< param BookRepo >}}/issues/1238) requires a protocol scoped to published Google semantics and a compliant performance repeat. No checkpointed mode is implemented. |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in

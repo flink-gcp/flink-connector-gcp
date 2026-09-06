@@ -263,16 +263,15 @@ comparing the existing task's payload or schedule with the replayed record.
 The extracted value must therefore identify an immutable logical task.
 Include a content or schedule version in that value when a changed record must create another task.
 
-The window is bounded, but by how much is **contradicted between Google's own sources**: the REST
-reference says an id takes "up to 24 hours" to be released, while the v2 proto comment for the same
-field says "~1 hour".
-For queues created from a `queue.yaml` or `queue.xml`, REST gives up to nine days and the proto gives approximately nine days.
-These estimates do not establish a precise minimum retention period for a correctness deadline.
-The documented name-retention period starts after deletion or execution; the live task also occupies its name.
+The window follows Google's published service specification.
+The [v2 task-creation reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create) describes name collisions and reuse, including the distinction for queues created from `queue.yaml` or `queue.xml`.
+The [v2beta3 Queue reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues) documents `tombstoneTtl`: after deletion or execution, the name remains protected for the configured duration.
+The sink creates tasks through v2; `tombstoneTtl` is configured through the v2beta3 queue-administration API and is not a sink option or a field on the v2 Queue resource.
+The live task also occupies its name.
 A replay after the name is released can create another task.
-The sink does not verify queue retention settings or their administrative history and does not enforce a bounded recovery protocol.
-The checkpointed-creation investigation and its unresolved retention and late-request bounds are recorded in
-[ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md#cloud-tasks-recovery-feasibility-gate-2026-09-06).
+Queue retention is administered outside the sink; the sink does not read or update those settings and does not enforce a bounded recovery protocol.
+The connector's [support boundary]({{< relref "docs/connectors/delivery-guarantees" >}}#support-boundary) is the published specification for the API and configuration in use.
+Refer to the official references above for service limits.
 
 This is off by default because it is expensive, and the cost is Google's rather than this
 connector's. From the `tasks.create` reference: *"Because there is an extra lookup cost to identify
