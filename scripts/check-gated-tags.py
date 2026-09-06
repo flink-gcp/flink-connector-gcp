@@ -83,7 +83,7 @@ def tags(path: Path, root: Path) -> tuple[set[str], bool, bool]:
 
 
 def check(root: Path) -> tuple[int, int, list[str]]:
-    sources = sorted(root.glob("*/src/test/java/**/*.java"))
+    sources = sorted(root.glob("*/src/test/java*/**/*.java"))
     gated_sources: list[Path] = []
     slow_sources: list[Path] = []
     problems: list[str] = []
@@ -153,7 +153,7 @@ def gated_sources(
         and (except_gate is None or gate != except_gate)
     ]
     by_gate: dict[str, list[Path]] = {gate: [] for gate in selected}
-    for source in sorted(root.glob("*/src/test/java/**/*.java")):
+    for source in sorted(root.glob("*/src/test/java*/**/*.java")):
         gates, _, _ = tags(source, root)
         for gate in gates & by_gate.keys():
             by_gate[gate].append(source.relative_to(root))

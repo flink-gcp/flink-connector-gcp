@@ -40,6 +40,10 @@ A column family is a *column name*, so it has to be a legal SQL identifier — a
 
 {{< sql-snippet file="flink/BigtableTableReference.sql" tag="overview" >}}
 
+The [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) return
+conditional outcomes and changed cells to Flink 2.x streaming queries, with SQL-only registration
+and named request settings.
+
 ## Getting the connector onto the classpath
 
 Use `flink-sql-connector-gcp-bigtable`, an uber-jar built for exactly this: put it in Flink's
@@ -506,7 +510,7 @@ An existing increment target must contain the service's eight-byte big-endian si
 
 These modes accept INSERT-only input, including repeated same-key inputs with or without a primary key.
 They wait for one `ReadModifyWriteRow` response per input and discard the returned cells.
-To consume those values, use the [DataStream async helper]({{< relref "docs/connectors/datastream/bigtable" >}}#append-and-increment-requests); SQL result functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+To consume those values, use the [DataStream async helper]({{< relref "docs/connectors/datastream/bigtable" >}}#append-and-increment-requests) or the [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) in Flink 2.x streaming mode.
 
 The table and families must exist, and the sink profile must use single-cluster routing with single-row transactions enabled.
 The request timeout, in-flight request limit and client-lifecycle options use `BigtableRequestOptions`.

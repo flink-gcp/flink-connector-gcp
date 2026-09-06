@@ -22,13 +22,13 @@ import org.apache.flink.api.connector.sink2.Sink;
 /**
  * The cross-version seam every sink in this module implements instead of {@link Sink} directly.
  *
- * <p>Two variants of this interface exist under {@code src/main/java-flink2} (this one, empty)
- * and {@code src/main/java-flink1}; the build selects one via the {@code flink.compat} Maven
- * property (default {@code flink2}). Flink 1.20 still declares the deprecated {@code
- * createWriter(Sink.InitContext)} abstract while Flink 2.x removed the type outright, so no
- * single source file can satisfy both compilers — the 1.20 variant carries a compile-only default
- * for it, and everything else in the module stays one copy. See the version policy in the root
- * {@code AGENTS.md} and issue #32.
+ * <p>Two variants of this interface exist under {@code src/main/java-flink2} (this one, empty) and
+ * {@code src/main/java-flink1}; the build selects one via the {@code flink.compat} Maven property
+ * (default {@code flink2}). Flink 1.20 still declares the deprecated {@code
+ * createWriter(Sink.InitContext)} abstract while Flink 2.x removed the type outright, so no single
+ * source file can satisfy both compilers — the 1.20 variant carries a compile-only default for it,
+ * and everything else in the module stays one copy. See the version policy in the root {@code
+ * AGENTS.md} and issue #32.
  */
 @Internal
 public interface CrossVersionSink<InputT> extends Sink<InputT> {}

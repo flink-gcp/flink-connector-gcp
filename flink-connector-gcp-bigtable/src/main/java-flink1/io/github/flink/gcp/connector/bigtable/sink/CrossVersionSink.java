@@ -21,8 +21,8 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 /**
- * The Flink 1.20 variant of the cross-version seam (selected by {@code -Dflink.compat=flink1};
- * see the {@code src/main/java-flink2} twin for the full story): Flink 1.20 still declares the
+ * The Flink 1.20 variant of the cross-version seam (selected by {@code -Dflink.compat=flink1}; see
+ * the {@code src/main/java-flink2} twin for the full story): Flink 1.20 still declares the
  * deprecated {@code createWriter(Sink.InitContext)} abstract, so a sink implementing only the
  * {@code WriterInitContext} overload does not compile there — while Flink 2.x removed {@code
  * Sink.InitContext} outright, so this default cannot live in shared source.

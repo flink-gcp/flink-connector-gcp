@@ -104,6 +104,10 @@ source = "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connect
 page = "docs/content/docs/connectors/table/bigquery.md"
 
 [[config_options]]
+source = "flink-connector-gcp-bigtable/src/main/java-flink2/io/github/flink/gcp/connector/bigtable/table/function/BigtableSqlFunctionOptions.java"
+page = "docs/content/docs/connectors/table/bigtable-functions.md"
+
+[[config_options]]
 source = "flink-connector-gcp-bigtable/src/main/java/io/github/flink/gcp/connector/bigtable/table/BigtableConnectorOptions.java"
 page = "docs/content/docs/connectors/table/bigtable.md"
 

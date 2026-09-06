@@ -25,6 +25,10 @@ limitations under the License.
 The [Bigtable quickstart]({{< relref "docs/quickstart/bigtable" >}}) owns the basic source and sink jobs.
 The cases below change one direction or compose it with another connector.
 
+The [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) return
+conditional outcomes and changed cells to Flink 2.x streaming queries, with SQL-only registration
+and named request settings.
+
 ## DataStream source
 
 The [Quickstart read job]({{< relref "docs/quickstart/bigtable" >}}#read-a-table-back) is the canonical bounded source example.

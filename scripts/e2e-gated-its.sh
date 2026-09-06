@@ -170,8 +170,9 @@ case "${1:-}" in
         failed=0
         sources=$(gated_sources)
         while IFS= read -r src; do
-            module=${src%%/src/test/java/*}
-            fqcn=${src#*/src/test/java/}
+            module=${src%%/src/test/*}
+            fqcn=${src#*/src/test/}
+            fqcn=${fqcn#*/}
             fqcn=${fqcn%.java}
             fqcn=${fqcn//\//.}
             report="$module/target/surefire-reports/TEST-$fqcn.xml"

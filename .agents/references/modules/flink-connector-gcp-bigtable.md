@@ -107,6 +107,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   tests the entire stored row, including undeclared families. Keep INSERT-only changelog handling,
   preserve repeated inputs through the planner and retain ADR-0149's per-cell writer clock.
 
+## Async SQL functions (`docs/adr/0161`)
+
+- Keep the two result-emitting SQL functions and their tests in the Flink 2.x roots; 1.20 artifacts
+  omit them. Named SET templates fix destinations and operation structures at specialization.
+- Reuse the single-row runtime. Reject Flink async automatic retries, require its timeout above the
+  SDK deadline, and retain the SQL planner's streaming-only boundary. There is no SQL UDF timeout
+  callback: task close cancels outstanding RPCs.
+- Preserve numbered operation order and the exact SQL operand types. Require NOT NULL types for
+  the row key and every supplied operand at planning, including unused operands and operands of an
+  unselected branch: Flink otherwise bypasses eval for NULL. It does not inherit the SQL sink's
+  NULL omission policy.
+- Return raw changed cells and decode an integer only for a cell whose last rule is increment,
+  keyed by family and binary qualifier rather than response position.
+
 ## Read-modify-write API (`docs/adr/0155`)
 
 - Keep the public request and rules immutable and serializable, preserving repeated columns and
