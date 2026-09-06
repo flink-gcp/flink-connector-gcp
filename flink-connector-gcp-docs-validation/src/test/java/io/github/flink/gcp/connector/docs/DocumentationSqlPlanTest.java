@@ -394,6 +394,12 @@ public class DocumentationSqlPlanTest {
                         "Bigtable table reference keep-latest versus GC",
                         snippet("flink/BigtableTableReference.sql", "keep-latest-versus-gc")),
                 scenario(
+                        "Bigtable table reference append",
+                        snippet("flink/BigtableTableReference.sql", "append")),
+                scenario(
+                        "Bigtable table reference increment",
+                        snippet("flink/BigtableTableReference.sql", "increment")),
+                scenario(
                         "Bigtable table reference insert-if-absent",
                         snippet("flink/BigtableTableReference.sql", "insert-if-absent")),
                 scenario(
