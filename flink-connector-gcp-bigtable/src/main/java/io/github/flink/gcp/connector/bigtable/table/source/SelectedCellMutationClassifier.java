@@ -111,7 +111,7 @@ final class SelectedCellMutationClassifier implements Serializable {
                 return null;
             }
             validateHeader(mutation);
-            if (!isUnbounded(entry.getTimestampRange())) {
+            if (!isFullColumnRange(entry.getTimestampRange())) {
                 throw protocolFailure(
                         "a timestamp-bounded delete cannot represent the selected logical row");
             }
@@ -229,9 +229,21 @@ final class SelectedCellMutationClassifier implements Serializable {
         }
     }
 
-    private static boolean isUnbounded(BigtableChangeStreamMutation.TimestampRange range) {
-        return range.getStart().getType() == BigtableChangeStreamMutation.BoundType.UNBOUNDED
-                && range.getEnd().getType() == BigtableChangeStreamMutation.BoundType.UNBOUNDED;
+    private static boolean isFullColumnRange(BigtableChangeStreamMutation.TimestampRange range) {
+        // The RPC TimestampRange defaults are inclusive zero and an infinite upper bound.
+        // SDK 2.82.0's ChangeStreamStateMachine exposes them as CLOSED(0)/OPEN(0), not
+        // UNBOUNDED. Interpret those sentinels here; the mutation envelope preserves SDK bounds.
+        BigtableChangeStreamMutation.TimestampBound start = range.getStart();
+        BigtableChangeStreamMutation.TimestampBound end = range.getEnd();
+        boolean fullStart =
+                start.getType() == BigtableChangeStreamMutation.BoundType.UNBOUNDED
+                        || (start.getType() == BigtableChangeStreamMutation.BoundType.CLOSED
+                                && start.getTimestampMicros().getAsLong() == 0L);
+        boolean fullEnd =
+                end.getType() == BigtableChangeStreamMutation.BoundType.UNBOUNDED
+                        || (end.getType() == BigtableChangeStreamMutation.BoundType.OPEN
+                                && end.getTimestampMicros().getAsLong() == 0L);
+        return fullStart && fullEnd;
     }
 
     private void validateHeader(BigtableChangeStreamMutation mutation) throws IOException {

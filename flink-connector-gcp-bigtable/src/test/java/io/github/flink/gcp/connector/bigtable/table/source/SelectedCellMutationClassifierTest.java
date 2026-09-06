@@ -26,9 +26,12 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestBigtableChangeStreamMutations;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Instant;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -77,6 +80,61 @@ class SelectedCellMutationClassifierTest {
                 .isEqualTo(SelectedCellMutationClassifier.Kind.UPSERT);
         assertThat(classifier.classify(columnUpsert).getValue().toStringUtf8()).isEqualTo("one");
         assertThat(classifier.classify(familyUpsert).getValue().toStringUtf8()).isEqualTo("two");
+    }
+
+    @ParameterizedTest
+    @MethodSource("fullColumnRanges")
+    void recognizesFullColumnReplacementAndDeletion(Range.TimestampRange range) throws Exception {
+        BigtableChangeStreamMutation replacement =
+                mutation(
+                        builder -> {
+                            builder.deleteCells(FAMILY, QUALIFIER, range);
+                            set(builder, "replacement");
+                        });
+        BigtableChangeStreamMutation deletion =
+                mutation(builder -> builder.deleteCells(FAMILY, QUALIFIER, range));
+
+        assertThat(classifier.classify(replacement).getKind())
+                .isEqualTo(SelectedCellMutationClassifier.Kind.UPSERT);
+        assertThat(classifier.classify(replacement).getValue().toStringUtf8())
+                .isEqualTo("replacement");
+        assertThat(classifier.classify(deletion).getKind())
+                .isEqualTo(SelectedCellMutationClassifier.Kind.DELETE);
+    }
+
+    private static Stream<Range.TimestampRange> fullColumnRanges() {
+        return Stream.of(
+                Range.TimestampRange.unbounded(),
+                Range.TimestampRange.create(0L, 0L),
+                Range.TimestampRange.unbounded().startClosed(0L),
+                Range.TimestampRange.unbounded().endOpen(0L));
+    }
+
+    @ParameterizedTest
+    @MethodSource("partialOrInvalidColumnRanges")
+    void rejectsPartialOrInvalidColumnRangesWithOrWithoutAReplacement(Range.TimestampRange range) {
+        assertProtocolFailure(
+                mutation(builder -> builder.deleteCells(FAMILY, QUALIFIER, range)),
+                "timestamp-bounded delete");
+        assertProtocolFailure(
+                mutation(
+                        builder -> {
+                            builder.deleteCells(FAMILY, QUALIFIER, range);
+                            set(builder, "replacement");
+                        }),
+                "timestamp-bounded delete");
+    }
+
+    private static Stream<Range.TimestampRange> partialOrInvalidColumnRanges() {
+        return Stream.of(
+                Range.TimestampRange.create(1L, 2L),
+                Range.TimestampRange.create(1L, 0L),
+                Range.TimestampRange.create(0L, 1L),
+                Range.TimestampRange.create(-1L, 0L),
+                Range.TimestampRange.unbounded().startClosed(1L),
+                Range.TimestampRange.unbounded().endOpen(1L),
+                Range.TimestampRange.unbounded().startOpen(0L),
+                Range.TimestampRange.unbounded().endClosed(0L));
     }
 
     @Test

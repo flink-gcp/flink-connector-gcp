@@ -312,6 +312,11 @@ public class DocumentationSqlPlanTest {
                         "Bigtable selected cell to BigQuery CDC",
                         snippet("flink/BigtableExamples.sql", "selected-cell-bigquery-cdc")),
                 scenario(
+                        "Bigtable keep-latest JSON producer and selected-cell consumer",
+                        snippet("flink/BigtableSelectedCellInterop.sql", "producer"),
+                        snippet("flink/BigtableSelectedCellInterop.sql", "replacement"),
+                        snippet("flink/BigtableSelectedCellInterop.sql", "consumer")),
+                scenario(
                         "Cloud Tasks App Engine target",
                         snippet("flink/CloudTasksExamples.sql", "app-engine-target")),
                 scenario(

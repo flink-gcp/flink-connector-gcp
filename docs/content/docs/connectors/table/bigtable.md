@@ -734,6 +734,17 @@ mutation from another cluster.
 The chosen format must be insert-only and emit exactly one non-null row for every upsert.
 Format metadata is not exposed because a key-only delete has no payload to decode.
 
+For a full selected-column delete, the source also recognizes the SDK's `CLOSED(0)` / `OPEN(0)`
+range: the [Bigtable RPC timestamp range](https://docs.cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#timestamprange)
+uses zero for the default inclusive lower bound and for an omitted, infinite upper bound.
+Positive lower bounds and finite upper bounds still fail the selected-cell protocol.
+Envelope mode preserves the SDK's bound types and numeric values.
+
+The [keep-latest producer example]({{< relref "docs/examples/bigtable" >}}#producing-a-selected-cell-with-keep-latest)
+stores a complete JSON object in one cell and reads it with the selected-cell JSON format.
+It distinguishes nullable JSON fields from a null cell payload and uses sequential completed writes
+to demonstrate replacement and reapplication.
+
 These are producer requirements, not inferences the connector can make from arbitrary Bigtable
 traffic.
 A writer that does not atomically replace the complete selected value with the sequence above must
@@ -992,11 +1003,19 @@ existing `flink-sql-connector-gcp-bigtable` uber-jar plans an envelope DDL throu
 `bigtable` factory.
 Selected-cell tests drive the strict mutation classifier and row assembly directly, while a
 MiniCluster job executes the canonical upsert, unrelated-mutation, and key-only-delete paths.
+The keep-latest interoperability unit test connects the factory-built sink serializer to the
+factory-built JSON decoder, including null fields, reapplication, selected-column deletion and
+invalid payloads.
 The emulator implements no Change Streams RPC, so the gated production-service suite runs the
 envelope DDL through the discovered `bigtable` factory on the existing ephemeral instance and
 single-cluster application profile.
 It starts from an explicit timestamp, finishes at a finite end timestamp, and verifies a binary row
 key, binary qualifier and value, ordered user writes and deletes, and all five readable metadata
 fields through SQL.
+A selected-cell service case writes complete JSON values with the SQL keep-latest sink and reads
+the resulting updates, repeated replacement and full selected-column deletion through the SQL
+source, collected with an explicit upsert changelog mode.
+Ordinary SQL result collection can normalize those records and suppress identical replacements.
+The deletion uses the data client; it is not a SQL `DELETE FROM` statement.
 Garbage-collection timing and retention expiry remain deterministic model and protocol tests rather
 than service-timed assertions.
