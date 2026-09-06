@@ -22,14 +22,19 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
+import com.google.api.gax.rpc.NotFoundException;
+import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.TableName;
+import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
-import com.google.cloud.bigtable.admin.v2.models.ColumnFamily;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import org.slf4j.Logger;
@@ -45,17 +50,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * Default {@link TableAdmin} backed by the Bigtable {@link BigtableTableAdminClient}.
  *
- * <p>Jobs whose destination table exists never construct a client (and never open its gRPC
- * channel). When auto-creation does trigger, the client is short-lived: opened for the one ensure
- * call and closed with it — together with its channel — so its resources are not held for the
- * writer's remaining lifetime for what is typically a one-shot event ({@link #close()} therefore
- * has nothing to release). With an emulator endpoint the short-lived clients connect to it over a
- * plaintext channel with no credentials.
+ * <p>Each ensure or schema validation opens a short-lived client, closed with the call — together
+ * with its channel — so its resources are not held for the writer's remaining lifetime for what is
+ * typically a one-shot event ({@link #close()} therefore has nothing to release). With an emulator
+ * endpoint the short-lived clients connect to it over a plaintext channel with no credentials.
  *
  * <p>Creation conflicts ({@code ALREADY_EXISTS}, the table or a family was created concurrently —
  * for example by a parallel subtask) are treated as success and resolved by re-reading: a lost
@@ -70,12 +72,12 @@ import java.util.stream.Collectors;
  * modify, or a read not seeing what the modify reports — and it fails rather than looping on,
  * because a loop with no end stops the task thread and surfaces, if at all, as checkpoints that
  * stop completing and a task that will not cancel, never as the reconciliation that caused it,
- * whereas the failure becomes an {@link IOException} the writer's recovery schedule already spends
- * an attempt on.
+ * whereas the failure becomes an {@link IOException} at the caller.
  *
  * <p>The client retries neither {@code CreateTable} nor {@code ModifyColumnFamilies} (their
- * retryable-code sets are empty), so a transiently failed ensure fails this call; the writer's
- * recovery budget is what bounds re-provocation, not this class.
+ * retryable-code sets are empty), so a transiently failed ensure fails this call. Reactive repair
+ * uses the writer's recovery budget; an ensure during SQL writer startup fails writer creation and
+ * follows the job's restart policy.
  */
 @Internal
 public class BigtableTableAdmin implements TableAdmin {
@@ -118,8 +120,15 @@ public class BigtableTableAdmin implements TableAdmin {
                     destination,
                     options,
                     client::createTable,
-                    tableId -> familyIdsOf(client, tableId),
-                    client::modifyFamilies);
+                    tableId -> familyTypesOf(client, destination),
+                    request ->
+                            client.getBaseClient()
+                                    .modifyColumnFamilies(
+                                            request.toProto(
+                                                    destination.getProject(),
+                                                    destination.getInstance())));
+        } catch (ColumnFamilyTypes.Mismatch e) {
+            throw e;
         } catch (RuntimeException e) {
             throw new IOException(
                     "Failed to create Bigtable table "
@@ -133,8 +142,8 @@ public class BigtableTableAdmin implements TableAdmin {
      * Ensures the table through the three admin operations, taken as functional values rather than
      * as the client that performs them.
      *
-     * <p><b>Because that is the only seam a test can drive</b> (#414), the same shape and the same
-     * reason as {@code BigtableBatcherAdapter}'s (ADR-0047). {@link BigtableTableAdminClient} is
+     * <p>The seam lets tests drive reconciliation races directly (#414), using the same functional
+     * shape as {@code BigtableBatcherAdapter} (ADR-0047). {@link BigtableTableAdminClient} is
      * final, this repository uses no mocking framework, and the client here is built inside {@link
      * #ensureTable} and closed with it, so nothing can hand in a scripted one. Nor can the emulator
      * substitute: what needs driving is a <em>concurrent</em> family addition landing between one
@@ -144,21 +153,21 @@ public class BigtableTableAdmin implements TableAdmin {
      * test that reaches this class; the gated real-GCP auto-creation cases are single-threaded and
      * would not produce the race either.
      *
-     * <p>The read yields the live family ids rather than the client's {@code Table}: that type has
-     * no public constructor, so a test would have to mint one through its {@code @InternalApi}
-     * {@code fromProto}. What that leaves outside the seam is one projection, which {@code
-     * BigtableTableAdminEmulatorITCase} pins in both directions — its no-op case fails if the read
-     * reports too few families, its amend case if it reports too many. That ITCase is also why the
-     * method references binding this call to a real client are covered, unlike the untested wiring
-     * #321 found: it drives {@link #ensureTable} itself down the creation, the addition and the
-     * no-op path.
+     * <p>The read yields live family types as protobufs rather than the client's {@code Table}:
+     * that type has no public constructor, so a test would have to mint one through its
+     * {@code @InternalApi} {@code fromProto}. What that leaves outside the seam is one projection,
+     * which {@code BigtableTableAdminEmulatorITCase} pins in both directions — its no-op case fails
+     * if the read reports too few families, its amend case if it reports too many. That ITCase is
+     * also why the method references binding this call to a real client are covered, unlike the
+     * untested wiring #321 found: it drives {@link #ensureTable} itself down the creation, the
+     * addition and the no-op path.
      */
     @VisibleForTesting
     static EnsureResult ensureWith(
             TableDestination destination,
             TableCreateOptions options,
             Consumer<CreateTableRequest> createTable,
-            Function<String, Set<String>> readFamilyIds,
+            Function<String, Map<String, Type>> readFamilyTypes,
             Consumer<ModifyColumnFamiliesRequest> modifyFamilies) {
         try {
             createTable.accept(toCreateTableRequest(destination, options));
@@ -170,7 +179,7 @@ public class BigtableTableAdmin implements TableAdmin {
         } catch (AlreadyExistsException e) {
             LOG.info("Bigtable table {} already exists, not creating it", destination);
         }
-        return addMissingFamilies(destination, options, readFamilyIds, modifyFamilies);
+        return addMissingFamilies(destination, options, readFamilyTypes, modifyFamilies);
     }
 
     /**
@@ -190,15 +199,24 @@ public class BigtableTableAdmin implements TableAdmin {
     private static EnsureResult addMissingFamilies(
             TableDestination destination,
             TableCreateOptions options,
-            Function<String, Set<String>> readFamilyIds,
+            Function<String, Map<String, Type>> readFamilyTypes,
             Consumer<ModifyColumnFamiliesRequest> modifyFamilies) {
         int rounds = options.getColumnFamilies().size() + 1;
+        Map<String, ColumnFamilyType> expectedTypes = options.getColumnFamilyTypes();
+        boolean validateTypes =
+                expectedTypes.values().stream().anyMatch(type -> type != ColumnFamilyType.RAW);
         // Carried out of the loop for the tripwire's message: which families were still absent is
         // the one thing an operator meeting it can act on, and the last round is the only round
         // that knows.
         Set<String> stillMissing = options.getColumnFamilies().keySet();
         for (int budget = rounds; budget > 0; budget--) {
-            Set<String> existing = readFamilyIds.apply(destination.getTable());
+            Map<String, Type> live = readFamilyTypes.apply(destination.getTable());
+            // Raw-only options predate typed provisioning and constrain creation, not existing
+            // family types. Aggregate declarations opt into checking the whole declared schema.
+            if (validateTypes) {
+                ColumnFamilyTypes.check(destination, expectedTypes, live, true);
+            }
+            Set<String> existing = live.keySet();
             Map<String, GcRule> missing = new LinkedHashMap<>(options.getColumnFamilies());
             missing.keySet().removeAll(existing);
             if (missing.isEmpty()) {
@@ -206,7 +224,8 @@ public class BigtableTableAdmin implements TableAdmin {
             }
             stillMissing = missing.keySet();
             try {
-                modifyFamilies.accept(toModifyColumnFamiliesRequest(destination, missing));
+                modifyFamilies.accept(
+                        toModifyColumnFamiliesRequest(destination, missing, expectedTypes));
                 LOG.info(
                         "Added column families {} to Bigtable table {}",
                         missing.keySet(),
@@ -235,11 +254,46 @@ public class BigtableTableAdmin implements TableAdmin {
                         + " modify reports.");
     }
 
-    /** Reads the ids of the column families the given table currently has. */
-    private static Set<String> familyIdsOf(BigtableTableAdminClient client, String tableId) {
-        return client.getTable(tableId).getColumnFamilies().stream()
-                .map(ColumnFamily::getId)
-                .collect(Collectors.toSet());
+    @Override
+    public void validateFamilies(
+            TableDestination destination,
+            Map<String, ColumnFamilyType> expected,
+            boolean allowMissing)
+            throws IOException {
+        try (BigtableTableAdminClient client = newClient(destination)) {
+            ColumnFamilyTypes.check(
+                    destination, expected, familyTypesOf(client, destination), allowMissing);
+        } catch (NotFoundException e) {
+            if (!allowMissing) {
+                throw new IOException("Bigtable table " + destination + " does not exist.", e);
+            }
+        } catch (ColumnFamilyTypes.Mismatch e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new IOException(
+                    "Failed to inspect Bigtable column family types for " + destination, e);
+        }
+    }
+
+    /** Reads protobuf types without parsing unrelated families through the SDK type vocabulary. */
+    private static Map<String, Type> familyTypesOf(
+            BigtableTableAdminClient client, TableDestination destination) {
+        Table table =
+                client.getBaseClient()
+                        .getTable(
+                                GetTableRequest.newBuilder()
+                                        .setName(
+                                                TableName.of(
+                                                                destination.getProject(),
+                                                                destination.getInstance(),
+                                                                destination.getTable())
+                                                        .toString())
+                                        .setView(Table.View.SCHEMA_VIEW)
+                                        .build());
+        Map<String, Type> types = new LinkedHashMap<>();
+        table.getColumnFamiliesMap()
+                .forEach((name, family) -> types.put(name, family.getValueType()));
+        return types;
     }
 
     /** Translates the create options into the table-creation request. */
@@ -247,13 +301,21 @@ public class BigtableTableAdmin implements TableAdmin {
     static CreateTableRequest toCreateTableRequest(
             TableDestination destination, TableCreateOptions options) {
         CreateTableRequest request = CreateTableRequest.of(destination.getTable());
+        Map<String, ColumnFamilyType> types = options.getColumnFamilyTypes();
         options.getColumnFamilies()
                 .forEach(
                         (name, rule) -> {
-                            if (rule == null) {
+                            if (rule == null && types.get(name) == ColumnFamilyType.RAW) {
                                 request.addFamily(name);
+                            } else if (rule == null) {
+                                request.addFamily(
+                                        name, ColumnFamilyTypes.toClient(types.get(name)));
                             } else {
-                                request.addFamily(name, toGcRule(rule));
+                                request.addFamily(
+                                        name,
+                                        toGcRule(rule),
+                                        ColumnFamilyTypes.toClient(
+                                                types.getOrDefault(name, ColumnFamilyType.RAW)));
                             }
                         });
         return request;
@@ -262,15 +324,24 @@ public class BigtableTableAdmin implements TableAdmin {
     /** Translates the given families into one atomic family-addition request. */
     @VisibleForTesting
     static ModifyColumnFamiliesRequest toModifyColumnFamiliesRequest(
-            TableDestination destination, Map<String, GcRule> families) {
+            TableDestination destination,
+            Map<String, GcRule> families,
+            Map<String, ColumnFamilyType> types) {
         ModifyColumnFamiliesRequest request =
                 ModifyColumnFamiliesRequest.of(destination.getTable());
         families.forEach(
                 (name, rule) -> {
                     if (rule == null) {
-                        request.addFamily(name);
+                        request.addFamily(
+                                name,
+                                ColumnFamilyTypes.toClient(
+                                        types.getOrDefault(name, ColumnFamilyType.RAW)));
                     } else {
-                        request.addFamily(name, toGcRule(rule));
+                        request.addFamily(
+                                name,
+                                toGcRule(rule),
+                                ColumnFamilyTypes.toClient(
+                                        types.getOrDefault(name, ColumnFamilyType.RAW)));
                     }
                 });
         return request;

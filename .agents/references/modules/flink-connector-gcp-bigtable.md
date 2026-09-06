@@ -100,8 +100,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   helper that takes the name as a parameter.
 - `FailedRequest.getPayloadBytes()` remains `null`: the conditional model's job-graph encoding
   is not a dead-letter format (ADR-0152). `sink.write-mode` selects ordinary `upsert`, atomic cell
-  replacement through `keep-latest` (ADR-0153), conditional `insert-if-absent`, or read-modify-write
-  `append`/`increment` (ADR-0155); #1226 extends this same option. Keep request options mapped through
+  replacement through `keep-latest` (ADR-0153), conditional `insert-if-absent`, read-modify-write
+  `append`/`increment` (ADR-0155), or aggregate contributions (ADR-0156). Keep request options mapped through
   `RequestOptionsMapper` and guard explicit mode-incompatible options with `WriteModeOptionChecks`.
 - Conditional SQL keeps the ordinary family/qualifier schema and codec. Its unset RPC predicate
   tests the entire stored row, including undeclared families. Keep INSERT-only changelog handling,
@@ -167,9 +167,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `toNanos()`, so ADR-0068's ceiling deliberately does not apply. Two admin-path tiers to reread
   on a BOM bump, both internal calls, tier-irrelevant under `docs/adr/0141`: the client's
   `GCRules` is class-level `@BetaApi`, and the admin methods the module calls —
-  `createTable`, `getTable`, `modifyFamilies` on this ensure; `getTable` and `getAppProfile` on
+  `createTable` on this ensure; `getTable` and `getAppProfile` on
   the change-stream coordinator's preflight — are `@ObsoleteApi`, pointed at the proto-based
-  `getBaseClient()` route.
+  `getBaseClient()` route. Family validation and modification already use raw protos through that route (ADR-0156), avoiding SDK parsing of undeclared family types in either response.
 - **`NOT_FOUND` outranks everything in the classifier** — ahead of the transient-anywhere check,
   `PubSubErrorClassifier`'s precedence — and, unlike Pub/Sub's ADR-0006, **the disposition gates
   the parking itself** (no cascades, no ordering keys). `tableMissing` is the only thing that
@@ -516,7 +516,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The eight
   defaulted table-owned options are `scan.mode`, `null-string-literal`, `decode.trailing-bytes`,
   `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
-  `sink.insert-only-input-mode` and `sink.write-mode`; `scan.change-stream.changelog-mode` is deliberately required so
+  `sink.insert-only-input-mode` and `sink.write-mode`; `sink.aggregate.column-family-types` is required
+  in aggregate mode and has no default. `scan.change-stream.changelog-mode` is deliberately required so
   selecting either Change Streams interpretation remains explicit. A mapped option gaining a
   default and a defaulted table-owned option losing its own both fail. "No default restated"
   covers the *description* as well (#1045, `docs/adr/0139`):
@@ -728,3 +729,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `StubWriterInitContext` cannot drive this writer; emulator tests inject through
   `createWriter(batcher, mailbox, metricGroup)`, and the MiniCluster job tests cover the
   production path.
+
+## Aggregate Table writes and typed families (`docs/adr/0156`)
+
+- Keep SQL aggregate input INSERT-only, with all declared families mapped to INT64 SUM/MIN/MAX/HLL and all integer contributions expressed through AddToCell.
+  Skip null families and cells, reject an empty contribution, and preserve repeated same-key inserts.
+- Preserve ADR-0149 timestamp behavior: explicit bucket timestamps or a per-cell writer clock when absent/null.
+  Do not describe a fixed timestamp as deduplicating an aggregate input.
+- Keep aggregate input DDL sink-only; state reads use separate BIGINT numeric and BYTES HLL qualifiers.
+- Keep typed provisioning serializable without SDK types, old job graphs raw-compatible, and reconciliation add-only. Options containing any aggregate type validate every declared existing type with fatal mismatches; raw-only options reconcile existing families by name only.
+  Read raw admin protos so an unknown type in an undeclared family cannot break inspection.
+  SQL validates/ensures at writer startup; typed DataStream creation options validate before a destination first sends; raw-only writers retain lazy admin access.

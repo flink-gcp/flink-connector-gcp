@@ -215,16 +215,19 @@ such request — see the
 
 ## `TableCreateOptions`
 
-The schema for the table the sink creates under `CREATE_IF_NEEDED` — its column families and, per
-family, an optional garbage-collection rule. **Creation only, per family**: an existing table is
-written to as it is, except that families declared here which it lacks are added, with their rules;
-an existing family's rule is neither compared nor updated. What creation does and does not repair
+The schema for the table the sink creates under `CREATE_IF_NEEDED`: column family names, value types, and optional garbage-collection rules.
+Missing families are added with their declared type and rule; options containing any aggregate type require every existing declared family's type to match, including raw declarations.
+Raw-only options leave existing types unconstrained, and existing rules are neither compared nor updated. What creation does and does not repair
 is under
 [Table auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation).
 
 | Option | Default | What it does |
 |---|---|---|
-| `columnFamily` | **at least one required** | Declares a column family, optionally with a `GcRule`. Repeatable; a repeated name is last-writer-wins |
+| `columnFamily` | **at least one required** | Declares a raw family by name, optionally with a `GcRule`; the three-argument overload takes name, `ColumnFamilyType`, and nullable rule. Types: `RAW`, `INT64_SUM`, `INT64_MIN`, `INT64_MAX`, `INT64_HLL`. Repeatable; a repeated name replaces both type and rule |
+
+`getColumnFamilies()` retains its family-to-GC-rule map; `getColumnFamilyTypes()` returns an immutable type map in the same declaration order.
+Options restored from an older job graph default their families to `RAW`.
+The enum is serializable; SDK type models are created only for admin requests.
 
 A family declared without a rule keeps Bigtable's default of collecting nothing — for this
 at-least-once sink a real decision, since the garbage-collection policy is what decides whether a

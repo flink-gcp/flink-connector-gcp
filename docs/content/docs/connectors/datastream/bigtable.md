@@ -428,7 +428,7 @@ The [aggregate example]({{< relref "docs/examples/bigtable" >}}#updating-aggrega
 Aggregate updates require an aggregate family whose input or state type matches the supplied value.
 See the source-backed [aggregate updates]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) and [immediate column replacement]({{< relref "docs/examples/bigtable" >}}#replacing-a-column-immediately) examples.
 The Table sink exposes immediate column replacement through [`sink.write-mode = keep-latest`]({{< relref "docs/connectors/table/bigtable" >}}#keep-latest).
-Aggregate updates through SQL remain planned in [#1176]({{< param BookRepo >}}/issues/1176).
+The Table sink accepts integer aggregate contributions through [`sink.write-mode = aggregate`]({{< relref "docs/connectors/table/bigtable" >}}#aggregate-contributions).
 Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
 the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
 in the serializer rather than upstream of the sink. Every serializer in this connector family reads
@@ -543,9 +543,14 @@ the builder rejects each without the other:
 
 {{< java-snippet file="BigtableConnectorTableAutoCreation.java" tag="bigtable-connector-table-auto-creation" >}}
 
-Creation is **reactive**, the shape the
-[Pub/Sub sink]({{< relref "docs/connectors/datastream/pubsub" >}}#topic-auto-creation) uses: no
-admin client is even constructed unless a mutation actually fails with `NOT_FOUND`. When one does,
+Creation is **reactive** for the DataStream batch sink: a mutation failing with `NOT_FOUND` triggers the repair.
+Raw-only creation options open no admin client before that failure.
+Options declaring an aggregate type first inspect the existing declared families before a destination receives data, and repeat that inspection if its batcher is evicted and reopened.
+Missing tables and families still reach the repair below; a type mismatch fails before submission and is never routed to the row failure handler.
+The inspection requires `bigtable.tables.get`.
+The [SQL aggregate mode]({{< relref "docs/connectors/table/bigtable" >}}#aggregate-contributions) also creates or validates its fixed destination during writer startup.
+
+When a mutation fails with `NOT_FOUND`,
 the failed mutations are *parked*, the sink ensures the table and its declared families exist —
 idempotently, so parallel subtasks race safely; a lost race falls through to adding whatever
 families are still missing, in one atomic request, re-reading at most once more per family it
@@ -563,10 +568,14 @@ whose only symptom would be checkpoints that stop completing. Nothing is ever dr
 is re-applied or the job fails — which is why `NOT_FOUND` may be acted on even when an outage
 status arrives beside it.
 
-**Creation only, per family.** An existing table is used as it is; the families declared in the
-options that it lacks are added, with their rules, and an existing family's garbage-collection
-rule is neither compared nor updated. The one condition creation cannot repair is a mutation
-naming a family the options do not declare. After ensuring the table, the sink compares a
+**Add-only, per family.** Missing declared families are added with their type and rule.
+When any aggregate type is declared, every existing declared type must match, including raw declarations and after a concurrent creation wins; a mismatch names the destination, family and both types and fails the job.
+Raw-only options leave existing family types unconstrained and use the declarations only when adding missing families.
+An existing family's garbage-collection rule is neither compared nor updated.
+Use `columnFamily(name, ColumnFamilyType.INT64_SUM, rule)` for a typed family; `INT64_MIN`, `INT64_MAX`, `INT64_HLL`, and `RAW` are also available.
+The one- and two-argument overloads still declare raw families, and raw and aggregate declarations can coexist in DataStream options.
+See the [aggregate example]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells).
+Creation also cannot repair a mutation naming an absent family the options do not declare. After ensuring the table, the sink compares a
 missing-family response with the entry and the families the ensure observed; an absent referenced
 family fails immediately with the table and family named instead of spending the remaining
 recovery attempts. A `NOT_FOUND` that does not specifically identify a missing family keeps the
@@ -1081,8 +1090,8 @@ Registered on the sink writer's metric group, one set per subtask:
 | `capacityEvictions` | counter | instance slots removed from the tracked set after the active-instance capacity selected the least recently used instance |
 | `idleEvictions` | counter | instance slots removed from the tracked set after the idle sweep evicted their last live table |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
-| `tablesCreated` | counter | tables the [auto-creation repair](#table-auto-creation) created, declared families included |
-| `columnFamiliesAdded` | counter | families the repair added to an already-existing table |
+| `tablesCreated` | counter | tables created by [auto-creation](#table-auto-creation), including aggregate SQL startup; declared families included |
+| `columnFamiliesAdded` | counter | families added to an existing table by repair or aggregate SQL startup |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
@@ -1108,7 +1117,7 @@ repair is a further give-up.
 
 **`tablesCreated` and `columnFamiliesAdded` split first contact from schema drift.** A created
 table's families ride along in `tablesCreated`; `columnFamiliesAdded` counts only families the
-repair added to a table that already existed — the signal that what a job declares and what the
+repair or aggregate SQL startup added to a table that already existed — the signal that what a job declares and what the
 table holds had drifted apart. Both are registered whatever the disposition, so a `CREATE_NEVER`
 dashboard reads zeroes rather than holes.
 

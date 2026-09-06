@@ -76,6 +76,34 @@ class BigtableTablePlanTest {
                     + "  'scan.app-profile-id' = 'single-cluster-profile'\n"
                     + ")";
 
+    @Test
+    void aggregatePlansDuplicateKeysAsInsertContributionsAndRejectsUpdatingQueries() {
+        for (boolean primaryKey : new boolean[] {false, true}) {
+            TableEnvironment env = tableEnvironment();
+            env.executeSql(
+                    "CREATE TABLE bt (rowkey STRING, cf ROW<q BIGINT>"
+                            + (primaryKey ? ", PRIMARY KEY (rowkey) NOT ENFORCED" : "")
+                            + ") "
+                            + WITH_CLAUSE.replace(
+                                    "\n)",
+                                    ", 'sink.write-mode'='aggregate', "
+                                            + "'sink.aggregate.column-family-types'='cf:int64-sum'\n)"));
+            String plan =
+                    env.explainSql(
+                            "INSERT INTO bt VALUES ('r', ROW(CAST(3 AS BIGINT))), "
+                                    + "('r', ROW(CAST(5 AS BIGINT)))");
+            assertThat(plan).contains("Sink").doesNotContain("UpsertMaterialize");
+            env.executeSql(
+                    "CREATE TEMPORARY VIEW updates AS SELECT * FROM "
+                            + "(VALUES ('r', CAST(3 AS BIGINT)), ('r', CAST(5 AS BIGINT))) AS t(k, n)");
+            assertThatThrownBy(
+                            () ->
+                                    env.explainSql(
+                                            "INSERT INTO bt SELECT k, ROW(SUM(n)) FROM updates GROUP BY k"))
+                    .hasStackTraceContaining("INSERT-only");
+        }
+    }
+
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
     }

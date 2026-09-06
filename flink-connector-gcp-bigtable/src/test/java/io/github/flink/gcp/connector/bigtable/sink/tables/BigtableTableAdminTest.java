@@ -25,6 +25,7 @@ import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.grpc.Status;
@@ -140,7 +141,14 @@ class BigtableTableAdminTest {
                         .addFamily("versions", GCRules.GCRULES.maxVersions(2));
 
         assertThat(
-                        BigtableTableAdmin.toModifyColumnFamiliesRequest(TABLE, missing)
+                        BigtableTableAdmin.toModifyColumnFamiliesRequest(
+                                        TABLE,
+                                        missing,
+                                        Map.of(
+                                                "plain",
+                                                ColumnFamilyType.RAW,
+                                                "versions",
+                                                ColumnFamilyType.RAW))
                                 .toProto("p", "i"))
                 .isEqualTo(expected.toProto("p", "i"));
     }
@@ -301,7 +309,18 @@ class BigtableTableAdminTest {
 
         TableAdmin.EnsureResult ensure(TableCreateOptions options) {
             return BigtableTableAdmin.ensureWith(
-                    TABLE, options, this::createTable, this::readFamilyIds, this::modifyFamilies);
+                    TABLE,
+                    options,
+                    this::createTable,
+                    tableId ->
+                            readFamilyIds(tableId).stream()
+                                    .collect(
+                                            java.util.stream.Collectors.toMap(
+                                                    name -> name,
+                                                    name ->
+                                                            com.google.bigtable.admin.v2.Type
+                                                                    .getDefaultInstance())),
+                    this::modifyFamilies);
         }
 
         private void createTable(CreateTableRequest request) {

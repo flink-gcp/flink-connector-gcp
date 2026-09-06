@@ -22,6 +22,10 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
+import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigtable.sink.GcRule;
+import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 
 import java.util.List;
 
@@ -32,6 +36,12 @@ final class BigtableExamplesAggregateUpdates {
     static void addInputs() {
         // tag::bigtable-examples-aggregate-add[]
         BigtableSink.<CounterUpdate>builder()
+                .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
+                .tableCreateOptions(
+                        TableCreateOptions.builder()
+                                .columnFamily(
+                                        "totals", ColumnFamilyType.INT64_SUM, GcRule.maxVersions(2))
+                                .build())
                 .table(TableDestination.of("my-project", "my-instance", "counters"))
                 .serializer(
                         (update, context) ->

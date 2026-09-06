@@ -303,6 +303,12 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         void setCell(String family, ByteString qualifier, long timestamp, ByteString value);
     }
 
+    long cellTimestampMicros(RowData element) throws IOException {
+        return timestampMetadataIndex >= 0 && !element.isNullAt(timestampMetadataIndex)
+                ? timestampMicros(element)
+                : clock.micros();
+    }
+
     private long timestampMicros(RowData element) throws IOException {
         TimestampData timestamp =
                 element.getTimestamp(timestampMetadataIndex, WritableMetadata.TIMESTAMP_PRECISION);
@@ -324,7 +330,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         }
     }
 
-    private ByteString rowKey(RowData element) throws IOException {
+    ByteString rowKey(RowData element) throws IOException {
         if (element.isNullAt(rowKeyIndex)) {
             throw new IOException(
                     String.format(

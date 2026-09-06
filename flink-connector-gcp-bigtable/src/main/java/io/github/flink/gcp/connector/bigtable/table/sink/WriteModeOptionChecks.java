@@ -32,6 +32,13 @@ import java.util.Map;
 public final class WriteModeOptionChecks {
     private WriteModeOptionChecks() {}
 
+    /** Returns whether the operation uses the MutateRows batch writer and its options. */
+    public static boolean usesBatchWriter(WriteMode mode) {
+        return mode == WriteMode.UPSERT
+                || mode == WriteMode.KEEP_LATEST
+                || mode == WriteMode.AGGREGATE;
+    }
+
     /**
      * Validates only explicit keys, including explicit values equal to an option's default.
      *
@@ -40,7 +47,7 @@ public final class WriteModeOptionChecks {
      */
     public static void validate(Map<String, String> options, WriteMode mode) {
         List<ConfigOption<?>> rejected =
-                mode != WriteMode.UPSERT && mode != WriteMode.KEEP_LATEST
+                !usesBatchWriter(mode)
                         ? List.of(
                                 BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
                                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
@@ -62,6 +69,11 @@ public final class WriteModeOptionChecks {
             rejected = new ArrayList<>(rejected);
             rejected.add(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY);
             rejected.add(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS);
+        }
+        if (mode == WriteMode.AGGREGATE) {
+            rejected = new ArrayList<>(rejected);
+            rejected.add(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE);
+            rejected.add(BigtableConnectorOptions.NULL_STRING_LITERAL);
         }
         for (ConfigOption<?> option : rejected) {
             if (options.containsKey(option.key())) {

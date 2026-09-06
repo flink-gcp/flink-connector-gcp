@@ -230,7 +230,7 @@ public abstract class AbstractBigtableRealGcpITCase {
         }
     }
 
-    /** Creates an Int64 Sum family through the SDK; sink auto-creation does not provision it. */
+    /** Creates an Int64 Sum fixture directly through the SDK. */
     protected static TableDestination createAggregateTable(String tableId) {
         tableAdmin.createTable(
                 CreateTableRequest.of(tableId)

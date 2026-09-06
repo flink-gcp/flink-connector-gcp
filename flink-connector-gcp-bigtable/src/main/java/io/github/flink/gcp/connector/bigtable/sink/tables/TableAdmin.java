@@ -19,11 +19,13 @@ package io.github.flink.gcp.connector.bigtable.sink.tables;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 
 import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -45,13 +47,34 @@ public interface TableAdmin extends AutoCloseable {
      * declared families it lacks are added, and existing families are left exactly as they are,
      * their garbage-collection rules neither compared nor updated.
      *
+     * <p>Options containing any aggregate type require every declared existing type to match,
+     * including raw declarations. Raw-only options reconcile existing families by name only.
+     *
      * @param destination the table to ensure
-     * @param options the families (and rules) to create it with
+     * @param options the families, value types and rules to create it with
      * @return what the call actually did
-     * @throws IOException if the table or a missing family could not be created for any reason
-     *     other than already existing
+     * @throws IOException if table creation or family reconciliation fails for a reason other than
+     *     a type mismatch
+     * @throws IllegalStateException if aggregate declarations contain an existing family whose type
+     *     does not match; retrying does not repair a type mismatch
      */
     EnsureResult ensureTable(TableDestination destination, TableCreateOptions options)
+            throws IOException;
+
+    /**
+     * Checks declared existing family types without changing the table.
+     *
+     * @param destination the table to inspect
+     * @param expected the declared family types
+     * @param allowMissing whether absent tables and families may be repaired later
+     * @throws IOException if metadata cannot be read or a required table is missing
+     * @throws IllegalStateException if a declared family's type does not match, or if a required
+     *     family is missing and {@code allowMissing} is false
+     */
+    void validateFamilies(
+            TableDestination destination,
+            Map<String, ColumnFamilyType> expected,
+            boolean allowMissing)
             throws IOException;
 
     @Override

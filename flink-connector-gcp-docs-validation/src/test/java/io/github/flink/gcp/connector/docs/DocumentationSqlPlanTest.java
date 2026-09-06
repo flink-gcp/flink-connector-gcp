@@ -297,6 +297,10 @@ public class DocumentationSqlPlanTest {
                         "Bigtable change stream envelope",
                         snippet("flink/BigtableExamples.sql", "change-stream-envelope")),
                 scenario(
+                        "Bigtable aggregate contributions and state reads",
+                        snippet("flink/BigtableExamples.sql", "aggregate-contributions"),
+                        snippet("flink/BigtableExamples.sql", "aggregate-read-state")),
+                scenario(
                         "Bigtable batch upsert",
                         snippet("flink/BigtableExamples.sql", "batch-upsert")),
                 scenario(
