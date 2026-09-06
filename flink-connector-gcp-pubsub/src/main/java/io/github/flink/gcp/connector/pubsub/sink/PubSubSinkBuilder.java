@@ -214,6 +214,16 @@ public class PubSubSinkBuilder<T> {
     /**
      * Builds the sink.
      *
+     * <p>The returned sink implements {@link
+     * org.apache.flink.streaming.api.lineage.LineageVertexProvider}. A fixed topic is reported as
+     * {@code pubsub} / {@code topic:project:topic}, with a {@code gcp} physical-resource facet. A
+     * dynamic resolver contributes an empty dataset list; inspection never evaluates it or the
+     * serializer, authenticates, creates a client, or issues an RPC. Dead-letter publishing is not
+     * an additional output of this vertex.
+     *
+     * <p>Flink 2.2 and 2.3 extract this metadata natively. Flink 1.20 supports direct inspection
+     * through the interface, without automatic FLIP-314 listener delivery.
+     *
      * @return the sink
      */
     public Sink<T> build() {

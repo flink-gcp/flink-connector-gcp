@@ -200,6 +200,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   non-empty keys are stable, null and empty keys are spread, and parallelism one skips the
   exchange (#143). This is not bucketing: `sink.parallelism` is the writer count and no bucket
   count is exposed.
+- Preserve both `DataStreamSinkProvider` and `SinkV2Provider` on the ordering-key provider:
+  Flink 2.2/2.3 use the latter for lineage; all supported planners use the former for routing.
+  Carry the catalog identity through Table copies/equality and retain every subscription in
+  the shared facet.
+  Read ADR-0014 and ADR-0160 before changing these paths. `PubSubDynamicSinkTest` checks routing
+  on both majors; `PubSubLineageGraphTest` checks native metadata and planner routing on Flink 2.x.
 - The two directions spell resource creation differently on purpose (sink: disposition gate +
   `sink.auto-create.*` settings; source: presence of `scan.auto-create.*` settings is the
   authorization), and **the source never creates a topic**. The `expirationTtl`/`neverExpire`

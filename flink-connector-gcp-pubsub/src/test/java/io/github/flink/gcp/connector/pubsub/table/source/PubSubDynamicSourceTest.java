@@ -151,6 +151,7 @@ class PubSubDynamicSourceTest {
 
     private static PubSubDynamicSource source(DecodingFormat<DeserializationSchema<RowData>> fmt) {
         return new PubSubDynamicSource(
+                "catalog.db.source",
                 PHYSICAL_DATA_TYPE,
                 fmt,
                 SUBSCRIPTIONS,
@@ -162,6 +163,26 @@ class PubSubDynamicSourceTest {
                 null,
                 null,
                 null);
+    }
+
+    @Test
+    void logicalTableNameIsPartOfTheIdentity() {
+        PubSubDynamicSource other =
+                new PubSubDynamicSource(
+                        "catalog.db.other",
+                        PHYSICAL_DATA_TYPE,
+                        TestDecodingFormat.plain(),
+                        SUBSCRIPTIONS,
+                        Collections.emptyMap(),
+                        null,
+                        null,
+                        null,
+                        PubSubSubscriberOptions.builder().build(),
+                        null,
+                        null,
+                        null);
+        assertThat(source()).isNotEqualTo(other);
+        assertThat(other.copy()).isEqualTo(other).hasSameHashCodeAs(other);
     }
 
     @Test
@@ -257,6 +278,7 @@ class PubSubDynamicSourceTest {
         assertThat(source())
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 DataTypes.ROW(DataTypes.FIELD("other", DataTypes.INT())),
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -276,6 +298,7 @@ class PubSubDynamicSourceTest {
                                         ChangelogMode.insertOnly())))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 Collections.singletonList(
@@ -290,6 +313,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -303,6 +327,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -316,6 +341,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -329,6 +355,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -342,6 +369,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -358,6 +386,7 @@ class PubSubDynamicSourceTest {
                 // is one the planner may reuse a plan across.
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -371,6 +400,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -384,6 +414,7 @@ class PubSubDynamicSourceTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
+                                "catalog.db.source",
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
@@ -412,6 +443,7 @@ class PubSubDynamicSourceTest {
 
     private static PubSubDynamicSource sourceStartingAt(PubSubStartPosition startPosition) {
         return new PubSubDynamicSource(
+                "catalog.db.source",
                 PHYSICAL_DATA_TYPE,
                 TestDecodingFormat.plain(),
                 SUBSCRIPTIONS,
@@ -435,6 +467,7 @@ class PubSubDynamicSourceTest {
         assertThatThrownBy(
                         () ->
                                 new PubSubDynamicSource(
+                                        "catalog.db.source",
                                         PHYSICAL_DATA_TYPE,
                                         TestDecodingFormat.plain(),
                                         Arrays.asList(first, second),
@@ -464,6 +497,7 @@ class PubSubDynamicSourceTest {
     void buildsASourceProviderCarryingTheParallelismAndTheAppliedMetadata() {
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
+                        "catalog.db.source",
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
@@ -500,6 +534,7 @@ class PubSubDynamicSourceTest {
         // healthy to every unit test and fail only in an emulator IT, by timing out.
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
+                        "catalog.db.source",
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
@@ -541,6 +576,7 @@ class PubSubDynamicSourceTest {
 
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
+                        "catalog.db.source",
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         Arrays.asList(orders, returns),
@@ -569,6 +605,7 @@ class PubSubDynamicSourceTest {
         Source<RowData, ?, ?> built =
                 ((SourceProvider)
                                 new PubSubDynamicSource(
+                                                "catalog.db.source",
                                                 PHYSICAL_DATA_TYPE,
                                                 new DecodingTestFormat(),
                                                 SUBSCRIPTIONS,
@@ -600,6 +637,7 @@ class PubSubDynamicSourceTest {
         // creation settings for it to check, and the source would build cleanly.
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
+                        "catalog.db.source",
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
@@ -621,6 +659,7 @@ class PubSubDynamicSourceTest {
     void leavesTheSourceParallelismUnsetWhenItWasNotGiven() {
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
+                        "catalog.db.source",
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,

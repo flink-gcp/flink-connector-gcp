@@ -39,6 +39,7 @@ import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
 
 import javax.annotation.Nullable;
 
@@ -65,6 +66,7 @@ import java.util.Set;
 @Internal
 public final class PubSubDynamicSource implements ScanTableSource, SupportsReadingMetadata {
 
+    private final String lineageTableName;
     private final DataType physicalDataType;
     private final DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
     private final List<SubscriptionDestination> subscriptions;
@@ -86,6 +88,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     /**
      * Builds a source from values the factory has already resolved.
      *
+     * @param lineageTableName the catalog identifier used for Table lineage
      * @param physicalDataType the row type of the table's physical columns
      * @param decodingFormat the format decoding the payload
      * @param subscriptions the subscriptions to consume, at least one
@@ -103,6 +106,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
      * @param parallelism the source operator's parallelism, or {@code null} for the job's
      */
     public PubSubDynamicSource(
+            String lineageTableName,
             DataType physicalDataType,
             DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
             List<SubscriptionDestination> subscriptions,
@@ -114,6 +118,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
+        this.lineageTableName = Objects.requireNonNull(lineageTableName, "lineageTableName");
         this.physicalDataType =
                 Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
         this.decodingFormat =
@@ -237,7 +242,9 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
-        Source<RowData, ?, ?> source = builder.build();
+        Source<RowData, ?, ?> source =
+                ((PubSubStreamingPullSource<RowData>) builder.build())
+                        .withTableLineage(lineageTableName);
         return SourceProvider.of(source, parallelism);
     }
 
@@ -245,6 +252,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     public DynamicTableSource copy() {
         PubSubDynamicSource copy =
                 new PubSubDynamicSource(
+                        lineageTableName,
                         physicalDataType,
                         decodingFormat,
                         subscriptions,
@@ -275,7 +283,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             return false;
         }
         PubSubDynamicSource that = (PubSubDynamicSource) o;
-        return physicalDataType.equals(that.physicalDataType)
+        return lineageTableName.equals(that.lineageTableName)
+                && physicalDataType.equals(that.physicalDataType)
                 && decodingFormat.equals(that.decodingFormat)
                 && subscriptions.equals(that.subscriptions)
                 && createOptions.equals(that.createOptions)
@@ -293,6 +302,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     @Override
     public int hashCode() {
         return Objects.hash(
+                lineageTableName,
                 physicalDataType,
                 decodingFormat,
                 subscriptions,

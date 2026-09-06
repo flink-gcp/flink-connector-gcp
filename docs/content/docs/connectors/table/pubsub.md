@@ -33,6 +33,22 @@ the option keys below are declared by `PubSubConnectorOptions` — `format`, `si
 both it and the DataStream types the options map onto are in the
 [Java API reference]({{< api-docs-url >}}).
 
+## Lineage
+
+On Flink 2.2 and 2.3, the planner keeps the SQL catalog identifier as the logical dataset name.
+The dataset has namespace `pubsub` and a `gcp` facet containing every configured physical subscription for a source, or the configured topic for a sink.
+A source with several subscriptions retains the complete set in this single facet.
+Physical names are `subscription:{project}:{subscription}` and `topic:{project}:{topic}`, respectively; the source is unbounded.
+
+Selecting writable `ordering-key` metadata preserves the existing keyed routing before the sink writer.
+Lineage inspection does not add another sink or exchange; parallelism one still skips the ordering shuffle.
+Inspection does not read credentials, create clients or resources, call serializers or deserializers, or look up backing topics.
+Auto-creation and dead-letter policy settings do not add physical resources to lineage.
+
+Flink 1.20 supports direct metadata inspection on the underlying Source/Sink, without automatic FLIP-314 listener delivery.
+Dynamic resource discovery and manual lineage declarations are not supported.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the shared facet API and listener classloader configuration; an unmodified OpenLineage listener is not assumed to understand the custom facet.
+
 ## Getting the connector onto the classpath
 
 Use `flink-sql-connector-gcp-pubsub`, an uber-jar built for exactly this: put it in Flink's `lib/`
