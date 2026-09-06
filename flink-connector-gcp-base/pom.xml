@@ -31,6 +31,18 @@ limitations under the License.
     <packaging>jar</packaging>
 
     <dependencies>
+        <!-- Lineage interfaces move from streaming-java in 1.20 to runtime in 2.x.
+             Both stay provided, including when base is bundled in a SQL jar. -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-streaming-java</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <!-- Flink (provided at runtime by the Flink cluster) -->
         <dependency>
             <groupId>org.apache.flink</groupId>
@@ -63,6 +75,27 @@ limitations under the License.
         </dependency>
 
         <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-clients</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-api-java-bridge</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-runtime</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-planner-loader</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <!-- MetricListener, so base.metrics is asserted through registered names rather than
                  through the counter objects the helpers happen to hold. -->

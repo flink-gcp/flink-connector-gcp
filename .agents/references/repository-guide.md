@@ -670,13 +670,15 @@ facts); the rules a session needs:
   weekly `lts` row verifies it, and no cross-major binary claim is made — the one-artifact
   claim spans the 2.x range only. A 1.20 patch bump is a hand edit to `FLINK_LTS` in
   `weekly.yaml` (dependabot does not see workflow env). **A cross-major API difference goes in
-  the roots, and both known ones are there** — every connector's `CrossVersionSink`, and
+  the roots** — every connector's `CrossVersionSink`, and
   BigQuery's `CrossVersionCheckpointId` (#404), which is what keeps a Flink method
   `@Deprecated(forRemoval = true)` on the moving major out of shared source. Two things the
   second one shows that the first did not: a compat file need not be compile-only, and need
   not sit at a module's `sink` root. Switching `flink.compat` between local runs needs a
   `clean` for each such class, not just for `CrossVersionSink` — an incremental build reuses
-  the other major's `.class`, and a *restored* source then reads green over stale bytecode
+  the other major's `.class`, and a *restored* source then reads green over stale bytecode.
+  ADR-0160 also places the test-utils lineage listener in `src/main/java-flink2` and its
+  consumer graph/planner tests in `src/test/java-flink2`; neither compiles for 1.20
 - The version matrix lives in `weekly.yaml`, not `verify.yaml` — per-PR CI stays single-version
   for latency. Rows carry a **role** (`floor` / `ceiling` / `next` / `lts`) resolved from the
   `FLINK_*` envs at the top of the file, and every matrix job checks out `github.sha`; the

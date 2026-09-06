@@ -24,6 +24,9 @@ limitations under the License.
 - Modules: flink-sql-connector-gcp-pubsub (and, by inheritance, every flink-sql-connector-gcp-*)
 - Current behavior: the SQL connector pages and each SQL module's README
 
+Partially superseded by [ADR-0160](0160-lineage-reports-configured-resources-through-a-shared-listener-contract.md):
+two immutable listener API classes retain their package names across SQL jars; base internals remain relocated.
+
 ## Decision
 
 **Everything bundled is relocated under `io.github.flink.gcp.connector.<product>.shaded.`, with

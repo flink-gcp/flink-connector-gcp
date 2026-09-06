@@ -28,7 +28,16 @@ record — context, evidence, declined alternatives — is the named ADR under `
   Flink import.
   Its direct test is justified by the narrow bar above because clean consumer descriptions cannot
   reach the rejection path.
-- No compat source roots; a cross-major sink test-double belongs in the module that needs it.
+- `LineageListenerCapture` is the Flink 2.x listener fixture in `src/main/java-flink2`
+  (ADR-0160). It depends on public Flink types, never on base. Runtime/streaming dependencies
+  remain provided. This shared-prerequisite fixture precedes the five connector adopters.
+  A cross-major sink test-double still belongs in the module that needs it.
+- Ordinary SQL lineage packaging assertions inspect only the current module's jar. Never discover
+  sibling `target/` artifacts: a scoped reactor does not rebuild them. After a clean full build,
+  the simultaneous five-jar measurement passes `-Dgcp.lineage.sql-jar-manifest=/absolute/file` to
+  `relocatedLineageHelpersShareTheListenerApiAcrossSqlJars`; that file names exactly the five
+  freshly built SQL jars, one absolute path per line. Reuse those floor-built paths for the
+  ceiling measurement; do not rebuild them on the ceiling.
 
 ## Harnesses (`docs/adr/0051`)
 

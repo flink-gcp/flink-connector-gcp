@@ -56,17 +56,20 @@ The uber-jar does not bundle Flink format implementations.
 A selected-cell Change Streams job must also put the chosen format jar, such as `flink-json`, on
 the SQL client and cluster classpaths.
 
-### Everything bundled is relocated
+### Relocation and shared APIs
 
-Every bundled package moves under `io.github.flink.gcp.connector.bigtable.shaded.`, so the
+Bundled dependencies and internal helpers move under `io.github.flink.gcp.connector.bigtable.shaded.`, so the
 versions of gRPC, protobuf and Guava this connector needs cannot collide with the ones a job,
-another connector, or Flink itself brings. Six packages are deliberately *not* relocated, and none
+another connector, or Flink itself brings. Six third-party packages are deliberately *not* relocated, and none
 of them can collide in a way that matters: `org.conscrypt`, which gRPC picks up reflectively as an
 optional TLS provider and does without when it is unusable; and the annotation-only
 `javax.annotation` (jsr305's classes only — `javax.annotation-api`, the other artifact publishing
 into that package, is not bundled, [#352]({{< param BookRepo >}}/issues/352)), `org.jspecify`,
 `org.codehaus.mojo.animal_sniffer`, `android.annotation` and `org.checkerframework`, where a
 duplicate class is inert because nothing ever invokes it.
+
+The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
 
 `io.grpc:grpc-netty-shaded` *is* relocated, including the rename of its `META-INF/native/`
 libraries that relocating an already-relocated gRPC requires. The full reasoning — why exempting

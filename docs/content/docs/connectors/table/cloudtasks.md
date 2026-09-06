@@ -55,13 +55,16 @@ cluster, or load it for one SQL Client session:
 
 {{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="add-jar" >}}
 
-The jar bundles `flink-connector-gcp-cloudtasks` and the runtime dependency tree it needs. Java
-dependency packages linked by the connector move under
+The jar bundles `flink-connector-gcp-cloudtasks` and the runtime dependency tree it needs. Third-party
+dependency packages and internal helpers move under
 `io.github.flink.gcp.connector.cloudtasks.shaded`, including the matching native-resource rename
 required by the already-shaded gRPC Netty transport. Conscrypt remains unrelocated because it owns
-native libraries and is optional; the other unrelocated packages are annotations only. The
+native libraries and is optional; the other unrelocated third-party packages are annotations only. The
 generated `META-INF/NOTICE` enumerates every bundled artifact, with pinned permissive licence texts
 under `META-INF/licenses/`.
+
+The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
+See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
 
 Keep sibling SQL connector jars as separate files in `lib/` or add each with its own `ADD JAR`.
 Merging them into another fat jar without merging service descriptors can silently discard one of

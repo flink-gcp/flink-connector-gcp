@@ -285,6 +285,11 @@ limitations under the License.
             </dependency>
             <dependency>
                 <groupId>org.apache.flink</groupId>
+                <artifactId>flink-runtime</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.flink</groupId>
                 <artifactId>flink-streaming-java</artifactId>
                 <version>${flink.version}</version>
             </dependency>
@@ -775,8 +780,9 @@ limitations under the License.
         </pluginManagement>
 
         <plugins>
-            <!-- Adds the per-major source root selected by ${flink.compat} (see the
-                 property's comment). A module without the directory is unaffected —
+            <!-- Adds the per-major production and test roots selected by ${flink.compat}.
+                 The test root isolates the 2.x lineage planner/listener tests (ADR-0160).
+                 A module without the directory is unaffected —
                  a missing added root is a no-op — so this can live here instead of
                  being repeated in the three connector modules. -->
             <plugin>
@@ -793,6 +799,18 @@ limitations under the License.
                         <configuration>
                             <sources>
                                 <source>src/main/java-${flink.compat}</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>add-flink-compat-test-sources</id>
+                        <phase>generate-test-sources</phase>
+                        <goals>
+                            <goal>add-test-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>src/test/java-${flink.compat}</source>
                             </sources>
                         </configuration>
                     </execution>
