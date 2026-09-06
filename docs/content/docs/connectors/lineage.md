@@ -27,6 +27,7 @@ It does not discover resources at runtime or infer them by inspecting records.
 Connector adoption is tracked separately for [BigQuery]({{< param BookRepo >}}/issues/1270), [Pub/Sub]({{< param BookRepo >}}/issues/1271), [Bigtable]({{< param BookRepo >}}/issues/1272), [Spanner]({{< param BookRepo >}}/issues/1273), and [Cloud Tasks]({{< param BookRepo >}}/issues/1274).
 The common graph and listener tests establish the shared contract.
 Pub/Sub also tests extraction against its builder-returned Source/Sink and SQL planner, including multiple subscriptions and ordering-key routing.
+Spanner implements the contract for the paths documented in its [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}) and [Table]({{< relref "docs/connectors/table/spanner" >}}) references.
 
 ## Metadata and resource identities
 

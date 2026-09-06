@@ -41,6 +41,24 @@ with application dependencies. DataStream applications should depend on
 The shared lineage values `PhysicalResourceFacet` and `ResourceIdentifier` also retain their original package names so one listener can consume them across SQL connector jars.
 See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and connector adoption status.
 
+## Lineage
+
+A bounded scan and a Table sink report their configured physical table in the `gcp` facet of one logical SQL dataset.
+The SQL catalog identifier remains Flink-owned.
+Index/filter pushdown and deferred scan resolution retain the same table identity without running the resolver during extraction.
+A Table CDC source reports its configured table and the configured Change Stream as provenance in that facet; it does not enumerate every table the stream watches.
+Lookup joins are outside this extraction path.
+
+Physical tables use namespace `spanner://{project}:{instance}` and name `{database}.{schema}.{table}`, omitting an absent schema segment.
+The existing dialect rules determine schema/table spelling, including PostgreSQL's `public` default for an unqualified native table name.
+A legacy native `schema.table` value already carries its qualification and does not receive another default schema prefix.
+The facet retains the original configured schema/table syntax, including quotes and case; an omitted `schema` option stays absent from the identity map even when the canonical name uses a default schema.
+Extraction changes neither record routing nor source boundedness.
+
+Flink 2.x retains the physical facet during planner extraction.
+Flink 1.20 supports direct inspection of the runtime Source/Sink metadata, without automatic FLIP-314 listener delivery.
+A custom listener must consume the `gcp` facet explicitly; an unmodified OpenLineage listener is not assumed to understand it.
+
 ## Credentials
 
 `service-account-key-file` selects one service-account JSON key for the sink, bounded scan, Change Streams scan, and synchronous or asynchronous lookup paths.

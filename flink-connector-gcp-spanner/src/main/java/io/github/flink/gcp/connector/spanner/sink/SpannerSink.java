@@ -78,6 +78,14 @@ public final class SpannerSink {
     /**
      * Creates a new {@link SpannerSinkBuilder}.
      *
+     * <p>The sink returned by the builder implements {@link
+     * org.apache.flink.streaming.api.lineage.LineageVertexProvider} and returns an empty physical
+     * dataset list. A database does not establish the tables a user serializer will write, and
+     * lineage extraction never calls that serializer or opens a client. The Table API sink
+     * separately carries its fixed table in the {@code gcp} physical-resource facet. Flink 2.x
+     * extracts lineage metadata automatically; Flink 1.20 supports direct inspection but not native
+     * listener delivery.
+     *
      * @param <T> type of the records written by the sink
      * @return a new builder
      */

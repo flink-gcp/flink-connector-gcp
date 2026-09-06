@@ -29,8 +29,13 @@ import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
@@ -38,15 +43,25 @@ import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeSt
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerChangeStreamReader;
 
+import java.util.List;
+
 /**
  * FLIP-27 source for Cloud Spanner Change Streams.
+ *
+ * <p>Lineage identifies the configured Change Stream in namespace {@code
+ * spanner://project:instance}, with name {@code database/changeStreams/stream} and resource kind
+ * {@code spanner-change-stream} in the {@code gcp} facet. It does not infer watched tables from
+ * filters or discover them at runtime. Extraction retains this source's boundedness and does not
+ * open clients, resolve credentials, or invoke the deserializer. Flink 2.x extracts the metadata
+ * automatically; Flink 1.20 supports direct inspection but not native listener delivery.
  *
  * @param <T> the record type produced
  */
 @PublicEvolving
 public final class SpannerChangeStreamSource<T>
         implements Source<T, ChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>,
-                ResultTypeQueryable<T> {
+                ResultTypeQueryable<T>,
+                LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
@@ -76,6 +91,19 @@ public final class SpannerChangeStreamSource<T>
         return config.getEndTimestamp() == null
                 ? Boundedness.CONTINUOUS_UNBOUNDED
                 : Boundedness.BOUNDED;
+    }
+
+    @Override
+    public SourceLineageVertex getLineageVertex() {
+        DatabaseDestination database = config.getDatabase();
+        return Lineage.source(
+                getBoundedness(),
+                List.of(
+                        LineageIdentifiers.spannerChangeStream(
+                                database.getProject(),
+                                database.getInstance(),
+                                database.getDatabase(),
+                                config.getChangeStreamName())));
     }
 
     @Override

@@ -121,7 +121,7 @@ class SpannerDynamicTableFactoryTest {
                                         .getSinkRuntimeProvider(
                                                 new SinkRuntimeProviderContext(false)))
                         .createSink();
-        return (SpannerMutationsSink<?>) sink;
+        return (SpannerMutationsSink<?>) ((SpannerTableLineage.TableSink<?>) sink).delegate;
     }
 
     @Test
@@ -443,13 +443,17 @@ class SpannerDynamicTableFactoryTest {
         return FactoryMocks.createTableSource(schema, options);
     }
 
+    private static Source<?, ?, ?> runtimeSource(Source<?, ?, ?> source) {
+        return ((SpannerTableLineage.TableSource<?, ?, ?>) source).delegate;
+    }
+
     private static SpannerSourceConfig<?> builtSource(
             ResolvedSchema schema, Map<String, String> options) {
         SourceProvider provider =
                 (SourceProvider)
                         ((ScanTableSource) source(schema, options))
                                 .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
-        return ((SpannerBatchReadSource<?>) provider.createSource()).getConfig();
+        return ((SpannerBatchReadSource<?>) runtimeSource(provider.createSource())).getConfig();
     }
 
     @Test
@@ -483,10 +487,11 @@ class SpannerDynamicTableFactoryTest {
                 (SourceProvider)
                         dynamic.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
         Source<?, ?, ?> runtime = provider.createSource();
-        SpannerChangeStreamSourceConfig<?> config = TestSources.changeStreamConfig(runtime);
+        SpannerChangeStreamSourceConfig<?> config =
+                TestSources.changeStreamConfig(runtimeSource(runtime));
 
         assertThat(dynamic).isInstanceOf(SpannerChangeStreamDynamicSource.class);
-        assertThat(runtime).isInstanceOf(SpannerChangeStreamSource.class);
+        assertThat(runtimeSource(runtime)).isInstanceOf(SpannerChangeStreamSource.class);
         assertThat(runtime.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
         assertThat(provider.getParallelism()).contains(3);
         assertThat(config.getStartPosition()).isEqualTo(StartPosition.earliest());
@@ -541,10 +546,11 @@ class SpannerDynamicTableFactoryTest {
         assertThat(dynamic).isNotEqualTo(beforeAbilities);
         assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
         assertThat(
-                        ((SourceProvider)
-                                        dynamic.getScanRuntimeProvider(
-                                                ScanRuntimeProviderContext.INSTANCE))
-                                .createSource())
+                        runtimeSource(
+                                ((SourceProvider)
+                                                dynamic.getScanRuntimeProvider(
+                                                        ScanRuntimeProviderContext.INSTANCE))
+                                        .createSource()))
                 .isInstanceOf(SpannerChangeStreamSource.class);
     }
 
@@ -672,7 +678,7 @@ class SpannerDynamicTableFactoryTest {
         SourceProvider provider =
                 (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
         SpannerSourceConfig<?> config =
-                ((SpannerBatchReadSource<?>) provider.createSource()).getConfig();
+                ((SpannerBatchReadSource<?>) runtimeSource(provider.createSource())).getConfig();
 
         assertThat(config.getPartitionOptions().getMaxPartitions()).isEqualTo(12);
         assertThat(config.getPartitionOptions().getPartitionSizeBytes())
@@ -722,7 +728,7 @@ class SpannerDynamicTableFactoryTest {
     private static SpannerSourceConfig<?> built(SpannerDynamicSource source) {
         SourceProvider provider =
                 (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
-        return ((SpannerBatchReadSource<?>) provider.createSource()).getConfig();
+        return ((SpannerBatchReadSource<?>) runtimeSource(provider.createSource())).getConfig();
     }
 
     @Test

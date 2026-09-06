@@ -79,6 +79,15 @@ public final class SpannerTableName implements Serializable {
         return table;
     }
 
+    /**
+     * Returns the schema segment for lineage. Legacy native API names may already include their
+     * schema; keep that complete name in the table segment instead of prepending a default schema.
+     */
+    @Nullable
+    public String lineageSchema() {
+        return explicitlyQualified || apiName.indexOf('.') < 0 ? schema : null;
+    }
+
     /** Returns whether a native API table name identifies this table. */
     public boolean matchesNativeApiName(String nativeApiName) {
         String expected =

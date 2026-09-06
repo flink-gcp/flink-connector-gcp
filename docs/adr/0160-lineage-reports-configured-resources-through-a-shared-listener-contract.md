@@ -157,3 +157,22 @@ On Flink 2.2.1 and 2.3.0, the planner obtains metadata through `createSink()` an
 The same sink object serves both paths; parallelism one still omits the keyed exchange.
 `PubSubLineageGraphTest` exercises both provider paths, configured and inherited parallelism, and single/multiple subscriptions without starting the Pub/Sub runtime.
 The direct metadata and serialization tests also compile on Flink 1.20.4; native extraction coverage stays in the Flink 2.x test source root.
+
+## Spanner adoption
+
+[Issue #1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273) adopts the shared API merged in [PR #1276](https://github.com/flink-gcp/flink-connector-gcp/pull/1276).
+The builder-returned batch source, Change Streams source, and mutations sink implement `LineageVertexProvider` through `Lineage.source` and `Lineage.sink`.
+Explicit native reads identify the base table; queries and generic mutation serializers establish no physical table set.
+The DataStream Change Streams source identifies its configured stream, regardless of its regex record filters.
+
+The Table factory captures its logical identifier, parsed table components, original option syntax, and configured stream provenance in immutable serializable metadata.
+Named internal adapters delegate the existing runtime Source/Sink operations and expose `Lineage.tableSource` or `Lineage.tableSink`.
+This keeps deferred index/filter resolution independent of lineage extraction, and keeps the fixed sink table outside the public serializer SPI.
+No lineage setter is added to a public builder.
+Legacy native table names remain complete names; a PostgreSQL default schema is prefixed only when the Table path has an unqualified native name.
+DataStream batch configuration has no dialect, so it does not infer that default.
+
+`SpannerLineageTest` inspects actual builder results with throwing runtime hooks and serialization round trips.
+`SpannerTableLineageTest` covers factory runtime objects, copies, quoted/default/named schemas, deferred pushdown, and table-plus-stream provenance.
+`SpannerLineageGraphTest` exercises Flink 2.x DataStream extraction and the actual Spanner SQL factory, including the unsupported lookup path.
+The shared listener-delivery and class-loader evidence above remains the foundation; the Spanner PR records its focused version and packaging measurements.

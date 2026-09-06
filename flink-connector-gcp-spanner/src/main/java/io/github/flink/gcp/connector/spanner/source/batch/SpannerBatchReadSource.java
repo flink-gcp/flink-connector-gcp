@@ -30,12 +30,17 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
@@ -50,6 +55,7 @@ import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDese
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.function.Supplier;
 
 /**
@@ -64,7 +70,8 @@ import java.util.function.Supplier;
 @Internal
 public class SpannerBatchReadSource<T>
         implements Source<T, BatchReadSplit, SpannerBatchReadEnumeratorState>,
-                ResultTypeQueryable<T> {
+                ResultTypeQueryable<T>,
+                LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
@@ -92,6 +99,25 @@ public class SpannerBatchReadSource<T>
     @Override
     public Boundedness getBoundedness() {
         return Boundedness.BOUNDED;
+    }
+
+    @Override
+    public SourceLineageVertex getLineageVertex() {
+        String table = config.getReadOperation().getTable();
+        DatabaseDestination database = config.getDatabase();
+        return Lineage.source(
+                getBoundedness(),
+                table == null
+                        ? List.of()
+                        : List.of(
+                                LineageIdentifiers.spannerTable(
+                                        database.getProject(),
+                                        database.getInstance(),
+                                        database.getDatabase(),
+                                        null,
+                                        table,
+                                        null,
+                                        table)));
     }
 
     @Override

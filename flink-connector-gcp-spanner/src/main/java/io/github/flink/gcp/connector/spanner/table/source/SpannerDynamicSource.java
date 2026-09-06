@@ -52,6 +52,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
+import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
@@ -86,6 +87,7 @@ public final class SpannerDynamicSource
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
     private final SpannerLookupConfig lookupConfig;
+    @Nullable private final SpannerTableLineage lineage;
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
     private SpannerFilterPushDown.State filterState = SpannerFilterPushDown.State.empty();
@@ -96,6 +98,16 @@ public final class SpannerDynamicSource
             String table,
             DataType producedDataType,
             ReadableConfig config) {
+        this(schema, database, table, producedDataType, config, null);
+    }
+
+    public SpannerDynamicSource(
+            SpannerTableSchemaConverter schema,
+            DatabaseDestination database,
+            String table,
+            DataType producedDataType,
+            ReadableConfig config,
+            @Nullable SpannerTableLineage lineage) {
         this(
                 schema,
                 database,
@@ -118,7 +130,8 @@ public final class SpannerDynamicSource
                 config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
-                SpannerLookupConfig.from(config));
+                SpannerLookupConfig.from(config),
+                lineage);
     }
 
     private static SpannerTableName tableName(String table, ReadableConfig config) {
@@ -151,7 +164,8 @@ public final class SpannerDynamicSource
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile,
             @Nullable Integer parallelism,
-            SpannerLookupConfig lookupConfig) {
+            SpannerLookupConfig lookupConfig,
+            @Nullable SpannerTableLineage lineage) {
         this.schema = schema;
         this.database = database;
         this.table = table;
@@ -169,6 +183,7 @@ public final class SpannerDynamicSource
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
         this.lookupConfig = lookupConfig;
+        this.lineage = lineage;
     }
 
     private static TimestampBound timestampBound(ReadableConfig config) {
@@ -265,7 +280,8 @@ public final class SpannerDynamicSource
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
         Source<RowData, ?, ?> source = builder.build();
-        return SourceProvider.of(source, parallelism);
+        return SourceProvider.of(
+                lineage == null ? source : lineage.source(source, producedType), parallelism);
     }
 
     private SpannerReadOperation readOperation() {
@@ -421,7 +437,8 @@ public final class SpannerDynamicSource
                         emulatorEndpoint,
                         serviceAccountKeyFile,
                         parallelism,
-                        lookupConfig);
+                        lookupConfig,
+                        lineage);
         copy.projectedFields = projectedFields == null ? null : projectedFields.clone();
         copy.filterState = filterState;
         return copy;
@@ -442,6 +459,7 @@ public final class SpannerDynamicSource
         }
         SpannerDynamicSource that = (SpannerDynamicSource) other;
         return Objects.equals(dataBoostEnabled, that.dataBoostEnabled)
+                && Objects.equals(lineage, that.lineage)
                 && schema.equals(that.schema)
                 && database.equals(that.database)
                 && table.equals(that.table)
@@ -481,6 +499,7 @@ public final class SpannerDynamicSource
                 emulatorEndpoint,
                 serviceAccountKeyFile,
                 parallelism,
+                lineage,
                 lookupConfig,
                 filterState,
                 Arrays.hashCode(projectedFields));
