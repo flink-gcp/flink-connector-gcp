@@ -63,8 +63,9 @@ public final class BigtableRow implements Serializable {
     public BigtableRow(ByteString key, List<Cell> cells) {
         this.key = Preconditions.checkNotNull(key, "key must not be null");
         Preconditions.checkNotNull(cells, "cells must not be null");
-        Preconditions.checkArgument(!cells.contains(null), "cells must not contain null");
-        this.cells = Collections.unmodifiableList(new ArrayList<>(cells));
+        List<Cell> copy = new ArrayList<>(cells);
+        Preconditions.checkArgument(!copy.contains(null), "cells must not contain null");
+        this.cells = Collections.unmodifiableList(copy);
     }
 
     /**
@@ -151,8 +152,9 @@ public final class BigtableRow implements Serializable {
             this.timestampMicros = timestampMicros;
             this.value = Preconditions.checkNotNull(value, "value must not be null");
             Preconditions.checkNotNull(labels, "labels must not be null");
-            Preconditions.checkArgument(!labels.contains(null), "labels must not contain null");
-            this.labels = Collections.unmodifiableList(new ArrayList<>(labels));
+            List<String> copy = new ArrayList<>(labels);
+            Preconditions.checkArgument(!copy.contains(null), "labels must not contain null");
+            this.labels = Collections.unmodifiableList(copy);
         }
 
         /**

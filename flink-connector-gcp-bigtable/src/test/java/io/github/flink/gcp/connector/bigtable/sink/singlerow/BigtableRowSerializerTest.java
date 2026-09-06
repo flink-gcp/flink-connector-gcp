@@ -221,6 +221,8 @@ class BigtableRowSerializerTest {
         assertThat(row.getCells().get(0).getLabels()).containsExactly("original");
         assertThatThrownBy(() -> row.getCells().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> row.getCells().get(0).getLabels().add("later"))
+                .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(
                         () ->
                                 new BigtableRow(

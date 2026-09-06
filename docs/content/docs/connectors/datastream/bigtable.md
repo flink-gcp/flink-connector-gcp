@@ -268,6 +268,10 @@ continuation token, estimated low watermark, and every ordered `SetCell`, `Delet
 `DeleteFamily`, `AddToCell`, and `MergeToCell` entry the client returns.
 Mutations are immutable and compare by value, so two of them can be compared, put in a set, or
 asserted on directly.
+The public constructor accepts mutable and immutable entry lists, including empty lists.
+`List.of(...)` and `List.copyOf(...)` inputs are supported.
+It copies entries in their supplied order, including duplicates, and exposes an unmodifiable list.
+A null list throws `NullPointerException`; a null entry throws `IllegalArgumentException`.
 Each entry reports which of those five it is through `Entry.getKind()`, and the `Value` an
 `AddToCell` or `MergeToCell` entry carries reports its own through `Value.getType()`, so a
 deserializer can tell them apart without a chain of `instanceof` checks — reading a subtype's own
@@ -772,6 +776,11 @@ downstream, key on it or hold it in state. No client-library type crosses the su
 client's `Row` is `@InternalExtensionOnly`, and its request builders carry a table id that the
 resolver must own — with the one exception of protobuf's `ByteString`, which is the row key and
 cell value type here as it is in the batching sink's `RowMutationEntry`.
+
+The `BigtableRow` and `BigtableRow.Cell` constructors accept mutable and immutable lists.
+Both accept empty lists, including those created by `List.of(...)` and `List.copyOf(...)`.
+They copy the lists in their supplied order, including duplicates, and expose unmodifiable lists.
+A null list throws `NullPointerException`; a null element throws `IllegalArgumentException`.
 
 **On the async surface, capacity and the outer timeout are Flink's.** The operator's capacity — the
 number handed to `AsyncDataStream` — is that surface's in-flight bound, while `maxInFlightRequests`
