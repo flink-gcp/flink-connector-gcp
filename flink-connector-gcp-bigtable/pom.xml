@@ -57,6 +57,13 @@ limitations under the License.
             <artifactId>flink-table-common</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- Official async scalar execution options used during SQL specialization. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-api-java</artifactId>
+            <version>${flink.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Shared connector infrastructure: the failure-handler SPI (#37). -->
         <dependency>
@@ -189,4 +196,21 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
     </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <configuration>
+                    <java>
+                        <!-- Format both compatibility roots, including goal-only just format. -->
+                        <includes>
+                            <include>src/main/java*/**/*.java</include>
+                            <include>src/test/java*/**/*.java</include>
+                        </includes>
+                    </java>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

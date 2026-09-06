@@ -624,7 +624,7 @@ value is the reason to call it. This connector runs them on a second runtime, in
 `BigtableConditionalSink` and `BigtableConditionalAsync` expose conditional writes through immutable
 `ConditionalRequest`, `ConditionalFilter` and `ConditionalMutation` values.
 `BigtableReadModifyWriteSink` and `BigtableReadModifyWriteAsync` expose append and increment rules.
-Result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+The [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) return conditional outcomes and changed cells in Flink 2.x streaming mode.
 The [Table sink]({{< relref "docs/connectors/table/bigtable" >}}#sink) also offers `insert-if-absent`, `append` and `increment` modes.
 
 ### Conditional requests and results
@@ -1505,9 +1505,9 @@ gated suite.
 
 ## Scope
 
-Result-emitting SQL functions remain in [#1181]({{< param BookRepo >}}/issues/1181).
+The [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) return conditional outcomes and changed cells in Flink 2.x streaming mode.
 DDL-defined conditional SQL commands with named predicates and numbered mutation options remain in
-[#1226]({{< param BookRepo >}}/issues/1226); arbitrary composable filters are available through DataStream.
+[#1226]({{< param BookRepo >}}/issues/1226); composable filters are available through DataStream and the async SQL functions.
 
 ## Provenance and attribution
 

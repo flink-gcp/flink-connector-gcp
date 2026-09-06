@@ -249,6 +249,17 @@ public class DocumentationSqlPlanTest {
     private static Stream<Scenario> scenarios() {
         return Stream.of(
                 scenario(
+                        "Bigtable conditional SQL outcome (Flink 2.x only)",
+                        bigtableAsyncSnippet(
+                                "conditional-outcome", "BigtableCheckAndMutateFunction")),
+                scenario(
+                        "Bigtable read-modify-write SQL cells (Flink 2.x only)",
+                        bigtableAsyncSnippet("changed-cells", "BigtableReadModifyWriteFunction")),
+                scenario(
+                        "Bigtable non-null SQL operands (Flink 2.x only)",
+                        bigtableAsyncSnippet(
+                                "non-null-operands", "BigtableReadModifyWriteFunction")),
+                scenario(
                         "BigQuery MySQL CDC sink",
                         MYSQL_SOURCE_CHANGES_VIEW,
                         snippet("flink/BigQueryExamples.sql", "mysql-sink-table"),
@@ -576,6 +587,14 @@ public class DocumentationSqlPlanTest {
     private static Scenario scenario(
             String name, List<ScenarioSetup> setups, ValidationStep... steps) {
         return new Scenario(name, setups, List.of(steps));
+    }
+
+    private static ValidationStep bigtableAsyncSnippet(String tag, String className) {
+        String file = "flink/BigtableAsyncSqlFunctions.sql";
+        if ("flink1".equals(System.getProperty("flink.compat"))) {
+            return negative(file, tag, "ClassNotFoundException", className);
+        }
+        return snippet(file, tag);
     }
 
     private static ValidationStep snippet(String file, String tag) {

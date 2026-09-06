@@ -80,8 +80,9 @@ def tree(tmp_path):
         tag=False,
         slow=False,
         javadoc=False,
+        source_root="java",
     ):
-        source = tmp_path / module / "src" / "test" / "java" / "p" / f"{name}.java"
+        source = tmp_path / module / "src" / "test" / source_root / "p" / f"{name}.java"
         source.parent.mkdir(parents=True, exist_ok=True)
         body = ["package p;", ""]
         if javadoc:
@@ -502,3 +503,26 @@ def test_the_build_excludes_the_gated_tag_by_default():
     # execution, so -Dtest= cannot pull a gated class through default-test.
     excluded = surefire[0].findtext("m:configuration/m:excludedGroups", "", POM_NS)
     assert excluded.strip() == "${test.excluded.groups}"
+
+
+@pytest.mark.parametrize("source_root", ["java-flink1", "java-flink2"])
+def test_compatibility_sources_are_discovered_checked_and_required_to_run(
+    tree, source_root
+):
+    for source in full_suite(tree):
+        tree.report(source.stem)
+    tree.add("CompatITCase", gate="BIGTABLE_IT_PROJECT", source_root=source_root)
+    result = tree("--check-tags")
+    assert result.returncode == 1
+    assert "CompatITCase.java" in result.stderr
+    tree.add(
+        "CompatITCase", gate="BIGTABLE_IT_PROJECT", tag=True, source_root=source_root
+    )
+    assert tree("--check-tags").returncode == 0
+    assert "CompatITCase" in tree("--for-gate", "BIGTABLE_IT_PROJECT").stdout
+    result = tree("--assert-ran")
+    assert result.returncode == 1
+    assert "p.CompatITCase produced no surefire report" in result.stderr
+    tree.report("CompatITCase")
+    result = tree("--assert-ran")
+    assert result.returncode == 0, result.stderr

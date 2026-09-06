@@ -18,8 +18,12 @@ package io.github.flink.gcp.connector.bigtable.sql;
 
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackagingITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.jar.JarFile;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Asserts the shape of this module's uber-jar. The checks are the shared ones; what is Bigtable's
@@ -41,6 +45,24 @@ import java.util.List;
  * <p>{@link BigtableSqlConnectorSmokeITCase} is what proves the relocated classes actually work.
  */
 class BigtableSqlConnectorPackagingITCase extends AbstractSqlConnectorPackagingITCase {
+
+    @Test
+    void asyncSqlFunctionsAreBundledOnlyForFlink2() throws Exception {
+        boolean flink2 = !"flink1".equals(System.getProperty("flink.compat"));
+        try (JarFile jar = new JarFile(shadedJar().path().toFile())) {
+            for (String name :
+                    List.of("BigtableCheckAndMutateFunction", "BigtableReadModifyWriteFunction")) {
+                assertThat(
+                                jar.getEntry(
+                                                "io/github/flink/gcp/connector/bigtable/table/function/"
+                                                        + name
+                                                        + ".class")
+                                        != null)
+                        .as("%s availability for this Flink major", name)
+                        .isEqualTo(flink2);
+            }
+        }
+    }
 
     @Override
     protected ShadedJar shadedJar() {

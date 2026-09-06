@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.sink.singlerow.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.streaming.api.functions.async.ResultFuture;
 import org.apache.flink.streaming.api.functions.async.RichAsyncFunction;
@@ -245,6 +246,15 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
     @Override
     public void open(OpenContext openContext) throws Exception {
         super.open(openContext);
+        openWithMetrics(getRuntimeContext().getMetricGroup());
+    }
+
+    /**
+     * Initializes the shared request runtime from an operator or SQL function metric group.
+     *
+     * @param metricGroup the owning runtime component's metrics
+     */
+    public final void openWithMetrics(MetricGroup metricGroup) throws Exception {
         // Re-checked for the reason the sink writer re-checks it: Java deserialization does not
         // run the builder, and a non-positive cap would refuse every input.
         Preconditions.checkArgument(
@@ -260,7 +270,7 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         // Thread-safe counters: answers count from client threads, concurrently.
         metrics =
                 SingleRowRequestMetrics.forOperator(
-                        getRuntimeContext().getMetricGroup(),
+                        metricGroup,
                         options.isPerDestinationMetrics(),
                         ThreadSafeSimpleCounter::new);
         nanoClock = injectedNanoClock != null ? injectedNanoClock : System::nanoTime;

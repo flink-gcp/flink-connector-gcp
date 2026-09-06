@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.sql;
 
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
@@ -39,12 +40,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Runs a SQL job through the shaded classes, against the Bigtable emulator.
@@ -116,6 +119,77 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
     @Override
     protected String factoryClass() {
         return UberJar.FACTORY_CLASS;
+    }
+
+    @Test
+    void asyncFunctionsExecuteFromTheShadedJarOrRejectRegistrationOnFlink1() throws Exception {
+        TableEnvironment env = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        String prefix = "io.github.flink.gcp.connector.bigtable.table.function.";
+        for (String name :
+                List.of("BigtableCheckAndMutateFunction", "BigtableReadModifyWriteFunction")) {
+            String registration =
+                    "CREATE TEMPORARY SYSTEM FUNCTION " + name + " AS '" + prefix + name + "'";
+            if ("flink1".equals(System.getProperty("flink.compat"))) {
+                assertThatThrownBy(() -> env.executeSql(registration))
+                        .hasStackTraceContaining("ClassNotFoundException")
+                        .hasStackTraceContaining(name);
+            } else {
+                Class<?> function = Class.forName(prefix + name);
+                assertThat(
+                                Path.of(
+                                        function.getProtectionDomain()
+                                                .getCodeSource()
+                                                .getLocation()
+                                                .toURI()))
+                        .isEqualTo(shadedJar().path().toAbsolutePath());
+                env.executeSql(registration);
+            }
+        }
+        if ("flink1".equals(System.getProperty("flink.compat"))) {
+            return;
+        }
+        String table = "sql-async-smoke";
+        adminClient.createTable(CreateTableRequest.of(table).addFamily("cf"));
+        env.getConfig().set("parallelism.default", "1");
+        env.getConfig().set("table.exec.async-scalar.max-attempts", "1");
+        String base = "bigtable.functions.smoke.";
+        env.getConfig().set(base + "project", PROJECT);
+        env.getConfig().set(base + "instance", INSTANCE);
+        env.getConfig().set(base + "table", table);
+        env.getConfig()
+                .set(
+                        base + "emulator-endpoint",
+                        EMULATOR.getHost() + ":" + EMULATOR.getEmulatorPort());
+        env.getConfig().set(base + "rules.0.operation", "increment");
+        env.getConfig().set(base + "rules.0.family", "cf");
+        env.getConfig().set(base + "rules.0.qualifier", "count");
+        env.getConfig().set(base + "rules.0.value-argument", "0");
+        try (CloseableIterator<org.apache.flink.types.Row> rows =
+                env.executeSql(
+                                "SELECT BigtableReadModifyWriteFunction('smoke', 'key', CAST(1 AS BIGINT))")
+                        .collect()) {
+            org.apache.flink.types.Row changed =
+                    (org.apache.flink.types.Row) rows.next().getField(0);
+            org.apache.flink.types.Row[] cells = (org.apache.flink.types.Row[]) changed.getField(1);
+            assertThat(cells).hasSize(1);
+            assertThat(cells[0].getField(4)).isEqualTo(1L);
+            assertThat(rows.hasNext()).isFalse();
+        }
+        // A separate profile makes each function's settings independently applicable.
+        for (String property : List.of("project", "instance", "table", "emulator-endpoint")) {
+            env.getConfig()
+                    .set(
+                            "bigtable.functions.check." + property,
+                            env.getConfig().getConfiguration().getString(base + property, ""));
+        }
+        env.getConfig().set("bigtable.functions.check.predicate.type", "row-exists");
+        env.getConfig().set("bigtable.functions.check.then.0.operation", "delete-row");
+        try (CloseableIterator<org.apache.flink.types.Row> rows =
+                env.executeSql("SELECT BigtableCheckAndMutateFunction('check', 'key')").collect()) {
+            assertThat(rows.next().getField(0)).isEqualTo(true);
+            assertThat(rows.hasNext()).isFalse();
+        }
+        assertThat(dataClient.readRow(TableId.of(table), "key")).isNull();
     }
 
     @Test

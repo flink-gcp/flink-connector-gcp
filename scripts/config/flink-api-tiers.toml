@@ -63,6 +63,7 @@ artifacts = [
     "flink-connector-base",
     "flink-table-common",
     "flink-table-api-java-bridge",
+    "flink-table-api-java",
     "flink-test-utils",
     "flink-avro",
 ]
