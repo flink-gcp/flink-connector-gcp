@@ -42,6 +42,13 @@ limitations under the License.
             <artifactId>flink-streaming-java</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!-- Lineage interfaces move from streaming-java in 1.20 to runtime in 2.x.
+             Both remain provided when the connector is bundled in a SQL jar. -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-base</artifactId>

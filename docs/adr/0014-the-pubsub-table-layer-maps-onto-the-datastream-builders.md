@@ -21,8 +21,8 @@ limitations under the License.
   2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09; explicit service-account key
   file 2026-08-12 ([#139]); SQL ordering-key routing 2026-08-12 ([#143]); multi-subscription
   auto-creation 2026-08-12 ([#152]); the no-restated-default rule generalized by [#1045]
-  (2026-08-23)
-- Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153], [#1045]
+  (2026-08-23); revised by [#1271] (2026-09-06)
+- Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153], [#1045], [#1271]
 - Modules: pubsub (`table`, `table.sink`, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/pubsub.md`
 
@@ -177,6 +177,14 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   so a backwards seek over it replays nothing already acknowledged unless `messageRetention` was
   set at creation.
 
+## Lineage refinement
+
+[#1271] applies [ADR-0160](0160-lineage-reports-configured-resources-through-a-shared-listener-contract.md) to the underlying Source/Sink.
+The ordering-key provider also implements `SinkV2Provider`, returning the same sink it attaches in `consumeDataStream(...)`.
+Flink 2.2.1 and 2.3.0 inspect that sink for lineage while retaining the `DataStreamSinkProvider` topology path.
+The Table factory's logical identifier travels through copies, and the shared Table adapter keeps every subscription in one physical-resource facet.
+This does not change ordering-key routing, subscription assignment, or the builder mapping.
+
 ## Evidence
 
 The emulator stores all four `TopicCreateOptions` knobs verbatim and returns them on `GetTopic`
@@ -198,3 +206,4 @@ with the real-GCP suite ([#82]).
 [#152]: https://github.com/flink-gcp/flink-connector-gcp/issues/152
 [#153]: https://github.com/flink-gcp/flink-connector-gcp/issues/153
 [#1045]: https://github.com/flink-gcp/flink-connector-gcp/issues/1045
+[#1271]: https://github.com/flink-gcp/flink-connector-gcp/issues/1271

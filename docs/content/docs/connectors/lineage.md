@@ -25,7 +25,8 @@ limitations under the License.
 The shared lineage contract describes the physical resources known from a connector's configuration.
 It does not discover resources at runtime or infer them by inspecting records.
 Connector adoption is tracked separately for [BigQuery]({{< param BookRepo >}}/issues/1270), [Pub/Sub]({{< param BookRepo >}}/issues/1271), [Bigtable]({{< param BookRepo >}}/issues/1272), [Spanner]({{< param BookRepo >}}/issues/1273), and [Cloud Tasks]({{< param BookRepo >}}/issues/1274).
-The common graph and listener tests establish the contract; they do not yet establish those connectors' individual coverage.
+The common graph and listener tests establish the shared contract.
+Pub/Sub also tests extraction against its builder-returned Source/Sink and SQL planner, including multiple subscriptions and ordering-key routing.
 
 ## Metadata and resource identities
 
@@ -73,6 +74,38 @@ The adapter does not change record routing or provide a user-facing lineage opti
 | 2.3 | The floor-built artifacts tested without recompilation on the supported ceiling |
 
 The pinned patch versions and the compatibility measurement are recorded in [ADR-0160]({{< param BookRepo >}}/blob/main/docs/adr/0160-lineage-reports-configured-resources-through-a-shared-listener-contract.md).
+
+### Configure a listener
+
+Flink's [Job Status Changed Listener guide](https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/deployment/advanced/job_status_listener/) describes the listener interfaces, job events and factory configuration.
+These are Flink-wide facilities shared by DataStream and Table API/SQL jobs.
+The connectors provide metadata; an external lineage service, exporter and visualization are separate components.
+
+For a connector that supports lineage, the supported Flink 2.x versions extract the configured resource metadata when constructing the job graph, even when no listener is configured.
+There is no connector-level lineage enable/disable option.
+Without a configured listener, this integration does not export that metadata.
+Configuring a listener makes the graph available through `JobCreatedEvent`; the listener decides how to store or export it.
+An existing listener can therefore receive additional metadata after upgrading to a connector release that adds lineage support.
+
+To consume the metadata, implement `JobStatusChangedListener` and `JobStatusChangedListenerFactory`, and package them and their required dependencies in a JAR.
+Make the factory and its dependencies loadable in the job-submission process and the Flink cluster; for SQL Gateway, this includes the Gateway process.
+Select the factory in the Flink configuration, for example in `config.yaml`:
+
+```yaml
+execution.job-status-changed-listeners:
+  - com.example.MyLineageListenerFactory
+```
+
+Replace the example class name with the fully qualified name of the factory packaged in the listener JAR.
+Adding the JAR alone does not select the listener.
+
+For a Java Table API application, pass the configuration through `EnvironmentSettings` when creating the `TableEnvironment`, as described in [Flink's Table API configuration guide](https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/dev/table/config/).
+For SQL Client or SQL Gateway, supply the setting in the configuration of the environment that submits the job and make the listener JAR available there before starting the session.
+This is an execution-environment setting, not an option in a connector table's `WITH` clause.
+An SQL-only user needs the environment operator to provide the listener if that user cannot install JARs or configure the submission environment.
+
+### Read the shared resource facet
+
 A custom listener must consume the `gcp` facet explicitly.
 Passing it to Flink does not mean an unmodified OpenLineage listener understands it.
 

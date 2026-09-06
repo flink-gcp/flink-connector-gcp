@@ -166,6 +166,7 @@ public class PubSubDynamicTableFactory
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
         return new PubSubDynamicSink(
+                context.getObjectIdentifier().asSummaryString(),
                 context.getPhysicalRowDataType(),
                 encodingFormat,
                 TopicDestination.of(config.get(PubSubConnectorOptions.PROJECT), topic),
@@ -206,6 +207,7 @@ public class PubSubDynamicTableFactory
             subscriptions.add(SubscriptionDestination.of(project, name));
         }
         return new PubSubDynamicSource(
+                context.getObjectIdentifier().asSummaryString(),
                 context.getPhysicalRowDataType(),
                 decodingFormat,
                 subscriptions,

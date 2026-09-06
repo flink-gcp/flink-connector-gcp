@@ -29,6 +29,24 @@ and dynamic per-record topic destinations on the sink, provided by the
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md).
 
+## Lineage
+
+The source and sink returned by the public builders implement Flink's `LineageVertexProvider`.
+The source reports one dataset per configured subscription, with namespace `pubsub` and name `subscription:{project}:{subscription}`; its vertex remains unbounded.
+The sink reports a fixed topic as `pubsub` / `topic:{project}:{topic}`.
+The last `topic(...)` or `destinationResolver(...)` call selects the effective destination; a dynamic resolver contributes an empty dataset list.
+Each known dataset carries the shared `gcp` physical-resource facet described in [Lineage]({{< relref "docs/connectors/lineage" >}}).
+
+Extraction uses configured identifiers only: it performs no authentication, client creation, RPC, serialization, deserialization, or dynamic resolver evaluation.
+Subscription identities remain subscriptions; the connector neither looks up their backing topics nor treats auto-creation settings as evidence of an existing topic relationship.
+Resource-creation options, ordering keys, parallelism, and publisher eviction do not add datasets or change resource identity.
+Standalone dead-letter publishers and service-configured dead-letter policies are outside the ordinary sink vertex.
+
+Metadata resources are immutable, deterministically ordered, and deduplicated.
+The source builder still rejects repeated subscription configuration; metadata ordering does not reorder source assignment.
+Flink 2.2 and 2.3 extract this metadata natively, while Flink 1.20 supports direct interface inspection without automatic FLIP-314 listener delivery.
+Dynamic resource discovery and manual lineage declarations are not supported.
+
 ## Credential file deployment
 
 > **Authentication recommendation.** Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).

@@ -22,10 +22,15 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
@@ -34,7 +39,11 @@ import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
 import io.github.flink.gcp.connector.pubsub.sink.writer.PubSubWriter;
 import io.github.flink.gcp.connector.pubsub.sink.writer.PublisherFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.List;
+import java.util.Objects;
 
 /**
  * At-least-once sink publishing through {@code google-cloud-pubsub} {@code Publisher} instances
@@ -43,11 +52,12 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
+public class PubSubPublisherSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
     private final PubSubSinkConfig<T> config;
+    @Nullable private final String lineageTableName;
 
     /**
      * Creates the sink; called by {@link PubSubSinkBuilder}.
@@ -55,7 +65,34 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
      * @param config the sink configuration
      */
     public PubSubPublisherSink(PubSubSinkConfig<T> config) {
+        this(config, null);
+    }
+
+    private PubSubPublisherSink(PubSubSinkConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
+        this.lineageTableName = lineageTableName;
+    }
+
+    /**
+     * Returns a copy carrying the logical Table identity without changing the writer configuration.
+     */
+    public PubSubPublisherSink<T> withTableLineage(String logicalName) {
+        return new PubSubPublisherSink<>(
+                config, Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        List<ResourceIdentifier> resources = List.of();
+        if (config.getDestinationResolver() instanceof FixedDestinationResolver) {
+            TopicDestination topic =
+                    ((FixedDestinationResolver) config.getDestinationResolver()).getDestination();
+            resources =
+                    List.of(LineageIdentifiers.pubSubTopic(topic.getProject(), topic.getTopic()));
+        }
+        return lineageTableName == null
+                ? Lineage.sink(resources)
+                : Lineage.tableSink(lineageTableName, "pubsub", resources);
     }
 
     /** Returns the sink configuration. */

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0160: Lineage reports configured resources through a shared listener contract
 
 - Status: Accepted
-- Date: 2026-09-06
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354)
-- Modules: base, test-utils, all SQL connector artifacts
+- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06)
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)
+- Modules: base, test-utils, pubsub, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
 
@@ -141,3 +141,19 @@ Lookup joins and Bigtable Async I/O do not use the FLIP-314 Source/Sink extracti
 An unmodified OpenLineage listener is not assumed to understand this custom facet.
 Connector-specific runtime support is tracked in [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), and [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274).
 Each adopts the merged shared PR/ADR and adds extraction tests against its actual builder-returned Source/Sink objects.
+
+## Pub/Sub adoption
+
+The Pub/Sub source and publisher sink added by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) consume the shared helpers introduced by [PR #1276](https://github.com/flink-gcp/flink-connector-gcp/pull/1276).
+They construct vertices on inspection from their existing resource values, without storing a vertex or introducing a serializable lambda.
+Only the effective `FixedDestinationResolver` exposes a known sink topic; a dynamic resolver remains unknown.
+The source reports subscriptions without consulting creation settings or discovering their backing topics.
+The source builder continues to reject repeated subscriptions: metadata deduplication does not relax that assignment contract.
+
+The Table factory supplies its catalog identifier, and internal Source/Sink copies keep that logical name alongside the same runtime configuration.
+Their `Lineage.tableSource` and `tableSink` calls retain all physical identifiers in one facet.
+The ordering-key runtime provider implements both `DataStreamSinkProvider` and `SinkV2Provider`.
+On Flink 2.2.1 and 2.3.0, the planner obtains metadata through `createSink()` and prioritizes `consumeDataStream(...)` when building the routed topology.
+The same sink object serves both paths; parallelism one still omits the keyed exchange.
+`PubSubLineageGraphTest` exercises both provider paths, configured and inherited parallelism, and single/multiple subscriptions without starting the Pub/Sub runtime.
+The direct metadata and serialization tests also compile on Flink 1.20.4; native extraction coverage stays in the Flink 2.x test source root.

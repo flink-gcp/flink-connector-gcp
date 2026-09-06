@@ -125,7 +125,16 @@ class PubSubDynamicSinkTest {
 
     private static PubSubDynamicSink sink(PubSubPublisherOptions publisherOptions) {
         return new PubSubDynamicSink(
-                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, null, publisherOptions, null, null, null);
+                "catalog.db.sink",
+                PHYSICAL_DATA_TYPE,
+                FORMAT,
+                TOPIC,
+                null,
+                null,
+                publisherOptions,
+                null,
+                null,
+                null);
     }
 
     private static PubSubDynamicSink orderedSink() {
@@ -134,6 +143,7 @@ class PubSubDynamicSinkTest {
 
     private static PubSubDynamicSink distributedSink(Integer parallelism) {
         return new PubSubDynamicSink(
+                "catalog.db.sink",
                 PHYSICAL_DATA_TYPE,
                 FORMAT,
                 TOPIC,
@@ -155,6 +165,24 @@ class PubSubDynamicSinkTest {
                                                 StringData.fromString("id"),
                                                 StringData.fromString("key")))
                 .returns(RowData.class);
+    }
+
+    @Test
+    void logicalTableNameIsPartOfTheIdentity() {
+        PubSubDynamicSink other =
+                new PubSubDynamicSink(
+                        "catalog.db.other",
+                        PHYSICAL_DATA_TYPE,
+                        FORMAT,
+                        TOPIC,
+                        null,
+                        null,
+                        PubSubPublisherOptions.builder().build(),
+                        null,
+                        null,
+                        null);
+        assertThat(sink()).isNotEqualTo(other);
+        assertThat(other.copy()).isEqualTo(other).hasSameHashCodeAs(other);
     }
 
     @Test
@@ -379,6 +407,7 @@ class PubSubDynamicSinkTest {
         assertThat(sink())
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 DataTypes.ROW(DataTypes.FIELD("other", DataTypes.INT())),
                                 FORMAT,
                                 TOPIC,
@@ -390,6 +419,7 @@ class PubSubDynamicSinkTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 new ConstantEncodingFormat("format-b"),
                                 TOPIC,
@@ -401,6 +431,7 @@ class PubSubDynamicSinkTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 FORMAT,
                                 TopicDestination.of("my-project", "other-topic"),
@@ -412,6 +443,7 @@ class PubSubDynamicSinkTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 FORMAT,
                                 TOPIC,
@@ -426,6 +458,7 @@ class PubSubDynamicSinkTest {
                 // sink's identity is one the planner may reuse a plan across.
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 FORMAT,
                                 TOPIC,
@@ -440,6 +473,7 @@ class PubSubDynamicSinkTest {
                 .isNotEqualTo(sink(other))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 FORMAT,
                                 TOPIC,
@@ -451,6 +485,7 @@ class PubSubDynamicSinkTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 FORMAT,
                                 TOPIC,
@@ -462,6 +497,7 @@ class PubSubDynamicSinkTest {
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
+                                "catalog.db.sink",
                                 PHYSICAL_DATA_TYPE,
                                 FORMAT,
                                 TOPIC,

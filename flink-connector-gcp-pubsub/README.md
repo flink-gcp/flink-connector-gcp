@@ -13,6 +13,7 @@ sink and multi-subscription consumption on the source.
 | Per-message failure policy; fatal-exception classifier | Implemented ([#206](https://github.com/flink-gcp/flink-connector-gcp/issues/206)) |
 | Cross-connector dead-letter queue (`PubSubDeadLetterQueue`) | Implemented ([#211](https://github.com/flink-gcp/flink-connector-gcp/issues/211)) |
 | Emulator integration tests | Implemented ([#21](https://github.com/flink-gcp/flink-connector-gcp/issues/21)) |
+| Configured fixed-topic lineage metadata | Implemented ([#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)) |
 
 ## Source
 
@@ -24,6 +25,7 @@ sink and multi-subscription consumption on the source.
 | Deserialization failure policy; nack on collect failure; metrics; acknowledgement confirmation | Implemented ([#80](https://github.com/flink-gcp/flink-connector-gcp/issues/80)) |
 | Startup check; subscription auto-creation; start position (seek); `NACK` failure policy | Implemented ([#81](https://github.com/flink-gcp/flink-connector-gcp/issues/81)) |
 | Acceptance and real-GCP integration tests | Implemented ([#82](https://github.com/flink-gcp/flink-connector-gcp/issues/82)) |
+| Configured subscription lineage metadata | Implemented ([#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)) |
 
 ## Table API / SQL
 
@@ -33,6 +35,7 @@ sink and multi-subscription consumption on the source.
 | `DynamicTableSource` (scan) with `message-id`/`publish-time`/`attributes`/`ordering-key`/`subscription` metadata columns | Implemented ([#136](https://github.com/flink-gcp/flink-connector-gcp/issues/136)) |
 | Subscription auto-creation, including per-subscription topic maps, and start position as table options | Implemented ([#137](https://github.com/flink-gcp/flink-connector-gcp/issues/137), [#152](https://github.com/flink-gcp/flink-connector-gcp/issues/152)) |
 | `flink-sql-connector-gcp-pubsub` shaded uber-jar | Implemented ([#138](https://github.com/flink-gcp/flink-connector-gcp/issues/138)) |
+| Logical table lineage with complete physical resources | Implemented ([#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271)) |
 
 <!-- readme-example file="PubSubConnectorOverview.java" tag="pubsub-connector-overview" -->
 ```java

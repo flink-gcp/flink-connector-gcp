@@ -32,10 +32,15 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
+import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
@@ -58,7 +63,10 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * At-least-once source consuming Pub/Sub subscriptions through {@code google-cloud-pubsub} {@code
@@ -73,13 +81,16 @@ import java.util.function.Supplier;
  */
 @Internal
 public class PubSubStreamingPullSource<T>
-        implements Source<T, SubscriptionSplit, PubSubEnumeratorState>, ResultTypeQueryable<T> {
+        implements Source<T, SubscriptionSplit, PubSubEnumeratorState>,
+                ResultTypeQueryable<T>,
+                LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubStreamingPullSource.class);
 
     private final PubSubSourceConfig<T> config;
+    @Nullable private final String lineageTableName;
 
     /**
      * Creates the source; called by {@link
@@ -88,7 +99,36 @@ public class PubSubStreamingPullSource<T>
      * @param config the source configuration
      */
     public PubSubStreamingPullSource(PubSubSourceConfig<T> config) {
+        this(config, null);
+    }
+
+    private PubSubStreamingPullSource(
+            PubSubSourceConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
+        this.lineageTableName = lineageTableName;
+    }
+
+    /**
+     * Returns a copy carrying the logical Table identity without changing subscription assignment.
+     */
+    public PubSubStreamingPullSource<T> withTableLineage(String logicalName) {
+        return new PubSubStreamingPullSource<>(
+                config, Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    @Override
+    public SourceLineageVertex getLineageVertex() {
+        List<ResourceIdentifier> resources =
+                config.getSubscriptions().stream()
+                        .map(
+                                subscription ->
+                                        LineageIdentifiers.pubSubSubscription(
+                                                subscription.getProject(),
+                                                subscription.getSubscription()))
+                        .collect(Collectors.toList());
+        return lineageTableName == null
+                ? Lineage.source(getBoundedness(), resources)
+                : Lineage.tableSource(lineageTableName, "pubsub", getBoundedness(), resources);
     }
 
     /** Returns the source configuration. */

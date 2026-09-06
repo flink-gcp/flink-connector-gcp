@@ -253,6 +253,16 @@ public class PubSubSourceBuilder<T> {
     /**
      * Builds the source.
      *
+     * <p>The returned source implements {@link
+     * org.apache.flink.streaming.api.lineage.LineageVertexProvider}. It reports each configured
+     * subscription as {@code pubsub} / {@code subscription:project:subscription}, with the source's
+     * unboundedness and a {@code gcp} physical-resource facet. It does not look up backing topics
+     * or infer them from subscription-creation settings. Inspection performs no authentication,
+     * client creation, RPC, or deserialization.
+     *
+     * <p>Flink 2.2 and 2.3 extract this metadata natively. Flink 1.20 supports direct inspection
+     * through the interface, without automatic FLIP-314 listener delivery.
+     *
      * @return the source
      */
     public Source<T, SubscriptionSplit, PubSubEnumeratorState> build() {

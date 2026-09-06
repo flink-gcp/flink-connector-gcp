@@ -36,6 +36,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
@@ -64,6 +65,7 @@ import java.util.Optional;
 @Internal
 public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
 
+    private final String lineageTableName;
     private final DataType physicalDataType;
     private final EncodingFormat<SerializationSchema<RowData>> encodingFormat;
     private final TopicDestination topic;
@@ -83,6 +85,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
      * <p>Deliberately takes no {@code ReadableConfig}: turning a DDL option into a value happens in
      * one place, the factory, so this class has no configuration vocabulary at all.
      *
+     * @param lineageTableName the catalog identifier used for Table lineage
      * @param physicalDataType the row type of the table's physical columns
      * @param encodingFormat the format encoding the payload
      * @param topic the destination topic
@@ -97,6 +100,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
      * @param parallelism the sink operator's parallelism, or {@code null} for the job's
      */
     public PubSubDynamicSink(
+            String lineageTableName,
             DataType physicalDataType,
             EncodingFormat<SerializationSchema<RowData>> encodingFormat,
             TopicDestination topic,
@@ -106,6 +110,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
+        this.lineageTableName = Objects.requireNonNull(lineageTableName, "lineageTableName");
         this.physicalDataType =
                 Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
         this.encodingFormat =
@@ -174,7 +179,8 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
-        Sink<RowData> sink = builder.build();
+        Sink<RowData> sink =
+                ((PubSubPublisherSink<RowData>) builder.build()).withTableLineage(lineageTableName);
         if (metadataKeys.contains(WritableMetadata.ORDERING_KEY.getKey())) {
             int orderingKeyIndex =
                     DataType.getFieldCount(physicalDataType)
@@ -188,6 +194,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
     public DynamicTableSink copy() {
         PubSubDynamicSink copy =
                 new PubSubDynamicSink(
+                        lineageTableName,
                         physicalDataType,
                         encodingFormat,
                         topic,
@@ -215,7 +222,8 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
             return false;
         }
         PubSubDynamicSink that = (PubSubDynamicSink) o;
-        return physicalDataType.equals(that.physicalDataType)
+        return lineageTableName.equals(that.lineageTableName)
+                && physicalDataType.equals(that.physicalDataType)
                 && encodingFormat.equals(that.encodingFormat)
                 && topic.equals(that.topic)
                 && createDisposition == that.createDisposition
@@ -230,6 +238,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
     @Override
     public int hashCode() {
         return Objects.hash(
+                lineageTableName,
                 physicalDataType,
                 encodingFormat,
                 topic,
@@ -242,8 +251,9 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 metadataKeys);
     }
 
-    /** Routes equal ordering keys to one sink writer before attaching the Pub/Sub sink. */
-    private static final class OrderingKeyDataStreamSinkProvider implements DataStreamSinkProvider {
+    /** Exposes sink metadata and routes equal ordering keys to one sink writer. */
+    private static final class OrderingKeyDataStreamSinkProvider
+            implements DataStreamSinkProvider, SinkV2Provider {
 
         private final Sink<RowData> sink;
         private final int orderingKeyIndex;
@@ -254,6 +264,13 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
             this.sink = sink;
             this.orderingKeyIndex = orderingKeyIndex;
             this.parallelism = parallelism;
+        }
+
+        // Flink 2.2/2.3 inspect this sink for metadata; consumeDataStream builds its routed
+        // topology.
+        @Override
+        public Sink<RowData> createSink() {
+            return sink;
         }
 
         @Override
