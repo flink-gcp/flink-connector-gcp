@@ -18,13 +18,18 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209]); revised by [#1051] and
-  [#1058] (2026-08-23)
-- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series)
+  [#1058] (2026-08-23); scoped to the default delivery mode by [#1240] (2026-09-06, see ADR-0158)
+- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series), [#1240]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md` § Failed-task
   policy, § Metrics
 
 ## Decision
+
+This routing belongs to the default delivery mode. The checkpointed-creation mode defined by
+ADR-0158 admits `failJob()` only in its first release: its writer routes the serializer-class
+failures before staging, and its committer throws rather than routing, so a failed create never
+leaves Flink's pending set; opening the handler in the committer is deferred there, not declined.
 
 `failedTaskHandler(...)` takes the shared `FailureHandler<FailedTask>`, defaulting to
 `failJob()`. `FailedTask` sits at the `sink` root (a one-class `sink.failure` fails the [#119] layer test) and carries the **whole serialized `Task`** as
@@ -84,3 +89,4 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
 [#209]: https://github.com/flink-gcp/flink-connector-gcp/issues/209
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
 [#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058
+[#1240]: https://github.com/flink-gcp/flink-connector-gcp/issues/1240

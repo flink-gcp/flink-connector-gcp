@@ -33,6 +33,7 @@ limitations under the License.
 
 [ADR-0154](0154-support-follows-published-google-cloud-specifications.md) supersedes only the blanket Cloud Tasks G0 stop and its mandatory investigation prerequisites.
 The original stronger recovery claim remains unproved; every other decision, correctness requirement, measurement and performance gate in this record remains in force.
+[ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md) supersedes only the Cloud Tasks decision below: it defines the checkpointed-creation mode [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) was asked for, scoped to published service semantics, and leaves this record's evidence and performance gates in force.
 
 ## Context
 
@@ -81,7 +82,7 @@ A committer-based Bigtable mode — a connector-specific committer whose pre-com
 the target table, not the common layer declined above — is planned under
 [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) and will be settled by its
 own ADR.
-Cloud Tasks checkpointed creation is proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238).
+Cloud Tasks checkpointed creation, proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), is defined by ADR-0158 and built under its runtime issues once [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) passes.
 Other non-BigQuery exactly-once implementations or additional performance stages require a concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
 
 The connector documentation distinguishes four boundaries:
@@ -104,8 +105,7 @@ The connector-specific decisions are:
   and `ALREADY_EXISTS` is successful creation within the service's name-retention window.
   A repeated ID neither compares nor updates the existing task.
   The handler remains at least once, and no broader guarantee is claimed.
-  The checkpointed-creation proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238)
-  must define its supported scope from Google's published specification and validate the connector protocol within it.
+  ADR-0158 defines the checkpointed-creation mode proposed in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238) within Google's published specification; the tests it owes validate the connector protocol within that scope.
   The [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) analysis below identifies the limits of a stronger recovery claim; it does not require individual vendor confirmation before work on documented semantics can proceed.
   ADR-0154 records this distinction.
 - **The Bigtable same-row conditional write passed Stage 1 on 2026-09-05, and the eager marker
@@ -352,9 +352,9 @@ The superseded reopening condition required evidence resolving those contracts, 
 The [original G0 decision and unexecuted probe plan](https://github.com/flink-gcp/flink-connector-gcp/blob/89b6a72e2ac5215659dabe2817120ce3d9513649/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md#cloud-tasks-recovery-feasibility-gate-2026-09-06) preserve the full matrix, prerequisites and reopening questions at the revision this decision replaces.
 [ADR-0154](0154-support-follows-published-google-cloud-specifications.md) clarifies that published Google specifications are the service assumptions the connector may rely on.
 The analysis does not establish the original stronger claim, but individual vendor confirmation and coverage of undocumented service behavior are not prerequisites for implementing a mode within published semantics.
-The protocol work in [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) must select and validate that supported scope; the performance repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) retains this ADR's measurement gates.
+The protocol work in [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) selected and defined that supported scope in ADR-0158; the performance repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) retains this ADR's measurement gates.
 Neither is held for a private service guarantee.
-No checkpointed Cloud Tasks mode or numerical recovery window is approved by this clarification.
+No checkpointed Cloud Tasks mode is enabled by this clarification, and the recovery window ADR-0158 derives is configured per deployment, not a numerical default of this record.
 
 The audit was based on documentation and local source inspection.
 No real-GCP retention probe ran, no resources were created or changed, and no vendor inquiry was sent.

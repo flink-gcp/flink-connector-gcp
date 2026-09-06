@@ -5,8 +5,15 @@ Module-scoped guidance, read when working in this module. Repository-wide rules
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
-## Sink (`docs/adr/0048`, `docs/adr/0129`, `docs/adr/0134`)
+## Sink (`docs/adr/0048`, `docs/adr/0129`, `docs/adr/0134`, `docs/adr/0158`)
 
+- **The eager, stateless writer is the default delivery mode.** The opt-in checkpointed-creation
+  mode is defined by `docs/adr/0158` and not yet implemented; read it before adding a committer,
+  writer state, a delivery-mode option or a staged-task format to this module, and keep its
+  invariants (every staged task named, nothing sent before checkpoint completion, the authorization
+  deadline checked before every send, expiry fails before the send, the writer holds no Flink
+  state). Its two lifecycle probes in the `sink` test package (`CloudTasksStagedCommitLifecycleTest`,
+  `StagedCommitTestSink`) pin Flink operator facts, not sink behavior.
 - **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
   (`docs/adr/0129`) — do not adopt a batch create without superseding that record.
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
