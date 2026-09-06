@@ -26,7 +26,8 @@ limitations under the License.
 
 This record is the G1 protocol decision of [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238).
 It defines a delivery mode; it does not enable one.
-The runtime is built by [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) through [#1244](https://github.com/flink-gcp/flink-connector-gcp/issues/1244) after the primitive performance gate in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) passes, and the mode is released only if [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) accepts its end-to-end cost.
+The runtime is built by [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) through [#1244](https://github.com/flink-gcp/flink-connector-gcp/issues/1244) after an applicable primitive performance gate passes, and the mode is released only if [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) accepts its end-to-end cost.
+The [#1241 repeat](evidence/0104-cloudtasks-stage1-1241.md#result-on-2026-09-06) was inconclusive and supplied no primitive performance pass.
 
 ## Context
 
@@ -376,7 +377,7 @@ The gated real-GCP acceptance in [#1245](https://github.com/flink-gcp/flink-conn
 - ADR-0048's stateless writer and ADR-0049's routed failures describe the default mode; both are refined in place with a pointer here.
 - [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) builds the writer, envelope, serializer and staging caps with the operator-harness and writer tests above; [#1243](https://github.com/flink-gcp/flink-connector-gcp/issues/1243) builds the committer, the deadline arithmetic, the graph check, the readback and the DataStream entry point with the MiniCluster tests and the four seams they need; [#1244](https://github.com/flink-gcp/flink-connector-gcp/issues/1244) adds the Table option, the planner check, and the documentation named next.
 - The documentation that changes when the mode ships: the delivery-guarantees sink matrix and Cloud Tasks section, the DataStream page's task naming and delivery sections, the Table page's delivery section, and the option reference; each states the guarantee, the four exclusions, the window arithmetic, the heap rule, the checkpoint-timeout rule, the prerequisites and the runbook.
-- The label `EXACTLY_ONCE` is conditional on the tests above passing on both supported Flink lines and on [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) and [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) accepting the cost; a mode that fails either is not released under that name.
+- The label `EXACTLY_ONCE` is conditional on the tests above passing on both supported Flink lines and on both ADR-0104's primitive performance gate and [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) accepting the cost; a mode that fails either is not released under that name.
 
 [create-task]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create
 [queue]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues

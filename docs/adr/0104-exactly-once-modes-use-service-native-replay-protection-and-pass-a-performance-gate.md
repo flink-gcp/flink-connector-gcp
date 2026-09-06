@@ -27,7 +27,8 @@ limitations under the License.
   [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
   [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210),
   [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211),
-  [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239)
+  [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239),
+  [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
@@ -82,7 +83,8 @@ A committer-based Bigtable mode — a connector-specific committer whose pre-com
 the target table, not the common layer declined above — is planned under
 [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) and will be settled by its
 own ADR.
-Cloud Tasks checkpointed creation, proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), is defined by ADR-0158 and built under its runtime issues once [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) passes.
+Cloud Tasks checkpointed creation, proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), is defined by ADR-0158 and requires an applicable primitive performance pass before its runtime work proceeds.
+The [#1241 repeat](evidence/0104-cloudtasks-stage1-1241.md#result-on-2026-09-06) was inconclusive and did not meet that prerequisite.
 Other non-BigQuery exactly-once implementations or additional performance stages require a concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
 
 The connector documentation distinguishes four boundaries:
@@ -134,7 +136,7 @@ Cloud Tasks already exposes its useful replay primitive through both connector A
 exposes no publisher-side replay primitive to add.
 
 If such a requirement reopens the Spanner candidate, it must first repeat Stage 1 with evenly distributed keys.
-For the Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), the repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) must first produce a stable run-to-run result under its own resource and cost approval.
+For the Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), the approved repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) stopped without the required repetitions and supplied no performance pass.
 Passing Stage 1 permits Stage 2 measurement, not implementation.
 Stage 2 would require separate resource and cost approval and would cover 64 KiB payloads, hot
 keys, concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals of 1, 10, and 60
@@ -239,6 +241,14 @@ second task creation.
 The paused queue dispatched no handlers, and the serialized control measured 4.5 tasks/s.
 No extra repetition ran because it would have exceeded the approved operation count and cost
 estimate.
+
+### Stage 1 repeat for Cloud Tasks (2026-09-06)
+
+The approved [#1241 repeat](evidence/0104-cloudtasks-stage1-1241.md) preregistered separate one-channel and eight-channel comparisons for SHA-256 and 128-bit random task names.
+It stopped during the first hash-replay warm-up after two concurrent submissions returned successful responses with the same expected task name, violating the one-success/one-collision oracle.
+Only the first one-channel random, hash and unnamed measurements completed; every comparison is inconclusive because the required repetitions and controls are missing, and each completed measured arm also recorded post-window admission-limiter waiting.
+The one-channel queue was deleted and separately verified absent; the eight-channel queue was never created.
+The linked record preserves the raw observations and their limits: two successful responses do not establish two persisted tasks or Flink recovery behavior.
 
 ### Stage 1 repeat for Bigtable with evenly distributed keys (2026-09-05)
 
@@ -495,7 +505,7 @@ Correctness and performance review of a future checkpointed mode remain necessar
   the record holds a compliant measurement rather than a deviation; the Flink-level measurement
   inside [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)'s design work is
   planned under that issue's own approval, not under this rule.
-  The Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238) likewise has a planned Stage 1 repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), subject to its own resource and cost approval.
+  The Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238) likewise ran a separately approved Stage 1 repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241); its inconclusive outcome supplied no performance pass.
 - **Match the "Exactly Once out of the box" of the
   [google/flink-connector-gcp Bigtable sink](https://github.com/google/flink-connector-gcp/blob/main/connectors/bigtable/README.md#exactly-once)**
   — compared 2026-09-05: that sink is a plain `Sink` and `SinkWriter` that flushes a bulk-mutation
