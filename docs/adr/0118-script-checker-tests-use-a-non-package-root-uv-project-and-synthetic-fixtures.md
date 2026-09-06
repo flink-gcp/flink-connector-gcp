@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0118: Script checker tests use a non-package root uv project and synthetic fixtures
 
 - Status: Accepted
-- Date: 2026-08-02; revised by [#1115] (2026-08-29)
-- Issues: [#243], [#249], [#1115]
+- Date: 2026-08-02; revised by [#1115] (2026-08-29); revised by [#1185] (2026-09-06)
+- Issues: [#243], [#249], [#1115], [#1185]
 - Modules: scripts, CI
 - Current behavior: [`pyproject.toml`](../../pyproject.toml), [`just test-scripts`](../../justfile),
   [script test sources](../../scripts/tests)
@@ -49,6 +49,11 @@ A dependency needed by only one standalone script remains in that script's PEP 7
 Checker tests build synthetic trees under `tmp_path` and redirect the checker's root, configuration and other derived paths to those fixtures.
 They do not assert the live repository tree because that would make every Java or documentation input an input to the lint workflow's paths filter and would let an unrelated change land a stale expectation while the suite never ran.
 The real-repository CLI layer of `test_ci_maven_args.py` is the named exception, and the poms and NOTICE templates it reads are consequently listed in that workflow filter.
+
+Workflow programs can also be tested directly: `test_release_workflow.py` reads the checked-in release workflow with PyYAML and exercises its shell commands against synthetic environment variables and fake executables.
+The workflow is the program under test; checker inputs still use synthetic trees.
+Changes to `.github/workflows/**` already trigger the lint workflow, so the suite reruns when this program changes.
+PyYAML remains in the test dependency group because the production release helper uses only the standard library.
 
 The primary negative direction is a checker finding less than it should.
 Each parsing or policy rule therefore needs a fixture that fails when the rule is removed, and mutation probes verify that the fixture discriminates instead of merely executing the line.
@@ -88,3 +93,4 @@ It remains non-packaged, and a dependency used by only one standalone script doe
 [#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
 [#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249
 [#1115]: https://github.com/flink-gcp/flink-connector-gcp/issues/1115
+[#1185]: https://github.com/flink-gcp/flink-connector-gcp/issues/1185
