@@ -24,7 +24,7 @@ limitations under the License.
 
 Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the
-[Java API reference]({{< param ApiDocsURL >}}).
+[Java API reference]({{< api-docs-url >}}).
 
 ## Publish a stream to a topic
 

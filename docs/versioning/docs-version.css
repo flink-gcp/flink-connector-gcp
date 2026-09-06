@@ -1,0 +1,96 @@
+/*
+Copyright 2026 The flink-gcp authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+.docs-version {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--gray-200, #c8c8c8);
+  border-radius: 0.25rem;
+  background: var(--body-background, #fff);
+  color: var(--body-font-color, #222);
+  font: 0.875rem/1.5 sans-serif;
+}
+.docs-version label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: bold;
+}
+.docs-version select {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 10rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--gray-200, #c8c8c8);
+  border-radius: 0.25rem;
+  background: var(--body-background, #fff);
+  color: inherit;
+  font: inherit;
+}
+.docs-version ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.docs-version li {
+  display: block;
+  float: none;
+  padding: 0;
+  margin: 0;
+}
+.docs-version a {
+  color: var(--color-link, #005ea8);
+  text-decoration: underline;
+}
+.docs-version li a {
+  display: block;
+  padding: 0.25rem 0;
+}
+.docs-version-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: center;
+  font-size: 0.8125rem;
+}
+.book-menu .docs-version {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 0.75rem 0 0;
+  border: 0;
+  border-top: 1px solid var(--gray-200, #c8c8c8);
+}
+.book-menu .docs-version-reference {
+  padding: 0;
+  margin-bottom: 0.5rem;
+}
+.book-menu .docs-version-links a {
+  padding: 0;
+}
+.docs-version [aria-current] {
+  font-weight: bold;
+}
+.docs-version a:focus-visible,
+.docs-version select:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}

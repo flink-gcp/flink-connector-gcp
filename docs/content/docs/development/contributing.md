@@ -95,3 +95,17 @@ Decisions with lasting consequences are recorded as architecture decision record
 record is written and how. Before proposing a change to a settled design, read the record that
 settled it: a refinement updates the existing record, and a reversal adds a superseding one. A
 pull request that changes a recorded design without touching its record is incomplete.
+
+## Publishing documentation versions
+
+The [documentation version policy]({{< relref "docs/versions" >}}) describes what readers can select.
+The Docs workflow builds all retained release tags and Development, then deploys one Pages artifact.
+To retry a failed publication, run `gh workflow run docs.yaml --ref main`; this rebuilds the retained set from the current release list.
+The workflow publishes only after every selected source passes the documentation checks.
+The `plan` step's log lists the selected versions and source commits, and the uploaded `docs-plan` artifact records them for inspection.
+
+For a local reproduction, run `just docs-site plan /tmp/docs-plan.json` from a checkout with fetched release tags and authenticated `gh`.
+For each entry, create a disposable checkout at its recorded SHA and run `just docs-site build /tmp/docs-plan.json <id> <source-checkout> /tmp/docs-lines` from the controller checkout.
+The build requires JDK 17, Docker and that source's mise tools; it modifies release metadata in the disposable checkout.
+Finally run `just docs-site assemble /tmp/docs-plan.json /tmp/docs-lines /tmp/docs-site` with a destination that does not exist.
+Each command is the same helper CI runs, and a failed build must be retried in a fresh source checkout.

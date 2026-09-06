@@ -405,15 +405,16 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   reason. `just check-doc-snippets` checks the two-way inventory before compiling the backing
   sources against the current reactor. Use `.agents/skills/maintain-javadoc-examples/` when adding,
   updating or repairing either form
-- The site is built as a CI check only; GitHub Pages publishing waits until the repository is
-  public (#6). Each module README links to its docs page by in-repo relative path — those links
-  become site URLs when Pages goes live, which is a checklist item on #6
-- **The API reference is the site's generated half** (#88; ADR-0056): `just docs-javadoc`
-  aggregates JavaDoc across every module into `docs/static/api/java`, never committed; pages
-  link to it with `{{< param ApiDocsURL >}}`, a param and not `Book*`-prefixed on purpose.
-  Nothing is filtered by API tier, doclint stays off with `failOnWarnings` on and nothing
-  fetches a remote link index, and there is one unversioned path tracking `main` — the first
-  two measured, all three argued in the ADR
+- **The site publishes the latest patch of two connector minors plus Development** (ADR-0159).
+  `docs/versions.toml` controls the count; use `just docs-site` for planning, per-source building,
+  and assembly. Keep the release source, dependency pins, snippets and API reference together.
+  The Docs workflow validates and packages all retained lines on PRs, and publishes on main,
+  manual dispatch against main, and successful tag-triggered Release completions. Keep its release-event,
+  concurrency, publication and skipped-job guards consistent when editing it.
+- **The API reference is the site's generated half** (ADR-0159, retaining ADR-0056's API rules).
+  `just docs-javadoc` aggregates it into `docs/static/api/java`; `api-docs-url` derives links from
+  Hugo's baseURL. It includes all API tiers, keeps doclint off with `failOnWarnings` on, and
+  fetches no remote link index. A released line uses the release tag; Development uses main.
 - A module `AGENTS.md` plus its `.agents/references/modules/` detail is the third document in this
   split and the only **agent-facing** one — never rendered, never linked from the site, so
   nothing user-facing belongs in it. It carries that module's design decisions and nothing else; behavior and public

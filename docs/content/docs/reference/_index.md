@@ -47,7 +47,7 @@ section below links to it.
 surface: most SQL options exist where a builder setter does and the mapping between them is
 the thing worth reading, and the table-owned selectors with no builder counterpart — a
 `scan.mode`, a schema mapping — are documented nowhere else. And every type named here — including the enums, the destination types and the
-SPIs an option takes — is in the [Java API reference]({{< param ApiDocsURL >}}), generated from the
+SPIs an option takes — is in the [Java API reference]({{< api-docs-url >}}), generated from the
 source.
 
 ## What a default means

@@ -30,10 +30,10 @@ name: CI
 on:
   pull_request:
 
-# The one concurrency group, deliberately not in the children: inside a
-# workflow_call, github.workflow is this workflow's name, so a group defined
-# in a child would collide with its siblings and they would cancel each
-# other.
+# Inside workflow_call, github.workflow is this caller's name. Children must
+# not reuse this group or they would cancel the caller or their siblings.
+# docs.yaml uses its own run-id-scoped group for PR validation and a separate
+# publication group for main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -54,7 +54,7 @@ jobs:
       contents: read
 
   # The write permissions belong to docs.yaml's `deploy` job (#93), which never
-  # runs from here: it is gated on a push to main and this workflow is
+  # runs from here: it is gated on the main ref and this workflow is
   # pull_request-only. They still have to be granted, because a called
   # workflow's nested jobs are validated against the caller's grant *before*
   # their `if:` is evaluated — omitting them fails the whole run at validation

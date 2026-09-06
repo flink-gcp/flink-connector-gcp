@@ -31,7 +31,7 @@ Per-feature implementation status — including which directions are implemented
 the option keys below are declared by `PubSubConnectorOptions` — `format`, `sink.parallelism` and
 `scan.parallelism` come from Flink's `FactoryUtil` — and are applied by an internal table factory;
 both it and the DataStream types the options map onto are in the
-[Java API reference]({{< param ApiDocsURL >}}).
+[Java API reference]({{< api-docs-url >}}).
 
 ## Getting the connector onto the classpath
 

@@ -16,7 +16,8 @@ limitations under the License.
 
 # ADR-0056: The API reference is unfiltered aggregated JavaDoc at one unversioned path
 
-- Status: Accepted
+- Status: Superseded by [ADR-0159](0159-documentation-keeps-two-released-minors-and-development.md)
+  (version publication); ADR-0159 retains the API filtering and example-validation decisions
 - Date: 2026-08-01 ([#88]); refined 2026-08-14 ([#694])
 - Issues: [#88], [#93] (the deploy job that publishes it), [#39] (per-release references wait
   there), [#694] (compiled examples)

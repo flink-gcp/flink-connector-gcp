@@ -24,7 +24,7 @@ limitations under the License.
 
 Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the
-[Java API reference]({{< param ApiDocsURL >}}).
+[Java API reference]({{< api-docs-url >}}).
 
 **Create the instance, database and table first.** The sink creates none of them — a missing table
 fails every record alike, so it is a configuration error rather than something a sink can repair.

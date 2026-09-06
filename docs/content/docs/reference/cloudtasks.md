@@ -53,7 +53,7 @@ HTTP schema chain (`withBody`, `withMethod`, `withUrl`, `withHeaders`, `withOidc
 `Task` a record becomes, and the sink builder takes the resulting schema as its single `serializer`
 option above. The APIs are described under
 [API notes]({{< relref "docs/connectors/datastream/cloudtasks" >}}#api-notes) and typed in the
-[Java API reference]({{< param ApiDocsURL >}}).
+[Java API reference]({{< api-docs-url >}}).
 
 ## `AppEngineTargetBuilder`
 

@@ -428,8 +428,8 @@ lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
     mise x ruff -- ruff --version
-    mise x ruff -- ruff check scripts/ opentofu/flink-gcp/appengine-e2e/main.py
-    mise x ruff -- ruff format --check scripts/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff check scripts/ docs/tests/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff format --check scripts/ docs/tests/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
     mise x opentofu -- tofu fmt -check -recursive opentofu/
@@ -622,6 +622,15 @@ docs-javadoc:
 # Build the documentation site, as the docs workflow does.
 docs:
     mise x hugo-extended go -- hugo --cleanDestinationDir --gc --minify --source docs --panicOnWarning
+
+# Test versioned Hugo links and browser navigation against synthetic pages.
+test-doc-versions:
+    mise x hugo-extended go node uv -- uv run --locked pytest docs/tests/test_versioning.py
+
+# Build one version or assemble the retained documentation lines (ADR-0159).
+[positional-arguments]
+docs-site +args:
+    python3 scripts/docs-site.py "$@"
 
 # Preview the documentation site at http://localhost:1313.
 docs-serve:
