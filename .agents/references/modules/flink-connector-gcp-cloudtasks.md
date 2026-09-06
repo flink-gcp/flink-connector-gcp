@@ -31,7 +31,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   pinned gax — an internal call, tier-irrelevant under `docs/adr/0141`; reread it on a BOM bump.
 - Task naming: unnamed by default; `taskIdExtractor(...)` on the **sink builder**, key hashed
   SHA-256, `ALREADY_EXISTS` = success; do not treat the contradictory name-release estimates as a
-  precise minimum retention guarantee (`docs/adr/0104`, Cloud Tasks G0 evidence).
+  precise minimum retention guarantee.
+  Use Google's documented `tombstoneTtl` semantics where that configuration applies, and direct
+  users to the official creation and Queue references (`docs/adr/0154`).
+  Do not require individual vendor confirmation or guarantees beyond the published specification;
+  validate connector behavior within the supported configuration and recovery scope.
   `httpTarget(url)` uses the existing two-stage immutable schema
   API. `appEngineTarget(relativeUri)` returns a mutable builder: `withBody(...)` binds the body
   type, optional settings stay on that builder, and `build()` produces the immutable serializer.
