@@ -26,6 +26,7 @@ import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.cloudtasks.CloudTasksMetricNames;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCommittable;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksReplaySnapshot;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagingConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
@@ -60,6 +61,7 @@ public final class CloudTasksStagedWriter<T>
     private final Counter errors;
     private List<CloudTasksCommittable> staged = new ArrayList<>();
     private long stagedBytes;
+    private volatile CloudTasksReplaySnapshot replaySnapshot = CloudTasksReplaySnapshot.empty();
     private boolean closed;
 
     /** Creates a staging writer using the wall clock and cryptographic random identities. */
@@ -96,6 +98,12 @@ public final class CloudTasksStagedWriter<T>
         errors = metrics.getNumRecordsSendErrorsCounter();
         metrics.gauge(CloudTasksMetricNames.STAGED_TASKS, this::getStagedTasks);
         metrics.gauge(CloudTasksMetricNames.STAGED_BYTES, this::getStagedBytes);
+        metrics.gauge(
+                CloudTasksMetricNames.OLDEST_STAGED_TASK_AGE_MILLIS,
+                () -> replaySnapshot.ageMillis(clock.currentTimeMillis()));
+        metrics.gauge(
+                CloudTasksMetricNames.STAGED_REPLAY_BUDGET_MILLIS,
+                () -> replaySnapshot.remainingMillis(clock.currentTimeMillis()));
     }
 
     @Override
@@ -197,6 +205,7 @@ public final class CloudTasksStagedWriter<T>
         }
         staged.add(envelope);
         stagedBytes += additionalBytes;
+        replaySnapshot = replaySnapshot.include(origin, deadline);
     }
 
     @Override
@@ -211,6 +220,7 @@ public final class CloudTasksStagedWriter<T>
         List<CloudTasksCommittable> owned = staged;
         staged = new ArrayList<>();
         stagedBytes = 0;
+        replaySnapshot = CloudTasksReplaySnapshot.empty();
         return Collections.unmodifiableList(owned);
     }
 
@@ -219,6 +229,7 @@ public final class CloudTasksStagedWriter<T>
         closed = true;
         staged.clear();
         stagedBytes = 0;
+        replaySnapshot = CloudTasksReplaySnapshot.empty();
     }
 
     private void checkOpen() throws IOException {

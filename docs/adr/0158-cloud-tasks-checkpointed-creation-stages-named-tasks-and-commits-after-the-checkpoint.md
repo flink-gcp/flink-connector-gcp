@@ -197,7 +197,7 @@ Each check runs where it can see what it checks.
 | Serializer returned `null` | Writer | Skipped and counted, as in every mode ([ADR-0001](0001-a-serializer-returning-null-skips-the-record.md)). |
 | Serializer set a task name, a task above the 100 KB size limit the creation reference documents, App Engine and HTTP target constraints the sink already owns | Writer, before staging | Failed as the serializer-class failure the sink already routes ([ADR-0049](0049-exactly-three-cloud-tasks-failures-are-routed-and-the-argument-half-never-scans.md)), which under `failJob()` fails the job; nothing invalid is staged, so no envelope is poison by construction. The size limit is a constant, not an option: the only direction a knob could move it is above the limit, which would stage an envelope the service rejects forever. |
 | Batch or automatic runtime mode, checkpointing disabled, `CheckpointingMode` other than `EXACTLY_ONCE`, checkpoints after tasks finish disabled | The sink's `addPreCommitTopology`, at graph construction | Rejected with a message naming the setting; this is the BigQuery buffered-stream sink's precedent, and it reaches the Table path because the planner uses the same translator. Under at-least-once alignment records processed after a barrier would be staged into the barrier's checkpoint and replayed after a restore; without checkpoints after tasks finish a bounded streaming job's tail would never commit. |
-| Bounded input in the Table sink | `CloudTasksDynamicSink`, at planning | `ValidationException` naming the option key, from `Context.isBounded()`. |
+| A bounded Table runtime context | `CloudTasksDynamicSink`, at planning | `ValidationException` naming `sink.delivery-guarantee`, from `Context.isBounded()`. On Flink 1.20.4 and 2.2.1 the batch planner passes true and the streaming planner passes false, including finite streaming inputs; this is not a test of source finiteness. |
 | Queue retention readback (`verifyQueueRetention`, default on) | `createCommitter`, before the first commit | Reads the queue through the v2beta3 `GetQueue` and requires `tombstoneTtl >= nameRetention`; an absent field is accepted only when `nameRetention` is at most the published one-hour default. Needs `cloudtasks.queues.get`. Skipped under an emulator endpoint, because the emulator implements v2 only. Never calls `UpdateQueue`. |
 | Full staging buffer | Writer | Fails the job with a sizing diagnostic (§ Heap). |
 | Envelope format or mode not recognized | Deserializer, committer | Fails before any send. |
@@ -240,7 +240,8 @@ The diagnostic's remedy is a shorter checkpoint interval, a larger cap with a la
 
 An envelope whose authorization deadline has passed, or whose format or mode the committer does not recognize, fails the commit before any send.
 Under the prerequisites above the job reaches FAILED or is canceled with its last completed checkpoint retained, and every restart from that checkpoint fails the same way at `initializeState`, before `open`, because Flink re-commits restored requests there.
-The failure message names the envelope's queue, origin and deadline, the clock reading that missed it, the option that overrides, and the runbook page; it is the first and only symptom, so it has to carry the diagnosis.
+The failure message names the envelope's queue, origin and deadline, the clock reading that missed it, the option that overrides, and the runbook page.
+A terminal failure can precede the next metric scrape, so the message must carry the diagnosis.
 The retained state is readable and the operator decides.
 
 The `expiredEnvelopePolicy` option names the decision; its default `FAIL` is the behavior above, and the three overrides are outside the guarantee and say so in their documentation:
@@ -399,12 +400,32 @@ The v2beta3 retention client and settings are class-level `@BetaApi` in the pinn
 This dependency enables the default retention preflight; its removal or service withdrawal would require a replacement readback with the same retention semantics, or an explicit deployment choice to verify retention outside the connector.
 The connector must not silently disable that check on a dependency upgrade.
 Readback rejects an emulator-configured factory before client creation and reports sanitized status codes for RPC failures, using `UNCLASSIFIED` when no code is available.
-Table API exposure and real-service/performance release acceptance remain #1244, #1245 and #1246 respectively.
+Issue #1244 adds Table API exposure below; real-service/performance release acceptance remains #1245 and #1246 respectively.
 
 The MiniCluster implementation corrected the earlier stop/savepoint claim in this ADR.
 Calling `handleGlobalFailure` does not imply a restart: both Flink 1.20.4 and 2.2.1 annotate `StopWithSavepointStoppingException` as non-recoverable, and `ExecutionFailureHandler` checks that before the restart strategy.
 The two fault arms now require terminal FAILED, then distinguish an external restore of the older checkpoint from recovery using the created savepoint.
 The fresh-name hazard belongs to choosing the older recovery point, not to automatic Flink failover in that completed-savepoint termination path.
+
+### Table integration and operational observations (2026-09-07)
+
+Issue #1244 maps the delivery mode and all seven staged settings through the Table factory and `OptionSetters` to the existing runtime.
+Task metadata, fixed queue identity, Table lineage and copy/value semantics are preserved in both modes.
+Expiry-policy enum values retain their Java names and render as kebab-case DDL values.
+The version-1 committable format and Flink state ownership do not change.
+
+The owner chose to align finite STREAMING inputs with the existing common protocol.
+The earlier validation row called `Context.isBounded()` a bounded-input check, but pinned Flink `StreamExecSink` passes false and `BatchExecSink` passes true to that context on both supported lines.
+The Table check now states what it observes; finite streaming tails use the existing checkpoints-after-tasks-finish path.
+The loopback-service Table MiniCluster suite checks that tail as well as response-loss recovery and repeated fail-before-send expiry from retained checkpoints.
+
+The owner chose observations within the existing writer/committer ownership boundaries rather than a new collector-monitoring topology.
+The writer reports its oldest staged age and minimum replay budget; the committer reports those minima over its entire current invocation, including tasks completed before later waves finish.
+Immutable observations contain only times, with no task payload copies, and use -1 for empty/idle and zero for expired remaining time.
+Flink's pending count remains the whole-collector signal; connector time gauges exclude its pre-invocation waiting interval.
+The default expiry refusal has its own counter beside the existing three overrides and actual collision counter.
+All counters are incarnation-local observations, and a terminal failure can precede a reporter's next scrape.
+The DataStream guide owns their inventory and both API guides link to the same monitoring and recovery contract.
 
 ### Deterministic fault tests the implementation owes
 
@@ -425,7 +446,7 @@ The gated real-GCP acceptance in [#1245](https://github.com/flink-gcp/flink-conn
 | Rescaling preserves names once each | Snapshot at committer parallelism 2, restore at 1 and at 3 via repartitioned subtask state | The union of created names differs from the staged set, or a name is created twice. |
 | A downgrade is detected, and the loss under the flag is exactly the documented one | MiniCluster: `EXACTLY_ONCE` job whose fake creator withholds the answers to the last checkpoint's creates, so the retained checkpoint owns envelopes whose creates never completed; cancel before the checkpoint timeout (the committer's blocking wait must honor interruption, which is part of its contract); restart with the `AT_LEAST_ONCE` sink under the same uid, once without and once with `allowNonRestoredState` | Without the flag the restore succeeds; with the flag the restore fails, or a task whose body is one of the withheld records' is ever created by any name (the expected outcome is a successful restore and those records never reaching the queue, which is the documented loss). |
 | Terminal failure retains and rejects | MiniCluster with retention on cancellation and no restart strategy; a map that throws after checkpoint N; restart from the retained path with the clock at origin plus retention | The restart reaches `open`, or `listTasks` on the paused queue shows a new task. |
-| Graph construction rejects unsupported execution | Batch and automatic mode, checkpointing disabled, at-least-once checkpointing, checkpoints after tasks finish disabled | `getStreamGraph()` succeeds; the Table plan test with a bounded source produces no `ValidationException`. |
+| Graph construction rejects unsupported execution | Batch and automatic mode, checkpointing disabled, at-least-once checkpointing, checkpoints after tasks finish disabled | `getStreamGraph()` succeeds; the Table plan in BATCH mode produces no `ValidationException`. |
 | Stop-with-savepoint commits before FINISHED and resumes within the window | MiniCluster: stop with savepoint, then resume from it inside the window | Tasks missing after the stop, or a second task after the resume. |
 | A stop-with-savepoint that does not finish behaves as documented | MiniCluster, two arms, restart strategy fixed-delay: the fake creator fails the second of two creates terminally; and every create completes, then an unrelated operator throws on its own completion notification, sequenced after the fake has answered every create. Each arm verifies FAILED with the non-recoverable exception despite fixed-delay restarts, then runs twice: once externally restoring the older checkpoint and completing another checkpoint, once restoring the created savepoint | Automatic task restart occurs, contradicting the exception annotation; or in the first run the externally restarted job's next completed checkpoint does not create a second task by body for a record the savepoint's commit had created (the documented hazard did not occur, so the documentation is wrong); in the second run resuming from the savepoint leaves a body the savepoint's commit had rejected without a task, or creates a second task for a body it had accepted (the remedy is wrong; the fake answers `ALREADY_EXISTS` only for a name whose create it accepted, so the designed re-send of an accepted name is not a failure and the rejected one must be created). |
 | The `ASSUME_COMMITTED` override is exactly as safe as documented | Resume the same savepoint after the window with the override | Any request reaches the emulator. |

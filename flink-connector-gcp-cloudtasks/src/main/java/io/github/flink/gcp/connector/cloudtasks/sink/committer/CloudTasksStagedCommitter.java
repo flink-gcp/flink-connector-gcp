@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.cloudtasks.CloudTasksMetricNames;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCommittable;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksReplaySnapshot;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagingConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
@@ -66,6 +67,8 @@ public final class CloudTasksStagedCommitter implements Committer<CloudTasksComm
     private final TaskCreator creator;
     private final TimeSource clock;
     private final Counter deduplicated;
+    private final Counter expiredFailed;
+    private volatile CloudTasksReplaySnapshot replaySnapshot = CloudTasksReplaySnapshot.empty();
     private final Counter expiredAssumedCommitted;
     private final Counter expiredDropped;
     private final Counter expiredCreatesAuthorized;
@@ -93,6 +96,13 @@ public final class CloudTasksStagedCommitter implements Committer<CloudTasksComm
         this.creator = Preconditions.checkNotNull(creator, "creator");
         this.clock = Preconditions.checkNotNull(clock, "clock");
         this.deduplicated = metricGroup.counter(CloudTasksMetricNames.TASKS_DEDUPLICATED);
+        this.expiredFailed = metricGroup.counter(CloudTasksMetricNames.EXPIRED_ENVELOPES_FAILED);
+        metricGroup.gauge(
+                CloudTasksMetricNames.CURRENT_COMMIT_OLDEST_TASK_AGE_MILLIS,
+                () -> replaySnapshot.ageMillis(clock.currentTimeMillis()));
+        metricGroup.gauge(
+                CloudTasksMetricNames.CURRENT_COMMIT_REPLAY_BUDGET_MILLIS,
+                () -> replaySnapshot.remainingMillis(clock.currentTimeMillis()));
         this.expiredAssumedCommitted =
                 metricGroup.counter(CloudTasksMetricNames.EXPIRED_ENVELOPES_ASSUMED_COMMITTED);
         this.expiredDropped = metricGroup.counter(CloudTasksMetricNames.EXPIRED_ENVELOPES_DROPPED);
@@ -117,9 +127,16 @@ public final class CloudTasksStagedCommitter implements Committer<CloudTasksComm
         BlockingQueue<Completion> completions = new LinkedBlockingQueue<>();
         try {
             // Validate every durable header before authorizing any request, including overrides.
+            CloudTasksReplaySnapshot observed = CloudTasksReplaySnapshot.empty();
             for (var request : requests) {
-                validateEnvelope(request.getCommittable());
+                var envelope = request.getCommittable();
+                validateEnvelope(envelope);
+                observed =
+                        observed.include(
+                                envelope.getOriginEpochMillis(), effectiveDeadline(envelope));
             }
+            // Keep the whole invocation's minima, including tasks completed before its last wave.
+            replaySnapshot = observed;
             var pending = requests.iterator();
             while (pending.hasNext() || !entries.isEmpty()) {
                 checkRunning();
@@ -180,6 +197,7 @@ public final class CloudTasksStagedCommitter implements Committer<CloudTasksComm
                 }
             }
         } finally {
+            replaySnapshot = CloudTasksReplaySnapshot.empty();
             for (Entry entry : entries) {
                 if (entry.attempt != null) {
                     entry.attempt.future.cancel(true);
@@ -228,6 +246,7 @@ public final class CloudTasksStagedCommitter implements Committer<CloudTasksComm
             if (now >= deadline) {
                 switch (options.getExpiredEnvelopePolicy()) {
                     case FAIL:
+                        expiredFailed.inc();
                         throw new IOException(
                                 "Cloud Tasks envelope expired: queue="
                                         + queuePath

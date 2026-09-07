@@ -16,11 +16,16 @@
 
 package io.github.flink.gcp.connector.cloudtasks.table;
 
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,6 +50,56 @@ class CloudTasksTablePlanTest {
 
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+    }
+
+    @Test
+    void stagedBatchTablePlanNamesTheUnsupportedDeliveryOption() {
+        var table = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        table.executeSql(
+                "CREATE TABLE staged_tasks (payload STRING) WITH ("
+                        + QUEUE_OPTIONS
+                        + ", 'http.url'='https://example.com/task',"
+                        + " 'emulator-endpoint'='127.0.0.1:1',"
+                        + " 'sink.delivery-guarantee'='exactly-once')");
+        assertThatThrownBy(() -> table.explainSql("INSERT INTO staged_tasks VALUES ('body')"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("sink.delivery-guarantee")
+                .hasStackTraceContaining("a bounded Table runtime is unsupported");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "execution.runtime-mode,BATCH,STREAMING",
+        "execution.runtime-mode,AUTOMATIC,STREAMING",
+        "execution.checkpointing.interval,absent,requires checkpointing; set execution.checkpointing.interval",
+        "execution.checkpointing.mode,AT_LEAST_ONCE,execution.checkpointing.mode=EXACTLY_ONCE",
+        "execution.checkpointing.checkpoints-after-tasks-finish,false,checkpoints-after-tasks-finish"
+    })
+    void stagedSqlRejectsUnsupportedExecutionConfiguration(
+            String key, String value, String reason) {
+        Configuration config = new Configuration();
+        config.setString("execution.runtime-mode", "STREAMING");
+        if (!value.equals("absent")) {
+            config.setString("execution.checkpointing.interval", "1 s");
+            config.setString(key, value);
+        }
+        assertThatThrownBy(
+                        () -> {
+                            var environment =
+                                    StreamExecutionEnvironment.getExecutionEnvironment(config);
+                            var table = StreamTableEnvironment.create(environment);
+                            table.executeSql(
+                                    "CREATE TABLE staged_tasks (payload STRING) WITH ("
+                                            + QUEUE_OPTIONS
+                                            + ", 'http.url'='https://example.com/task',"
+                                            + " 'emulator-endpoint'='127.0.0.1:1',"
+                                            + " 'sink.delivery-guarantee'='exactly-once')");
+                            table.createStatementSet()
+                                    .addInsertSql("INSERT INTO staged_tasks VALUES ('body')")
+                                    .attachAsDataStream();
+                            environment.getStreamGraph();
+                        })
+                .hasStackTraceContaining(reason);
     }
 
     @Test

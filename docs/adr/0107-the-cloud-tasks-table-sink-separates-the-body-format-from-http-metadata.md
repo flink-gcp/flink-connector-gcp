@@ -87,8 +87,8 @@ sink contracts rather than being silently omitted.
 
 **Task ids remain outside the task serializer.**
 Selecting `task-id` installs a `TaskIdExtractor<RowData>` on the sink builder.
-The existing writer therefore keeps sole ownership of SHA-256 hashing, queue-qualified task-name
-composition, missing-key failure and `ALREADY_EXISTS` success.
+The eager or staged writer therefore keeps sole ownership of SHA-256 hashing, queue-qualified task-name composition and missing-key failure.
+The eager writer handles `ALREADY_EXISTS` as success; in staged mode the committer owns that response.
 The table serializer always leaves `Task.name` empty.
 
 **Cloud Tasks API credentials and external dispatched-request credentials stay separate.**
@@ -99,6 +99,12 @@ Google OIDC tokens; fixed OAuth options serve Google APIs on `*.googleapis.com`.
 The two token modes are mutually exclusive and no per-row authentication metadata is exposed.
 App Engine rejects both token families because Cloud Tasks uses its internal integration instead;
 queue-level `appEngineRoutingOverride` remains authoritative over task-level routing.
+
+The opt-in `sink.delivery-guarantee` and `sink.staged.*` settings reuse ADR-0158's checkpointed creation runtime.
+Selecting `task-id` keeps its stable-key semantics; without that metadata the staged writer persists a random identity.
+Table rejects a bounded runtime context and delegates execution/checkpoint configuration checks to the shared topology.
+Finite STREAMING input remains supported because the streaming planner supplies an unbounded runtime context; the final checkpoint commits its tail.
+Planning does not contact the queue: retention preflight remains the committer's responsibility.
 
 ## Evidence
 

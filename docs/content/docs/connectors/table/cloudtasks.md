@@ -280,10 +280,9 @@ Cloud Tasks or App Engine and cannot be overridden.
 
 ### Authentication has two independent identities
 
-`service-account-key-file` authenticates the Flink writer to the Cloud Tasks API.
-When it is absent the writer uses application-default credentials.
-The file path, not the credential contents, travels in the job graph, and each TaskManager reads the
-file when its writer starts.
+`service-account-key-file` authenticates the eager writer or staged committer to the Cloud Tasks API.
+When it is absent that component uses application-default credentials.
+The file path, not the credential contents, travels in the job graph, and each TaskManager reads the file when its eager writer or staged committer starts.
 
 The `http.oidc.*` and `http.oauth.*` options configure a token that Cloud Tasks attaches later when
 it dispatches the HTTP request.
@@ -301,8 +300,7 @@ When the task URL contains a path, set `http.oidc.audience` to the stable root U
 service or function, normally its default `run.app` URL.
 If the option is absent, Cloud Tasks uses the complete target URL, including its path, as the
 audience.
-The Flink writer's identity, selected independently through `service-account-key-file` or
-application-default credentials, remains the principal that calls `CreateTask`.
+The eager writer or staged committer uses the identity selected independently through `service-account-key-file` or application-default credentials to call `CreateTask`.
 
 A public Compute Engine, GKE or on-premises handler can also use OIDC, but the application must
 validate the signature, issuer, audience and intended service-account identity itself.
@@ -410,6 +408,27 @@ explains why `NOT_FOUND` has a separate short budget and why no setting controls
 | `sink.metrics.per-destination` | Boolean | `false` | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | job parallelism | the sink operator parallelism |
 
+### Checkpointed creation settings
+
+These keys map onto the same delivery mode and `CloudTasksStagedOptions` used by DataStream.
+Any explicitly supplied `sink.staged.*` key requires `sink.delivery-guarantee = 'exactly-once'`, even when its value equals the default.
+The factory reports invalid values using their SQL keys; retention minus clock skew and request timeout must leave at least one whole millisecond.
+
+| Option | Type | Default | Maps to |
+|---|---|---|---|
+| `sink.delivery-guarantee` | `at-least-once` or `exactly-once` | `at-least-once` | `deliveryGuarantee` |
+| `sink.staged.name-retention` | Duration | 1 h | `nameRetention` |
+| `sink.staged.clock-skew-allowance` | Duration | 5 min | `clockSkewAllowance` |
+| `sink.staged.request-timeout` | Duration | 20 s | `requestTimeout` |
+| `sink.staged.max-tasks` | Integer | 100000 | `maxStagedTasks` |
+| `sink.staged.max-bytes` | Long | 67108864 | `maxStagedBytes` |
+| `sink.staged.verify-queue-retention` | Boolean | `true` | `verifyQueueRetention` |
+| `sink.staged.expired-envelope-policy` | `fail`, `assume-committed`, `create-anyway` or `drop` | `fail` | `expiredEnvelopePolicy` |
+
+The [staging reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtasksstagedoptions) explains the accounting and recovery assumptions behind these values.
+The clock-skew allowance is a deployment convention, not a service guarantee.
+The existing in-flight, retry, transport and per-destination settings configure the committer in this mode.
+
 ## Delivery guarantees and task identity
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
@@ -418,7 +437,7 @@ for the Table and DataStream API comparison.
 The connector accepts an insert-only Flink changelog.
 That planner contract prevents update and delete rows from becoming new HTTP requests, but it does
 not deduplicate task creation by itself.
-Without writable `task-id` metadata, a replay creates another unnamed task.
+In the default `at-least-once` mode, replay creates another unnamed task when writable `task-id` metadata is absent.
 
 Selecting `task-id` installs the DataStream sink's existing task-id extractor for every row.
 A remembered duplicate returns `ALREADY_EXISTS`, which the sink treats as successful creation
@@ -428,14 +447,56 @@ created task definition, even when only the executed or deleted task's retained 
 The metadata value must identify an immutable logical task, or include a content or schedule
 version when a changed row must create another task.
 
-This is bounded effectively-once task creation, not exactly-once handler execution.
+In the eager mode, stable keys provide bounded effectively-once task creation.
 Cloud Tasks may dispatch the handler more than once, so the handler still needs an idempotent
 operation or its own durable event ledger.
+
+### Checkpointed task creation
+
+Select `sink.delivery-guarantee = 'exactly-once'` to stage named tasks and create them after their owning checkpoint completes.
+This uses the DataStream writer and committer, with the same guarantee of exactly-once task creation per staged envelope within the documented scope and recovery window.
+The `task-id` metadata remains optional: selecting it hashes the application key, while omitting it generates a persisted random identity for each accepted record.
+Two independently accepted copies of a logical event remain distinct without a stable key.
+Restore reuses the original queue, name and serialized task, including its `schedule-time`; it never invokes the format or metadata extractor again for a restored envelope.
+If that schedule is already in the past after checkpoint or commit latency, the task is immediately eligible for dispatch under the queue's pacing and state.
+
+The following example requires a pre-provisioned queue and a durable filesystem mounted at the same path on every JobManager and TaskManager.
+Replace the example destination, handler URL and checkpoint directory for the deployment; a private local filesystem on one process is insufficient for distributed recovery.
+The queue must retain names for the configured assumption, and the creating identity needs both task-creation permission and `cloudtasks.queues.get` for the retention preflight.
+The example's datagen source is synthetic input, not an event deduplication protocol.
+
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="checkpointed-creation" >}}
+
+The Table runtime refuses `Context.isBounded() == true`, which the supported Flink batch planners report.
+Streaming planners report false even for finite input, so finite STREAMING jobs are supported when exactly-once checkpoints and checkpoints after tasks finish are enabled; their tail commits after a completed checkpoint.
+The shared graph check rejects BATCH, AUTOMATIC, disabled checkpointing, at-least-once checkpoint alignment and disabled checkpoints after tasks finish.
+These are planning checks, not remote queue checks.
+The committer performs the retention readback at startup; an emulator endpoint skips it, and disabling verification makes retention the operator's responsibility.
+No path creates a queue or updates queue policy.
+
+Recovery requires the latest retained checkpoint, a finite restart policy, and the same mapped operator state and queue.
+Preserve the SQL job's topology and operator identities when restoring; keeping the same table name alone does not establish a state mapping.
+Flink's [UID generation documentation](https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/dev/table/config/#table-exec-uid-generation) explains persisted compiled plans and why setting `table.exec.uid.generation` to `ALWAYS` alone does not establish stable identities across translations.
+Keep the original deployment artifact and checkpoint path with the recovery record.
+
+Follow the shared [recovery runbook]({{< relref "docs/connectors/datastream/cloudtasks" >}}#recovery-runbook) for poison state, expiry and stop-with-savepoint.
+The SQL `sink.staged.expired-envelope-policy` values select the corresponding DataStream policies: `assume-committed` is justified after a stop-with-savepoint demonstrably reached FINISHED; `create-anyway` accepts duplicates; `drop` accepts loss or relies on handler records proving completion.
+These overrides apply only to expired envelopes; corrupt state, unknown deadlines, queue mismatches and retention failures still fail.
+Return to `fail` after recovery.
+If a savepoint was created but the stop fails to reach FINISHED, preserve and recover that savepoint: an external restart from an older checkpoint can create fresh random names for tasks already created by the savepoint commit.
+
+The [heap and checkpoint sizing rules]({{< relref "docs/connectors/datastream/cloudtasks" >}}#heap-and-checkpoint-sizing) and [operational metrics]({{< relref "docs/connectors/datastream/cloudtasks" >}}#checkpointed-creation-metrics) apply to both APIs.
+Writer caps do not bound Flink's total pending collector; use peak pending counts, task size and representation overhead, and size the checkpoint timeout for all pending commit waves and retries.
+Task visibility is incremental after checkpoint completion, and handler execution remains at-least-once.
+Administrative removal of name protection and unbounded late service effects remain outside the guarantee.
+Release still requires [#1245]({{< param BookRepo >}}/issues/1245)'s real-service recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment.
 
 ## Testing
 
 Planner tests translate every source-backed statement through connector discovery and sink
 validation without submitting a job or calling GCP.
+Table MiniCluster tests additionally execute the production factory, transport and committer against a loopback fake service, covering checkpoint-triggered creation, success with a lost response, retained-checkpoint recovery, expiry and explicit overrides, finite streaming input and stable-key collisions.
+The fake records accepted task names separately from received requests; these tests are connector recovery evidence, not real-service acceptance.
 Serializer and factory tests cover physical-column projection, target-family metadata, header
 precedence, body methods, OIDC and OAuth selection, and task-ID extraction.
 The emulator integration tests add HTTP dispatch, metadata overrides, named-task deduplication,

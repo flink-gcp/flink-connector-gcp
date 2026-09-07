@@ -7,7 +7,7 @@ service executes later, paced by the queue's rate limit.
 |---|---|
 | Sink design (targets, task naming/dedup, rate limits, checkpoint semantics) | Design settled ([#23](https://github.com/flink-gcp/flink-connector-gcp/issues/23)) |
 | SinkV2 at-least-once sink; HTTP and App Engine targets; fixed and per-record queue destinations | Implemented ([#24](https://github.com/flink-gcp/flink-connector-gcp/issues/24), [#628](https://github.com/flink-gcp/flink-connector-gcp/issues/628)) |
-| Opt-in DataStream checkpointed task creation for a fixed queue, within a bounded recovery window | Implemented; real-service acceptance and final performance release gates pending ([#1245](https://github.com/flink-gcp/flink-connector-gcp/issues/1245), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)) |
+| Opt-in DataStream and Table checkpointed task creation for a fixed queue, within a bounded recovery window | Implemented; real-service acceptance and final performance release gates pending ([#1245](https://github.com/flink-gcp/flink-connector-gcp/issues/1245), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)) |
 | Opt-in named-task deduplication | Implemented ([#24](https://github.com/flink-gcp/flink-connector-gcp/issues/24)) |
 | Emulator integration tests | Implemented ([#25](https://github.com/flink-gcp/flink-connector-gcp/issues/25)) |
 | Per-task failure policy (fail, drop or dead-letter) | Implemented ([#207](https://github.com/flink-gcp/flink-connector-gcp/issues/207)) |

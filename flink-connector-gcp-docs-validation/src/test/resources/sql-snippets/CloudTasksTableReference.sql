@@ -12,6 +12,42 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
+-- tag::checkpointed-creation[]
+SET 'execution.runtime-mode' = 'STREAMING';
+SET 'execution.checkpointing.interval' = '1 s';
+SET 'execution.checkpointing.mode' = 'EXACTLY_ONCE';
+SET 'execution.checkpointing.checkpoints-after-tasks-finish' = 'true';
+SET 'execution.checkpointing.storage' = 'filesystem';
+SET 'execution.checkpointing.dir' = 'file:///shared/flink/checkpoints/cloudtasks';
+SET 'execution.checkpointing.externalized-checkpoint-retention' = 'RETAIN_ON_CANCELLATION';
+SET 'execution.checkpointing.timeout' = '5 min';
+SET 'restart-strategy.type' = 'fixed-delay';
+SET 'restart-strategy.fixed-delay.attempts' = '3';
+SET 'restart-strategy.fixed-delay.delay' = '1 s';
+
+CREATE TABLE generated_tasks (
+  payload STRING
+) WITH (
+  'connector' = 'datagen',
+  'rows-per-second' = '10'
+);
+
+CREATE TABLE checkpointed_tasks (
+  payload STRING
+) WITH (
+  'connector' = 'cloud-tasks',
+  'project' = 'my-project',
+  'location' = 'asia-northeast1',
+  'queue' = 'webhooks',
+  'http.url' = 'https://api.example.com/tasks',
+  'format' = 'json',
+  'sink.delivery-guarantee' = 'exactly-once',
+  'sink.staged.max-tasks' = '1000'
+);
+
+INSERT INTO checkpointed_tasks SELECT payload FROM generated_tasks;
+-- end::checkpointed-creation[]
+
 -- tag::overview[]
 CREATE TABLE order_tasks (
   order_id   STRING,

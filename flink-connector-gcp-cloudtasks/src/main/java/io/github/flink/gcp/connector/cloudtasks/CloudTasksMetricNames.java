@@ -50,8 +50,15 @@ public final class CloudTasksMetricNames {
     // Registered by the internal staged writer (CloudTasksStagedWriter).
     public static final String STAGED_TASKS = "stagedTasks";
     public static final String STAGED_BYTES = "stagedBytes";
+    public static final String OLDEST_STAGED_TASK_AGE_MILLIS = "oldestStagedTaskAgeMillis";
+    public static final String STAGED_REPLAY_BUDGET_MILLIS = "stagedReplayBudgetMillis";
 
     // Registered by CloudTasksStagedCommitter.
+    public static final String CURRENT_COMMIT_OLDEST_TASK_AGE_MILLIS =
+            "currentCommitOldestTaskAgeMillis";
+    public static final String CURRENT_COMMIT_REPLAY_BUDGET_MILLIS =
+            "currentCommitReplayBudgetMillis";
+    public static final String EXPIRED_ENVELOPES_FAILED = "expiredEnvelopesFailed";
     public static final String EXPIRED_ENVELOPES_ASSUMED_COMMITTED =
             "expiredEnvelopesAssumedCommitted";
     public static final String EXPIRED_ENVELOPES_DROPPED = "expiredEnvelopesDropped";
