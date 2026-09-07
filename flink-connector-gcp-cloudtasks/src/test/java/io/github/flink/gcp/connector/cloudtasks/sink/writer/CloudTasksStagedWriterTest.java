@@ -49,6 +49,28 @@ class CloudTasksStagedWriterTest {
     private final CountingRandom random = new CountingRandom();
 
     @Test
+    void observesOnlyWriterOwnedTimeAndClearsOnTransferAndClose() throws Exception {
+        var writer = writer(TestSinkConfigs.builder(), new CloudTasksStagingConfig());
+        assertThat(metrics.<Long>gaugeValue("oldestStagedTaskAgeMillis")).isEqualTo(-1);
+        assertThat(metrics.<Long>gaugeValue("stagedReplayBudgetMillis")).isEqualTo(-1);
+        writer.write("first", TestContexts.NO_OP);
+        time.sleep(500);
+        writer.write("second", TestContexts.NO_OP);
+        assertThat(metrics.<Long>gaugeValue("oldestStagedTaskAgeMillis")).isEqualTo(500);
+        assertThat(metrics.<Long>gaugeValue("stagedReplayBudgetMillis")).isEqualTo(3_279_500);
+        writer.flush(false);
+        assertThat(metrics.<Long>gaugeValue("oldestStagedTaskAgeMillis")).isEqualTo(500);
+        writer.prepareCommit();
+        assertThat(metrics.<Long>gaugeValue("oldestStagedTaskAgeMillis")).isEqualTo(-1);
+        assertThat(metrics.<Long>gaugeValue("stagedReplayBudgetMillis")).isEqualTo(-1);
+        writer.write("next", TestContexts.NO_OP);
+        time.sleep(3_280_000);
+        assertThat(metrics.<Long>gaugeValue("stagedReplayBudgetMillis")).isZero();
+        writer.close();
+        assertThat(metrics.<Long>gaugeValue("stagedReplayBudgetMillis")).isEqualTo(-1);
+    }
+
+    @Test
     void randomIdentityIsMintedOncePerAcceptedRecordAndSurvivesOwnershipTransfer()
             throws Exception {
         var writer = writer(TestSinkConfigs.builder(), new CloudTasksStagingConfig());

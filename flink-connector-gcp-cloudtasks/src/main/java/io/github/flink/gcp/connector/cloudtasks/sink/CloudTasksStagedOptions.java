@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.base.options.OptionChecks;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.util.Objects;
 
 /**
  * Immutable staging and recovery settings for checkpointed Cloud Tasks creation. Set through {@link
@@ -38,13 +39,24 @@ public final class CloudTasksStagedOptions implements Serializable {
     @Experimental
     public enum ExpiredEnvelopePolicy {
         /** Fails without sending and leaves recovery to the retained checkpoint. */
-        FAIL,
+        FAIL("fail"),
         /** Assumes expired work completed; use after a stop-with-savepoint reached FINISHED. */
-        ASSUME_COMMITTED,
+        ASSUME_COMMITTED("assume-committed"),
         /** Creates expired work accepting the risk of duplicate tasks. */
-        CREATE_ANYWAY,
+        CREATE_ANYWAY("create-anyway"),
         /** Discards expired work accepting the risk of lost tasks. */
-        DROP
+        DROP("drop");
+
+        private final String value;
+
+        ExpiredEnvelopePolicy(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
     }
 
     private final Duration nameRetention;
@@ -65,6 +77,36 @@ public final class CloudTasksStagedOptions implements Serializable {
         this.expiredEnvelopePolicy = builder.expiredEnvelopePolicy;
         toStagingConfig();
         Preconditions.checkNotNull(expiredEnvelopePolicy, "expiredEnvelopePolicy must not be null");
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof CloudTasksStagedOptions)) {
+            return false;
+        }
+        CloudTasksStagedOptions that = (CloudTasksStagedOptions) other;
+        return nameRetention.equals(that.nameRetention)
+                && clockSkewAllowance.equals(that.clockSkewAllowance)
+                && requestTimeout.equals(that.requestTimeout)
+                && maxStagedTasks == that.maxStagedTasks
+                && maxStagedBytes == that.maxStagedBytes
+                && verifyQueueRetention == that.verifyQueueRetention
+                && expiredEnvelopePolicy == that.expiredEnvelopePolicy;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(
+                nameRetention,
+                clockSkewAllowance,
+                requestTimeout,
+                maxStagedTasks,
+                maxStagedBytes,
+                verifyQueueRetention,
+                expiredEnvelopePolicy);
     }
 
     /** Returns a new builder with the documented staging and recovery defaults. */

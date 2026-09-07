@@ -21,6 +21,8 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 
 import com.google.cloud.tasks.v2.HttpMethod;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksDeliveryGuarantee;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedOptions;
 
 import java.time.Duration;
 import java.util.Map;
@@ -38,6 +40,74 @@ import java.util.Map;
  */
 @PublicEvolving
 public final class CloudTasksConnectorOptions {
+
+    /** The task-creation delivery guarantee, separate from handler execution. */
+    public static final ConfigOption<CloudTasksDeliveryGuarantee> SINK_DELIVERY_GUARANTEE =
+            ConfigOptions.key("sink.delivery-guarantee")
+                    .enumType(CloudTasksDeliveryGuarantee.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "The task-creation delivery guarantee, separate from handler execution.");
+
+    /** Assumed queue name retention; the pre-provisioned queue must cover this duration. */
+    public static final ConfigOption<Duration> SINK_STAGED_NAME_RETENTION =
+            ConfigOptions.key("sink.staged.name-retention")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Assumed queue name retention; the pre-provisioned queue must cover this duration.");
+
+    /** Allowance for relative clock error between staging and send authorization. */
+    public static final ConfigOption<Duration> SINK_STAGED_CLOCK_SKEW_ALLOWANCE =
+            ConfigOptions.key("sink.staged.clock-skew-allowance")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Allowance for relative clock error between staging and send authorization.");
+
+    /** Absolute client deadline budget for each staged CreateTask attempt. */
+    public static final ConfigOption<Duration> SINK_STAGED_REQUEST_TIMEOUT =
+            ConfigOptions.key("sink.staged.request-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Absolute client deadline budget for each staged CreateTask attempt.");
+
+    /** Maximum tasks held in one writer staging batch; overflow fails the job. */
+    public static final ConfigOption<Integer> SINK_STAGED_MAX_TASKS =
+            ConfigOptions.key("sink.staged.max-tasks")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Maximum tasks held in one writer staging batch; overflow fails the job.");
+
+    /** Maximum accounted bytes in one writer staging batch, including envelope overhead. */
+    public static final ConfigOption<Long> SINK_STAGED_MAX_BYTES =
+            ConfigOptions.key("sink.staged.max-bytes")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Maximum accounted bytes in one writer staging batch, including envelope overhead.");
+
+    /** Whether the committer checks queue name retention before creating tasks. */
+    public static final ConfigOption<Boolean> SINK_STAGED_VERIFY_QUEUE_RETENTION =
+            ConfigOptions.key("sink.staged.verify-queue-retention")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the committer checks queue name retention before creating tasks.");
+
+    /**
+     * The explicit recovery decision for expired envelopes; overrides accept loss or duplicate
+     * risk.
+     */
+    public static final ConfigOption<CloudTasksStagedOptions.ExpiredEnvelopePolicy>
+            SINK_STAGED_EXPIRED_ENVELOPE_POLICY =
+                    ConfigOptions.key("sink.staged.expired-envelope-policy")
+                            .enumType(CloudTasksStagedOptions.ExpiredEnvelopePolicy.class)
+                            .noDefaultValue()
+                            .withDescription(
+                                    "The explicit recovery decision for expired envelopes; overrides accept loss or duplicate risk.");
 
     /**
      * The task request target. 'http' preserves the external HTTP target; 'app-engine' selects an

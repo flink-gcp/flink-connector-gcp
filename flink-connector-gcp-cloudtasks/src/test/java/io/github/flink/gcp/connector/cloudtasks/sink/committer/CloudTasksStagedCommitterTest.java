@@ -63,6 +63,34 @@ class CloudTasksStagedCommitterTest {
     private final CloudTasksStagedOptions defaults = CloudTasksStagedOptions.builder().build();
 
     @Test
+    void commitTimeMetricsIncludeQueuedAndAlreadyCompletedWorkAndUseEffectiveDeadlines()
+            throws Exception {
+        wall.set(1500);
+        creator.script =
+                call -> {
+                    assertThat(metrics.<Long>gaugeValue("currentCommitOldestTaskAgeMillis"))
+                            .isEqualTo(wall.get() - 900);
+                    assertThat(metrics.<Long>gaugeValue("currentCommitReplayBudgetMillis"))
+                            .isEqualTo(2100 - wall.get());
+                    wall.addAndGet(100);
+                    return ApiFutures.immediateFuture(call.request.getTask());
+                };
+        var tighter =
+                CloudTasksStagedOptions.builder()
+                        .nameRetention(Duration.ofSeconds(2))
+                        .clockSkewAllowance(Duration.ZERO)
+                        .requestTimeout(Duration.ofMillis(800))
+                        .build();
+        try (var committer = committer(tighter, 1, 2, 2)) {
+            assertThat(metrics.<Long>gaugeValue("currentCommitReplayBudgetMillis")).isEqualTo(-1);
+            committer.commit(List.of(request(1, 900, 5000), request(2, 1000, 2500)));
+            assertThat(metrics.<Long>gaugeValue("currentCommitOldestTaskAgeMillis")).isEqualTo(-1);
+            assertThat(metrics.<Long>gaugeValue("currentCommitReplayBudgetMillis")).isEqualTo(-1);
+        }
+        assertThat(creator.calls).hasSize(2);
+    }
+
+    @Test
     void lostResponseRetriesIdenticalTaskAndSignalsTheCollision() throws Exception {
         creator.script =
                 call ->
@@ -138,6 +166,9 @@ class CloudTasksStagedCommitterTest {
                     .hasMessageContaining("authorizationDeadlineMillis=2000")
                     .hasMessageContaining("now=2000")
                     .hasMessageContaining("expiredEnvelopePolicy");
+            assertThat(metrics.counterValue("expiredEnvelopesFailed")).isEqualTo(1);
+            assertThat(metrics.<Long>gaugeValue("currentCommitOldestTaskAgeMillis")).isEqualTo(-1);
+            assertThat(metrics.<Long>gaugeValue("currentCommitReplayBudgetMillis")).isEqualTo(-1);
         }
         assertThat(creator.calls).isEmpty();
     }

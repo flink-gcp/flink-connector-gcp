@@ -68,6 +68,14 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
     public Set<ConfigOption<?>> optionalOptions() {
         return new HashSet<>(
                 Arrays.asList(
+                        CloudTasksConnectorOptions.SINK_DELIVERY_GUARANTEE,
+                        CloudTasksConnectorOptions.SINK_STAGED_NAME_RETENTION,
+                        CloudTasksConnectorOptions.SINK_STAGED_CLOCK_SKEW_ALLOWANCE,
+                        CloudTasksConnectorOptions.SINK_STAGED_REQUEST_TIMEOUT,
+                        CloudTasksConnectorOptions.SINK_STAGED_MAX_TASKS,
+                        CloudTasksConnectorOptions.SINK_STAGED_MAX_BYTES,
+                        CloudTasksConnectorOptions.SINK_STAGED_VERIFY_QUEUE_RETENTION,
+                        CloudTasksConnectorOptions.SINK_STAGED_EXPIRED_ENVELOPE_POLICY,
                         CloudTasksConnectorOptions.HTTP_URL,
                         CloudTasksConnectorOptions.TARGET_TYPE,
                         CloudTasksConnectorOptions.HTTP_METHOD,
@@ -134,6 +142,8 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                 target,
                 hasNotNullAddressMetadata(context, targetType),
                 WriterOptionsMapper.map(config),
+                WriterOptionsMapper.deliveryGuarantee(config),
+                WriterOptionsMapper.mapStaged(config),
                 config.getOptional(CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                         .orElse(null),
                 config.getOptional(CloudTasksConnectorOptions.EMULATOR_ENDPOINT).orElse(null),

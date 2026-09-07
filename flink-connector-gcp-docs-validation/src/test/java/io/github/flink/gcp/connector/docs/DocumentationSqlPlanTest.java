@@ -332,6 +332,9 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/BigtableSelectedCellInterop.sql", "replacement"),
                         snippet("flink/BigtableSelectedCellInterop.sql", "consumer")),
                 scenario(
+                        "Cloud Tasks checkpointed creation",
+                        snippet("flink/CloudTasksTableReference.sql", "checkpointed-creation")),
+                scenario(
                         "Cloud Tasks App Engine target",
                         snippet("flink/CloudTasksExamples.sql", "app-engine-target")),
                 scenario(

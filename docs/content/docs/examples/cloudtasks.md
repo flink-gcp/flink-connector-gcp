@@ -28,6 +28,9 @@ The [DataStream connector]({{< relref "docs/connectors/datastream/cloudtasks" >}
 runtime behavior, while the [Table connector]({{< relref "docs/connectors/table/cloudtasks" >}})
 owns DDL, writable metadata, and planner restrictions.
 
+For checkpointed task creation, the [DataStream configuration]({{< relref "docs/connectors/datastream/cloudtasks" >}}#checkpointed-task-creation) and [SQL example]({{< relref "docs/connectors/table/cloudtasks" >}}#checkpointed-task-creation) include retained checkpoints and bounded restart settings.
+They share the same creation and recovery protocol; the examples below use eager creation unless explicitly configured otherwise.
+
 ## DataStream sink
 
 ### Basic dispatch job

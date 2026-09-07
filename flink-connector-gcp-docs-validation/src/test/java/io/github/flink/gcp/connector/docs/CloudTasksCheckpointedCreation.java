@@ -23,6 +23,7 @@ import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExternalizedCheckpointRetention;
 import org.apache.flink.configuration.RestartStrategyOptions;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksDeliveryGuarantee;
@@ -41,6 +42,7 @@ final class CloudTasksCheckpointedCreation {
         var environment = input.getExecutionEnvironment();
         Configuration checkpointSettings = new Configuration();
         checkpointSettings.set(CheckpointingOptions.CHECKPOINT_STORAGE, "filesystem");
+        checkpointSettings.set(CheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         checkpointSettings.set(
                 CheckpointingOptions.CHECKPOINTS_DIRECTORY, durableCheckpointDirectory);
         checkpointSettings.set(
@@ -52,7 +54,7 @@ final class CloudTasksCheckpointedCreation {
                 RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY, Duration.ofSeconds(1));
         environment.configure(checkpointSettings);
         environment.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-        environment.enableCheckpointing(1000);
+        environment.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
         // Size this timeout for every pending batch and retry wave in the deployment.
         environment.getCheckpointConfig().setCheckpointTimeout(Duration.ofMinutes(5).toMillis());
 

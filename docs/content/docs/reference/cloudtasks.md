@@ -60,6 +60,7 @@ option above. The APIs are described under
 ## `CloudTasksStagedOptions`
 
 Set through `stagedOptions(...)` with `deliveryGuarantee(EXACTLY_ONCE)`.
+The [Table staging settings]({{< relref "docs/connectors/table/cloudtasks" >}}#checkpointed-creation-settings) map the same knobs through `sink.staged.*`, with identical defaults and runtime validation.
 Build immutable settings with `CloudTasksStagedOptions.builder().build()`.
 The new delivery-guarantee enum and staging options are experimental APIs; their recovery and performance release gates remain pending.
 The [checkpointed-creation guide]({{< relref "docs/connectors/datastream/cloudtasks" >}}#checkpointed-task-creation) describes the guarantee, deployment requirements and recovery decisions.

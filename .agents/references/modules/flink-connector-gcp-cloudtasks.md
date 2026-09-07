@@ -7,7 +7,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Sink (`docs/adr/0048`, `docs/adr/0129`, `docs/adr/0134`, `docs/adr/0158`)
 
-- **The eager, stateless writer is the default delivery mode.** Opt-in DataStream
+- **The eager, stateless writer is the default delivery mode.** Opt-in DataStream and Table
   `EXACTLY_ONCE` uses the staging writer and production committer from `docs/adr/0158`.
   Preserve immutable named envelopes, no sends before checkpoint completion, deadline checks before
   every send, strict fail-before-send expiry, and no Flink writer state. Reuse the v1
@@ -97,6 +97,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   descriptions — the reference page or the table page's row is where a default is written. "The
   default HTTP method" naming a per-row-overridable option's role, and the constraint absence
   imposes on `url`/`relative-uri` metadata, are deliberately outside the rule.
+- Preserve the Table delivery/staged option mapping to the shared runtime and SQL-key diagnostics.
+  `Context.isBounded()` rejects the batch-planner context, not finite STREAMING input; ADR-0158
+  records this distinction. Keep the common time metrics scoped to writer ownership/current commit
+  invocation and use Flink's pending count for the full collector.
 - `cloud-tasks` is insert-only and maps one table to one fixed queue. `target.type` defaults to
   external HTTP and can select App Engine without translating between their protobuf request arms.
   A generic Flink format sees physical columns only; writable target metadata configures the task

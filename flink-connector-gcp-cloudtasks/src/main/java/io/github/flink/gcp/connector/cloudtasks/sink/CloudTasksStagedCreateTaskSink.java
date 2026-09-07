@@ -46,6 +46,8 @@ import io.github.flink.gcp.connector.cloudtasks.sink.writer.TimeSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.List;
 
@@ -66,6 +68,7 @@ public class CloudTasksStagedCreateTaskSink<T>
     private final CloudTasksSinkConfig<T> config;
     private final CloudTasksStagingConfig staging;
     private final CloudTasksStagedOptions options;
+    @Nullable private final String logicalTableName;
 
     CloudTasksStagedCreateTaskSink(
             CloudTasksSinkConfig<T> config, CloudTasksStagingConfig staging) {
@@ -82,6 +85,15 @@ public class CloudTasksStagedCreateTaskSink<T>
 
     CloudTasksStagedCreateTaskSink(
             CloudTasksSinkConfig<T> config, CloudTasksStagedOptions options) {
+        this(config, options, null);
+    }
+
+    /** Creates the staged runtime with the planner's optional logical table identity. */
+    public CloudTasksStagedCreateTaskSink(
+            CloudTasksSinkConfig<T> config,
+            CloudTasksStagedOptions options,
+            @Nullable String logicalTableName) {
+        this.logicalTableName = logicalTableName;
         this.config = Preconditions.checkNotNull(config, "config");
         this.options = Preconditions.checkNotNull(options, "stagedOptions");
         this.staging = options.toStagingConfig();
@@ -92,10 +104,22 @@ public class CloudTasksStagedCreateTaskSink<T>
     public LineageVertex getLineageVertex() {
         QueueDestination queue =
                 ((FixedDestinationResolver) config.getDestinationResolver()).getDestination();
-        return Lineage.sink(
-                List.of(
-                        LineageIdentifiers.cloudTasksQueue(
-                                queue.getProject(), queue.getLocation(), queue.getQueue())));
+        var resource =
+                LineageIdentifiers.cloudTasksQueue(
+                        queue.getProject(), queue.getLocation(), queue.getQueue());
+        return logicalTableName == null
+                ? Lineage.sink(List.of(resource))
+                : Lineage.tableSink(logicalTableName, resource.namespace(), List.of(resource));
+    }
+
+    /** Returns the validated sink configuration. */
+    public CloudTasksSinkConfig<T> getConfig() {
+        return config;
+    }
+
+    /** Returns the staging and recovery settings. */
+    public CloudTasksStagedOptions getStagedOptions() {
+        return options;
     }
 
     private void validate() {

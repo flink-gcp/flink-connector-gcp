@@ -29,8 +29,11 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksDeliveryGuarantee;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.sink.TaskIdExtractor;
@@ -54,6 +57,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
     private final TargetSpec target;
     private final boolean addressMetadataNotNull;
     private final CloudTasksWriterOptions writerOptions;
+    private final CloudTasksDeliveryGuarantee deliveryGuarantee;
+    @Nullable private final CloudTasksStagedOptions stagedOptions;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
@@ -71,6 +76,34 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
+        this(
+                logicalTableName,
+                physicalDataType,
+                encodingFormat,
+                queue,
+                target,
+                addressMetadataNotNull,
+                writerOptions,
+                CloudTasksDeliveryGuarantee.AT_LEAST_ONCE,
+                null,
+                serviceAccountKeyFile,
+                emulatorEndpoint,
+                parallelism);
+    }
+
+    public CloudTasksDynamicSink(
+            String logicalTableName,
+            DataType physicalDataType,
+            EncodingFormat<SerializationSchema<RowData>> encodingFormat,
+            QueueDestination queue,
+            TargetSpec target,
+            boolean addressMetadataNotNull,
+            CloudTasksWriterOptions writerOptions,
+            CloudTasksDeliveryGuarantee deliveryGuarantee,
+            @Nullable CloudTasksStagedOptions stagedOptions,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable String emulatorEndpoint,
+            @Nullable Integer parallelism) {
         this.logicalTableName =
                 Preconditions.checkNotNull(logicalTableName, "logicalTableName must not be null");
         this.physicalDataType =
@@ -82,6 +115,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         this.addressMetadataNotNull = addressMetadataNotNull;
         this.writerOptions =
                 Preconditions.checkNotNull(writerOptions, "writerOptions must not be null");
+        this.deliveryGuarantee = Preconditions.checkNotNull(deliveryGuarantee, "deliveryGuarantee");
+        this.stagedOptions = stagedOptions;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.parallelism = parallelism;
@@ -129,6 +164,11 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
+        if (deliveryGuarantee == CloudTasksDeliveryGuarantee.EXACTLY_ONCE && context.isBounded()) {
+            throw new ValidationException(
+                    "Option 'sink.delivery-guarantee' = 'exactly-once' requires STREAMING execution"
+                            + " with exactly-once checkpointing; a bounded Table runtime is unsupported.");
+        }
         if (target.fixedAddress() == null
                 && !metadataKeys.contains(target.addressMetadata().getKey())) {
             throw missingAddress();
@@ -145,7 +185,11 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 CloudTasksSink.<RowData>builder()
                         .queue(queue)
                         .serializer(serializer)
-                        .writerOptions(writerOptions);
+                        .writerOptions(writerOptions)
+                        .deliveryGuarantee(deliveryGuarantee);
+        if (stagedOptions != null) {
+            builder.stagedOptions(stagedOptions);
+        }
         int taskIdPosition = metadataKeys.indexOf(WritableMetadata.TASK_ID.getKey());
         if (taskIdPosition >= 0) {
             int rowIndex = DataType.getFieldCount(physicalDataType) + taskIdPosition;
@@ -156,6 +200,14 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
+        }
+        if (deliveryGuarantee == CloudTasksDeliveryGuarantee.EXACTLY_ONCE) {
+            CloudTasksStagedCreateTaskSink<RowData> sink =
+                    (CloudTasksStagedCreateTaskSink<RowData>) builder.build();
+            return SinkV2Provider.of(
+                    new CloudTasksStagedCreateTaskSink<>(
+                            sink.getConfig(), sink.getStagedOptions(), logicalTableName),
+                    parallelism);
         }
         CloudTasksCreateTaskSink<RowData> sink =
                 (CloudTasksCreateTaskSink<RowData>) builder.build();
@@ -206,6 +258,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                         target,
                         addressMetadataNotNull,
                         writerOptions,
+                        deliveryGuarantee,
+                        stagedOptions,
                         serviceAccountKeyFile,
                         emulatorEndpoint,
                         parallelism);
@@ -234,6 +288,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 && target.equals(that.target)
                 && addressMetadataNotNull == that.addressMetadataNotNull
                 && writerOptions.equals(that.writerOptions)
+                && deliveryGuarantee == that.deliveryGuarantee
+                && Objects.equals(stagedOptions, that.stagedOptions)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
@@ -250,6 +306,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 target,
                 addressMetadataNotNull,
                 writerOptions,
+                deliveryGuarantee,
+                stagedOptions,
                 serviceAccountKeyFile,
                 emulatorEndpoint,
                 parallelism,

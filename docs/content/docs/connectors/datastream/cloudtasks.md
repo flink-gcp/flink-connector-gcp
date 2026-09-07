@@ -386,7 +386,7 @@ a `queue.yaml`/`queue.xml` that omits it.
 The default is `AT_LEAST_ONCE`, with eager task creation.
 The opt-in DataStream `EXACTLY_ONCE` mode stages named tasks and commits them after checkpoint completion, as described below.
 Both modes leave handler execution at-least-once.
-The Table API currently exposes the default mode only; its staged-mode entry point is tracked in [#1244]({{< param BookRepo >}}/issues/1244).
+The [Table API]({{< relref "docs/connectors/table/cloudtasks" >}}#checkpointed-task-creation) exposes both modes through `sink.delivery-guarantee` and maps `sink.staged.*` keys to the same runtime.
 
 ### At-least-once mode
 
@@ -458,6 +458,7 @@ A configured `taskIdExtractor(...)` retains the existing SHA-256 naming and coll
 Without an extractor, each accepted record receives a fresh persisted 128-bit random identity, so identical payloads can be distinct tasks.
 Retries, restore and rescaling reuse the original queue, name, bytes and staging origin without calling the serializer, resolver or extractor again.
 A serializer returning `null` still skips and increments `recordsSkipped`.
+The original schedule time is preserved; when it is already past after checkpoint and commit latency, the task is immediately eligible for dispatch under the queue's pacing and state.
 
 The committer treats `ALREADY_EXISTS` as collision success.
 It owns the same transient and separate `NOT_FOUND` retry budgets as the eager writer; the GAPIC client's `CreateTask` retries remain disabled.
@@ -471,7 +472,7 @@ Four exclusions constrain this guarantee:
 - **Unbounded service effects and administrative history:** client cancellation and deadlines do not exclude late service-side effects, including requests sent by an old process; purge, queue deletion/recreation and shortened name retention can remove replay protection.
 - **Stop-with-savepoint without FINISHED:** a synchronous savepoint can create tasks before an unrelated operator or the commit itself fails; the job fails without automatic recovery; an external restart from an older checkpoint can stage those records under fresh random names.
 
-The DataStream implementation is available for validation, but release of the mode still requires [#1245]({{< param BookRepo >}}/issues/1245)'s real-service recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance verdict.
+The DataStream and Table implementations are available for validation, but release of the mode still requires [#1245]({{< param BookRepo >}}/issues/1245)'s real-service recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance verdict.
 The earlier primitive measurements remain inconclusive; implementing this mode does not change that result.
 
 ### Recovery window and prerequisites
@@ -542,7 +543,7 @@ Within the window, repair the queue permissions/configuration or other failure c
 A poison envelope is retried unchanged: changing the serializer cannot repair its already checkpointed bytes.
 Do not edit checkpoint bytes or use an expiry policy as a poison-state handler; retain the state and repair the service-side rejection, or make an explicit out-of-guarantee recovery decision using the application's records.
 
-After expiry, an operator can choose one of these explicit policies in `CloudTasksStagedOptions`:
+After expiry, an operator can choose one of these explicit policies in `CloudTasksStagedOptions`, or the matching kebab-case value of the Table `sink.staged.expired-envelope-policy` key:
 
 | Policy | Effect and operator decision |
 |---|---|
@@ -778,11 +779,33 @@ Its `numRecordsSendErrors` counts staging serialization failures and extractor e
 |---|---|---|
 | `stagedTasks` | gauge | tasks still owned by the writer before `prepareCommit()` |
 | `stagedBytes` | gauge | their named Task wire bytes plus 256 bytes per task |
+| `oldestStagedTaskAgeMillis` | gauge | oldest writer-owned envelope age in milliseconds, or -1 when empty |
+| `stagedReplayBudgetMillis` | gauge | shortest remaining writer-owned authorization budget in milliseconds, or -1 when empty |
 
-Both gauges reset when the writer transfers its batch and exclude committables already held by Flink's collector.
+The count and bytes gauges reset to zero and the time gauges to -1 when the writer transfers its batch and exclude committables already held by Flink's collector.
 They therefore describe one writer batch, not the total pending checkpoint backlog or actual live heap.
 
-The committer reports explicit expiry decisions separately:
+The committer exposes the current invocation's time window and expiry decisions:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `currentCommitOldestTaskAgeMillis` | gauge | oldest envelope age across the entire executing commit invocation, or -1 when idle |
+| `currentCommitReplayBudgetMillis` | gauge | shortest effective authorization budget across that invocation in milliseconds, or -1 when idle |
+| `expiredEnvelopesFailed` | counter | expired envelopes rejected by the FAIL policy before authorizing a create |
+
+Time gauges read the wall clock when sampled, clamp elapsed age and remaining budget at zero and saturate an overflowing positive difference.
+The committer uses the earlier of each persisted deadline and the deadline under current settings, so a relaxed configuration never extends its observation of an old envelope's window.
+Its invocation minima include queued tasks and tasks that completed earlier in the same invocation, making them conservative until the invocation exits on success or failure.
+They contain no payload copies and are cleared before operator shutdown, not measured only at close.
+
+The time gauges cannot observe envelopes parked in Flink's collector before a commit invocation begins.
+Use Flink's full pending count for that backlog and alert on stalled checkpoints and pending growth as well as dwindling observed replay budgets.
+An idle value of -1 does not establish that the collector is empty.
+An invocation stops at its first expired `FAIL` rejection, so `expiredEnvelopesFailed` does not count the entire expired backlog.
+Counter increments immediately followed by job failure might not be scraped; retain exception and job-status diagnostics for terminal expiry.
+These definitions apply equally to DataStream and Table jobs.
+
+Explicit overrides are counted separately:
 
 | Metric | Type | Meaning |
 |---|---|---|
