@@ -77,12 +77,15 @@ final class LineageTestFixtures {
         public SourceReader<RowData, SourceSplit> createReader(SourceReaderContext context) {
             READERS.incrementAndGet();
             return new SourceReader<>() {
+                private final CompletableFuture<Void> available = new CompletableFuture<>();
+                private boolean noMoreSplits;
+
                 @Override
                 public void start() {}
 
                 @Override
                 public InputStatus pollNext(ReaderOutput<RowData> output) {
-                    return InputStatus.END_OF_INPUT;
+                    return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
                 }
 
                 @Override
@@ -92,14 +95,17 @@ final class LineageTestFixtures {
 
                 @Override
                 public CompletableFuture<Void> isAvailable() {
-                    return CompletableFuture.completedFuture(null);
+                    return available;
                 }
 
                 @Override
                 public void addSplits(List<SourceSplit> splits) {}
 
                 @Override
-                public void notifyNoMoreSplits() {}
+                public void notifyNoMoreSplits() {
+                    noMoreSplits = true;
+                    available.complete(null);
+                }
 
                 @Override
                 public void close() {}
@@ -115,15 +121,14 @@ final class LineageTestFixtures {
                 public void start() {}
 
                 @Override
-                public void handleSplitRequest(int subtask, String hostname) {
-                    context.signalNoMoreSplits(subtask);
-                }
+                public void handleSplitRequest(int subtask, String hostname) {}
 
                 @Override
                 public void addSplitsBack(List<SourceSplit> splits, int subtask) {}
 
                 @Override
                 public void addReader(int subtask) {
+                    // Registration is the only completion signal; readers do not request splits.
                     context.signalNoMoreSplits(subtask);
                 }
 
