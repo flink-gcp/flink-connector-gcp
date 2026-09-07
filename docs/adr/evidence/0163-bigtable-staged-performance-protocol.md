@@ -103,4 +103,5 @@ The harness first verifies every target is absent; a collision fails without reu
 Cleanup runs on success, failure and budget exhaustion, deletes the exact created resources and checkpoint objects, and independently verifies absence.
 Record any unremoved resource immediately and stop further work on that lease.
 Changing node count, region, cell coverage, experiment timing, repetition count, or budget requires a new authorization before the change is run.
-No resources have been created under this protocol.
+The [bounded experiment record](0163-bigtable-stage2-experiment-harness.md) identifies the implemented instrument, local calibration, authorized small lease and its results.
+It does not authorize the full matrix.

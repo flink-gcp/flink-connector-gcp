@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigtable.sink;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
@@ -81,13 +80,8 @@ final class LocalStagedJob implements AutoCloseable {
         env.setParallelism(parallelism);
         env.setMaxParallelism(16);
         env.enableCheckpointing(intervalMillis);
-        env.getCheckpointConfig().setCheckpointTimeout(30_000);
-        env.fromSource(
-                        hold
-                                ? new LocalStagedSource(run.id, records)
-                                : new NumberSequenceSource(0, records - 1),
-                        WatermarkStrategy.noWatermarks(),
-                        "local-input")
+        env.getCheckpointConfig().setCheckpointTimeout(run.checkpointTimeoutMillis());
+        env.fromSource(run.source(records, hold), WatermarkStrategy.noWatermarks(), "local-input")
                 .uid("local-input")
                 .sinkTo(
                         staged

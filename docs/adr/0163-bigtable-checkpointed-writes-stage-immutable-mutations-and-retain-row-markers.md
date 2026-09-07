@@ -23,7 +23,7 @@ limitations under the License.
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
-Implementation and real-service evaluation remain pending under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+Production implementation and the full Stage 2 service evaluation remain pending under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
 
 ## Context
 
@@ -168,6 +168,8 @@ Its AddToCell probe read 1,000 rows with sum 9 and nine markers each; every tent
 Those are service-primitive observations, not a Flink staged-mode throughput or latency result.
 
 The [Stage 2 protocol](evidence/0163-bigtable-staged-performance-protocol.md) covers the complete proposed cost before runtime delivery proceeds under ADR-0104.
+The [timed experiment harness](evidence/0163-bigtable-stage2-experiment-harness.md) adds bounded measurement inventory, metadata preflight and exact-resource lease supervision.
+Its small-run record does not pass the full matrix or authorize a production API.
 Resource creation and execution require a separate approval of concrete targets, lifetime, operation caps and cost.
 The benchmark implementation is experimental test code; it is not a public sink or permission to release one.
 Real-service recovery acceptance must exercise the actual production factory and both API entry points once implemented, including response-loss recovery, aggregates, incompatible profiles, retained markers and exact-target cleanup.
