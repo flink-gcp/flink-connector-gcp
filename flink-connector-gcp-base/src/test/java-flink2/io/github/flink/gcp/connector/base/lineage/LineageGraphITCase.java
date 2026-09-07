@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.testutils.lineage.LineageListenerCapture;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -42,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class LineageGraphITCase {
     @Test
+    @Timeout(60)
     void flinkDeliversExtractedMetadataToItsConfiguredListener() throws Exception {
         ResourceIdentifier input = LineageIdentifiers.pubSubSubscription("p", "in");
         ResourceIdentifier output = LineageIdentifiers.bigQueryTable("p", "d", "out");
