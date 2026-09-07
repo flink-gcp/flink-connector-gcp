@@ -51,6 +51,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class Stage2Harness extends LocalStagedHarness {
     final Stage2Ledger ledger;
     final Stage2Lease lease;
+    final Stage2CommitProgress commits = new Stage2CommitProgress();
     final AtomicBoolean censored = new AtomicBoolean();
     final AtomicLong sourcePollNanos = new AtomicLong();
     final AtomicLong committerWaitNanos = new AtomicLong();
@@ -138,6 +139,16 @@ final class Stage2Harness extends LocalStagedHarness {
     @Override
     long checkpointTimeoutMillis() {
         return 60_000;
+    }
+
+    @Override
+    void commitStarted(Object committer, int entries) {
+        commits.started(committer, entries, System.nanoTime());
+    }
+
+    @Override
+    void commitFinished(Object committer, boolean successful) {
+        commits.finished(committer, successful, System.nanoTime());
     }
 
     @Override
