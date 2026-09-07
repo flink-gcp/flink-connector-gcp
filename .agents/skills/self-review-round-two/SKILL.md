@@ -1,9 +1,17 @@
 ---
 name: self-review-round-two
 description: "Run round two of this repository's mandatory two-round self-review — is the pull request description *true*? Use after `self-review`, with bounded fix-up review after a narrow repair. A conflict-only base refresh follows `push-pr-branch`. Its lenses point outward: the user, operator, blast radius, adversary, and docs reader. Also pays measurements deferred by round one and records coverage."
+license: Apache-2.0
 ---
 
 # Self-review, round two
+
+This procedure is restored from [the connector skill at `02c4bd59`](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/.agents/skills/self-review-round-two/SKILL.md).
+The incidents and measurements below are historical connector evidence, not observations about the consuming project.
+Before using the procedure, read the consuming repository's `AGENTS.md` and the development guidance it names for repository identity, verification commands, supported versions, and authorization boundaries.
+Keep the procedure and its decision conditions shared; bind only those repository-specific inputs locally.
+Current review records described below as PR comments use inline comments on reviewed diff lines, an empty review body, and the GitHub review API `comments` array.
+Existing user authorization remains applicable; the workflow diagram does not request approval again for work already authorized.
 
 Where this sits in the development flow:
 
@@ -25,7 +33,7 @@ Restart the full claim audit when the repair expands scope or changes a contract
 
 **Round one asked whether the code does what the description says. Round two asks whether the
 description is true.** That is a different question, and it is the reason the rounds are not
-"review twice" (`docs/adr/0060`). Run it before saying the PR is ready — not after.
+"review twice" ([connector ADR-0060](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0060-self-review-is-two-rounds-and-round-two-audits-the-descriptions-claims.md)). Run it before saying the PR is ready — not after.
 
 The measurement that pinned this: on two PRs that had passed round one and were CI-green, round
 two found in each **claims written in the PR's own javadoc, docs or description that were false** —
@@ -86,7 +94,7 @@ Point each away from the diff:
 **A deferred measurement is a claim.** Anything round one flagged as reasoned-but-unmeasured gets
 measured now — the flag is not a substitute. If the claim is about a vendor library, read the
 pinned version's source; if it is about the service, measure against the service; if it is about
-Flink, check both supported minors.
+a framework or runtime, check every supported version required by the consuming repository's compatibility policy (both supported Flink minors in the original connector).
 
 **And a measurement you are about to record has a base.** "21 checks pass" is true when written and
 stops being true when `main` moves under it, without anything in the diff changing and without any
@@ -100,7 +108,7 @@ gh pr view <n> --json mergeable,mergeStateStatus     # MERGEABLE, or the result 
 
 `UNKNOWN` means ask again, not pass. `CONFLICTING` means rebase and re-run before recording, because
 a conflicting PR runs no further checks and the green you are quoting is the last base's. Measured on
-#1014, where the stale claim sat in this round's own comment (issue #1020).
+[#1014](https://github.com/flink-gcp/flink-connector-gcp/issues/1014), where the stale claim sat in this round's own comment (issue [#1020](https://github.com/flink-gcp/flink-connector-gcp/issues/1020)).
 
 ## Step 4: sweep the prose the diff did not touch
 
@@ -109,8 +117,8 @@ and the sibling pages — for the term you changed, not just the paragraph you e
 untouched doc sentences have survived a round one this way.
 
 A page is more than its Markdown. A comment inside a tagged region a page renders is published
-prose, and no checker reads what it asserts, so sweep the backing sources under
-`flink-connector-gcp-docs-validation` too. Caught in draft on #717: a corrected page still rendered
+prose, and no checker reads what it asserts, so sweep the consuming repository's backing sources too
+(`flink-connector-gcp-docs-validation` in the original connector). Caught in draft on [#717](https://github.com/flink-gcp/flink-connector-gcp/issues/717): a corrected page still rendered
 the superseded claim from a snippet comment a hundred lines below the correction, with every check
 green.
 
@@ -132,10 +140,13 @@ reasons. For a fix-up, name the previous reviewed HEAD and base and why the boun
 did or did not expand the claim inventory. If round two changed the design, say so in the
 description too.
 
-Routing stays the user's (`docs/adr/0061`): fold in, file, or drop, and never `gh issue create` on
+Routing stays the user's ([connector ADR-0061](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0061-a-finding-outside-the-issue-is-routed-by-the-user-with-drop-as-a-real-outcome.md)): fold in, file, or drop, and never `gh issue create` on
 your own initiative.
 
 ## Done when
+
+The mutation-batch item follows the consuming repository's verification policy and any batch
+actually performed. Record it as not applicable only when no batch is required or performed.
 
 - [ ] Every claim in description, javadoc, docs, commit message **and the issue's premise** listed
 - [ ] Coverage inventory entries checked are recorded

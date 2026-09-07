@@ -19,6 +19,8 @@ on:
       - v1.20
     paths:
       - 'scripts/**'
+      # ShellCheck reads the imported skill installation recipe through `just lint`.
+      - 'dev-tools.just'
       # Ruff also checks the documentation rendering tests.
       - 'docs/tests/**'
       # actionlint lints every workflow, so every workflow is an input here —

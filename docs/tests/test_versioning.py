@@ -59,7 +59,8 @@ def test_build_scopes_the_real_theme_search_to_its_version(tmp_path, monkeypatch
         'disableKinds = ["taxonomy", "term"]\n'
         '[params]\nBookRepo = "https://github.com/example/connector"\n'
         'BookEditLink = "https://github.com/example/connector/edit/main/docs/{{ .Path }}"\n'
-        '[module]\n[[module.imports]]\npath = "github.com/alex-shpak/hugo-book"\n'
+        "[module]\n[[module.imports]]\n"
+        'path = "github.com/flink-gcp/flink-gcp-dev-tools/hugo"\n'
     )
     # Stub Maven and the separately tested snippet checkers. The production
     # build() hands its actual environment to the real pinned Hugo/theme here.

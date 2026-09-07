@@ -247,10 +247,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `SKILL.md` is gone; no allowlist, so no curate-* skill. **Its own `verify.yaml` job, not part of
   `just lint`** — because it downloads, and `just lint` stays offline; that is
   `check-flink-api-tiers`'s rule applied rather than excepted
-- `just docs` / `just docs-serve` / `just docs-chroma` — build the site as CI does (a deprecation,
-  a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
-  palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
-  `docs/go.mod`. These build the hand-written pages only; the generated half is
+- `just docs` / `just docs-serve` — build the site as CI does (a deprecation,
+  a broken `relref` or a missing shortcode fails the build) and preview it.
+  `mise.toml` pins hugo-extended and Go; the shared design module and its Hugo Book dependency
+  resolve through `docs/go.mod` and `docs/go.sum`. Regenerate palettes in flink-gcp-dev-tools,
+  then update this site's module pin. These build the hand-written pages only; the generated half is
   `just docs-javadoc` (below), which the docs workflow runs first
 - `just docs-javadoc` — the aggregated JavaDoc that ships as the site's API reference (#88;
   ADR-0056), into `docs/static/api/java`, which Hugo copies verbatim (gitignored, rat-excluded).
@@ -266,7 +267,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. A single
   compound command is fine (`binary-compat`'s final `diff … || { …; exit 1; }`); a multi-line
   script block is not. The boundary is shellcheck coverage: it reads `scripts/`, actionlint reads
-  inline `run:` blocks, and nothing reads inside a recipe
+  inline `run:` blocks, and ordinary recipe bodies have no ShellCheck coverage
+- The imported `dev-tools.just` is the exception: retain the upstream installation recipe
+  verbatim and let `just lint` extract its shebang body and pass it to ShellCheck.
+  Do not add local logic inside the managed recipe; update it from the selected upstream commit.
 - **Inside a recipe, always name the tool: `mise x <tool> -- …`, never bare `mise x -- …`** —
   the bare form activates every tool in `mise.toml` and installs what is missing, silently
   undoing a CI job's `install_args` (the PR #113 incident; ADR-0057). The bare form stays right
@@ -354,9 +358,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   exist here, and staying clear of them is why `NOTICE` needs no entry. Hugo's own built-ins
   (`relref`, `param`) are fine; prefer `{{< param BookRepo >}}` over hardcoding the repository URL
 - Syntax highlighting is class-based (`markup.highlight.noClasses = false`) with the palettes
-  selected in `docs/assets/_custom.scss`, which hugo-book bundles into its own stylesheet.
-  Regenerate the palettes with `just docs-chroma`, which is where the two `hugo gen chromastyles`
-  style names live (verbatim output; apache-rat excludes them). Each palette is imported **twice**:
+  selected by the shared flink-gcp-dev-tools Hugo module, which Hugo Book bundles into its stylesheet.
+  Keep the highlighting setting in this site's configuration; the module's markup settings are
+  not inherited under Hugo's default merge rules.
+  Regenerate palettes with `just docs-chroma` in flink-gcp-dev-tools and update the reviewed module pin.
+  Each palette is imported **twice**:
   once under `prefers-color-scheme` for the reader whose scheme the OS decides, once under
   `[data-theme]` for the reader who used the colour-scheme toggle. Keep the two arms mutually
   exclusive — the media-query arm is scoped with `:root:not([data-theme])` — because the generated
@@ -435,6 +441,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 
 ## Workflow rules
 
+- Four workflow skills are installed by `just skills-sync` from the full dev-tools commit pinned
+  in the justfile. They contain the full push/review procedures and original exceptions.
+  This guide supplies connector verification commands and compatibility requirements.
+  The other skills remain locally owned.
 - **One git worktree per PR** under `/tmp/worktrees/flink-connector-gcp/`; never switch branches
   in the main checkout. Remove the worktree and local branch after merge. If the branch needs the
   real-GCP ITs or `just tofu`, run `just worktree-env` once in the fresh worktree — it symlinks
@@ -468,9 +478,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   retains the root guidance's local `just verify-flink 1.20.4` exception.
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
-  findings *and the deferrals, with their reasons* as a PR comment; recording is not routing, which
-  the bullet below governs. **How the round is run is `.agents/skills/self-review/`**, and round
-  two is `.agents/skills/self-review-round-two/` — the two skills carry the lenses, the
+  findings *and the deferrals, with their reasons* as inline review comments, using an empty review
+  body and a comments array; recording is not routing, which the bullet below governs.
+  **How the round is run is `.agents/skills/self-review/`**, and round two is `.agents/skills/self-review-round-two/` — the two skills carry the lenses, the
   verify-before-acting rule and the recording format, so neither round depends on a command Claude
   cannot start:
   - Freeze each round's initial review inventory before its lenses run: changed surfaces and the

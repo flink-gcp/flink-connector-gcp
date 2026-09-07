@@ -23,8 +23,8 @@ limitations under the License.
   by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30)
 - Issues: [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172)
 - Modules: all (workflow)
-- Current behavior: root `AGENTS.md` § GitHub workflow (the imperative form, with the review
-  tooling)
+- Current behavior: root `AGENTS.md` § GitHub workflow, the shared review skills in `.agents/skills/`,
+  and `.agents/references/repository-guide.md` for connector-specific verification (ADR-0164)
 - Related: `docs/adr/0130` adds a third round after these two — an independent review by a second
   model — which extends this flow without changing what either round here asks
 
@@ -82,10 +82,11 @@ the commit message.
   design — so the full second round is for changes whose description makes claims about
   framework behaviour, deployment, or "this is the only way", not for a typo fix.
 - Coverage, findings, and deferrals, with their reasons and full reviewed base and head SHAs, are
-  recorded as a PR comment; recording is not routing, which ADR-0061 governs.
-- **The rounds are carried by two project skills**, `.agents/skills/self-review/` and
-  `.agents/skills/self-review-round-two/`, rather than by a built-in command. Claude Code's
-  `/code-review` — and `/review`, an alias of it since v2.1.223 — is marked
+  recorded as inline review comments with an empty review body and a comments array; recording is
+  not routing, which ADR-0061 governs.
+- **The rounds are carried by two shared skills installed in this project**,
+  `.agents/skills/self-review/` and `.agents/skills/self-review-round-two/`, rather than by a built-in
+  command. Claude Code's `/code-review` — and `/review`, an alias of it since v2.1.223 — is marked
   `disable-model-invocation` by design, so it cannot be started on Claude's behalf or scheduled;
   a decision this repository requires on *every* draft PR cannot rest on a command only the user
   can type. The built-in remains worth asking the user for as a second opinion, and the skills

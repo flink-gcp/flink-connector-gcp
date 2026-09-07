@@ -73,6 +73,33 @@ guidance, docs and ADRs remain the only source of truth), and
 [Context7](https://github.com/upstash/context7) for current third-party library documentation,
 asked version-specific questions resolved from this repository's POM and BOM.
 
+## Shared development assets
+
+The four push/review skills are maintained in [flink-gcp-dev-tools](https://github.com/flink-gcp/flink-gcp-dev-tools).
+This repository tracks their copies under `.agents/skills/`; the other skills remain local.
+The shared skills retain the original detailed procedures, decision conditions, examples and exceptions.
+Connector verification commands and compatibility requirements live in
+[`.agents/references/repository-guide.md`]({{< param BookRepo >}}/blob/main/.agents/references/repository-guide.md).
+Ordinary builds and agent sessions use the committed copies without downloading them.
+
+To update the skills, choose a reviewed commit from dev-tools main, set its full SHA as
+`dev_tools_revision` in `justfile`, and run `just skills-sync` from the repository root.
+The installer requires Bash, Git, `gh`, tar and just.
+It preserves unrelated skills and refuses to replace differing uncommitted content in managed directories.
+Review and commit the pin and skill changes together; use an earlier pin to roll back.
+Keep `dev-tools.just` aligned with `examples/skills.just` at that commit when the upstream recipe changes.
+Project-specific policy belongs outside those four skill directories.
+The WHAT/WHY PR template remains a deliberate copy, updated separately when needed.
+
+The site's design is the shared repository's Hugo module, pinned in `docs/go.mod` and `docs/go.sum`.
+Update it from the `docs/` directory with
+`hugo mod get github.com/flink-gcp/flink-gcp-dev-tools/hugo@<full commit SHA>` and review both files.
+Keep `markup.highlight.noClasses = false` in this site's configuration.
+Palette and theme-control changes belong in dev-tools, including its `just docs-chroma` recipe.
+This repository owns its content, source-snippet mounts and shortcodes, Javadoc, version assembly and Pages workflow.
+Validate a module update with `just docs` and compare the affected pages in both color schemes.
+Local assets or partials override module files, so avoid reintroducing copies of the shared theme files.
+
 ## Licensing and attribution
 
 Write code from scratch wherever possible. When a contribution adapts or closely follows code

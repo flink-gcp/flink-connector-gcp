@@ -1,9 +1,17 @@
 ---
 name: independent-review
 description: "Run the third review round of this repository's pre-review flow — a second model reads the initial pushed diff without the framing that wrote it. Use after `self-review-round-two` and before Ready; after a narrow repair, use bounded patch-series `range-diff` instead of reopening untouched work. A conflict-only base refresh follows `push-pr-branch`. Covers invocation, coverage evidence, findings, and disagreements."
+license: Apache-2.0
 ---
 
 # Independent review
+
+This procedure is restored from [the connector skill at `02c4bd59`](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/.agents/skills/independent-review/SKILL.md).
+The incidents and measurements below are historical connector evidence, not observations about the consuming project.
+Before using the procedure, read the consuming repository's `AGENTS.md` and the development guidance it names for repository identity, verification commands, supported versions, and authorization boundaries.
+Keep the procedure and its decision conditions shared; bind only those repository-specific inputs locally.
+Current review records described below as PR comments use inline comments on reviewed diff lines, an empty review body, and the GitHub review API `comments` array.
+Existing user authorization remains applicable; the workflow diagram does not request approval again for work already authorized.
 
 Where this sits in the development flow:
 
@@ -23,16 +31,18 @@ round.
 but each is briefed by the model that wrote the change, from a description that model also wrote.
 This round is the only one that is not. On PR [#1008] every self-review pass that saw one class
 stopped at making its fields `volatile`; an independent pass named the check-then-create
-interleaving they had missed. `docs/adr/0130` records that measurement and the
+interleaving they had missed. [connector ADR-0130](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0130-an-independent-review-follows-the-two-self-review-rounds.md) records that measurement and the
 decision; this file is how to run it.
 
 [#1008]: https://github.com/flink-gcp/flink-connector-gcp/pull/1008
 
 ## Prerequisite
 
-The `codex` Claude Code plugin, which is a local install this repository does not provision —
-`mise.toml` does not supply it and nothing in the build depends on it. `/codex:setup` reports
-whether it is ready. If it is not, that is one of the recorded skip reasons below, not a blocker.
+The command adapter below is the original connector's `codex` Claude Code plugin route, used when
+that plugin is locally installed and available. It is optional, is not provisioned by this shared
+package, and is not a build dependency. `/codex:setup` reports whether that adapter is ready.
+If it is not, that is one of the recorded skip reasons below, not a blocker.
+From a Codex-authored session, use a Claude Code reviewer or a human instead, as required below.
 
 **The second model must not be the one that wrote the change, and nothing enforces that — it is
 yours to check.** From a Codex session this round is Claude Code's, or a human's. The trap is
@@ -43,7 +53,7 @@ a model that wrote none of it.
 
 ## Run it
 
-Issue it **from the main thread**, with the `Agent` tool and `subagent_type: "codex:codex-rescue"`,
+When using that plugin adapter, issue it **from the main thread**, with the `Agent` tool and `subagent_type: "codex:codex-rescue"`,
 or by typing the command. Do **not** reach for `Skill(codex:rescue)`: that re-enters the command and
 hangs the session, and a forked general-purpose subagent has no `Agent` tool to forward with.
 
@@ -81,7 +91,9 @@ node "<plugin>/scripts/codex-companion.mjs" result <job-id>   # the review itsel
 ```
 
 A round whose output was never read is not a round. Do not record "it found nothing" from a job you
-did not collect.
+did not collect. For another reviewer route, collect its actual result and record the same identity,
+invocation, session/job identifier, duration and clean-head evidence. A running or uncollected review
+is incomplete, not an unavailable-reviewer exception.
 
 Two of those are flags:
 
@@ -120,7 +132,7 @@ framing was not handed over, and that reaching for it takes a deliberate step.
 
 **Why `rescue` and not `/codex:review` or `/codex:adversarial-review`**, which are purpose-built for
 this: both carry `disable-model-invocation: true`, so only the user can start them. An obligation on
-every draft PR cannot rest on a command the agent cannot invoke — the same reason `docs/adr/0060`
+every draft PR cannot rest on a command the agent cannot invoke — the same reason [connector ADR-0060](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0060-self-review-is-two-rounds-and-round-two-audits-the-descriptions-claims.md)
 gives for not resting self-review on `/code-review`. If the user starts one of those instead, that
 satisfies this round; record which was used.
 
@@ -133,14 +145,14 @@ standing for coming from outside. Read the code it names before changing anythin
   no-builds, no-tests instruction is what keeps it safe, and it means every finding it makes rests
   on control flow it read rather than on a run. When such a finding lands in a docs page or an ADR —
   where this repository's standard is that a premise is measured — the author owes the measurement
-  before it merges. Measured on #1014: an independent finding about which configurations a change
+  before it merges. Measured on [#1014](https://github.com/flink-gcp/flink-connector-gcp/issues/1014): an independent finding about which configurations a change
   now refuses was accepted, written into an ADR and merged on two careful readings and no probe. A
   throwaway probe afterwards confirmed the paragraph, which is the good outcome and not the point:
   the same shape with the reading slightly wrong would have merged just as easily.
 - **A finding you judge wrong is recorded with the reason**, like any deferral. A round that
   exercised judgement and a round that found nothing look identical in the record otherwise.
 - **A defect that predates the change** is a different thing from a regression, and establishing
-  which is part of the review. Routing it is the user's (`docs/adr/0061`): present the evidence and
+  which is part of the review. Routing it is the user's ([connector ADR-0061](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0061-a-finding-outside-the-issue-is-routed-by-the-user-with-drop-as-a-real-outcome.md)): present the evidence and
   the cost, do not fold it in silently, and do not `gh issue create` on your own initiative.
 - **A disagreement with a decision the PR argues for** is resolved on evidence. Its verdict is input
   to the user, not a gate.
@@ -151,7 +163,7 @@ standing for coming from outside. Read the code it names before changing anythin
 
 **If this round changes code, rounds one and two run again over that change before this round is
 re-run.** They ask questions this one does not, and a fix that lands with neither is the shape
-`docs/adr/0130`'s own evidence is built on. The loop ends when a round produces no change.
+[connector ADR-0130](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0130-an-independent-review-follows-the-two-self-review-rounds.md)'s own evidence is built on. The loop ends when a round produces no change.
 
 ## No small-change carve-out
 
@@ -191,8 +203,9 @@ way a reader can tell it from one that never ran.
 ## Done when
 
 - [ ] Both self-review rounds finished, and the branch squashed and pushed first
-- [ ] Invoked from the main thread with `--fresh`, `--background`, an explicit no-writes
-      instruction, the right base, no pull-request number, and no agent memory
+- [ ] Invoked with an isolated reviewer context, an explicit no-writes instruction, the right base,
+      no pull-request number, and no agent memory; for the plugin adapter, from the main thread with
+      `--fresh` and `--background`
 - [ ] No part of the change under review was authored by the model now reviewing it, and no
       `/codex:transfer` handed this session over to it
 - [ ] **The job was collected and read**, not merely started

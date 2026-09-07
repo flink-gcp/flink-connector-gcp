@@ -1,9 +1,16 @@
 ---
 name: push-pr-branch
 description: Squash a pull request's branch to one commit and push it without silently reverting work that landed on main meanwhile. Use before EVERY push of a PR branch — the first one, each review round's fix-ups, and the final push before calling the PR ready — and whenever about to run `git push`, `git push --force`, `git push --force-with-lease`, `git reset --soft`, or "squash the commits". Mandatory when `origin/main` may have moved since the branch was created, which on this repository it usually has.
+license: Apache-2.0
 ---
 
 # Push a PR branch
+
+This procedure is restored from [the connector skill at `02c4bd59`](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/.agents/skills/push-pr-branch/SKILL.md).
+The incidents and measurements below are historical connector evidence, not observations about the consuming project.
+Before using the procedure, read the consuming repository's `AGENTS.md` and the development guidance it names for repository identity, verification commands, supported versions, and authorization boundaries.
+Keep the procedure and its decision conditions shared; bind only those repository-specific inputs locally.
+Current review records described below as PR comments use inline comments on reviewed diff lines, an empty review body, and the GitHub review API `comments` array.
 
 The operation this repository asks for on every PR — one commit, squashed, force-pushed — has a
 failure mode that nothing downstream reports. This skill is the procedure that avoids it.
@@ -15,7 +22,7 @@ tip** but whose **tree is the branch's older one**. Everything main gained since
 is then *deleted* by that commit. It is a well-formed, internally consistent revert of other
 people's merged work, wearing your change's commit message.
 
-Three properties make it invisible, all measured on PR #376 (2026-08-08; `docs/adr/0069`):
+Three properties make it invisible, all measured on PR [#376](https://github.com/flink-gcp/flink-connector-gcp/issues/376) (2026-08-08; [connector ADR-0069](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0069-a-pr-branch-is-rebased-before-it-is-squashed.md)):
 
 - **CI passes.** Reverting a feature deletes its tests along with its code, so nothing fails to
   compile and no test is left referencing anything missing. That PR was 14/14 green while deleting
@@ -93,7 +100,7 @@ gh pr view <n> --json mergeable,mergeStateStatus     # MERGEABLE, or resolve bef
 `CONFLICTING` means GitHub runs no further checks, so a "CI is green" already recorded in a review
 comment stays in the record looking current while nothing re-ran against the moved base. The three
 commands above compare the branch against `origin/main` and would not catch it: the branch can be
-current at squash time and the conflict arrive afterwards. Measured on #1014, where `main` moved and
+current at squash time and the conflict arrive afterwards. Measured on [#1014](https://github.com/flink-gcp/flink-connector-gcp/issues/1014), where `main` moved and
 the conflict was in `docs/adr/README.md`, one row beneath the row the change edited.
 
 `mergeable` is computed asynchronously, so a push is often followed by `UNKNOWN` for a few seconds.
@@ -108,7 +115,7 @@ CI owns the build-integration check.
 
 The second of the three is the one that matters most, and it is **a list to read rather than a
 number to interpret**.
-On #376 the diffstat *was* read at each push and the deletions hid inside a plausible-looking
+On [#376](https://github.com/flink-gcp/flink-connector-gcp/issues/376) the diffstat *was* read at each push and the deletions hid inside a plausible-looking
 insertion count; only the explicit list makes them impossible to miss. If any path in it is one you
 did not intend to remove, stop — do not push, do not "just re-run the squash".
 
@@ -180,40 +187,42 @@ public contracts, or factual claims depend.
   authored fix-up. Run affected checks and use the bounded fix-up review defined by the review
   skills.
 
-Do not run `just verify` merely because the rebase brought already-validated commits from `main`.
+Do not rerun the consuming repository's full verification merely because the rebase brought already-validated commits from `main`.
 A Markdown conflict gets its documentation checker, a Java conflict gets its affected test or
 module, and a build-input conflict may require the full build. Compatibility-sensitive work still
-runs `just verify-flink 1.20.4`; per-PR CI does not cover it.
+runs the consuming repository's required local compatibility checks for versions its per-PR CI does not cover.
+The original connector command is `just verify-flink 1.20.4`; at that source revision, its per-PR CI does not cover that version.
 
 ## The fourth check, once the pull request exists
 
 The gate above protects the tree. One thing it cannot see is whether the pull request will close
 the issue it was written for, and that is the other thing this repository asks of every PR:
-`.agents/references/repository-guide.md` § Workflow rules requires an **unformatted** `Closes #N`.
+The workflow requires an **unformatted** closing keyword for the assigned issue.
 Two spellings satisfy that rule and the repository's other one, that a bare `#N` does not autolink
-in a PR body: `Closes https://github.com/flink-gcp/flink-connector-gcp/issues/N` (PRs #792 and
-#794) and `Closes [#N](https://github.com/flink-gcp/flink-connector-gcp/issues/N).` (PR #770). A
+in a PR body: `Closes https://github.com/<owner>/<repository>/issues/N` (PRs [#792](https://github.com/flink-gcp/flink-connector-gcp/issues/792) and
+[#794](https://github.com/flink-gcp/flink-connector-gcp/issues/794)) and `Closes [#N](https://github.com/<owner>/<repository>/issues/N).` (PR [#770](https://github.com/flink-gcp/flink-connector-gcp/issues/770)). A
 closing keyword inside a code span does not parse at all.
 
 The check runs immediately after `gh pr create` — there is no PR to ask about before that, so it
-is not part of the gate above — and again after any push that rewrites the body. Ask GitHub rather
+is not part of the gate above — and again after any push that rewrites the body. Resolve `<owner>` and
+`<repository>` with `gh repo view --json owner,name`, substitute the current PR number for `N`, and ask GitHub rather
 than reading the body:
 
 ```bash
-gh api graphql -f query='{repository(owner:"flink-gcp",name:"flink-connector-gcp"){
+gh api graphql -f query='{repository(owner:"<owner>",name:"<repository>"){
   pullRequest(number:N){closingIssuesReferences(first:5){nodes{number title}}}}}'
 ```
 
 An empty array means the issue survives the merge and nothing reports it; a list naming an issue
-this PR must *not* close means a closing verb was parsed out of ordinary prose. #361's timeline
-records exactly that, closed by PR #389, whose body no longer carries the sentence the guide quotes.
+this PR must *not* close means a closing verb was parsed out of ordinary prose. [#361](https://github.com/flink-gcp/flink-connector-gcp/issues/361)'s timeline
+records exactly that, closed by PR [#389](https://github.com/flink-gcp/flink-connector-gcp/issues/389), whose body no longer carries the sentence [the original connector guide](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/.agents/references/repository-guide.md) quotes.
 
 This check is here rather than in either self-review round because by review time the body is
 already written, and because the failure is silent from every direction: the merge succeeds, CI is
 green, and the issue is simply still open. Three merged passes of this repository's coverage-audit
-series carried no closing reference — #772, #774 and #791 — so issues #784, #785 and #788 each
-had to be closed by hand. They are not consecutive: #790, between the second and the third, carried
-one and closed #785 on merge, which is what makes the omission easy to miss by eye.
+series carried no closing reference — [#772](https://github.com/flink-gcp/flink-connector-gcp/issues/772), [#774](https://github.com/flink-gcp/flink-connector-gcp/issues/774) and [#791](https://github.com/flink-gcp/flink-connector-gcp/issues/791) — so issues [#784](https://github.com/flink-gcp/flink-connector-gcp/issues/784), [#785](https://github.com/flink-gcp/flink-connector-gcp/issues/785) and [#788](https://github.com/flink-gcp/flink-connector-gcp/issues/788) each
+had to be closed by hand. They are not consecutive: [#790](https://github.com/flink-gcp/flink-connector-gcp/issues/790), between the second and the third, carried
+one and closed [#785](https://github.com/flink-gcp/flink-connector-gcp/issues/785) on merge, which is what makes the omission easy to miss by eye.
 
 ## Recovery, when the gate fails
 
@@ -249,11 +258,11 @@ earlier diff read a wrong one.
 
 ## Why this is a skill and not a checker
 
-A content-only check cannot tell this apart from an intentional deletion: on #376 the deleted files
+A content-only check cannot tell this apart from an intentional deletion: on [#376](https://github.com/flink-gcp/flink-connector-gcp/issues/376) the deleted files
 existed at the merge base, exactly as they would if the author had meant to remove them. The intent
 lives in the author's head at squash time, which is where this procedure runs. A CI check would
 need that intent restated as an allowlist or a declaration, for a defect whose real cure is not
 using `reset --soft` on a moving ref.
 
-Related: root `CLAUDE.md` § Workflow rules, `docs/adr/0069`, and `.agents/skills/self-review/`,
+Related: the consuming repository's `AGENTS.md` and development guidance, [connector ADR-0069](https://github.com/flink-gcp/flink-connector-gcp/blob/02c4bd594d2b774cc24b0c0194c1834dd5032120/docs/adr/0069-a-pr-branch-is-rebased-before-it-is-squashed.md), and the `self-review` skill,
 whose fix-up commits are the most common reason a branch is squashed a second time.

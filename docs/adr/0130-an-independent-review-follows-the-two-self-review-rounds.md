@@ -23,8 +23,8 @@ limitations under the License.
 - Issues: [#1017](https://github.com/flink-gcp/flink-connector-gcp/issues/1017),
   [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172)
 - Modules: all (workflow)
-- Current behavior: root `AGENTS.md` § GitHub workflow, and the `push-pr-branch` and
-  `independent-review` skills
+- Current behavior: root `AGENTS.md` § GitHub workflow, the shared `push-pr-branch` and
+  `independent-review` skills, and `.agents/references/repository-guide.md` (ADR-0164)
 
 ## Context
 
@@ -108,8 +108,9 @@ reviewer who inherited the change's framing has least reason to make.
 **Leaving the collection route unstated.** The background job answers with an id, and the plugin's
 `status` and `result` commands both carry `disable-model-invocation: true` — so an agent cannot read
 its own review through them, and a round whose output is never collected is indistinguishable in the
-record from one that found nothing. The skill names the companion script instead. Declining to
-mention this was the first version's largest defect and was found by the round reviewing itself.
+record from one that found nothing. The restored shared `.agents/skills/independent-review/SKILL.md`
+names the companion script for that adapter instead. Declining to mention this was the first
+version's largest defect and was found by the round reviewing itself.
 
 **A CI check that the third PR comment exists.** It is the cheapest checkable artifact in the flow,
 which is exactly why it would be gamed: a comment is trivially produced without a review behind it,
@@ -134,8 +135,9 @@ review the description the earlier rounds have already corrected.
 ## Consequences
 
 The flow becomes `self-review` → `self-review-round-two` → `independent-review` → ask for review,
-and the third round has its own PR comment for the same reason the first two do: a reader cannot
-otherwise tell a review that found nothing from one that never ran.
+and the third round has its own inline review record, with an empty review body and a comments
+array, for the same reason the first two do: a reader cannot otherwise tell a review that found
+nothing from one that never ran.
 
 It costs wall-clock rather than attention — #1008's pass took 16 m 48 s in the background — which is
 why there is no small-change carve-out of the kind round two has. The conflict-only rule is not a
