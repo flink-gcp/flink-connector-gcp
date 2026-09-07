@@ -237,7 +237,10 @@ public final class BigtableStage2Probe {
                     "{\"phase\":\"before-admission\",\"checkpoints\":"
                             + job.checkpointStats()
                             + "}";
-            long sampleBytes = initialSample.length() * 2L;
+            long sampleBytes =
+                    (initialSample + System.lineSeparator())
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                            .length;
             if (sampleBytes > 8L * 1024 * 1024) {
                 throw new IOException("Stage 2 checkpoint/measurement storage cap exhausted");
             }
@@ -298,7 +301,31 @@ public final class BigtableStage2Probe {
                 if (now >= nextSample) {
                     String sample = job.checkpointStats();
                     String runtime = sampler.sample();
-                    sampleBytes += (sample.length() + runtime.length()) * 2L;
+                    String progress = run.commits.sample(System.nanoTime());
+                    String record =
+                            "{\"elapsedNanos\":"
+                                    + (now - started)
+                                    + ",\"stagedEntries\":"
+                                    + run.stagedTotal(0)
+                                    + ",\"stagedBytes\":"
+                                    + run.stagedTotal(1)
+                                    + ",\"activeRequests\":"
+                                    + run.active.get()
+                                    + ",\"admittedInputs\":"
+                                    + run.ledger.admittedCount()
+                                    + ",\"acknowledgedInputs\":"
+                                    + run.ledger.acknowledgedCount()
+                                    + ",\"commitProgress\":"
+                                    + progress
+                                    + ",\"runtime\":"
+                                    + runtime
+                                    + ",\"checkpoints\":"
+                                    + sample
+                                    + "}";
+                    sampleBytes +=
+                            (record + System.lineSeparator())
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                                    .length;
                     if (sampleBytes > 8L * 1024 * 1024
                             || directorySize(lease == null ? directory : lease.work)
                                     > 2L * 1024 * 1024 * 1024) {
@@ -311,20 +338,7 @@ public final class BigtableStage2Probe {
                                     ManagementFactory.getMemoryMXBean()
                                             .getHeapMemoryUsage()
                                             .getUsed());
-                    samples.println(
-                            "{\"elapsedNanos\":"
-                                    + (now - started)
-                                    + ",\"stagedEntries\":"
-                                    + run.stagedTotal(0)
-                                    + ",\"stagedBytes\":"
-                                    + run.stagedTotal(1)
-                                    + ",\"activeRequests\":"
-                                    + run.active.get()
-                                    + ",\"runtime\":"
-                                    + runtime
-                                    + ",\"checkpoints\":"
-                                    + sample
-                                    + "}");
+                    samples.println(record);
                     if (samples.checkError()) {
                         throw new IOException("Stage 2 measurement write failed");
                     }

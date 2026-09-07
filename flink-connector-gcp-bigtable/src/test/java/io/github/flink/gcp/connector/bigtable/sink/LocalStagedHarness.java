@@ -154,6 +154,10 @@ class LocalStagedHarness implements AutoCloseable {
         return 30_000;
     }
 
+    void commitStarted(Object committer, int entries) {}
+
+    void commitFinished(Object committer, boolean successful) {}
+
     void beforeSend(CheckAndMutateRowRequest wire) throws IOException {}
 
     void prepared(Collection<CheckAndMutateRowRequest> requests) throws IOException {}
@@ -442,6 +446,8 @@ class LocalStagedHarness implements AutoCloseable {
         @Override
         public void commit(Collection<CommitRequest<CheckAndMutateRowRequest>> requests)
                 throws IOException, InterruptedException {
+            run.commitStarted(this, requests.size());
+            boolean successful = false;
             try {
                 for (CommitRequest<CheckAndMutateRowRequest> request : requests) {
                     if (pending.size() == run.inFlight) {
@@ -485,8 +491,13 @@ class LocalStagedHarness implements AutoCloseable {
                 while (!pending.isEmpty()) {
                     finishFirst();
                 }
+                successful = true;
             } finally {
-                cancelPending();
+                try {
+                    cancelPending();
+                } finally {
+                    run.commitFinished(this, successful);
+                }
             }
         }
 

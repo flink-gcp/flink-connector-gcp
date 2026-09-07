@@ -59,6 +59,7 @@ Storage is sampled, so the 2 GiB checkpoint limit is an observed stop threshold,
 No cap is raised automatically.
 
 The sampler records checkpoint REST responses, staged entries/bytes, active conditional requests, and the available pending-committable/busy/backpressure/idle metrics once per second.
+The [checkpoint-stall follow-up](0163-bigtable-stage2-checkpoint-stalls.md) adds input totals and active commit-invocation sizes/ages without retaining completed request history.
 An initial checkpoint response is written before admission opens, so even an immediate workload failure retains that baseline.
 It rediscovers metric names because committer registration may lag task registration.
 Missing metrics remain missing.
@@ -241,6 +242,7 @@ The supervisor terminated that worker during failure cleanup; its driver exit st
 The remaining bulk r2/r3, staged r3 and hot-row phase never ran.
 No three-repetition variability verdict, sustained hot-row growth rate or formal matrix result can be calculated.
 A future service plan must address the censored control and observed checkpoint limit explicitly; this record does not raise them retroactively.
+The [local diagnostic follow-up](0163-bigtable-stage2-checkpoint-stalls.md) reproduces checkpoint expiration with delayed fake replies; it does not identify this historical repetition's exact cause or repeat the service run.
 
 The supervisor checked ownership, deleted the exact instance, verified direct and list absence, and removed its owned checkpoint/inventory directory.
 An independent `gcloud` describe returned `NOT_FOUND`, and an unfiltered instance list also contained no matching instance.

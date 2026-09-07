@@ -170,6 +170,7 @@ Those are service-primitive observations, not a Flink staged-mode throughput or 
 The [Stage 2 protocol](evidence/0163-bigtable-staged-performance-protocol.md) covers the complete proposed cost before runtime delivery proceeds under ADR-0104.
 The [timed experiment harness](evidence/0163-bigtable-stage2-experiment-harness.md) adds bounded measurement inventory, metadata preflight and exact-resource lease supervision.
 Its small-run record does not pass the full matrix or authorize a production API.
+The [checkpoint-stall diagnostic](evidence/0163-bigtable-stage2-checkpoint-stalls.md) reproduces a later-checkpoint timeout during a long local commit invocation; it retains the service timeout and leaves the gate pending.
 Resource creation and execution require a separate approval of concrete targets, lifetime, operation caps and cost.
 The benchmark implementation is experimental test code; it is not a public sink or permission to release one.
 Real-service recovery acceptance must exercise the actual production factory and both API entry points once implemented, including response-loss recovery, aggregates, incompatible profiles, retained markers and exact-target cleanup.

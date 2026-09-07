@@ -33,6 +33,58 @@ class Stage2JobITCase {
     @TempDir Path directory;
 
     @Test
+    void heldCommitExpiresTheNextCheckpointAndReleasesItsProgressOnCancellation() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        try (LocalStagedHarness run =
+                new LocalStagedHarness(1024, false, false, 4) {
+                    @Override
+                    long checkpointTimeoutMillis() {
+                        return 5_000;
+                    }
+
+                    @Override
+                    void commitStarted(Object committer, int entries) {
+                        progress.started(committer, entries, System.nanoTime());
+                    }
+
+                    @Override
+                    void commitFinished(Object committer, boolean successful) {
+                        progress.finished(committer, successful, System.nanoTime());
+                    }
+                }) {
+            run.hang = true;
+            try (LocalStagedJob job =
+                    new LocalStagedJob(
+                            run, directory, true, false, 1, 4, 3_600_000, true, null, false)) {
+                job.awaitAdmissions(4);
+                job.checkpoint();
+                await("commit requests held", Duration.ofSeconds(10), () -> run.active.get() == 4);
+                var waiting =
+                        new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind
+                                        .ObjectMapper()
+                                .readTree(progress.sample(System.nanoTime()));
+                assertThat(waiting.path("activeBatches").asInt()).isEqualTo(1);
+                assertThat(waiting.path("activeBatchEntries").asInt()).isEqualTo(4);
+                org.assertj.core.api.Assertions.assertThatThrownBy(job::checkpoint)
+                        .hasStackTraceContaining("Checkpoint expired before completing");
+                org.assertj.core.api.Assertions.assertThatThrownBy(
+                                () -> job.result.get(20, TimeUnit.SECONDS))
+                        .hasStackTraceContaining("Exceeded checkpoint tolerable failure threshold");
+            }
+            assertThat(run.originalFutures)
+                    .hasSize(4)
+                    .allSatisfy(future -> assertThat(future.isCancelled()).isTrue());
+            assertThat(run.active.get()).isZero();
+            var stopped =
+                    new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind
+                                    .ObjectMapper()
+                            .readTree(progress.sample(System.nanoTime()));
+            assertThat(stopped.path("activeBatches").asInt()).isZero();
+            assertThat(stopped.path("failedBatches").asInt()).isEqualTo(1);
+        }
+    }
+
+    @Test
     void failedRunPreservesSamplesBeforeOwnedWorkRemoval() throws Exception {
         Path work = directory.resolve("overflow");
         org.assertj.core.api.Assertions.assertThatThrownBy(
