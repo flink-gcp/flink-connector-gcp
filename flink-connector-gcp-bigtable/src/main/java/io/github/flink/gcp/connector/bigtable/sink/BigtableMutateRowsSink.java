@@ -22,12 +22,15 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
+import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.BigtableWriter;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.DefaultMutationBatcherFactory;
@@ -38,6 +41,7 @@ import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.Objects;
 
 /**
  * At-least-once sink applying one row mutation per record through the {@code MutateRows} bulk
@@ -46,11 +50,12 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
+public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
 
     private final BigtableSinkConfig<T> config;
+    @Nullable private final String lineageTableName;
     @Nullable private final TableDestination initialDestination;
     @Nullable private final TableCreateOptions expectedFamilies;
 
@@ -71,12 +76,35 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
             BigtableSinkConfig<T> config,
             @Nullable TableDestination initialDestination,
             @Nullable TableCreateOptions expectedFamilies) {
+        this(config, initialDestination, expectedFamilies, null);
+    }
+
+    private BigtableMutateRowsSink(
+            BigtableSinkConfig<T> config,
+            @Nullable TableDestination initialDestination,
+            @Nullable TableCreateOptions expectedFamilies,
+            @Nullable String lineageTableName) {
         Preconditions.checkArgument(
                 (initialDestination == null) == (expectedFamilies == null),
                 "initialDestination and expectedFamilies must both be supplied or both be absent");
         this.config = config;
         this.initialDestination = initialDestination;
         this.expectedFamilies = expectedFamilies;
+        this.lineageTableName = lineageTableName;
+    }
+
+    /** Returns a copy retaining the writer configuration and startup family validation. */
+    public BigtableMutateRowsSink<T> withTableLineage(String logicalName) {
+        return new BigtableMutateRowsSink<>(
+                config,
+                initialDestination,
+                expectedFamilies,
+                Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        return BigtableLineage.sink(config.getDestinationResolver(), lineageTableName);
     }
 
     /** Returns the sink configuration. */

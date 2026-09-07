@@ -205,6 +205,7 @@ public class BigtableDynamicTableFactory
         Map<String, ColumnFamilyType> aggregateTypes = AggregateOptionsMapper.map(config, schema);
 
         return BigtableDynamicSink.builder()
+                .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .schema(schema)
                 .destination(
                         TableDestination.of(
@@ -331,6 +332,7 @@ public class BigtableDynamicTableFactory
             }
             checkEnvelopeDecodesNoCell(context);
             return BigtableChangeStreamDynamicSource.builder()
+                    .lineageTableName(context.getObjectIdentifier().asSummaryString())
                     .destination(destination)
                     .appProfileId(appProfileId)
                     .serviceAccountKeyFile(serviceAccountKeyFile)
@@ -366,6 +368,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions
                                 .SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID);
         return BigtableChangeStreamDynamicSource.builder()
+                .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .destination(destination)
                 .appProfileId(appProfileId)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
@@ -699,6 +702,7 @@ public class BigtableDynamicTableFactory
                         .orElse(Collections.emptyList());
 
         return BigtableDynamicSource.builder()
+                .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .schema(schema)
                 .destination(
                         TableDestination.of(

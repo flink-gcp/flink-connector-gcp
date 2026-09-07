@@ -69,6 +69,7 @@ public final class BigtableChangeStreamDynamicSource
         implements ScanTableSource, SupportsReadingMetadata {
 
     private final TableDestination destination;
+    @Nullable private final String lineageTableName;
     private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final StartPosition startPosition;
@@ -92,6 +93,7 @@ public final class BigtableChangeStreamDynamicSource
     private DataType producedDataType;
 
     private BigtableChangeStreamDynamicSource(Builder builder) {
+        this.lineageTableName = builder.lineageTableName;
         this.destination =
                 Preconditions.checkNotNull(builder.destination, "destination must not be null");
         this.appProfileId =
@@ -244,7 +246,11 @@ public final class BigtableChangeStreamDynamicSource
                 BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK.key(),
                 maxConcurrentStreamsPerSubtask,
                 builder::maxConcurrentStreamsPerSubtask);
-        return SourceProvider.of(builder.build(), parallelism);
+        BigtableChangeStreamSource<RowData> source = builder.build();
+        if (lineageTableName != null) {
+            source = source.withTableLineage(lineageTableName);
+        }
+        return SourceProvider.of(source, parallelism);
     }
 
     @Override
@@ -252,6 +258,7 @@ public final class BigtableChangeStreamDynamicSource
         Builder builder =
                 builder()
                         .destination(destination)
+                        .lineageTableName(lineageTableName)
                         .appProfileId(appProfileId)
                         .serviceAccountKeyFile(serviceAccountKeyFile)
                         .startPosition(startPosition)
@@ -292,6 +299,7 @@ public final class BigtableChangeStreamDynamicSource
         }
         BigtableChangeStreamDynamicSource that = (BigtableChangeStreamDynamicSource) other;
         return destination.equals(that.destination)
+                && Objects.equals(lineageTableName, that.lineageTableName)
                 && appProfileId.equals(that.appProfileId)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(startPosition, that.startPosition)
@@ -316,6 +324,7 @@ public final class BigtableChangeStreamDynamicSource
     public int hashCode() {
         return Objects.hash(
                 destination,
+                lineageTableName,
                 appProfileId,
                 serviceAccountKeyFile,
                 startPosition,
@@ -360,7 +369,18 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private String selectedCellSourceClusterId;
         @Nullable private TrailingBytes trailingBytes;
 
+        @Nullable private String lineageTableName;
+
         private Builder() {}
+
+        /**
+         * Sets the catalog identifier supplied by the Table factory, or null for direct
+         * construction.
+         */
+        public Builder lineageTableName(@Nullable String logicalName) {
+            this.lineageTableName = logicalName;
+            return this;
+        }
 
         /**
          * Sets the table to read. Required.

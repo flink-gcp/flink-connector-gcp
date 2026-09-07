@@ -766,3 +766,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Keep typed provisioning serializable without SDK types, old job graphs raw-compatible, and reconciliation add-only. Options containing any aggregate type validate every declared existing type with fatal mismatches; raw-only options reconcile existing families by name only.
   Read raw admin protos so an unknown type in an undeclared family cannot break inspection.
   SQL validates/ensures at writer startup; typed DataStream creation options validate before a destination first sends; raw-only writers retain lazy admin access.
+
+## Configured resource lineage (`docs/adr/0160`)
+
+- Keep lineage on both concrete sources and all three sink families returned by public builders.
+  Inspect the effective fixed resolver, including single-row request configuration, without evaluating it.
+- Table factory catalog names survive Dynamic Table copies and runtime copies. Retain the MutateRows
+  aggregate startup destination and expected families when making a lineage copy.
+- Both Change Streams Table modes name the data table and use the source's actual boundedness.
+  Lookup and Async I/O/SQL functions are outside FLIP-314 Source/Sink extraction.
+- Keep graph/planner tests in the Flink 2.x root; direct metadata and serialization tests run on 1.20 too.
+  Declare `flink-runtime` directly as provided while preserving SQL jar listener API exemptions.
