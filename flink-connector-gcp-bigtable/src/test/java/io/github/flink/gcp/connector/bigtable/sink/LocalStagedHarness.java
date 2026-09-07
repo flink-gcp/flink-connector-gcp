@@ -68,8 +68,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Local MiniCluster instrumentation. A run never loads credentials or a real-service fixture. */
-final class LocalStagedHarness implements AutoCloseable {
+/** Loopback-only instrumentation; Stage 2 supplies separate, explicitly authorized transports. */
+class LocalStagedHarness implements AutoCloseable {
     static final Map<String, LocalStagedHarness> RUNS = new ConcurrentHashMap<>();
     static final String PROFILE = "single-cluster";
     final String id = UUID.randomUUID().toString();
@@ -141,6 +141,69 @@ final class LocalStagedHarness implements AutoCloseable {
         this.aggregate = aggregate;
         this.inFlight = inFlight;
         RUNS.put(id, this);
+    }
+
+    org.apache.flink.api.connector.source.Source<Long, ?, ?> source(long records, boolean hold) {
+        return hold
+                ? new LocalStagedSource(id, records)
+                : new org.apache.flink.api.connector.source.lib.NumberSequenceSource(
+                        0, records - 1);
+    }
+
+    long checkpointTimeoutMillis() {
+        return 30_000;
+    }
+
+    void beforeSend(CheckAndMutateRowRequest wire) throws IOException {}
+
+    void prepared(Collection<CheckAndMutateRowRequest> requests) throws IOException {}
+
+    void beforeBulk(MutateRowsRequest.Entry entry) {}
+
+    void writerStaged(Object writer, int entries, long bytes) {}
+
+    SimpleVersionedSerializer<CheckAndMutateRowRequest> serializer() {
+        return new StagedMutationTestSink(id, 1, 1).getCommittableSerializer();
+    }
+
+    void trace(CheckAndMutateRowRequest wire, ApiFuture<Boolean> future) {
+        attempts.add(wire);
+        originalFutures.add(future);
+    }
+
+    void committerWaited(long nanos) {}
+
+    void clientCompleted(long sequence, long nanos, long completedAt) {
+        clientCompletionNanos.add(nanos);
+    }
+
+    synchronized void commitAcknowledged(CheckAndMutateRowRequest wire, long now)
+            throws IOException {
+        if (loseAnswerAt == acknowledgedCount()) {
+            loseAnswerAt = -1;
+            throw new IOException("Applied row; injected response loss");
+        }
+        acknowledged(sequence(wire.getFalseMutationsList()), now);
+    }
+
+    int acknowledgedCount() {
+        return acknowledgements.size();
+    }
+
+    DefaultSingleRowClientFactory singleRowFactory() throws IOException {
+        return new DefaultSingleRowClientFactory(
+                PROFILE,
+                BigtableRequestOptions.builder().build(),
+                EmulatorEndpoint.parse(endpoint, "endpoint"),
+                null);
+    }
+
+    MutationBatcherFactory batcherFactory() throws IOException {
+        return new DefaultMutationBatcherFactory(
+                PROFILE,
+                BigtableWriterOptions.builder().maxInFlightEntries(inFlight).build(),
+                EmulatorEndpoint.parse(endpoint, "endpoint"),
+                null);
     }
 
     static String tableName(TableDestination table) {
@@ -302,6 +365,7 @@ final class LocalStagedHarness implements AutoCloseable {
                     run.admitted(value);
                     delegate.write(run.input(value), context);
                     run.staged.incrementAndGet();
+                    run.writerStaged(delegate, delegate.stagedEntries(), delegate.stagedBytes());
                     run.peakWriterBytes.accumulateAndGet(delegate.stagedBytes(), Math::max);
                     run.peakWriterEntries.accumulateAndGet(delegate.stagedEntries(), Math::max);
                 }
@@ -310,13 +374,17 @@ final class LocalStagedHarness implements AutoCloseable {
                 public void flush(boolean endOfInput) {}
 
                 @Override
-                public Collection<CheckAndMutateRowRequest> prepareCommit() {
-                    return delegate.prepareCommit();
+                public Collection<CheckAndMutateRowRequest> prepareCommit() throws IOException {
+                    Collection<CheckAndMutateRowRequest> requests = delegate.prepareCommit();
+                    run.writerStaged(delegate, 0, 0);
+                    run.prepared(requests);
+                    return requests;
                 }
 
                 @Override
                 public void close() throws Exception {
                     delegate.close();
+                    run.writerStaged(delegate, 0, 0);
                     if (run.failWriterClose.compareAndSet(true, false)) {
                         throw new IOException("Injected writer close failure after stop");
                     }
@@ -331,7 +399,7 @@ final class LocalStagedHarness implements AutoCloseable {
 
         @Override
         public SimpleVersionedSerializer<CheckAndMutateRowRequest> getCommittableSerializer() {
-            return new StagedMutationTestSink(runId, 1, 1).getCommittableSerializer();
+            return run(runId).serializer();
         }
 
         @Override
@@ -385,16 +453,12 @@ final class LocalStagedHarness implements AutoCloseable {
                         throw new IOException(
                                 "Restored destination/profile differs from the local run");
                     }
+                    run.beforeSend(wire);
                     long started;
                     ApiFuture<Boolean> future;
                     if (emulator) {
                         if (client == null) {
-                            factory =
-                                    new DefaultSingleRowClientFactory(
-                                            PROFILE,
-                                            BigtableRequestOptions.builder().build(),
-                                            EmulatorEndpoint.parse(run.endpoint, "endpoint"),
-                                            null);
+                            factory = run.singleRowFactory();
                             client = factory.create(run.table);
                         }
                         ConditionalRowMutation mutation = ConditionalRowMutation.fromProto(wire);
@@ -414,8 +478,7 @@ final class LocalStagedHarness implements AutoCloseable {
                         started = System.nanoTime();
                         future = run.fake(wire);
                     }
-                    run.attempts.add(wire);
-                    run.originalFutures.add(future);
+                    run.trace(wire, future);
                     run.peakActive.accumulateAndGet(run.active.incrementAndGet(), Math::max);
                     pending.addLast(new Pending(request, future, started, run));
                 }
@@ -429,14 +492,11 @@ final class LocalStagedHarness implements AutoCloseable {
 
         void finishFirst() throws IOException, InterruptedException {
             Pending first = pending.getFirst();
+            long waitStarted = System.nanoTime();
             try {
                 boolean matched = first.observed.get(30, TimeUnit.SECONDS);
                 CheckAndMutateRowRequest wire = first.request.getCommittable();
-                if (run.loseAnswerAt == run.acknowledgements.size()) {
-                    run.loseAnswerAt = -1;
-                    throw new IOException("Applied row; injected response loss");
-                }
-                run.acknowledged(sequence(wire.getFalseMutationsList()), first.completedAt);
+                run.commitAcknowledged(wire, first.completedAt);
                 if (matched) {
                     run.deduplicated.incrementAndGet();
                     first.request.signalAlreadyCommitted();
@@ -446,6 +506,8 @@ final class LocalStagedHarness implements AutoCloseable {
             } catch (java.util.concurrent.ExecutionException
                     | java.util.concurrent.TimeoutException failure) {
                 throw new IOException("Local conditional request failed", failure);
+            } finally {
+                run.committerWaited(System.nanoTime() - waitStarted);
             }
         }
 
@@ -487,7 +549,10 @@ final class LocalStagedHarness implements AutoCloseable {
                             future,
                             matched -> {
                                 completedAt = System.nanoTime();
-                                run.clientCompletionNanos.add(completedAt - started);
+                                run.clientCompleted(
+                                        sequence(request.getCommittable().getFalseMutationsList()),
+                                        completedAt - started,
+                                        completedAt);
                                 return matched;
                             },
                             Runnable::run);
@@ -555,20 +620,11 @@ final class LocalStagedHarness implements AutoCloseable {
     static final class ObservedBatchers implements MutationBatcherFactory {
         private static final long serialVersionUID = 1L;
         final transient LocalStagedHarness run;
-        final transient DefaultMutationBatcherFactory delegate;
+        final transient MutationBatcherFactory delegate;
 
-        ObservedBatchers(LocalStagedHarness run, boolean emulator) {
+        ObservedBatchers(LocalStagedHarness run, boolean emulator) throws IOException {
             this.run = run;
-            this.delegate =
-                    emulator
-                            ? new DefaultMutationBatcherFactory(
-                                    PROFILE,
-                                    BigtableWriterOptions.builder()
-                                            .maxInFlightEntries(run.inFlight)
-                                            .build(),
-                                    EmulatorEndpoint.parse(run.endpoint, "endpoint"),
-                                    null)
-                            : null;
+            this.delegate = emulator ? run.batcherFactory() : null;
         }
 
         @Override
@@ -581,6 +637,7 @@ final class LocalStagedHarness implements AutoCloseable {
                 public ApiFuture<Void> add(RowMutationEntry entry) {
                     long started = System.nanoTime();
                     MutateRowsRequest.Entry wire = entry.toProto();
+                    run.beforeBulk(wire);
                     ApiFuture<Void> future;
                     if (batcher == null) {
                         SettableApiFuture<Void> answer = SettableApiFuture.create();
@@ -598,7 +655,8 @@ final class LocalStagedHarness implements AutoCloseable {
                                 @Override
                                 public void onSuccess(Void ignored) {
                                     long now = System.nanoTime();
-                                    run.clientCompletionNanos.add(now - started);
+                                    run.clientCompleted(
+                                            sequence(wire.getMutationsList()), now - started, now);
                                     run.acknowledged(sequence(wire.getMutationsList()), now);
                                     run.active.decrementAndGet();
                                 }
