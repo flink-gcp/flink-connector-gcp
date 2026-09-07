@@ -36,8 +36,8 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
   let the per-connector CI lane carry the full verification — it is faster than a local full build
   and starts clean. Two exceptions stay local: per-PR CI builds one Flink version, so a
   compatibility-sensitive change (cross-version shims, renames the 1.x source root sees) still
-  runs `just verify-flink 1.20.4` before push; and self-review's "re-run whatever the change
-  touches" means the scoped suite above, not an unconditional full verify.
+  runs `just verify-flink 1.20.4` before push; and self-review's requirement to rerun affected
+  checks means the scoped suite above, not an unconditional full verify.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
 - `just check-readme-examples`: check module README Java examples against compiled source.
@@ -134,6 +134,11 @@ green; use the clean-state procedures in that guide for such changes.
 
 ## GitHub workflow
 
+- The four push/review skills are tracked copies from `flink-gcp/flink-gcp-dev-tools` at the
+  `dev_tools_revision` pin in `justfile`; `just skills-sync` updates only those directories.
+  They retain the original detailed procedures, examples and exceptions.
+  Read `.agents/references/repository-guide.md` for this repository's verification commands and
+  compatibility requirements; keep those bindings outside the managed skill directories.
 - Use one dedicated worktree per PR under `/tmp/worktrees/flink-connector-gcp/`; never switch the
   main checkout. All PRs are drafts and use `.github/PULL_REQUEST_TEMPLATE.md` with filled `WHAT`
   and `WHY` sections.
@@ -149,9 +154,10 @@ green; use the clean-state procedures in that guide for such changes.
   checks the resolved paths owe; current PR merge-ref CI validates build integration with the new
   base. The compatibility-sensitive `just verify-flink 1.20.4` exception still applies.
 - After creating the draft PR, run `$self-review`, apply verified findings, push fixes, and then run
-  `$self-review-round-two` when its trigger applies. Record findings and reasoned deferrals on the
-  PR. Each round's first full review freezes its changed surfaces and invariants and records which
-  it covered. Only after that round has completed its full pass may a narrow fix-up review
+  `$self-review-round-two` when its trigger applies. Record findings and reasoned deferrals as
+  inline review comments with an empty review body. Each round's first full review freezes its
+  changed surfaces and invariants and records which it covered. Only after that round has completed
+  its full pass may a narrow fix-up review
   `git range-diff previous-base..previous-reviewed-SHA current-base..HEAD` and the affected
   invariants; a tree diff between rebased head SHAs is not the repair delta. Restart the full pass
   when the fix expands scope or changes a contract beyond the finding. Record full base and head

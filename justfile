@@ -43,13 +43,20 @@
 # runs only when its own recipe does, which is why the ceiling in
 # check-flink-release is one.
 
+import 'dev-tools.just'
+
 set shell := ["bash", "-euo", "pipefail", "-c"]
+
+dev_tools_revision := "c3784bce1f95dc75848b1fc2de0f370e5c0a09ea"
 
 mvn := "./mvnw -ntp"
 
 # List the recipes.
 default:
     @just --list
+
+# Refresh the four shared workflow skills from the reviewed upstream commit.
+skills-sync: (install-skills dev_tools_revision)
 
 # `just help` would otherwise be read as a recipe name and fail with "justfile
 # does not contain recipe `help`", which is a poor answer to someone asking what
@@ -427,6 +434,7 @@ sweep-e2e *args:
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
+    just --justfile dev-tools.just --show install-skills | sed -n '/^[[:space:]]*#!/,$p' | sed 's/^    //' | mise x shellcheck -- shellcheck -
     mise x ruff -- ruff --version
     mise x ruff -- ruff check scripts/ docs/tests/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x ruff -- ruff format --check scripts/ docs/tests/ opentofu/flink-gcp/appengine-e2e/main.py
@@ -635,11 +643,6 @@ docs-site +args:
 # Preview the documentation site at http://localhost:1313.
 docs-serve:
     mise x hugo-extended go -- hugo serve --source docs
-
-# Regenerate the syntax-highlighting palettes (verbatim generator output).
-docs-chroma:
-    cd docs && mise x hugo-extended -- hugo gen chromastyles --style=github > assets/_chroma-light.scss
-    cd docs && mise x hugo-extended -- hugo gen chromastyles --style=github-dark > assets/_chroma-dark.scss
 
 # Pin every GitHub Actions reference to a commit SHA.
 pin-actions:

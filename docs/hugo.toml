@@ -21,15 +21,15 @@ title = "GCP Connectors for Apache Flink"
 # pages stay portable if this project is ever donated to the ASF.
 [markup]
   # Emit CSS classes instead of inlining one fixed colour scheme into every code
-  # block; the light/dark palettes are selected in assets/_custom.scss so code
+  # block; the shared module selects the light/dark palettes so code
   # follows the page theme.
   [markup.highlight]
     noClasses = false
 
-# hugo-book is pulled in as a Hugo module; the version is pinned in go.mod.
+# The shared design module and its Hugo Book dependency are pinned through go.mod.
 [module]
-  # Defining another assets mount replaces the default assets mount for this
-  # component, so keep the site's own SCSS explicit beside the Java sources.
+  # Sub-target mounts replace the default assets mount for this component.
+  # Retain local assets for site-specific extensions; the design module mounts its own assets.
   [[module.mounts]]
     source = "assets"
     target = "assets"
@@ -44,17 +44,15 @@ title = "GCP Connectors for Apache Flink"
     target = "assets/sql-snippets/spanner"
 
   [[module.imports]]
-    path = "github.com/alex-shpak/hugo-book"
+    path = "github.com/flink-gcp/flink-gcp-dev-tools/hugo"
 
 [params]
   # A generic code-block render hook rejects raw SQL fences under these paths. Source-backed
   # sql-snippet shortcodes call transform.Highlight directly and therefore remain renderable.
   SourceBackedSqlPaths = ["/docs/examples", "/docs/quickstart", "/docs/connectors/table"]
 
-  # Everything hugo-book already defaults to (BookSection, BookToC, BookSearch)
-  # is left unset; only genuine departures are listed. The theme's own default
-  # is a light theme, so "auto" is a real choice.
-  BookTheme = "auto"
+  # The shared module supplies BookTheme = "auto"; other Hugo Book defaults remain unset.
+
   # Reaches further than its name suggests: BookEditLink below builds every
   # "Edit this page" target from it, and sixteen content pages build their issue
   # links as `{{< param BookRepo >}}/issues/N`. All of those pointed at the

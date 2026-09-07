@@ -23,7 +23,8 @@ limitations under the License.
   came out of that PR's own failure, and no issue was ever filed for it. `—` was the alternative
   and says less; [#1172] refines the verification required after the safe rebase.
 - Modules: all (workflow)
-- Current behavior: `.agents/skills/push-pr-branch/`, root `AGENTS.md` § Workflow rules
+- Current behavior: `.agents/skills/push-pr-branch/`, `.agents/references/repository-guide.md`, and
+  root `AGENTS.md` § GitHub workflow (ADR-0164)
 
 ## Context / Evidence
 
@@ -70,8 +71,9 @@ git fetch origin && git rebase origin/main          # then reset --soft is a mov
 git diff --diff-filter=D --name-only origin/main    # empty, or every path deliberate
 ```
 
-The procedure, its recovery path and the reasoning live in `.agents/skills/push-pr-branch/`, which
-the workflow rule names; `git reset --soft $(git merge-base HEAD origin/main)` is the equivalent
+The full shared push, refresh and recovery procedures live in `.agents/skills/push-pr-branch/`;
+connector-specific checks live in `.agents/references/repository-guide.md`, with the reasoning retained here.
+The workflow rule names both; `git reset --soft $(git merge-base HEAD origin/main)` is the equivalent
 safe form when a rebase is genuinely unwanted.
 
 A base refresh does not by itself require a full local build or every review round again.

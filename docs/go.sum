@@ -1,2 +1,4 @@
 github.com/alex-shpak/hugo-book v0.14.0 h1:edQbxbKHZQoaHidnGR9dZ9EnoEqIV+kPjyEuAaDWvzc=
 github.com/alex-shpak/hugo-book v0.14.0/go.mod h1:3N2fYXAJzb31L13moUOXmPo2DC58VvQYJkGr9VniXfQ=
+github.com/flink-gcp/flink-gcp-dev-tools/hugo v0.0.0-20260906141921-f33d4549a3be h1:TQF0QYeWncNkTJXZsNuBLFtgKkJnF1fnNXRhyldsWgw=
+github.com/flink-gcp/flink-gcp-dev-tools/hugo v0.0.0-20260906141921-f33d4549a3be/go.mod h1:HM7rQ6jIS5WO6VDdt28kmCyl+y1ofCoA7HSjyn3EOHM=
