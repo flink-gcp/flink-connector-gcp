@@ -303,6 +303,14 @@ final class StagedMutationTestSink
             bytes += charge;
         }
 
+        long stagedBytes() {
+            return bytes;
+        }
+
+        int stagedEntries() {
+            return pending.size();
+        }
+
         @Override
         public void flush(boolean endOfInput) {}
 
