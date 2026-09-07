@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -27,11 +28,14 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
+import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -42,17 +46,49 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.reader.Bigtabl
 
 import javax.annotation.Nullable;
 
-/** FLIP-27 source for Bigtable Change Streams. */
+import java.util.Objects;
+
+/**
+ * FLIP-27 source for Bigtable Change Streams.
+ *
+ * <p>Lineage reports the configured data table with namespace {@code
+ * bigtable://{project}/{instance}}, name {@code {table}} and a {@code gcp} physical-resource facet.
+ * Its boundedness follows {@link #getBoundedness()}; no external metadata table is reported.
+ * Extraction calls no user schema and opens no client. The supported Flink 2.x versions extract the
+ * metadata automatically; Flink 1.20 supports direct inspection only.
+ *
+ * @param <T> the record type produced
+ */
 @PublicEvolving
 public final class BigtableChangeStreamSource<T>
         implements Source<T, ChangeStreamPartitionSplit, BigtableChangeStreamEnumeratorState>,
-                ResultTypeQueryable<T> {
+                ResultTypeQueryable<T>,
+                LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
     private final BigtableChangeStreamSourceConfig<T> config;
+    @Nullable private final String lineageTableName;
 
     BigtableChangeStreamSource(BigtableChangeStreamSourceConfig<T> config) {
-        this.config = config;
+        this(config, null);
+    }
+
+    private BigtableChangeStreamSource(
+            BigtableChangeStreamSourceConfig<T> config, @Nullable String lineageTableName) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.lineageTableName = lineageTableName;
+    }
+
+    /** Returns a copy carrying the logical Table identity with the same source configuration. */
+    @Internal
+    public BigtableChangeStreamSource<T> withTableLineage(String logicalName) {
+        return new BigtableChangeStreamSource<>(
+                config, Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    @Override
+    public SourceLineageVertex getLineageVertex() {
+        return BigtableLineage.source(config.getTable(), getBoundedness(), lineageTableName);
     }
 
     /**

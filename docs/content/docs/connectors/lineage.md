@@ -25,9 +25,11 @@ limitations under the License.
 The shared lineage contract describes the physical resources known from a connector's configuration.
 It does not discover resources at runtime or infer them by inspecting records.
 [BigQuery DataStream]({{< relref "docs/connectors/datastream/bigquery#lineage" >}}) and [Table/SQL]({{< relref "docs/connectors/table/bigquery#lineage" >}}) implement this contract for configured table inputs and fixed outputs, including explicitly named view materialization and default-stream CDC.
-Connector adoption remains tracked separately for [Pub/Sub]({{< param BookRepo >}}/issues/1271), [Bigtable]({{< param BookRepo >}}/issues/1272), [Spanner]({{< param BookRepo >}}/issues/1273), and [Cloud Tasks]({{< param BookRepo >}}/issues/1274).
+[Bigtable DataStream]({{< relref "docs/connectors/datastream/bigtable#lineage" >}}) and [Table/SQL]({{< relref "docs/connectors/table/bigtable#lineage" >}}) implement configured-table lineage for scans, Change Streams and all sink write modes.
+Connector adoption remains tracked separately for [Pub/Sub]({{< param BookRepo >}}/issues/1271), [Spanner]({{< param BookRepo >}}/issues/1273), and [Cloud Tasks]({{< param BookRepo >}}/issues/1274).
 The common graph and listener tests establish the shared contract.
-Pub/Sub also tests extraction against its builder-returned Source/Sink and SQL planner, including multiple subscriptions and ordering-key routing.
+Pub/Sub and Bigtable also test extraction against their builder-returned Source/Sink objects and SQL planners.
+Pub/Sub covers multiple subscriptions and ordering-key routing; Bigtable covers scans, bounded and unbounded Change Streams, and every Table write mode.
 Spanner implements the contract for the paths documented in its [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}) and [Table]({{< relref "docs/connectors/table/spanner" >}}) references.
 The [Cloud Tasks guide]({{< relref "docs/connectors/datastream/cloudtasks" >}}#lineage) describes its fixed-queue coverage for DataStream and Table/SQL; its connector tests exercise the builder-returned sink, listener delivery and planner facets.
 
@@ -57,7 +59,8 @@ The constructors are internal integration plumbing, not a supported manual datas
 
 BigQuery, Pub/Sub and Spanner table names follow [OpenLineage's naming convention](https://openlineage.io/docs/spec/naming/).
 The Bigtable, Cloud Tasks and Change Stream names are project conventions.
-A Change Stream identity names the stream, not the complete set of tables it watches.
+A Spanner Change Stream identity names the stream, not the complete set of tables it watches.
+Bigtable Change Streams reports its configured data table.
 
 ## Table planner behavior
 

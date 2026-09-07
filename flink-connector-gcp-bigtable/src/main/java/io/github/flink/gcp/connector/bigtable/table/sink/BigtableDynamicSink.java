@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
@@ -77,6 +76,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     private final BigtableTableSchema schema;
     private final TableDestination destination;
+    @Nullable private final String lineageTableName;
     private final String nullStringLiteral;
     @Nullable private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
@@ -97,6 +97,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private List<String> metadataKeys;
 
     private BigtableDynamicSink(Builder builder) {
+        this.lineageTableName = builder.lineageTableName;
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
         this.destination =
                 Preconditions.checkNotNull(builder.destination, "destination must not be null");
@@ -213,7 +214,10 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 requests.emulatorEndpoint(
                         EmulatorEndpoint.parse(emulatorEndpoint, "emulator-endpoint"));
             }
-            return SinkV2Provider.of(requests.build(), parallelism);
+            BigtableReadModifyWriteSink<RowData> sink = requests.build();
+            return SinkV2Provider.of(
+                    lineageTableName == null ? sink : sink.withTableLineage(lineageTableName),
+                    parallelism);
         }
         if (writeMode == WriteMode.INSERT_IF_ABSENT) {
             BigtableConditionalSinkBuilder<RowData> conditional =
@@ -239,7 +243,10 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
             if (emptyBranchPolicy != null) {
                 conditional.emptyBranchPolicy(emptyBranchPolicy);
             }
-            return SinkV2Provider.of(conditional.build(), parallelism);
+            BigtableConditionalSink<RowData> sink = conditional.build();
+            return SinkV2Provider.of(
+                    lineageTableName == null ? sink : sink.withTableLineage(lineageTableName),
+                    parallelism);
         }
         BigtableSinkBuilder<RowData> builder =
                 BigtableSink.<RowData>builder()
@@ -270,17 +277,15 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
-        Sink<RowData> sink = builder.build();
+        BigtableMutateRowsSink<RowData> sink = (BigtableMutateRowsSink<RowData>) builder.build();
         if (writeMode == WriteMode.AGGREGATE) {
             TableCreateOptions.Builder expected = TableCreateOptions.builder();
             aggregateTypes.forEach((name, type) -> expected.columnFamily(name, type, null));
-            sink =
-                    new BigtableMutateRowsSink<>(
-                            ((BigtableMutateRowsSink<RowData>) sink).getConfig(),
-                            destination,
-                            expected.build());
+            sink = new BigtableMutateRowsSink<>(sink.getConfig(), destination, expected.build());
         }
-        return SinkV2Provider.of(sink, parallelism);
+        return SinkV2Provider.of(
+                lineageTableName == null ? sink : sink.withTableLineage(lineageTableName),
+                parallelism);
     }
 
     @Override
@@ -288,6 +293,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         return builder()
                 .schema(schema)
                 .destination(destination)
+                .lineageTableName(lineageTableName)
                 .nullStringLiteral(nullStringLiteral)
                 .appProfileId(appProfileId)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
@@ -323,6 +329,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         BigtableDynamicSink that = (BigtableDynamicSink) o;
         return schema.equals(that.schema)
                 && destination.equals(that.destination)
+                && Objects.equals(lineageTableName, that.lineageTableName)
                 && nullStringLiteral.equals(that.nullStringLiteral)
                 && Objects.equals(appProfileId, that.appProfileId)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
@@ -346,6 +353,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         return Objects.hash(
                 schema,
                 destination,
+                lineageTableName,
                 nullStringLiteral,
                 appProfileId,
                 serviceAccountKeyFile,
@@ -386,7 +394,18 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private boolean truncateCellTimestampToMillis;
         private List<String> metadataKeys = Collections.emptyList();
 
+        @Nullable private String lineageTableName;
+
         private Builder() {}
+
+        /**
+         * Sets the catalog identifier supplied by the Table factory, or null for direct
+         * construction.
+         */
+        public Builder lineageTableName(@Nullable String logicalName) {
+            this.lineageTableName = logicalName;
+            return this;
+        }
 
         /**
          * @param value the write operation

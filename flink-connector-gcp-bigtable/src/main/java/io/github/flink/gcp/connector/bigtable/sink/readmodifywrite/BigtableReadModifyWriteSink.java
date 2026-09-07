@@ -16,33 +16,48 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.readmodifywrite;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
+import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestConfig;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestSinks;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.Objects;
 
 /**
  * Atomic per-row read-modify-write writes with at-least-once delivery. Checkpoints drain accepted
  * requests; successful results are discarded. A replay can apply an operation again. Requires
  * single-cluster app-profile routing with single-row transactions enabled.
  *
+ * <p>The builder-returned sink implements {@code LineageVertexProvider}. Its effective fixed
+ * destination reports namespace {@code bigtable://{project}/{instance}}, name {@code {table}} and a
+ * {@code gcp} physical-resource facet. Dynamic destinations produce an empty dataset list, without
+ * resolver evaluation. Extraction calls no user schema and opens no client. The supported Flink 2.x
+ * versions extract the metadata automatically; Flink 1.20 supports direct inspection only.
+ *
  * @param <T> the input type
  */
 @PublicEvolving
-public final class BigtableReadModifyWriteSink<T> implements CrossVersionSink<T> {
+public final class BigtableReadModifyWriteSink<T>
+        implements CrossVersionSink<T>, LineageVertexProvider {
     private static final long serialVersionUID = 1L;
     private final SingleRowRequestConfig<T> config;
+    @Nullable private final String lineageTableName;
 
     BigtableReadModifyWriteSink(
             ReadModifyWriteConfig<T> config, FailureHandler<? super FailedRequest> handler) {
-        this.config =
+        this(
                 new SingleRowRequestConfig<>(
                         config.destinationResolver,
                         config.sinkSerializer(),
@@ -50,7 +65,26 @@ public final class BigtableReadModifyWriteSink<T> implements CrossVersionSink<T>
                         config.requestOptions,
                         handler,
                         config.serviceAccountKeyFile,
-                        config.emulatorEndpoint);
+                        config.emulatorEndpoint),
+                null);
+    }
+
+    private BigtableReadModifyWriteSink(
+            SingleRowRequestConfig<T> config, @Nullable String lineageTableName) {
+        this.config = config;
+        this.lineageTableName = lineageTableName;
+    }
+
+    /** Returns a copy carrying the logical Table identity with the same request configuration. */
+    @Internal
+    public BigtableReadModifyWriteSink<T> withTableLineage(String logicalName) {
+        return new BigtableReadModifyWriteSink<>(
+                config, Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    @Override
+    public LineageVertex getLineageVertex() {
+        return BigtableLineage.sink(config.getDestinationResolver(), lineageTableName);
     }
 
     /**

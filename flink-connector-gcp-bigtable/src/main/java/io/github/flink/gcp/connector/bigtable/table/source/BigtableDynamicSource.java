@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -46,6 +45,7 @@ import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
@@ -95,6 +95,7 @@ public final class BigtableDynamicSource
 
     private final BigtableTableSchema schema;
     private final TableDestination destination;
+    @Nullable private final String lineageTableName;
     private final String nullStringLiteral;
     private final TrailingBytes trailingBytes;
     @Nullable private final String appProfileId;
@@ -115,6 +116,7 @@ public final class BigtableDynamicSource
     private BigtableFilterPushDown.State filterState;
 
     private BigtableDynamicSource(Builder builder) {
+        this.lineageTableName = builder.lineageTableName;
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
         this.destination =
                 Preconditions.checkNotNull(builder.destination, "destination must not be null");
@@ -224,7 +226,10 @@ public final class BigtableDynamicSource
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
-        Source<RowData, ?, ?> source = builder.build();
+        BigtableScanSource<RowData> source = (BigtableScanSource<RowData>) builder.build();
+        if (lineageTableName != null) {
+            source = source.withTableLineage(lineageTableName);
+        }
         return SourceProvider.of(source, parallelism);
     }
 
@@ -381,6 +386,7 @@ public final class BigtableDynamicSource
         return builder()
                 .schema(schema)
                 .destination(destination)
+                .lineageTableName(lineageTableName)
                 .nullStringLiteral(nullStringLiteral)
                 .trailingBytes(trailingBytes)
                 .appProfileId(appProfileId)
@@ -416,6 +422,7 @@ public final class BigtableDynamicSource
         BigtableDynamicSource that = (BigtableDynamicSource) o;
         return schema.equals(that.schema)
                 && destination.equals(that.destination)
+                && Objects.equals(lineageTableName, that.lineageTableName)
                 && nullStringLiteral.equals(that.nullStringLiteral)
                 && trailingBytes == that.trailingBytes
                 && Objects.equals(appProfileId, that.appProfileId)
@@ -439,6 +446,7 @@ public final class BigtableDynamicSource
         return Objects.hash(
                 schema,
                 destination,
+                lineageTableName,
                 nullStringLiteral,
                 trailingBytes,
                 appProfileId,
@@ -479,7 +487,18 @@ public final class BigtableDynamicSource
         @Nullable private int[] projectedFields;
         private BigtableFilterPushDown.State filterState = BigtableFilterPushDown.State.empty();
 
+        @Nullable private String lineageTableName;
+
         private Builder() {}
+
+        /**
+         * Sets the catalog identifier supplied by the Table factory, or null for direct
+         * construction.
+         */
+        public Builder lineageTableName(@Nullable String logicalName) {
+            this.lineageTableName = logicalName;
+            return this;
+        }
 
         /**
          * @param schema the table's parsed DDL model
