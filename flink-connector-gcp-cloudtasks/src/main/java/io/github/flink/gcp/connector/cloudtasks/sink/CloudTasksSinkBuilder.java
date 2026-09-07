@@ -43,10 +43,14 @@ import javax.annotation.Nullable;
 @Public
 public class CloudTasksSinkBuilder<T> {
 
+    private CloudTasksDeliveryGuarantee deliveryGuarantee =
+            CloudTasksDeliveryGuarantee.AT_LEAST_ONCE;
+    @Nullable private CloudTasksStagedOptions stagedOptions;
+
     private DestinationResolver<? super T> destinationResolver;
     private CloudTasksSerializationSchema<? super T> serializer;
     @Nullable private TaskIdExtractor<? super T> taskIdExtractor;
-    private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.defaults();
+    private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.builder().build();
     private FailureHandler<? super FailedTask> failedTaskHandler = FailureHandler.failJob();
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
@@ -95,8 +99,9 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
-     * Opts into named tasks, deduplicating records by the extracted key. Optional; without it the
-     * sink creates unnamed tasks and a record replayed after a failure can create another task.
+     * Deduplicates records by the extracted key. Optional; without it the default at-least-once
+     * mode creates unnamed tasks, while exactly-once mode persists a fresh random identity for
+     * every accepted record. Recovery in exactly-once mode reuses the saved identity.
      *
      * <p>The sink hashes the key with SHA-256 before using it as the task id, and a repeated create
      * for a key Cloud Tasks still remembers counts as success. Naming is off by default because
@@ -116,8 +121,8 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
-     * Sets the writer tuning options (the in-flight cap and the two retry budgets). Optional;
-     * defaults to {@link CloudTasksWriterOptions#defaults()}.
+     * Sets the in-flight cap and the two retry budgets for the writer or staged committer.
+     * Optional; defaults to {@link CloudTasksWriterOptions#defaults()}.
      *
      * @param writerOptions the options
      * @return this builder
@@ -150,9 +155,9 @@ public class CloudTasksSinkBuilder<T> {
 
     /**
      * Authenticates the sink with the service-account JSON key at the given path instead of
-     * application-default credentials. The file is read on each TaskManager when its writer is
-     * created, so the same path must be readable by every TaskManager that can run this sink.
-     * Optional; when unset the sink uses application-default credentials.
+     * application-default credentials. The file is read on each TaskManager when its writer or
+     * committer is created, so the same path must be readable by every TaskManager that can run
+     * this sink. Optional; when unset the sink uses application-default credentials.
      *
      * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
      * Workload Identity where the deployment supports one. This setting cannot be combined with
@@ -191,6 +196,31 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
+     * Selects eager creation or checkpointed named creation within the documented recovery window.
+     *
+     * @param deliveryGuarantee the task-creation mode
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> deliveryGuarantee(
+            CloudTasksDeliveryGuarantee deliveryGuarantee) {
+        this.deliveryGuarantee =
+                Preconditions.checkNotNull(deliveryGuarantee, "deliveryGuarantee must not be null");
+        return this;
+    }
+
+    /**
+     * Sets staging and recovery options; requires {@link CloudTasksDeliveryGuarantee#EXACTLY_ONCE}.
+     *
+     * @param stagedOptions the staging and recovery options
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> stagedOptions(CloudTasksStagedOptions stagedOptions) {
+        this.stagedOptions =
+                Preconditions.checkNotNull(stagedOptions, "stagedOptions must not be null");
+        return this;
+    }
+
+    /**
      * Builds the sink.
      *
      * @return the sink
@@ -210,7 +240,7 @@ public class CloudTasksSinkBuilder<T> {
                 "channelPoolSize(...) cannot be combined with emulatorEndpoint(...): an emulator"
                         + " always uses one plaintext channel, so the pool would be silently"
                         + " ignored. Remove one of the two settings.");
-        return new CloudTasksCreateTaskSink<>(
+        CloudTasksSinkConfig<T> config =
                 new CloudTasksSinkConfig<>(
                         destinationResolver,
                         serializer,
@@ -218,6 +248,23 @@ public class CloudTasksSinkBuilder<T> {
                         writerOptions,
                         failedTaskHandler,
                         serviceAccountKeyFile,
-                        emulatorEndpoint));
+                        emulatorEndpoint);
+        if (deliveryGuarantee == CloudTasksDeliveryGuarantee.EXACTLY_ONCE) {
+            Preconditions.checkState(
+                    destinationResolver instanceof FixedDestinationResolver,
+                    "EXACTLY_ONCE requires a fixed queue(...), not a dynamic destinationResolver(...).");
+            Preconditions.checkState(
+                    failedTaskHandler == FailureHandler.failJob(),
+                    "EXACTLY_ONCE requires failedTaskHandler(FailureHandler.failJob()).");
+            return new CloudTasksStagedCreateTaskSink<>(
+                    config,
+                    stagedOptions == null
+                            ? CloudTasksStagedOptions.builder().build()
+                            : stagedOptions);
+        }
+        Preconditions.checkState(
+                stagedOptions == null,
+                "stagedOptions(...) requires deliveryGuarantee(EXACTLY_ONCE).");
+        return new CloudTasksCreateTaskSink<>(config);
     }
 }

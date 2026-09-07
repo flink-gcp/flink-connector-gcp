@@ -82,6 +82,12 @@ final class FakeTaskCreator implements TaskCreator {
     }
 
     @Override
+    public com.google.api.core.ApiFuture<com.google.cloud.tasks.v2.Task> createTask(
+            com.google.cloud.tasks.v2.CreateTaskRequest request, io.grpc.Deadline deadline) {
+        return createTask(request);
+    }
+
+    @Override
     public void close() {
         closeCalls++;
         if (closeFailure != null) {

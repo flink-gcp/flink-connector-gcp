@@ -21,10 +21,15 @@ import org.apache.flink.annotation.Public;
 /**
  * Entry point for building a Cloud Tasks sink.
  *
- * <p>The sink creates one HTTP task per record, at-least-once, and flushes every outstanding
+ * <p>By default the sink creates one task per record, at-least-once, and flushes every outstanding
  * creation at each checkpoint barrier. Dispatch pacing is <em>not</em> configured here: Cloud Tasks
  * paces execution on the queue, so the queue's rate limits and retry policy — applied by whoever
  * created it — decide how fast the tasks run. The sink only decides how fast tasks are handed over.
+ *
+ * <p>Opt-in {@link CloudTasksDeliveryGuarantee#EXACTLY_ONCE} stages immutable named envelopes and
+ * creates tasks after checkpoint completion, within a bounded retention and recovery scope. It
+ * requires a fixed queue, checkpointed streaming and the built-in fail-job handler; it does not
+ * make handler execution exactly once. See the DataStream guide's recovery runbook before use.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
  * Under a dropping policy configured through {@link

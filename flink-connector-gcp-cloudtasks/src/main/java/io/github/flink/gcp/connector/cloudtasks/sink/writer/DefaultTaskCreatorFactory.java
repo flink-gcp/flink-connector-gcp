@@ -23,6 +23,7 @@ import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
+import com.google.api.gax.grpc.GrpcCallContext;
 import com.google.api.gax.rpc.UnaryCallable;
 import com.google.cloud.tasks.v2.CloudTasksClient;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
@@ -30,6 +31,8 @@ import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.grpc.CallOptions;
+import io.grpc.Deadline;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,6 +55,10 @@ import java.util.concurrent.TimeUnit;
  * (ADR-0134). The emulator arm keeps its single caller-owned channel (ADR-0081), so the constructor
  * rejects a pool beside an emulator endpoint — the sink builder and the table factory already
  * refuse the combination, and this keeps the impossible state unrepresentable here too.
+ *
+ * <p>Checkpointed creation also uses this factory for a production-only v2beta3 queue-retention
+ * readback with the same credential selection. That client surface is beta in the pinned SDK;
+ * retain its published retention semantics when updating the dependency (ADR-0158).
  */
 @Internal
 public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
@@ -152,15 +159,64 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
         return settings;
     }
 
+    /**
+     * Reads queue retention using v2beta3 and the creation client's credentials.
+     *
+     * @param queuePath the pre-provisioned queue
+     * @return its published retention, using the one-hour default for an absent field
+     * @throws IOException if queue readback fails
+     */
+    public java.time.Duration readQueueRetention(String queuePath) throws IOException {
+        Preconditions.checkState(
+                emulatorEndpoint == null,
+                "Queue retention readback is unavailable for an emulator endpoint.");
+        try (var client =
+                com.google.cloud.tasks.v2beta3.CloudTasksClient.create(
+                        retentionSettings(serviceAccountKeyFile).build())) {
+            return queueRetention(client.getQueue(queuePath));
+        } catch (RuntimeException e) {
+            throw retentionReadFailure(e);
+        }
+    }
+
+    static IOException retentionReadFailure(RuntimeException failure) {
+        var code = CloudTasksErrorClassifier.statusCode(failure);
+        return new IOException(
+                "Cloud Tasks queue retention readback failed: status="
+                        + (code == null ? "UNCLASSIFIED" : code)
+                        + "; verify cloudtasks.queues.get, queue configuration and service availability.");
+    }
+
+    static com.google.cloud.tasks.v2beta3.CloudTasksSettings.Builder retentionSettings(
+            @Nullable String serviceAccountKeyFile) throws IOException {
+        var settings = com.google.cloud.tasks.v2beta3.CloudTasksSettings.newBuilder();
+        CredentialsProvider credentials = CloudTasksCredentials.load(serviceAccountKeyFile);
+        if (credentials != null) {
+            settings.setCredentialsProvider(credentials);
+        }
+        return settings;
+    }
+
+    static java.time.Duration queueRetention(com.google.cloud.tasks.v2beta3.Queue queue)
+            throws IOException {
+        if (!queue.hasTombstoneTtl()) {
+            return java.time.Duration.ofHours(1);
+        }
+        var ttl = queue.getTombstoneTtl();
+        if (ttl.getSeconds() < 0 || ttl.getNanos() < 0 || ttl.getNanos() >= 1_000_000_000) {
+            throw new IOException("Cloud Tasks queue returned an invalid tombstoneTtl.");
+        }
+        return java.time.Duration.ofSeconds(ttl.getSeconds(), ttl.getNanos());
+    }
+
     /** Adapts the SDK {@link CloudTasksClient} to the writer-facing {@link TaskCreator}. */
-    private static final class CloudTasksClientAdapter implements TaskCreator {
+    static final class CloudTasksClientAdapter implements TaskCreator {
 
         private final CloudTasksClient client;
         private final UnaryCallable<CreateTaskRequest, Task> createTaskCallable;
         @Nullable private final ManagedChannel ownedChannel;
 
-        private CloudTasksClientAdapter(
-                CloudTasksClient client, @Nullable ManagedChannel ownedChannel) {
+        CloudTasksClientAdapter(CloudTasksClient client, @Nullable ManagedChannel ownedChannel) {
             this.client = client;
             this.createTaskCallable = client.createTaskCallable();
             this.ownedChannel = ownedChannel;
@@ -169,6 +225,14 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
         @Override
         public ApiFuture<Task> createTask(CreateTaskRequest request) {
             return createTaskCallable.futureCall(request);
+        }
+
+        @Override
+        public ApiFuture<Task> createTask(CreateTaskRequest request, Deadline deadline) {
+            return createTaskCallable.futureCall(
+                    request,
+                    GrpcCallContext.createDefault()
+                            .withCallOptions(CallOptions.DEFAULT.withDeadline(deadline)));
         }
 
         @Override

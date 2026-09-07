@@ -7,18 +7,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Sink (`docs/adr/0048`, `docs/adr/0129`, `docs/adr/0134`, `docs/adr/0158`)
 
-- **The eager, stateless writer is the default delivery mode.** The internal staging writer,
-  immutable envelope, v1 committable serializer and abstract sink seam implement the first part of
-  `docs/adr/0158`; the production committer and public mode remain in
-  [#1243](https://github.com/flink-gcp/flink-connector-gcp/issues/1243).
-  Read that ADR before extending staging or adding a committer or delivery-mode option, and keep its
-  invariants (every staged task named, nothing sent before checkpoint completion, the authorization
-  deadline checked before every send, expiry fails before the send, the writer holds no Flink
-  state). `CloudTasksStagedCommitLifecycleTest` and `StagedCommitTestSink` pin Flink operator facts.
-  `CloudTasksStagedWriterLifecycleTest` and `StagedTaskTestSink` exercise the production writer and
-  envelope through those operators, with a recording-only committer; they do not establish service
-  creation or recovery acceptance. Extend the existing `CloudTasksCommittableSerializer` format under
-  its versioned compatibility contract rather than introducing a second staging format.
+- **The eager, stateless writer is the default delivery mode.** Opt-in DataStream
+  `EXACTLY_ONCE` uses the staging writer and production committer from `docs/adr/0158`.
+  Preserve immutable named envelopes, no sends before checkpoint completion, deadline checks before
+  every send, strict fail-before-send expiry, and no Flink writer state. Reuse the v1
+  `CloudTasksCommittableSerializer` compatibility contract when changing durable state.
+  `CloudTasksStagedCreationLifecycleTest` pins operator restore/rescale and
+  `CloudTasksStagedRecoveryITCase` exercises retained filesystem checkpoints and stop/savepoint recovery.
+  Do not equate those fake-service tests with #1245's real-service acceptance.
+  Keep the fixed-queue/failJob restrictions, v2beta3 retention readback and explicit out-of-guarantee
+  expiry policies aligned with the DataStream recovery runbook.
 - Use `docs/adr/0162` for the delivery order: implementation can start from ADR-0158 without a
   separate primitive performance pass; correctness and final performance acceptance still govern
   release. Keep #1241's inconclusive result distinct from that sequencing decision.
@@ -29,7 +27,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   App Engine targets are separate serializer arms. OIDC vs OAuth is the external HTTP target's
   choice, so that builder rejects setting both; App Engine uses the task `oneof`'s internal
   request arm and optional same-project service/version/instance routing.
-- **Retries are the sink's one owned loop in the writer**, never gax `createTaskSettings`;
+- **Retries belong to one sink-owned loop in the eager writer or staged committer**, never gax `createTaskSettings`;
   `NOT_FOUND` keeps its separate short budget. A failed create parks with a due time; parked
   creates count against `maxInFlightTasks` and drop on close.
 - Keep `CloudTasksCredentials` package-private in `sink.writer`; do not lift it to the module
@@ -38,13 +36,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`DefaultTaskCreatorFactory`) shares its package — the
   [#1043](https://github.com/flink-gcp/flink-connector-gcp/issues/1043) review judged the
   divergence deliberate.
-- **Transport sizing is the one gax setting the sink configures** (`docs/adr/0134`): an explicit
+- **Transport sizing controls channel capacity** (`docs/adr/0134`): an explicit
   `channelPoolSize` resizes the production channel pool; unset leaves the client's default single
   channel, it is never derived from `maxInFlightTasks`, and beside `emulatorEndpoint` it is
   rejected — the emulator arm keeps its caller-owned single channel (`docs/adr/0081`). gax retry
-  and batching policy stay untouched. `ChannelPoolSettings` is class-level `@BetaApi` in the
+  and batching policy stay untouched; staged creates additionally carry an absolute per-attempt deadline. `ChannelPoolSettings` is class-level `@BetaApi` in the
   pinned gax — an internal call, tier-irrelevant under `docs/adr/0141`; reread it on a BOM bump.
-- Task naming: unnamed by default; `taskIdExtractor(...)` on the **sink builder**, key hashed
+- Recheck the v2beta3 retention client on a BOM bump: `CloudTasksClient` and `CloudTasksSettings`
+  are `@BetaApi` in the pinned 2.96.0 SDK. ADR-0158 records this dependency; losing that surface
+  requires a replacement retention readback or an explicit operator-verified deployment decision,
+  never silently disabling the default check.
+- Task naming: unnamed in the default eager mode; staged envelopes always carry a persisted name; `taskIdExtractor(...)` on the **sink builder**, key hashed
   SHA-256, `ALREADY_EXISTS` = success; do not treat the contradictory name-release estimates as a
   precise minimum retention guarantee.
   Use Google's documented `tombstoneTtl` semantics where that configuration applies, and direct
@@ -71,7 +73,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Failure policy and metrics (`docs/adr/0049`)
 
-- **Exactly three failures are routed**: serializer rejection, extractor throw, creation
+- **In the default eager mode, exactly three failures are routed**: serializer rejection, extractor throw, creation
   rejected `INVALID_ARGUMENT`. An extractor's missing key is per-stream and fatal; a serializer
   `null` is a skip (`docs/adr/0001`).
 - The transient half of classification scans the whole chain; the `INVALID_ARGUMENT` half

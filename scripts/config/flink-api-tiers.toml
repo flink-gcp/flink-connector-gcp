@@ -158,7 +158,10 @@ reason = """
 Implemented by both BigQuery 2PC sinks: FILE_LOADS aggregates per-subtask
 pending files into load jobs before the committer (issue #14, FileSink's
 compactor precedent), and the buffered-stream exactly-once sink uses the
-identity topology as its validation hook (issue #30)."""
+identity topology as its validation hook (issue #30). CloudTasksStagedCreateTaskSink
+uses the same identity validation hook to reject unsupported runtime/checkpoint settings
+(issue #1243, ADR-0158); if this hook moves, adapt the cross-version sink surface
+before admitting checkpointed creation."""
 
 [experimental."org.apache.flink.streaming.api.connector.sink2.CommittableMessage"]
 reason = "Carrier type of the SupportsPreCommitTopology contract; same exposure."

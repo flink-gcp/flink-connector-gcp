@@ -29,7 +29,7 @@ import java.util.Set;
 
 /** Classifies status codes reported by failed Cloud Tasks creations. */
 @Internal
-final class CloudTasksErrorClassifier {
+public final class CloudTasksErrorClassifier {
 
     /** Statuses the sink retries on its main budget; a chain carrying one is never data-shaped. */
     private static final Set<StatusCode.Code> TRANSIENT_CODES =
@@ -48,7 +48,7 @@ final class CloudTasksErrorClassifier {
      * @return the outermost classifiable status, or {@code null} when the chain carries none
      */
     @Nullable
-    static StatusCode.Code statusCode(Throwable throwable) {
+    public static StatusCode.Code statusCode(Throwable throwable) {
         return firstMatching(throwable, null);
     }
 
@@ -62,7 +62,7 @@ final class CloudTasksErrorClassifier {
      * @return the first transient status, or {@code null} when the chain carries none
      */
     @Nullable
-    static StatusCode.Code transientCode(Throwable throwable) {
+    public static StatusCode.Code transientCode(Throwable throwable) {
         return firstMatching(throwable, TRANSIENT_CODES);
     }
 

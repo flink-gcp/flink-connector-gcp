@@ -27,7 +27,8 @@ Flink restores an earlier checkpoint.
 
 The short version is that flushing before a checkpoint makes data durable, but does not by itself
 prevent a restored job from writing the same record again.
-Only BigQuery currently has checkpoint-coordinated exactly-once write methods.
+BigQuery has checkpoint-coordinated exactly-once write methods.
+Cloud Tasks also has opt-in checkpointed task creation within its documented retention and recovery scope; its real-service acceptance and final performance release gates remain pending.
 Some other sinks can make a replay harmless when the record supplies a stable identity, but that is
 not the same contract as a general-purpose exactly-once sink.
 
@@ -48,8 +49,8 @@ These terms describe different properties and should not be used interchangeably
 
 **Checkpoint-durable** means that a completed checkpoint covers every preceding record the sink did
 not deliberately skip or route to a dropping failure policy.
-The sink has waited until the destination acknowledged those records before allowing the checkpoint
-barrier to pass.
+An eager sink waits for destination acknowledgement before allowing the checkpoint barrier to pass.
+A staged sink can instead checkpoint pending writes and apply them after completion; checkpoint completion alone then does not mean the destination has received them.
 
 **At-least-once** means that recovery does not lose a checkpoint-covered record, but may apply a
 record again when the source and sink restore an earlier checkpoint.
@@ -82,7 +83,8 @@ Checkpointing must be enabled in a streaming job for that durability boundary to
 | [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) `FILE_LOADS` | Checkpointed staged objects become deterministic load and copy jobs through a committer; batch `WRITE_TRUNCATE_DATA` overflow adds a terminal query job | Restored jobs reuse deterministic object and job identities | Exactly-once service writes for batch and checkpoint-triggered streaming loads |
 | [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) `STORAGE_API_AT_LEAST_ONCE` | Stateless writer flushes the default stream before the barrier | The same row may be appended again | At-least-once |
 | [Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}) sink | Stateless writer flushes SDK publishers and waits for publish acknowledgements | A replay is a new publish with a new service-assigned message ID | At-least-once; no publisher-side idempotent mode |
-| [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` or Table API `task-id` metadata |
+| [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) `AT_LEAST_ONCE` | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` or Table API `task-id` metadata |
+| [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) DataStream `EXACTLY_ONCE` | Stateless writer stages immutable named envelopes in committer state; bounded `CreateTask` calls start after checkpoint completion | Restore reuses original queue, name and Task bytes; every send enforces the persisted recovery deadline | Exactly-once task creation per staged envelope within the documented scope and recovery window; no exactly-once handler execution; release acceptance remains pending |
 | [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A regenerated `setCell` timestamp can add a version; a stable timestamp targets the same version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once; replay safety depends on the mutation shape |
 | [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes) single-row request runtime | Sink surface: stateless writer waits for every `CheckAndMutateRow` or `ReadModifyWriteRow` request. Async surface: Flink's async operator checkpoints un-emitted inputs and replays them | A replayed conditional write re-evaluates its predicate against the state the first attempt left; a replayed read-modify-write applies its increment or append again | At-least-once; neither RPC is idempotent, and the runtime retries neither. Conditional and read-modify-write sink and async entry points are available |
 | [Spanner]({{< relref "docs/connectors/datastream/spanner" >}}) sink | Stateless writer consumes `BatchWrite` responses before the barrier | Spanner documents no replay protection; the selected mutation operation may nevertheless be idempotent | At-least-once; `insertOrUpdate`, `replace`, `update`, and delete effects can be idempotent within their operation constraints |
@@ -110,11 +112,11 @@ implements insert-if-absent.
 | Bigtable DataStream API, bulk sink | The serializer chooses the `RowMutationEntry` row key, mutations, qualifiers, and cell timestamps | Replaying `setCell` with a stable explicit timestamp targets the same version; a regenerated timestamp can create another version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once submission; replay safety belongs to the mutation shape |
 | Bigtable single-row request runtime | The request names the row key; `CheckAndMutateRow` carries a predicate and an ordered mutation list for each branch, `ReadModifyWriteRow` an ordered list of append and increment rules | Repeating a conditional write re-runs the predicate, so a marker it writes can make the second attempt a no-op; repeating a read-modify-write appends or increments again, with no timestamp to target | At-least-once submission, one attempt per request; a conditional write is the only shape here that can be made replay-safe, and only by what the application puts in the row |
 | Cloud Tasks Table API | The sink accepts inserts only; writable `task-id` metadata optionally selects a stable task identity | A remembered ID returns `ALREADY_EXISTS`; the existing task is neither compared nor updated | At-least-once submission; bounded effectively-once task creation when `task-id` is selected |
-| Cloud Tasks DataStream API | `taskIdExtractor(...)` optionally selects a stable task identity; otherwise Cloud Tasks assigns one | A remembered extracted ID returns `ALREADY_EXISTS`; an unnamed replay creates another task | At-least-once submission; bounded effectively-once task creation with an extractor |
+| Cloud Tasks DataStream API, default `AT_LEAST_ONCE` | `taskIdExtractor(...)` optionally selects a stable task identity; otherwise Cloud Tasks assigns one | A remembered extracted ID returns `ALREADY_EXISTS`; an unnamed replay creates another task | At-least-once submission; bounded effectively-once task creation with an extractor |
 
-None of these key choices turns a non-BigQuery connector into a checkpoint-coordinated
-exactly-once sink.
-They make a particular destination effect replay-safe only within the identity, operation, and
+These key choices alone do not establish a checkpoint-coordinated protocol.
+Cloud Tasks separately offers the checkpointed mode described below.
+The eager paths make a particular destination effect replay-safe only within the identity, operation, and
 retention constraints in the table.
 
 ## BigQuery and the Storage Write API example
@@ -168,14 +170,22 @@ Cloud Tasks already exposes the useful service primitive: a caller-chosen task n
 The sink's `taskIdExtractor(...)` hashes a stable application key into such a name and treats that
 response as success.
 
-This mechanism does not need a Flink committer because eager task creation is idempotent during the
-window.
+The default eager mode uses this mechanism without a Flink committer because repeating the same named creation is idempotent during the window.
 It is deliberately described as bounded effectively-once task creation.
 Google's [v2beta3 Queue reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues) documents name protection after deletion or execution for the configured `tombstoneTtl`.
 The sink creates tasks through v2; this field belongs to v2beta3 queue administration and is not a sink option or a field on the v2 Queue resource.
 Consult that field and the [v2 task-creation reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create) for their respective configuration and name-reuse semantics.
-The existing sink does not verify queue retention or enforce a bounded recovery protocol.
+The default eager mode does not verify queue retention or enforce a bounded recovery protocol.
 Once the service releases a name, replay can create another task.
+
+The DataStream `EXACTLY_ONCE` mode instead stages immutable named tasks and creates them only after their owning checkpoint completes.
+Names are hashes of stable application keys when configured, or persisted random identities otherwise.
+Restore and rescale reuse checkpointed bytes without rerunning user code, and each attempt checks a durable deadline derived from staging time, retention, clock skew and request timeout.
+The committer verifies the fixed queue's `tombstoneTtl` by default and fails before sending expired envelopes.
+Its explicit expiry overrides accept loss or duplicate risk outside the guarantee.
+See [checkpointed creation]({{< relref "docs/connectors/datastream/cloudtasks" >}}#checkpointed-task-creation) for retained-checkpoint and finite-restart prerequisites, state-loss hazards, heap/checkpoint sizing and the recovery runbook.
+Tasks become visible incrementally after completion; old in-flight service effects and a stop-with-savepoint that never reaches FINISHED remain explicit exclusions.
+Table API support is tracked separately in [#1244]({{< param BookRepo >}}/issues/1244).
 
 Cloud Tasks [delivers the task handler at least once](https://cloud.google.com/tasks/docs/dual-overview)
 even when task creation was deduplicated.
@@ -320,10 +330,10 @@ Stage 1 ran against the real services on 2026-08-13 with the repository's pinned
 clients; the Bigtable candidate ran again on 2026-09-05 with evenly distributed keys, and once
 more the same day under an amended protocol with every repetition in its own JVM.
 The Cloud Tasks task-identity candidate ran again on 2026-09-06.
-These results measure the service primitives, not end-to-end Flink jobs, and none of the
-not-yet-implemented modes below is currently available through a connector builder.
+These results measure the service primitives, not end-to-end Flink jobs.
+The Cloud Tasks staged DataStream runtime is implemented, but this does not turn its primitive result into a pass or satisfy its remaining release gates.
 Apart from the committer-based Bigtable mode planned under
-[#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks checkpointed-creation proposal in
+[#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks checkpointed-creation work in
 [#1238]({{< param BookRepo >}}/issues/1238), no non-BigQuery exactly-once implementation or
 additional performance stage is planned without a concrete non-idempotent requirement that the
 existing write shapes cannot satisfy.
@@ -332,7 +342,7 @@ existing write shapes cannot satisfy.
 |---|---|---|
 | Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
-| Cloud Tasks task identity | All four planned comparisons in the 2026-09-06 repeat were inconclusive: the one-channel replay warm-up stopped before required repetitions and controls finished; the eight-channel configuration never ran | The existing bounded task-creation behavior remains available. The checkpointed-creation protocol for [#1238]({{< param BookRepo >}}/issues/1238) is defined in [ADR-0158]({{< param BookRepo >}}/blob/main/docs/adr/0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md); [ADR-0162]({{< param BookRepo >}}/blob/main/docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) permits implementation while preserving the inconclusive result. Release requires [#1245]({{< param BookRepo >}}/issues/1245)'s recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment. No checkpointed mode is implemented. |
+| Cloud Tasks task identity | All four planned comparisons in the 2026-09-06 repeat were inconclusive: the one-channel replay warm-up stopped before required repetitions and controls finished; the eight-channel configuration never ran | The existing bounded task-creation behavior remains available. The checkpointed-creation protocol for [#1238]({{< param BookRepo >}}/issues/1238) is defined in [ADR-0158]({{< param BookRepo >}}/blob/main/docs/adr/0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md); [ADR-0162]({{< param BookRepo >}}/blob/main/docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) permits implementation while preserving the inconclusive result. Release requires [#1245]({{< param BookRepo >}}/issues/1245)'s recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment. The staged DataStream runtime is implemented; Table API exposure remains in [#1244]({{< param BookRepo >}}/issues/1244). |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in

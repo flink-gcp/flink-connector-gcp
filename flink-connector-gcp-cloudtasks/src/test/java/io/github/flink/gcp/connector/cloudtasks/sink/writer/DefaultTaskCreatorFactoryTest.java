@@ -156,6 +156,137 @@ class DefaultTaskCreatorFactoryTest {
     }
 
     @Test
+    void retentionReadbackUsesTheSameExplicitCredentialsOrAdcAndValidatesItsDuration()
+            throws Exception {
+        Path key = ServiceAccountKeyFiles.create(tempDir);
+        assertThat(
+                        DefaultTaskCreatorFactory.retentionSettings(key.toString())
+                                .getCredentialsProvider()
+                                .getCredentials())
+                .isEqualTo(
+                        DefaultTaskCreatorFactory.productionSettings(key.toString(), null)
+                                .getCredentialsProvider()
+                                .getCredentials());
+        assertThat(DefaultTaskCreatorFactory.retentionSettings(null).getCredentialsProvider())
+                .isInstanceOf(GoogleCredentialsProvider.class);
+        var queue = com.google.cloud.tasks.v2beta3.Queue.newBuilder();
+        assertThat(DefaultTaskCreatorFactory.queueRetention(queue.build()))
+                .isEqualTo(java.time.Duration.ofHours(1));
+        queue.setTombstoneTtl(com.google.protobuf.Duration.newBuilder().setSeconds(7200));
+        assertThat(DefaultTaskCreatorFactory.queueRetention(queue.build()))
+                .isEqualTo(java.time.Duration.ofHours(2));
+        queue.setTombstoneTtl(com.google.protobuf.Duration.newBuilder().setSeconds(-1));
+        assertThatThrownBy(() -> DefaultTaskCreatorFactory.queueRetention(queue.build()))
+                .hasMessageContaining("invalid tombstoneTtl");
+        queue.setTombstoneTtl(com.google.protobuf.Duration.newBuilder().setNanos(1_000_000_000));
+        assertThatThrownBy(() -> DefaultTaskCreatorFactory.queueRetention(queue.build()))
+                .hasMessageContaining("invalid tombstoneTtl");
+    }
+
+    @Test
+    void emulatorRetentionReadbackFailsBeforeLoadingCredentials() {
+        var factory =
+                new DefaultTaskCreatorFactory(
+                        "/missing-must-not-be-read.json",
+                        EmulatorEndpoint.parse("localhost:8123", "emulatorEndpoint"),
+                        null);
+        assertThatThrownBy(() -> factory.readQueueRetention("projects/p/locations/l/queues/q"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("unavailable for an emulator endpoint");
+    }
+
+    @Test
+    void retentionDiagnosticsKeepStatusWithoutVendorDetailsOrCause() {
+        for (var status :
+                new io.grpc.Status[] {
+                    io.grpc.Status.NOT_FOUND,
+                    io.grpc.Status.PERMISSION_DENIED,
+                    io.grpc.Status.UNAVAILABLE
+                }) {
+            var failure =
+                    DefaultTaskCreatorFactory.retentionReadFailure(
+                            new IllegalStateException(
+                                    "private wrapper",
+                                    status.withDescription("private vendor payload")
+                                            .asRuntimeException()));
+            assertThat(failure)
+                    .hasMessageContaining("status=" + status.getCode())
+                    .hasMessageNotContaining("private")
+                    .hasNoCause();
+        }
+        assertThat(
+                        DefaultTaskCreatorFactory.retentionReadFailure(
+                                new IllegalStateException("private")))
+                .hasMessageContaining("status=UNCLASSIFIED")
+                .hasMessageNotContaining("private")
+                .hasNoCause();
+    }
+
+    @Test
+    void stagedCallPassesTheOriginalAbsoluteDeadlineThroughTheProductionAdapter() throws Exception {
+        var observed =
+                new java.util.concurrent.atomic.AtomicReference<
+                        com.google.api.gax.rpc.ApiCallContext>();
+        var stub =
+                new com.google.cloud.tasks.v2.stub.CloudTasksStub() {
+                    @Override
+                    public com.google.api.gax.rpc.UnaryCallable<
+                                    com.google.cloud.tasks.v2.CreateTaskRequest,
+                                    com.google.cloud.tasks.v2.Task>
+                            createTaskCallable() {
+                        return new com.google.api.gax.rpc.UnaryCallable<>() {
+                            @Override
+                            public com.google.api.core.ApiFuture<com.google.cloud.tasks.v2.Task>
+                                    futureCall(
+                                            com.google.cloud.tasks.v2.CreateTaskRequest request,
+                                            com.google.api.gax.rpc.ApiCallContext context) {
+                                observed.set(context);
+                                return com.google.api.core.ApiFutures.immediateFuture(
+                                        request.getTask());
+                            }
+                        };
+                    }
+
+                    @Override
+                    public void close() {}
+
+                    @Override
+                    public void shutdown() {}
+
+                    @Override
+                    public void shutdownNow() {}
+
+                    @Override
+                    public boolean isShutdown() {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean isTerminated() {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean awaitTermination(
+                            long duration, java.util.concurrent.TimeUnit unit) {
+                        return true;
+                    }
+                };
+        var request = com.google.cloud.tasks.v2.CreateTaskRequest.getDefaultInstance();
+        try (var adapter =
+                new DefaultTaskCreatorFactory.CloudTasksClientAdapter(
+                        com.google.cloud.tasks.v2.CloudTasksClient.create(stub), null)) {
+            var deadline = io.grpc.Deadline.after(-1, java.util.concurrent.TimeUnit.SECONDS);
+            adapter.createTask(request, deadline).get();
+            assertThat(
+                            ((com.google.api.gax.grpc.GrpcCallContext) observed.get())
+                                    .getCallOptions()
+                                    .getDeadline())
+                    .isSameAs(deadline);
+        }
+    }
+
+    @Test
     void isSerializableIntoTheJobGraph() throws Exception {
         DefaultTaskCreatorFactory emulator =
                 new DefaultTaskCreatorFactory(

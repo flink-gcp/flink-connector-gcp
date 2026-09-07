@@ -65,6 +65,20 @@ class CloudTasksLineageTest {
     }
 
     @Test
+    void stagedCreationRetainsFixedQueueLineageAcrossSerializationWithoutOpeningTheSink()
+            throws Exception {
+        Sink<String> sink =
+                InstantiationUtil.clone(
+                        builder()
+                                .queue(QUEUE)
+                                .deliveryGuarantee(CloudTasksDeliveryGuarantee.EXACTLY_ONCE)
+                                .build());
+        assertThat(vertex(sink).datasets())
+                .singleElement()
+                .satisfies(dataset -> assertQueue(dataset, "project", "location", "queue"));
+    }
+
+    @Test
     void anUnknownQueueHasANonNullEmptyVertexWithoutCallingTheResolver() {
         Sink<String> sink = builder().destinationResolver(new ThrowingResolver()).build();
         assertThat(vertex(sink).datasets()).isEmpty();

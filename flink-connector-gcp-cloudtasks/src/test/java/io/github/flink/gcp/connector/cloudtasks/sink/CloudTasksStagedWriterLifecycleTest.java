@@ -252,7 +252,7 @@ class CloudTasksStagedWriterLifecycleTest {
     }
 
     @Test
-    void emptyCollectorRestoresAndThePublicBuilderStillExposesOnlyTheEagerMode() throws Exception {
+    void emptyCollectorRestoresAndThePublicBuilderDefaultsToTheEagerMode() throws Exception {
         OperatorSubtaskState state;
         try (var writer = writer(1, 0);
                 var committer = committer(1, 0)) {
@@ -269,7 +269,7 @@ class CloudTasksStagedWriterLifecycleTest {
             assertThat(probe.committed).isEmpty();
         }
         assertThat(Modifier.isAbstract(CloudTasksStagedCreateTaskSink.class.getModifiers()))
-                .isTrue();
+                .isFalse();
         assertThat(SupportsWriterState.class.isAssignableFrom(sink.getClass())).isFalse();
         var eager =
                 CloudTasksSink.<String>builder()
