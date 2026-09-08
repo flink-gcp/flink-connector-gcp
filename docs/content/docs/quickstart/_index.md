@@ -27,7 +27,7 @@ have in common — getting the artifacts, and getting credentials in front of th
 
 | | |
 |---|---|
-| [BigQuery]({{< relref "docs/quickstart/bigquery" >}}) | Write a stream of JSON documents into a table |
+| [BigQuery]({{< relref "docs/quickstart/bigquery" >}}) | Write a stream of JSON documents into a table, and read a table with the bounded Storage Read API source |
 | [Cloud Pub/Sub]({{< relref "docs/quickstart/pubsub" >}}) | Publish to a topic, consume from a subscription, and the same in SQL |
 | [Cloud Tasks]({{< relref "docs/quickstart/cloudtasks" >}}) | Dispatch a stream as HTTP tasks the queue paces |
 | [Bigtable]({{< relref "docs/quickstart/bigtable" >}}) | Write a stream of row mutations into a table, and read a table back |
@@ -133,7 +133,8 @@ What each connector asks for:
 
 | Connector | Permissions |
 |---|---|
-| BigQuery | `bigquery.tables.create` on the dataset under the default create disposition; `bigquery.tables.get` and `bigquery.tables.update` when schema updates or `FILE_LOADS` are enabled, plus BigQuery data-editor and job-user access, and Cloud Storage read/write on the staging bucket for `FILE_LOADS` |
+| BigQuery sink | `bigquery.tables.create` on the dataset under the default create disposition; `bigquery.tables.get` and `bigquery.tables.update` when schema updates or `FILE_LOADS` are enabled, plus BigQuery data-editor and job-user access, and Cloud Storage read/write on the staging bucket for `FILE_LOADS` |
+| BigQuery source | [Storage Read API session permissions](https://cloud.google.com/bigquery/docs/reference/storage#permissions) on the read-session project and access to the table's data. Queries also need `bigquery.jobs.create`; a [named result dataset]({{< relref "docs/connectors/datastream/bigquery" >}}#where-the-result-lands) additionally needs [result-table creation/write permissions](https://cloud.google.com/bigquery/docs/writing-results#required_permissions) and `bigquery.tables.get` / `bigquery.tables.update` to set expiration. The default anonymous result uses the query identity's access. Opt-in [view materialization]({{< relref "docs/connectors/datastream/bigquery" >}}#reading-a-view-without-writing-the-query) also needs [`bigquery.tables.get`](https://cloud.google.com/bigquery/docs/reference/rest/v2/tables/get) on the configured table or view |
 | Pub/Sub sink | `pubsub.topics.publish`, plus `pubsub.topics.create` (roles/pubsub.editor) when topic auto-creation may trigger |
 | Pub/Sub source | The JobManager needs `pubsub.subscriptions.get` for the startup check and `pubsub.subscriptions.consume` for every non-default start position's timestamp seek. Auto-creation on the JobManager additionally needs `pubsub.subscriptions.create` on the containing project and `pubsub.topics.attachSubscription` on the requested topic. TaskManager readers need `pubsub.subscriptions.consume` for pulling and acknowledgement handling. `roles/pubsub.viewer` plus `roles/pubsub.subscriber` cover an existing subscription; `roles/pubsub.editor` covers the full create and consume path |
 | Cloud Tasks | `cloudtasks.tasks.create` ([roles/cloudtasks.enqueuer](https://cloud.google.com/tasks/docs/secure-queue-configuration)), which binds to a single queue as well as to the project. The sink never creates a queue |

@@ -22,10 +22,13 @@ limitations under the License.
 
 # BigQuery Connector
 
-BigQuery sink for Apache Flink with a unified, `BigQueryIO`-style write API, provided by the
-`flink-connector-gcp-bigquery` module.
+The `flink-connector-gcp-bigquery` module provides a bounded [source](#source) and a [sink](#sink) for Apache Flink.
+The source reads tables and query results through the Storage Read API.
+The sink offers a unified, `BigQueryIO`-style write API over the Storage Write API and GCS-staged load jobs.
+Experimental [CDC writes](#change-data-capture) apply upserts and deletes to tables with a BigQuery primary key, using only the at-least-once default-stream write method.
+The [Table API / SQL connector]({{< relref "docs/connectors/table/bigquery" >}}) also supports bounded reads, writes, and CDC ingestion.
 
-One builder dispatches to a write-method implementation at job-graph construction time:
+The sink builder dispatches to a write-method implementation at job-graph construction time:
 
 {{< java-snippet file="BigQueryConnectorOverview.java" tag="bigquery-connector-overview" >}}
 

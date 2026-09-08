@@ -1,15 +1,17 @@
 # flink-connector-gcp-bigquery
 
-BigQuery connectors for Apache Flink: a sink with a unified, `BigQueryIO`-style write API, and a
-bounded source over the Storage Read API.
+BigQuery source and sink for Apache Flink, available through DataStream and Table API / SQL.
+The bounded source reads tables and query results through the Storage Read API.
+The sink offers a unified, `BigQueryIO`-style write API, including experimental CDC upserts and deletes on the at-least-once default stream for tables with a BigQuery primary key.
 
-One builder dispatches to a write-method implementation at job-graph construction time:
+The sink supports these write features:
 
-| Write method | Status |
+| Write feature | Status |
 |---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: [#15](https://github.com/flink-gcp/flink-connector-gcp/issues/15)); tuning knobs, cold-destination eviction and `flushInterval` ([#54](https://github.com/flink-gcp/flink-connector-gcp/issues/54)) |
 | `STORAGE_API_EXACTLY_ONCE` | Implemented, including dynamic destinations and mid-stream schema evolution ([#30](https://github.com/flink-gcp/flink-connector-gcp/issues/30), [#76](https://github.com/flink-gcp/flink-connector-gcp/issues/76), [#77](https://github.com/flink-gcp/flink-connector-gcp/issues/77)) |
 | `FILE_LOADS` | Implemented ([#14](https://github.com/flink-gcp/flink-connector-gcp/issues/14) batch, [#69](https://github.com/flink-gcp/flink-connector-gcp/issues/69) streaming, [#646](https://github.com/flink-gcp/flink-connector-gcp/issues/646) metadata-preserving batch replacement) |
+| CDC upserts and deletes with `STORAGE_API_AT_LEAST_ONCE` | Implemented ([#625](https://github.com/flink-gcp/flink-connector-gcp/issues/625)); Experimental ([#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706)) |
 
 <!-- readme-example file="BigQueryConnectorOverview.java" tag="bigquery-connector-overview" -->
 ```java
@@ -59,6 +61,7 @@ Using the shipped `GenericRecord` deserializer needs `flink-avro` on the job's c
 | The remaining write methods from SQL (`sink.buffered-stream.*`, `sink.file-loads.*`) | Implemented ([#288](https://github.com/flink-gcp/flink-connector-gcp/issues/288)) |
 | Table-creation options (`sink.table-create.*`): time partitioning and clustering | Implemented ([#289](https://github.com/flink-gcp/flink-connector-gcp/issues/289)) |
 | Bounded `DynamicTableSource` over table, query, and view-materialization reads, with top-level projection and conservative filter pushdown | Implemented ([#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542), [#1137](https://github.com/flink-gcp/flink-connector-gcp/issues/1137)) |
+| CDC upsert/delete changelog ingestion with a declared primary key and `sink.write-method=storage-api-at-least-once` | Implemented ([#626](https://github.com/flink-gcp/flink-connector-gcp/issues/626)); Experimental ([#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706)) |
 | `flink-sql-connector-gcp-bigquery` shaded uber-jar | Implemented ([#290](https://github.com/flink-gcp/flink-connector-gcp/issues/290)) |
 
 ## Documentation
@@ -72,7 +75,9 @@ A complete runnable job is in
 destinations, the exactly-once write methods and table auto-creation are worked through in
 [Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/bigquery/), which also work
 through reading: projection and restriction, a public dataset, a point-in-time read and the
-stream-count knobs. Every option the sink and the source take, with its default, is in the
+stream-count knobs.
+The [CDC examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/bigquery/#change-data-capture) cover DataStream and SQL upsert/delete ingestion.
+Every option the sink and the source take, with its default, is in the
 [configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/bigquery/).
 
 The Table API / SQL option surface is documented in the
