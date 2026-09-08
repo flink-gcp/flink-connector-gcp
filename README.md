@@ -61,6 +61,20 @@ destinations, exactly-once, auto-creation and emulator-backed local runs; and th
 [configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/) lists
 every option each connector takes, with its default.
 
+## Blog series
+
+This series introduces the project and its five connectors as they were released in 1.0.0.
+For current setup and supported behavior, see the [documentation].
+
+- [Release introduction](https://laughingman7743.hatenablog.com/entry/2026/08/31/190604)
+- [BigQuery](https://laughingman7743.hatenablog.com/entry/2026/09/02/001129)
+- [Pub/Sub](https://laughingman7743.hatenablog.com/entry/2026/09/03/001309)
+- [Spanner](https://laughingman7743.hatenablog.com/entry/2026/09/04/001631)
+- [Bigtable](https://laughingman7743.hatenablog.com/entry/2026/09/05/163307)
+- [Cloud Tasks](https://laughingman7743.hatenablog.com/entry/2026/09/06/123117)
+
+[documentation]: https://flink-gcp.github.io/flink-connector-gcp/
+
 ## Contributing
 
 Beyond a trivial fix, contributions start with an issue rather than a pull request — see
