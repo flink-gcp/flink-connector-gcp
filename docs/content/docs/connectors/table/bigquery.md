@@ -22,8 +22,9 @@ limitations under the License.
 
 # BigQuery SQL Connector
 
-The `bigquery` connector reads a bounded BigQuery table or query result and writes a table through
-the module `flink-connector-gcp-bigquery`. It maps onto the DataStream source and sink documented in
+The `bigquery` connector provides a bounded [source](#source) for BigQuery tables and query results, and a [sink](#sink) for all three write methods through the module `flink-connector-gcp-bigquery`.
+The sink also supports experimental [CDC ingestion](#change-data-capture): upserts and deletes with a declared primary key, using only the at-least-once default-stream write method.
+It maps onto the DataStream source and sink documented in
 [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) — that page carries the design,
 the delivery guarantees and the error handling; this one carries the DDL surface. Per-feature
 status is in the module README.
@@ -42,7 +43,7 @@ A query source needs a billing project but no `dataset` or `table`:
 
 Use `flink-sql-connector-gcp-bigquery`, an uber-jar built for exactly this: put it in Flink's `lib/`
 directory, or add it with `ADD JAR` in the SQL client. It bundles `flink-connector-gcp-bigquery`
-together with its whole runtime tree — the Storage Write API and REST clients, the Cloud Storage
+together with its whole runtime tree — the Storage Read API, Storage Write API and REST clients, the Cloud Storage
 client, gRPC, protobuf, Avro, Guava, the Google auth and HTTP clients — which is 110 artifacts, not
 a dependency list anyone wants to assemble by hand.
 
