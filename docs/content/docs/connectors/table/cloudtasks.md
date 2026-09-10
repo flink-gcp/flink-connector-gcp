@@ -489,7 +489,7 @@ The [heap and checkpoint sizing rules]({{< relref "docs/connectors/datastream/cl
 Writer caps do not bound Flink's total pending collector; use peak pending counts, task size and representation overhead, and size the checkpoint timeout for all pending commit waves and retries.
 Task visibility is incremental after checkpoint completion, and handler execution remains at-least-once.
 Administrative removal of name protection and unbounded late service effects remain outside the guarantee.
-Release still requires [#1245]({{< param BookRepo >}}/issues/1245)'s real-service recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment.
+The mode has [#1245]({{< param BookRepo >}}/issues/1245)'s adopted real-service recovery evidence; release still requires [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment.
 
 ## Testing
 
