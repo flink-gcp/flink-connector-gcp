@@ -33,6 +33,97 @@ class Stage2JobITCase {
     @TempDir Path directory;
 
     @Test
+    void diagnosticCreditsYieldToCheckpointsAndResumeBothSourceSubtasks() throws Exception {
+        try (Stage2Harness run =
+                new Stage2Harness(
+                        TableDestination.of("local-project", "local-instance", "local-table"),
+                        "127.0.0.1:1",
+                        directory.resolve("credits"),
+                        100,
+                        1024,
+                        false,
+                        false,
+                        1,
+                        true,
+                        null,
+                        2)) {
+            try (LocalStagedJob job =
+                    new LocalStagedJob(
+                            run,
+                            directory.resolve("job"),
+                            true,
+                            false,
+                            2,
+                            100,
+                            3_600_000,
+                            true,
+                            null,
+                            false)) {
+                await(
+                        "both diagnostic readers started",
+                        Duration.ofSeconds(20),
+                        () -> run.readersStarted.get() == 2);
+                // Only checkpoint-driven credit release is under test; outlive the test timeout.
+                run.startWindow(System.nanoTime(), 0, TimeUnit.MINUTES.toNanos(5));
+                await(
+                        "both source credit windows full",
+                        Duration.ofSeconds(20),
+                        () -> run.ledger.admittedCount() == 4);
+                assertThat(run.ledger.acknowledgedCount()).isZero();
+                job.checkpoint();
+                await(
+                        "both source credit windows refilled",
+                        Duration.ofSeconds(10),
+                        () -> run.ledger.admittedCount() == 8);
+                assertThat(run.ledger.acknowledgedCount()).isEqualTo(4);
+                job.checkpoint();
+                await(
+                        "second credit release",
+                        Duration.ofSeconds(10),
+                        () -> run.ledger.admittedCount() == 12);
+                assertThat(run.ledger.acknowledgedCount()).isEqualTo(8);
+                var sample =
+                        new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind
+                                        .ObjectMapper()
+                                .readTree(run.admission.sample());
+                assertThat(sample.path("peakPendingPerSubtask").asInt()).isEqualTo(2);
+                assertThat(sample.path("peakPendingInputs").asInt()).isEqualTo(4);
+                assertThat(sample.path("availabilityWaits").asInt()).isPositive();
+            }
+            assertThat(run.active.get()).isZero();
+        }
+    }
+
+    @Test
+    void diagnosticTimedRunLabelsSamplesAndDrainsAtTheUnchangedDeadline() throws Exception {
+        Path work = directory.resolve("diagnostic");
+        BigtableStage2Probe.timed(
+                null,
+                "local-table",
+                work,
+                true,
+                false,
+                "127.0.0.1:1",
+                1024,
+                1,
+                1,
+                60_000,
+                0,
+                1000,
+                1000,
+                1,
+                false,
+                4);
+        assertThat(work).doesNotExist();
+        String samples =
+                java.nio.file.Files.readString(directory.resolve("diagnostic-samples.jsonl"));
+        assertThat(samples)
+                .contains(
+                        "\"admissionMode\":\"diagnostic-credit\"",
+                        "\"maxPendingInputsPerSubtask\":4");
+    }
+
+    @Test
     void heldCommitExpiresTheNextCheckpointAndReleasesItsProgressOnCancellation() throws Exception {
         Stage2CommitProgress progress = new Stage2CommitProgress();
         try (LocalStagedHarness run =
