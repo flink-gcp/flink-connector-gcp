@@ -16,9 +16,19 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
+import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
+import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo;
+import org.apache.flink.streaming.runtime.operators.sink.CommitterOperatorFactory;
+import org.apache.flink.streaming.runtime.operators.sink.SinkWriterOperatorFactory;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
+
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
+import com.google.api.core.SettableApiFuture;
+import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -37,6 +47,89 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(30)
 class Stage2CommitProgressTest {
     @TempDir Path directory;
+
+    @Test
+    void oneCompletionNotificationSynchronouslyDrainsAllEarlierCheckpointCollections()
+            throws Exception {
+        var executor = Executors.newSingleThreadExecutor();
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        try (LocalStagedHarness run =
+                new LocalStagedHarness(1024, false, false, 2) {
+                    @Override
+                    void commitStarted(Object committer, int entries) {
+                        progress.started(committer, entries, System.nanoTime());
+                    }
+
+                    @Override
+                    void commitFinished(Object committer, boolean successful) {
+                        progress.finished(committer, successful, System.nanoTime());
+                    }
+                }) {
+            run.hang = true;
+            var sink = new LocalStagedHarness.StagedSink(run, false);
+            try (var writer =
+                            new OneInputStreamOperatorTestHarness<
+                                    Long, CommittableMessage<CheckAndMutateRowRequest>>(
+                                    new SinkWriterOperatorFactory<>(sink), 16, 1, 0);
+                    var committer =
+                            new OneInputStreamOperatorTestHarness<
+                                    CommittableMessage<CheckAndMutateRowRequest>,
+                                    CommittableMessage<CheckAndMutateRowRequest>>(
+                                    new CommitterOperatorFactory<>(sink, false, true), 16, 1, 0)) {
+                writer.setup(
+                        CommittableMessageTypeInfo.of(sink::getCommittableSerializer)
+                                .createSerializer(new SerializerConfigImpl()));
+                writer.open();
+                committer.open();
+                long sequence = 0;
+                int[] sizes = {2, 3, 1};
+                for (int checkpoint = 1; checkpoint <= sizes.length; checkpoint++) {
+                    for (int entry = 0; entry < sizes[checkpoint - 1]; entry++) {
+                        writer.processElement(sequence++, 0);
+                    }
+                    writer.getOperator().prepareSnapshotPreBarrier(checkpoint);
+                    for (var message : writer.extractOutputValues()) {
+                        committer.processElement(new StreamRecord<>(message));
+                    }
+                    writer.getOutput().clear();
+                    committer.snapshot(checkpoint, 0);
+                }
+                committer.getOperator().notifyCheckpointAborted(1);
+                assertThat(run.originalFutures).isEmpty();
+                var notification =
+                        executor.submit(
+                                () -> {
+                                    committer.notifyOfCompletedCheckpoint(3);
+                                    return null;
+                                });
+                try {
+                    for (int sent = 1; sent <= 6; sent++) {
+                        int expected = sent;
+                        await(
+                                "next synchronous request",
+                                Duration.ofSeconds(5),
+                                () -> run.originalFutures.size() >= expected);
+                        assertThat(notification).isNotDone();
+                        ((SettableApiFuture<Boolean>) run.originalFutures.get(sent - 1)).set(false);
+                    }
+                    notification.get(5, TimeUnit.SECONDS);
+                    JsonNode completed = json(progress.sample(System.nanoTime()));
+                    assertThat(completed.path("finishedBatches").asInt()).isEqualTo(3);
+                    assertThat(completed.path("largestBatchEntries").asInt()).isEqualTo(3);
+                    assertThat(completed.path("failedBatches").asInt()).isZero();
+                    assertThat(run.acknowledgedCount()).isEqualTo(6);
+                    assertThat(run.active.get()).isZero();
+                } finally {
+                    notification.cancel(true);
+                    executor.shutdownNow();
+                    assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
 
     @Test
     void reportsConcurrentInvocationsAndRetainsOnlyTotalsAfterCompletion() throws Exception {

@@ -33,6 +33,10 @@ final class Stage2Ledger implements AutoCloseable {
     private int admitted;
     private int acknowledged;
     private int measured;
+    private int warmup;
+    private int tail;
+    private long firstMeasuredAdmission;
+    private long lastMeasuredAdmission;
     private long measuredStart;
     private long measuredEnd;
 
@@ -80,7 +84,15 @@ final class Stage2Ledger implements AutoCloseable {
         file.writeLong(now);
         admitted++;
         if (now >= measuredStart && now < measuredEnd) {
+            if (measured == 0) {
+                firstMeasuredAdmission = now;
+            }
             measured++;
+            lastMeasuredAdmission = now;
+        } else if (now < measuredStart) {
+            warmup++;
+        } else {
+            tail++;
         }
     }
 
@@ -163,6 +175,26 @@ final class Stage2Ledger implements AutoCloseable {
 
     static long percentile(long[] values, int count, double fraction) {
         return values[(int) Math.ceil(count * fraction) - 1];
+    }
+
+    synchronized String sample() {
+        return "{\"admittedInputs\":"
+                + admitted
+                + ",\"acknowledgedInputs\":"
+                + acknowledged
+                + ",\"pendingInputs\":"
+                + (admitted - acknowledged)
+                + ",\"warmupInputs\":"
+                + warmup
+                + ",\"measuredInputs\":"
+                + measured
+                + ",\"tailInputs\":"
+                + tail
+                + ",\"firstMeasuredAdmissionOffsetNanos\":"
+                + (measured == 0 ? -1 : firstMeasuredAdmission - measuredStart)
+                + ",\"lastMeasuredAdmissionOffsetNanos\":"
+                + (measured == 0 ? -1 : lastMeasuredAdmission - measuredStart)
+                + "}";
     }
 
     synchronized int admittedCount() {

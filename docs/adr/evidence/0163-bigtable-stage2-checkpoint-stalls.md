@@ -104,3 +104,6 @@ Their bounded logs and samples remain in ignored local evidence storage outside 
 No GCP resources were created or reused, and this follow-up incurred no GCP usage charges.
 The previous lease's cost estimate and unconfirmed actual billing remain unchanged.
 The full 108-cell service matrix, settled marker storage, sustained hot-row growth and production-path acceptance remain pending.
+
+The subsequent [admission diagnostics](0163-bigtable-stage2-admission-diagnostics.md) add explicitly limited local source controls and examine synchronous work across pending checkpoint collections.
+Their results remain separate from formal Stage 2 acceptance.
