@@ -472,7 +472,7 @@ Four exclusions constrain this guarantee:
 - **Unbounded service effects and administrative history:** client cancellation and deadlines do not exclude late service-side effects, including requests sent by an old process; purge, queue deletion/recreation and shortened name retention can remove replay protection.
 - **Stop-with-savepoint without FINISHED:** a synchronous savepoint can create tasks before an unrelated operator or the commit itself fails; the job fails without automatic recovery; an external restart from an older checkpoint can stage those records under fresh random names.
 
-The DataStream and Table implementations are available for validation, but release of the mode still requires [#1245]({{< param BookRepo >}}/issues/1245)'s real-service recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance verdict.
+The DataStream and Table implementations have [#1245]({{< param BookRepo >}}/issues/1245)'s adopted real-service recovery evidence; release of the mode still requires [#1246]({{< param BookRepo >}}/issues/1246)'s final performance verdict.
 The earlier primitive measurements remain inconclusive; implementing this mode does not change that result.
 
 ### Recovery window and prerequisites
@@ -926,7 +926,27 @@ failure after a successful test.
 The scheduled sweep restores the stopped state after a hard cancellation that cannot run shell cleanup.
 The remaining gated suites run after the fixture has returned to its idle state.
 
-Limits of this coverage:
+The checkpointed-creation recovery acceptance has a separate, manually approved
+[protocol]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0158-cloudtasks-recovery-1245.md).
+It captures real creation responses before injecting response loss and verifies original
+creation generations through task readback.
+After two partial runs stopped on a list-reservation failure and a direct-path
+checkpoint-observation timeout, a third approved run passed all 56 recovery cases on each of
+Flink 1.20.4 and 2.2.1, including the direct production paths.
+All twelve names returned `ALREADY_EXISTS` at both positive observations, but none could be
+recreated within the registered negative-control period, despite 105 attempts per name.
+All three runs verified cleanup.
+The owner's [acceptance clarification]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0158-cloudtasks-recovery-1245.md#acceptance-clarification-on-2026-09-10)
+adopts this recovery evidence for [#1245]({{< param BookRepo >}}/issues/1245), with actual
+post-tombstone recreation treated as optional additional calibration.
+Longer name protection for the same logical task does not create a duplicate; the connector
+still stops expired envelopes under their original deadline.
+The slow test remains failed under its original criterion, and actual service-side recreation
+is unobserved. The production recovery window and service assumptions are unchanged.
+Local model results do not establish service retention, and ten-day automatic task expiry is
+not measured by this experiment.
+
+Limits of the existing eager-mode coverage:
 
 - The deduplication tests assert `ALREADY_EXISTS` using separate flush cycles and a queue per
   test. They do not establish the service's task-name reservation window.

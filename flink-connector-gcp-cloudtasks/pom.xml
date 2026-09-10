@@ -119,6 +119,12 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <dependency>
+            <!-- Runs the preregistered acceptance inventory from a frozen test classpath. -->
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- Inspect dispatched JWT claims as JSON rather than matching their encoding. -->
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>

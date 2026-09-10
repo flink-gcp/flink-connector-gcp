@@ -336,6 +336,15 @@ Those are the test designs below.
 
 The service facts are ADR-0104's G0 record and ADR-0154's reading of it, and this record adds none: the collision outcome, the retention field and its range, the client's timeout, and the limits of a client deadline are cited there.
 
+The [#1245 recovery acceptance protocol](evidence/0158-cloudtasks-recovery-1245.md) preregisters the representative real-service cases, creation-generation oracle, controls and resource limits.
+After two partial runs stopped on a list-reservation failure and a direct-path checkpoint-observation timeout, a third approved run passed all 56 recovery cases on each of Flink 1.20.4 and 2.2.1 and all 24 positive tombstone observations.
+Each of the twelve negative controls still returned `ALREADY_EXISTS` on 105 attempts within the registered observation period, so no post-tombstone generation was observed.
+All three runs verified resource cleanup; the protocol records their results and evidence inventories.
+The owner's [acceptance clarification](evidence/0158-cloudtasks-recovery-1245.md#acceptance-clarification-on-2026-09-10) makes actual post-tombstone recreation an optional additional calibration and adopts the completed recovery, removal and positive-retention evidence for #1245.
+Longer name protection for the same logical task does not violate the no-second-creation invariant; protection ending before the assumed safe window would still threaten it.
+The production deadlines and service assumptions are unchanged, actual reuse time remains unmeasured, and #1246's performance/release gate remains required.
+The owner excluded a ten-day `taskTtl` wait; no long-lived task or reminder is part of the experiment.
+
 ### Internal staging implementation (2026-09-06)
 
 [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) implements the envelope, writer and internal construction seam.
