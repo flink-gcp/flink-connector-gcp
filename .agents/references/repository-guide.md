@@ -261,7 +261,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (a workflow added, or an action version changed)
 - `just tofu <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
   persistent GCP resources (#5). Local escape hatch only: plan/apply normally run in CI (see
-  "Infrastructure (OpenTofu)" below). Credentials come from
+  "Infrastructure (OpenTofu and Kubernetes)" below). Credentials come from
   `GOOGLE_APPLICATION_CREDENTIALS` in the uncommitted `.env` — the google provider does not read
   `CLOUDSDK_CONFIG` (only the gcloud CLI does; see `opentofu/README.md`)
 - Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. A single
@@ -566,7 +566,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   query='{repository(owner:"flink-gcp",name:"flink-connector-gcp"){pullRequest(number:N)
   {closingIssuesReferences(first:5){nodes{number}}}}}'`)
 
-## Infrastructure (OpenTofu, `opentofu/`)
+## Infrastructure (OpenTofu and Kubernetes)
+
+Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0063 before changing
+the CUE hierarchy or the CUE/Helm ownership split. `just tier3-check` validates the static layer,
+`just tier3-render <leaf>` prints that delivery's resources as a YAML document stream, and
+`just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
+but can download the pinned schema module, Python dependencies and chart from public registries.
+Keep them outside the offline `just lint` recipe. The generator declares its PyYAML dependency in
+PEP 723 metadata and runs with `uv run --no-project`; the tests use the locked project environment.
 
 Migrated to ADR (`docs/adr/0063`, which carries the design, the incidents and the service-agent
 facts); the rules a session needs:

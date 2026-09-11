@@ -23,6 +23,7 @@ on:
       - 'dev-tools.just'
       # Ruff also checks the documentation rendering tests.
       - 'docs/tests/**'
+      - 'kubernetes/**'
       # actionlint lints every workflow, so every workflow is an input here —
       # not just this one.
       - '.github/workflows/**'
@@ -119,3 +120,27 @@ jobs:
 
       - name: Run the scripts test suite
         run: just test-scripts
+
+  # Validate deliveries and reproduce generated CRDs on every PR. This job may
+  # fetch public schema modules and the checksum-pinned chart; it is separate
+  # from offline `just lint`. Install only the CUE and Python runners it uses.
+  tier3:
+    name: Validate Tier-3 manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: cue uv
+
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: just
+
+      - name: Check CUE constraints and hierarchy
+        run: just tier3-check
+
+      - name: Verify generated schemas against the pinned chart
+        run: just tier3-schemas check

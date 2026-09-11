@@ -136,7 +136,8 @@ Then install the Flink Kubernetes Operator through an OpenTofu-managed Helm rele
 Keeping that release out of the cluster-creation plan avoids asking its provider to connect to an endpoint that does not yet exist.
 The Operator's tracked value is `replicas: 0`, with `webhook.create: false`; cert-manager is unnecessary.
 Every other Kubernetes resource, including workload ServiceAccounts, quotas, FlinkDeployment objects and teardown controls, is defined in CUE.
-These Operator and CUE resources are subsequent changes; the foundation alone does not install a runnable benchmark.
+The [CUE manifest module](../kubernetes/README.md) now provides static validation, hierarchy and CRD rendering.
+Operator installation and applying the CUE resources remain subsequent stages; the foundation alone does not install a runnable benchmark.
 
 ### Run and cleanup contract
 

@@ -1,0 +1,19 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The distributed chart, rather than a mutable source branch, defines the CRDs.
+[operator]
+version = "1.15.0"
+url = "https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.15.0/flink-kubernetes-operator-1.15.0-helm.tgz"
+sha512 = "13076a6cbc92136da01aa67f4881ca2bb12d44697f782616b3f2e5b185e915cbb3ed7dd00de5b14ad81c408aebd7cbffa1611e96538d36389261780a75935781"
