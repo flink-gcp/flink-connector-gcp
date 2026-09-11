@@ -53,11 +53,13 @@ class Stage2CommitProgressTest {
             throws Exception {
         var executor = Executors.newSingleThreadExecutor();
         Stage2CommitProgress progress = new Stage2CommitProgress();
+        Stage2NotificationProgress notifications = new Stage2NotificationProgress();
         try (LocalStagedHarness run =
                 new LocalStagedHarness(1024, false, false, 2) {
                     @Override
                     void commitStarted(Object committer, int entries) {
                         progress.started(committer, entries, System.nanoTime());
+                        notifications.invocation(entries);
                     }
 
                     @Override
@@ -96,10 +98,13 @@ class Stage2CommitProgressTest {
                 }
                 committer.getOperator().notifyCheckpointAborted(1);
                 assertThat(run.originalFutures).isEmpty();
+                var observed =
+                        Stage2NotificationOperatorFactory.observe(
+                                committer.getOperator(), notifications);
                 var notification =
                         executor.submit(
                                 () -> {
-                                    committer.notifyOfCompletedCheckpoint(3);
+                                    observed.notifyCheckpointComplete(3);
                                     return null;
                                 });
                 try {
@@ -110,6 +115,15 @@ class Stage2CommitProgressTest {
                                 Duration.ofSeconds(5),
                                 () -> run.originalFutures.size() >= expected);
                         assertThat(notification).isNotDone();
+                        JsonNode active = json(notifications.sample(System.nanoTime()));
+                        assertThat(active.path("activeNotifications")).hasSize(1);
+                        assertThat(
+                                        active.path("activeNotifications")
+                                                .get(0)
+                                                .path("checkpointId")
+                                                .asLong())
+                                .isEqualTo(3);
+                        assertThat(active.path("finishedNotifications").asInt()).isZero();
                         ((SettableApiFuture<Boolean>) run.originalFutures.get(sent - 1)).set(false);
                     }
                     notification.get(5, TimeUnit.SECONDS);
@@ -119,6 +133,17 @@ class Stage2CommitProgressTest {
                     assertThat(completed.path("failedBatches").asInt()).isZero();
                     assertThat(run.acknowledgedCount()).isEqualTo(6);
                     assertThat(run.active.get()).isZero();
+                    JsonNode notificationResult = json(notifications.sample(System.nanoTime()));
+                    assertThat(notificationResult.path("activeNotifications")).isEmpty();
+                    assertThat(notificationResult.path("finishedNotifications").asInt())
+                            .isEqualTo(1);
+                    assertThat(notificationResult.path("maxNotificationInvocations").asInt())
+                            .isEqualTo(3);
+                    assertThat(notificationResult.path("maxNotificationEntries").asInt())
+                            .isEqualTo(6);
+                    assertThat(notificationResult.path("maxFinishedNotificationNanos").asLong())
+                            .isGreaterThanOrEqualTo(
+                                    completed.path("maxFinishedBatchNanos").asLong());
                 } finally {
                     notification.cancel(true);
                     executor.shutdownNow();

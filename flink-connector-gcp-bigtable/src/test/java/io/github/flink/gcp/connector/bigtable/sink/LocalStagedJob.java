@@ -89,6 +89,9 @@ final class LocalStagedJob implements AutoCloseable {
                                 : new LocalStagedHarness.BulkSink(run, emulator))
                 .uid("local-sink");
         var streamGraph = env.getStreamGraph();
+        if (staged && run instanceof Stage2Harness && ((Stage2Harness) run).timed) {
+            Stage2NotificationOperatorFactory.install(streamGraph, run.id);
+        }
         streamGraph.setJobName("local-bigtable-" + (staged ? "staged" : "bulk"));
         var graph = streamGraph.getJobGraph();
         if (restorePath != null) {

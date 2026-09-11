@@ -122,7 +122,7 @@ public final class BigtableStage2Probe {
             }
             return;
         }
-        if ((args.length == 12 || args.length == 13) && args[0].equals("local")) {
+        if (args.length == 12 && args[0].equals("local")) {
             if (!(args[2].equals("staged") || args[2].equals("bulk"))
                     || !(args[11].equals("hot") || args[11].equals("even"))) {
                 throw new IllegalArgumentException(
@@ -143,14 +143,13 @@ public final class BigtableStage2Probe {
                     Long.parseLong(args[8]),
                     Integer.parseInt(args[9]),
                     Long.parseLong(args[10]),
-                    args[11].equals("hot"),
-                    args.length == 13 ? Integer.parseInt(args[12]) : 0);
+                    args[11].equals("hot"));
             return;
         }
         throw new IllegalArgumentException(
                 "Commands: plan|create|cleanup|supervise|preflight manifest; "
                         + "service manifest table; local directory arm bytes parallelism inFlight checkpointMillis "
-                        + "warmupMillis measureMillis capacity delayMillis keys [maxPendingInputsPerSubtask]");
+                        + "warmupMillis measureMillis capacity delayMillis keys");
     }
 
     static void timed(
@@ -170,43 +169,6 @@ public final class BigtableStage2Probe {
             long delayMillis,
             boolean hot)
             throws Exception {
-        timed(
-                lease,
-                table,
-                directory,
-                staged,
-                emulator,
-                endpoint,
-                bytes,
-                parallelism,
-                inFlight,
-                intervalMillis,
-                warmupMillis,
-                measurementMillis,
-                capacity,
-                delayMillis,
-                hot,
-                0);
-    }
-
-    static void timed(
-            Stage2Lease lease,
-            String table,
-            Path directory,
-            boolean staged,
-            boolean emulator,
-            String endpoint,
-            int bytes,
-            int parallelism,
-            int inFlight,
-            long intervalMillis,
-            long warmupMillis,
-            long measurementMillis,
-            int capacity,
-            long delayMillis,
-            boolean hot,
-            int maxPendingInputsPerSubtask)
-            throws Exception {
         if ((bytes != 1024 && bytes != 65536)
                 || parallelism < 1
                 || parallelism > 16
@@ -221,10 +183,7 @@ public final class BigtableStage2Probe {
                 || delayMillis < 0
                 || delayMillis > 1000
                 || capacity < 1
-                || capacity > 1_000_000
-                || maxPendingInputsPerSubtask < 0
-                || maxPendingInputsPerSubtask > capacity
-                || (maxPendingInputsPerSubtask > 0 && lease != null)) {
+                || capacity > 1_000_000) {
             throw new IllegalArgumentException(
                     "Stage 2 local calibration configuration is outside its limits");
         }
@@ -246,8 +205,7 @@ public final class BigtableStage2Probe {
                                 false,
                                 inFlight,
                                 true,
-                                lease,
-                                maxPendingInputsPerSubtask);
+                                lease);
                 LocalStagedJob job =
                         new LocalStagedJob(
                                 run,
@@ -276,11 +234,7 @@ public final class BigtableStage2Probe {
                     () -> "started=" + run.readersStarted.get());
             Stage2Sampler sampler = new Stage2Sampler(job);
             String initialSample =
-                    "{\"phase\":\"before-admission\",\"admissionMode\":\""
-                            + (run.admission == null ? "unrestricted" : "diagnostic-credit")
-                            + "\",\"maxPendingInputsPerSubtask\":"
-                            + maxPendingInputsPerSubtask
-                            + ",\"checkpoints\":"
+                    "{\"phase\":\"before-admission\",\"admissionMode\":\"unrestricted\",\"checkpoints\":"
                             + job.checkpointStats()
                             + "}";
             long sampleBytes =
@@ -309,8 +263,6 @@ public final class BigtableStage2Probe {
                             + hot
                             + " delayMillis="
                             + delayMillis
-                            + " maxPendingInputsPerSubtask="
-                            + maxPendingInputsPerSubtask
                             + " jvmFlags="
                             + ManagementFactory.getRuntimeMXBean().getInputArguments());
             if (lease != null
@@ -365,10 +317,10 @@ public final class BigtableStage2Probe {
                                     + run.ledger.acknowledgedCount()
                                     + ",\"inputProgress\":"
                                     + run.ledger.sample()
-                                    + ",\"admissionCredits\":"
-                                    + (run.admission == null ? "null" : run.admission.sample())
                                     + ",\"commitProgress\":"
                                     + progress
+                                    + ",\"notificationProgress\":"
+                                    + run.notifications.sample(System.nanoTime())
                                     + ",\"runtime\":"
                                     + runtime
                                     + ",\"checkpoints\":"
@@ -418,9 +370,7 @@ public final class BigtableStage2Probe {
                         Locale.ROOT,
                         "STAGE2,%s,%s,%d,%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
                         staged ? "staged" : "bulk",
-                        run.censored.get()
-                                ? "CENSORED"
-                                : run.admission == null ? "OBSERVATION" : "DIAGNOSTIC_OBSERVATION",
+                        run.censored.get() ? "CENSORED" : "OBSERVATION",
                         result.count,
                         result.throughput,
                         result.p50,
@@ -443,9 +393,8 @@ public final class BigtableStage2Probe {
             System.out.println("STAGE2_CHECKPOINT_FINAL " + job.checkpointStats());
             System.out.println("STAGE2_INPUT_FINAL " + run.ledger.sample());
             System.out.println("STAGE2_COMMIT_FINAL " + run.commits.sample(System.nanoTime()));
-            if (run.admission != null) {
-                System.out.println("STAGE2_ADMISSION_FINAL " + run.admission.sample());
-            }
+            System.out.println(
+                    "STAGE2_NOTIFICATION_FINAL " + run.notifications.sample(System.nanoTime()));
             if (lease != null || emulator) {
                 run.readback(staged, emulator);
             }

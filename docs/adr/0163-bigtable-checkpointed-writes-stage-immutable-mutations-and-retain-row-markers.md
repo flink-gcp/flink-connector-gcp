@@ -171,7 +171,9 @@ The [Stage 2 protocol](evidence/0163-bigtable-staged-performance-protocol.md) co
 The [timed experiment harness](evidence/0163-bigtable-stage2-experiment-harness.md) adds bounded measurement inventory, metadata preflight and exact-resource lease supervision.
 Its small-run record does not pass the full matrix or authorize a production API.
 The [checkpoint-stall diagnostic](evidence/0163-bigtable-stage2-checkpoint-stalls.md) reproduces a later-checkpoint timeout during a long local commit invocation; it retains the service timeout and leaves the gate pending.
-The [admission diagnostic](evidence/0163-bigtable-stage2-admission-diagnostics.md) adds local outstanding-input controls to distinguish admitted work from RPC concurrency without changing the formal gate.
+The [historical admission diagnostic](evidence/0163-bigtable-stage2-admission-diagnostics.md) distinguished admitted work from RPC concurrency without changing the formal gate.
+The owner [retired its input-credit control and seven-cell service proposal](evidence/0163-bigtable-stage2-service-diagnostic.md) on 2026-09-11.
+Complete-notification instrumentation and shared ownership, reservation, supervision, stop and cleanup checks remain for unrestricted evaluation; historical evidence is preserved.
 Resource creation and execution require a separate approval of concrete targets, lifetime, operation caps and cost.
 The benchmark implementation is experimental test code; it is not a public sink or permission to release one.
 Real-service recovery acceptance must exercise the actual production factory and both API entry points once implemented, including response-loss recovery, aggregates, incompatible profiles, retained markers and exact-target cleanup.
