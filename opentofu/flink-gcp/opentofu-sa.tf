@@ -42,10 +42,15 @@ resource "google_project_iam_member" "opentofu" {
     "roles/appengine.appCreator",
     "roles/appengine.deployer",
     "roles/appengine.serviceAdmin",
+    # Tier-3 mirrored runtime-image repository.
+    "roles/artifactregistry.admin",
     "roles/bigquery.admin",
     # A modern Standard deployment builds its container through Cloud Build.
     # Storage Admin below already carries the other deployer-side requirement.
     "roles/cloudbuild.builds.editor",
+    # Tier-3 cluster and private network.
+    "roles/compute.networkAdmin",
+    "roles/container.clusterAdmin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.workloadIdentityPoolAdmin",
     "roles/resourcemanager.projectIamAdmin",

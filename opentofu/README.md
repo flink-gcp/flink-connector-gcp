@@ -3,8 +3,8 @@
 The GCP resources behind the real-GCP integration tests
 ([#5](https://github.com/flink-gcp/flink-connector-gcp/issues/5)): the
 `flink-gcp` project's service accounts, Workload Identity Federation, buckets
-and the BigQuery dataset. *Persistent* means idle-cost-free resources applied
-once and kept; the fine-grained resources (tables, topics, subscriptions,
+and the BigQuery dataset, plus the on-demand Tier-3 rig's standing cluster.
+*Persistent* means resources applied once and kept; the fine-grained resources (tables, topics, subscriptions,
 queues) are created and deleted by the tests themselves.
 
 ## Layout
@@ -22,6 +22,8 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/e2e-sa.tf` | The E2E test service account and its scoped grants |
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
 | `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
+| `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
+| `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket for separately approved Cloud Tasks benchmarks |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
 | `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |
@@ -50,7 +52,7 @@ why:
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
 | GitHub App | on | The org-owned `flink-gcp-bot` ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121). Each step that pushes mints its own token from `BOT_APP_ID` / `BOT_APP_PRIVATE_KEY`, downscoped below the App's contents/pull-requests/workflows ceiling. Plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them |
 | `test` action (`fmt`, `validate`, check-providers, tflint) | on | Runs in the plan job, after init, under the App token — which is what makes it usable: a fix commit pushed with `GITHUB_TOKEN` would not retrigger CI, so the branch would sit behind checks that ran before the fix. A fixable finding is pushed and the step then fails the run; the push starts the next one. Two rounds when tflint and `fmt` both have work, because tflint throws before `fmt` runs. Skipped when the App credentials are absent (a fork), where `just lint` covers both locally |
-| `trivy` inside the `test` action | off | Measured, not assumed: `trivy config opentofu/flink-gcp` returns five findings against the configuration as it stands — customer-managed encryption keys on both buckets (LOW), access logging on both (MEDIUM), and versioning on the integration-test bucket (MEDIUM). tfaction throws on **any** trivy finding, so this would redden every pull request touching `opentofu/` until all five were fixed or suppressed, and none is worth its cost here: CMEK adds a KMS key to rotate, access logging adds a log bucket to pay for, and versioning would retain copies of the staging objects a one-day lifecycle rule exists to delete. Revisit if a resource arrives whose exposure is not a storage bucket's |
+| `trivy` inside the `test` action | off | The original bucket-only scan reported five findings. A Trivy 0.74.0 scan on 2026-09-11 with the Tier-3 foundation reports eleven: CMEK on three buckets (LOW), access logging on three (MEDIUM), versioning on two temporary buckets (MEDIUM), two subnet flow-logging checks (LOW/MEDIUM), and master authorized networks on GKE (HIGH). Bucket and flow-log dispositions retain the existing cost policy: no extra key management, log storage or retained temporary-data versions. The GKE finding checks IP authorized networks, while this cluster disables IP endpoints and uses its IAM-authenticated DNS endpoint; adding an IP allowlist would not control that endpoint. tfaction fails on any finding, so the scan remains non-gating. These are configuration findings, not a runtime reachability measurement |
 | `tflint` inside the `test` action | on | Clean against this configuration today, and `fix: true` lets it push the correction rather than only report it. What is bought is the bundled `terraform` ruleset over thirteen `.tf` files — no plugins are configured — so the case for it is modest rather than free: it also puts a PR-controlled plugin loader in a step holding a write token (ADR-0121 records why that is acceptable). Pinned in `mise.toml`, run by `just lint` and by tfaction as a plain PATH command |
 | `drift_detection` | off (default) | Declined 2026-08-16, no longer for want of a token: it wants three more workflows and apply-job changes, and this configuration changes rarely enough that the detection interval would not repay that surface |
 
@@ -94,6 +96,62 @@ one instance and prints its id; `stop` waits for `STOPPED` with zero instances.
 OpenTofu ignores only `manual_scaling.instances`, so those lifecycle changes do
 not create drift while every other version setting remains managed. Both
 commands require `CLOUDTASKS_IT_PROJECT` and authenticated `gcloud` access.
+
+## Tier-3 Kubernetes environment
+
+[Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) owns the shared GKE Autopilot rig.
+[Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) supplies its first Cloud Tasks performance scenario.
+Routine E2E remains on MiniCluster; this rig is on demand and does not gate a release.
+
+### Persistent foundation
+
+The root creates the regional `flink-tier3` Autopilot cluster in `us-central1`, its private subnet, a dedicated node identity and the `flink-tier3` Artifact Registry Docker repository.
+Nodes have private addresses, and operator access uses the IAM-authenticated DNS endpoint with IP endpoints disabled.
+There is no Cloud NAT, bastion or IAP SSH firewall.
+Mirror the pinned Operator and Flink images into `us-central1-docker.pkg.dev/flink-gcp/flink-tier3` before starting Pods; public registries are outside this network path.
+The node identity has telemetry permissions and read access to that repository.
+It has no connector data permissions.
+Autopilot's required managed Prometheus collection stays enabled, with automatic workload monitoring disabled.
+Optional application scraping and its ingestion cost belong to each run's CUE definition and budget.
+System and workload logging also remain enabled; a run must bound application log volume and include its ingestion cost.
+
+The separate `cloudtasks-benchmark` runtime account has project-wide `roles/cloudtasks.editor` and object read/write/delete access only to `flink-gcp-cloudtasks-benchmark`.
+The Kubernetes identity `tier3-cloudtasks/cloudtasks-benchmark` may impersonate it through Workload Identity Federation for GKE; the workload ServiceAccount must carry the corresponding GCP account annotation.
+Queue operations remain project-wide, so the run supervisor must enforce exact queue names.
+Neither the node account nor the runtime account receives IAM administration permissions.
+The apply identity gains `compute.networkAdmin`, `container.clusterAdmin`, `artifactregistry.admin` and permission to attach only the dedicated node account.
+
+A merge applies this foundation and creates a cluster; it therefore requires resource and cost approval before merge.
+The [GKE price list](https://cloud.google.com/kubernetes-engine/pricing) checked on 2026-09-11 charges $0.10 per cluster-hour.
+The $74.40 monthly free-tier credit is shared by a billing account, and its availability for this project has not been verified.
+Without that credit, a 744-hour month costs $74.40 in cluster management fees even with no workload Pods.
+Image/object storage, application Pods and other metered services are additional.
+No claim of zero idle cost follows from this configuration.
+Cluster deletion protection prevents accidental removal; deliberate decommissioning requires a reviewed change disabling it before deletion.
+
+### Operator installation follows the cluster
+
+First verify the foundation's apply succeeded and the root has an empty plan.
+Then install the Flink Kubernetes Operator through an OpenTofu-managed Helm release in a separate Kubernetes root.
+Keeping that release out of the cluster-creation plan avoids asking its provider to connect to an endpoint that does not yet exist.
+The Operator's tracked value is `replicas: 0`, with `webhook.create: false`; cert-manager is unnecessary.
+Every other Kubernetes resource, including workload ServiceAccounts, quotas, FlinkDeployment objects and teardown controls, is defined in CUE.
+These Operator and CUE resources are subsequent changes; the foundation alone does not install a runnable benchmark.
+
+### Run and cleanup contract
+
+A separately approved run fixes image digests, Flink/Operator/GKE versions, namespace and queue names, workload identities, Pod requests/limits, Spot policy, input rate, repetitions, object prefixes, operation limits and expiry.
+Use a quota and an independent expiry supervisor, and record the effective Pod resources after Autopilot admission.
+Record eviction, rescheduling, CPU throttling and resource mutations alongside Flink checkpoint, GC and task observations.
+An interrupted steady-state cell cannot provide a completed performance comparison.
+
+Scale the Operator up only for a session.
+At the end, keep it running until FlinkDeployment deletion and owned workload cleanup complete, then scale it back to zero.
+Verify absence of owned deployments, Pods, PVCs, load balancers, queues and object prefixes, and verify the Operator has zero Pods.
+Scaling the Operator down alone does not stop an existing Flink job.
+The ClusterIP-only workload design requires no external load balancer.
+Durable measurement evidence must be exported before cleanup; the temporary bucket's one-day lifecycle and disabled soft delete do not preserve published results.
+Lifecycle expiry is an object fallback, not a workload or queue cleanup mechanism.
 
 ## Bootstrap (already done — recorded for reproducibility)
 

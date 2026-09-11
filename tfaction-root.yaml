@@ -64,8 +64,8 @@ tflint:
   fix: true
 
 # Off against a measurement: tfaction throws on any trivy finding at all, and
-# this configuration already has five. opentofu/README.md's decisions table
-# names them and prices the alternative.
+# the measured findings in opentofu/README.md's decisions table have
+# explicit dispositions there, including the benchmark network extension.
 trivy:
   enabled: false
 
