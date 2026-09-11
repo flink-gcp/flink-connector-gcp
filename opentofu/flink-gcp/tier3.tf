@@ -82,6 +82,9 @@ resource "google_container_cluster" "tier3" {
 
   private_cluster_config {
     enable_private_nodes = true
+    # The provider reads this legacy flag as !enablePublicEndpoint.
+    # Match its observed true value; IP endpoints remain disabled below.
+    enable_private_endpoint = true
   }
 
   # Authenticated clients, including GitHub-hosted plan runners, reach the
