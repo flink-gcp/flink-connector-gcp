@@ -5,6 +5,10 @@ maven = "latest"
 # Hugo needs Go to resolve the theme as a Hugo module.
 hugo-extended = "0.164.0"
 go = "1.26"
+# Runs Tier-3 validation and CRD generation. Exact output is compared in CI, so
+# pin the generator/formatter version; review kubernetes/cue.mod/module.cue's
+# language floor when upgrading it.
+cue = "0.17.1"
 # Lints scripts/. Pinned rather than taken from the runner image, which carries
 # 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04 — when ubuntu-latest migrates, the
 # newer release's added checks would fail a pull request that changed nothing.

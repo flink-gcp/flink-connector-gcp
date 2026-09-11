@@ -220,8 +220,8 @@ ci-maven-args *args:
 # root uv project (pyproject.toml): uv is pinned in mise.toml like the
 # linters, pytest and the shared Java parser are pinned in uv.lock, and --locked
 # makes a drifted lockfile fail instead of silently re-resolving.
-# check-skill-frontmatter.py declares PyYAML in PEP 723 metadata of its own and
-# runs through `uv run --no-project`; because the tests load every script by
+# check-skill-frontmatter.py and tier3-schemas.py declare PyYAML in their own
+# PEP 723 metadata and run through `uv run --no-project`; because tests load them by
 # file path, that import has to resolve here too, which is why pyyaml is in the
 # dev group and not in the project's dependencies. Release workflow tests also
 # use PyYAML to parse the workflow program before exercising its shell commands.
@@ -436,8 +436,8 @@ lint:
     mise x shellcheck -- shellcheck scripts/*.sh
     just --justfile dev-tools.just --show install-skills | sed -n '/^[[:space:]]*#!/,$p' | sed 's/^    //' | mise x shellcheck -- shellcheck -
     mise x ruff -- ruff --version
-    mise x ruff -- ruff check scripts/ docs/tests/ opentofu/flink-gcp/appengine-e2e/main.py
-    mise x ruff -- ruff format --check scripts/ docs/tests/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff check scripts/ docs/tests/ kubernetes/tests/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
     mise x opentofu -- tofu fmt -check -recursive opentofu/
@@ -469,6 +469,21 @@ check-skill-frontmatter:
 # Run OpenTofu in the flink-gcp root module, e.g. `just tofu plan`.
 tofu *args:
     mise x opentofu -- tofu -chdir=opentofu/flink-gcp {{ args }}
+
+# Static CUE checks and synthetic manifests; no Kubernetes credentials or workload.
+tier3-check:
+    mise x cue -- cue -C kubernetes fmt --check --files . cue.mod/module.cue
+    mise x cue uv -- uv run --locked pytest kubernetes/tests -q
+
+# Emit delivery resources as a YAML stream. Rendering never contacts the cluster.
+[positional-arguments]
+tier3-render leaf:
+    mise x cue -- cue -C kubernetes cmd render "./$1"
+
+# Both modes verify the fixed upstream chart hash. Only refresh changes sources.
+[positional-arguments]
+tier3-schemas mode='check':
+    mise x cue uv -- uv run --no-project scripts/tier3-schemas.py "$1"
 
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.
