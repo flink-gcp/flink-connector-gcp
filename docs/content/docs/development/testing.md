@@ -85,8 +85,8 @@ observations — sit behind gates of their own, outside `just e2e`.
 These suites create and delete billed resources; each run costs real money, which is why CI
 runs them on a weekly schedule (plus manual dispatch) rather than per pull request.
 
-The Google Cloud project behind them is provisioned in two layers. The persistent,
-idle-cost-free layer — service accounts, Workload Identity Federation, buckets, the dataset —
+The Google Cloud project behind them is provisioned in two layers. The persistent
+layer — service accounts, Workload Identity Federation, buckets, the dataset and the Tier-3 cluster —
 is OpenTofu under
 [`opentofu/`]({{< param BookRepo >}}/tree/main/opentofu), whose README documents the layout,
 the CI plan/apply flow and the security model (no service-account keys; local runs use your own
@@ -102,6 +102,12 @@ safeguard entirely, so say it only when nothing else, scheduled or local, is usi
 project. The environment gates come
 from an uncommitted `.env` at the repository root; `just worktree-env` makes it reachable from
 a git worktree.
+
+The on-demand GKE Autopilot rig ([#38]({{< param BookRepo >}}/issues/38)) has a standing cluster management fee, even between test sessions.
+Availability of the billing account's shared free-tier credit is unverified.
+Its [runbook]({{< param BookRepo >}}/tree/main/opentofu#tier-3-kubernetes-environment) records costs, separate resource approval and cleanup.
+`just e2e` and `just sweep-e2e` do not launch or clean up this rig.
+Its Operator installation and CUE-managed workloads follow the cloud foundation; routine suites continue to use MiniCluster.
 
 ## The slow lane
 

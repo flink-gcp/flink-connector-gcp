@@ -23,8 +23,9 @@ limitations under the License.
   [#170](https://github.com/flink-gcp/flink-connector-gcp/pull/170) and
   [#176](https://github.com/flink-gcp/flink-connector-gcp/pull/176)); the GitHub App
   deferred to go-public ([#177]) and adopted 2026-08-16 once the org existed ([#177],
-  ADR-0121); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444])
-- Issues: [#5], [#177], [#444]
+  ADR-0121); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444]);
+  extended for Tier-3 deployment infrastructure 2026-09-11 ([#38], [#1246])
+- Issues: [#5], [#38], [#177], [#444], [#1246]
 - Modules: opentofu
 - Current behavior: `opentofu/README.md` (bootstrap, service-agent one-offs, credentials)
 
@@ -105,6 +106,33 @@ limitations under the License.
 - **The tofu version is pinned twice on purpose**: `mise.toml` (what installs) and
   `versions.tf` `required_version` (what refuses to run on a skew) — a bump edits both.
 
+## Tier-3 deployment infrastructure (2026-09-11)
+
+[Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) extends the existing GCP root with a shared regional GKE Autopilot cluster, private network, node identity and Artifact Registry repository.
+The user's Kubernetes direction for [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) replaces that investigation's dedicated-VM proposal before any resources were applied.
+Cloud Tasks keeps a separate runtime identity and temporary bucket, reached through one namespace/ServiceAccount binding rather than the node identity.
+The GCP root retains ownership of persistent cloud resources; a subsequent Kubernetes root owns only the Operator's Helm release after the cluster exists.
+That ordering permits CI to plan the Helm release against a real endpoint.
+
+The settled [#38 constraints](https://github.com/flink-gcp/flink-connector-gcp/issues/38#issuecomment-5301543921) remain: cost first, Operator replicas zero in tracked state, webhook disabled, all other Kubernetes resources in CUE, and on-demand tests outside the release gate.
+The benchmark records actual admitted Pod resources and scheduling interruptions.
+The steady-state Spot policy and each paid workload require a preregistered run manifest.
+Scale-down follows verified workload deletion because an inactive Operator does not stop managed jobs.
+
+Private nodes fetch frozen images from the dedicated regional Artifact Registry repository over Private Google Access.
+The IAM-authenticated DNS control-plane endpoint allows operator/CI access without a public control-plane IP, bastion or NAT.
+Node telemetry/image access and connector data access use separate service accounts.
+The temporary Cloud Tasks bucket has one-day object expiry and no soft-delete retention; evidence is exported before exact-prefix cleanup.
+
+Autopilot introduces a standing management-fee exposure.
+The [published rate](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-09-11, is $0.10 per cluster-hour with a $74.40 monthly credit per billing account.
+The credit's availability is not verified, so zero idle cost is not an acceptance claim.
+The foundation's merge therefore requires approval of that persistent exposure as well as its saved resource plan.
+Cluster deletion protection makes decommissioning a deliberate reviewed action.
+The Operator install, lifecycle smoke/recovery suite and Cloud Tasks measurements remain dependent work; this foundation closes neither issue.
+
 [#5]: https://github.com/flink-gcp/flink-connector-gcp/issues/5
+[#38]: https://github.com/flink-gcp/flink-connector-gcp/issues/38
 [#177]: https://github.com/flink-gcp/flink-connector-gcp/issues/177
 [#444]: https://github.com/flink-gcp/flink-connector-gcp/issues/444
+[#1246]: https://github.com/flink-gcp/flink-connector-gcp/issues/1246

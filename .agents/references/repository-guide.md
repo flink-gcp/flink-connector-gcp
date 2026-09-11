@@ -589,7 +589,7 @@ facts); the rules a session needs:
   both have work, because tflint throws before `fmt` runs. A tflint finding `--fix` cannot fix is
   the case with no commit to read: red plan job, and because the plan step never runs, **no plan
   comment either** — reproduce it with `just lint`, which runs the same pinned tflint. trivy is
-  off by measurement, not oversight; `opentofu/README.md`'s decisions table carries the five
+  off by measurement, not oversight; `opentofu/README.md`'s decisions table carries the current
   findings and their cost
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens, with
   per-account bindings restricting what each workflow identity can do; plan runs read-only.

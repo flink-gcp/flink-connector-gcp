@@ -14,10 +14,8 @@
 
 # Only the APIs this project's function needs are managed; the assortment a
 # fresh project ships enabled (logging, monitoring, ...) is left alone. A new
-# connector's E2E suite adds its API here in the pull request that first needs
-# it, not in advance. With Spanner (#224) every connector this repository ships
-# is now represented, so the next entry belongs to a connector that does not
-# exist yet.
+# connector's E2E suite or deployment infrastructure adds its API here in
+# the pull request that first needs it, not in advance.
 resource "google_project_service" "this" {
   for_each = toset([
     # Workload Identity Federation and IAM management.
@@ -47,6 +45,9 @@ resource "google_project_service" "this" {
     # writing and reading through it needs nothing further enabled.
     "spanner.googleapis.com",
     "storage.googleapis.com",
+    # Tier-3 deployment infrastructure: cluster and private node network.
+    "compute.googleapis.com",
+    "container.googleapis.com",
   ])
 
   service = each.value
