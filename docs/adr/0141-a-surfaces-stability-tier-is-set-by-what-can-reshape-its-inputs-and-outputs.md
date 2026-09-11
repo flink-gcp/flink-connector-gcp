@@ -156,6 +156,11 @@ which the ADR-0124 revision records as closure stops.
   signatures ADR-0124's closure exists to prevent; `@Experimental` closure stops are the recorded
   exception, so a demotion that cannot take its referrers with it goes there or nowhere.
 
+## Bigtable staged API revision (2026-09-11)
+
+ADR-0165 adds `BigtableDeliveryGuarantee`, `BigtableStagedOptions` and its builder as `@Experimental` closure stops named by the existing public sink builder.
+Final Stage 2 acceptance can still constrain the unreleased configuration surface.
+
 ## Consequences
 
 - 24 main-tree files flip annotations (12 change-stream files to `@PublicEvolving`, 12 CDC files

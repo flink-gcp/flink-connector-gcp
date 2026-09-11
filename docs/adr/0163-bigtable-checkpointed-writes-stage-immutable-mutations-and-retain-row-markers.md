@@ -23,7 +23,8 @@ limitations under the License.
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
-Production implementation and the full Stage 2 service evaluation remain pending under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+The staged runtime and both API surfaces are implemented under [ADR-0165](0165-bigtable-implementation-precedes-final-stage2-acceptance.md), which moves final Stage 2 acceptance after implementation.
+Release and the full service evaluation remain pending under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
 
 ## Context
 
@@ -167,7 +168,7 @@ The 2026-09-05 [#1210 measurement](https://github.com/flink-gcp/flink-connector-
 Its AddToCell probe read 1,000 rows with sum 9 and nine markers each; every tenth submission replayed the preceding event rather than contributing a tenth distinct event.
 Those are service-primitive observations, not a Flink staged-mode throughput or latency result.
 
-The [Stage 2 protocol](evidence/0163-bigtable-staged-performance-protocol.md) covers the complete proposed cost before runtime delivery proceeds under ADR-0104.
+The [Stage 2 protocol](evidence/0163-bigtable-staged-performance-protocol.md) covers the complete cost required before release; ADR-0165 supersedes only its ordering before implementation.
 The [timed experiment harness](evidence/0163-bigtable-stage2-experiment-harness.md) adds bounded measurement inventory, metadata preflight and exact-resource lease supervision.
 Its small-run record does not pass the full matrix or authorize a production API.
 The [checkpoint-stall diagnostic](evidence/0163-bigtable-stage2-checkpoint-stalls.md) reproduces a later-checkpoint timeout during a long local commit invocation; it retains the service timeout and leaves the gate pending.
@@ -178,10 +179,10 @@ Real-service recovery acceptance must exercise the actual production factory and
 
 ## Delivery sequence
 
-1. Merge this design, local probe evidence and measurement protocol; keep #1211 open.
-2. Calibrate the Stage 2 harness locally, request concrete resource/cost approval, run the preregistered service evaluation and record its verdict and cleanup.
-3. After that gate, implement the staged runtime and DataStream entry point, with deterministic production-path tests and MiniCluster recovery/savepoint acceptance on both Flink lines.
-4. Add Table integration and source-backed examples, complete real-service acceptance, and update the sink matrix, DataStream/Table pages, option/metric references and measured performance note before closing #1211.
+1. Preserve the accepted protocol and historical diagnostic evidence; keep #1211 open.
+2. Implement and locally verify the production runtime, DataStream/Table APIs and operational documentation under ADR-0165.
+3. Reconcile the existing aggregate cost authorization, freeze the reviewed production source and service plan, then perform actual-factory recovery acceptance and the unchanged formal Stage 2 evaluation.
+4. Record the verdict, supported workload limits and verified cleanup before release or closing #1211.
 
 ## Alternatives declined
 

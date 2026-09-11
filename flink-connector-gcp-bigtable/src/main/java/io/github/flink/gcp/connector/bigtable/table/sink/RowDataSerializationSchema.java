@@ -56,9 +56,11 @@ import java.util.List;
  * <p>Keep-latest deletes all versions of each written cell immediately before setting it, in the
  * same entry. Null families and undeclared qualifiers remain untouched.
  *
- * <p>A delete removes the entire row, not the declared qualifiers one by one. The row key is the
- * primary key of an upsert sink, so "this key is gone" is what a {@code -D} means here; deleting
- * only the declared cells would leave a row behind made of whatever else was in it.
+ * <p>In the default at-least-once mode a delete removes the entire row. Staged exactly-once
+ * delivery deletes only declared data families, preserving replay markers and undeclared families.
+ * For the default mode, The row key is the primary key of an upsert sink, so "this key is gone" is
+ * what a {@code -D} means here; deleting only the declared cells would leave a row behind made of
+ * whatever else was in it.
  *
  * <p>Three rejections, each of which fails the record through the sink's failure handler rather
  * than skipping it:
@@ -88,6 +90,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     private final int timestampMetadataIndex;
     private final boolean truncateCellTimestampToMillis;
     private final boolean keepLatest;
+    private final boolean deleteDeclaredFamilies;
 
     /**
      * Transient and restored in {@link #readObject}, not because it holds lambdas but because it is
@@ -151,8 +154,45 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             boolean truncateCellTimestampToMillis,
             boolean keepLatest,
             CellClock clock) {
+        this(
+                schema,
+                nullStringLiteral,
+                metadata,
+                truncateCellTimestampToMillis,
+                keepLatest,
+                false,
+                clock);
+    }
+
+    /** Keeps reserved markers by limiting SQL deletes to the DDL's data families. */
+    RowDataSerializationSchema(
+            BigtableTableSchema schema,
+            String nullStringLiteral,
+            WritableMetadata[] metadata,
+            boolean truncateCellTimestampToMillis,
+            boolean keepLatest,
+            boolean deleteDeclaredFamilies) {
+        this(
+                schema,
+                nullStringLiteral,
+                metadata,
+                truncateCellTimestampToMillis,
+                keepLatest,
+                deleteDeclaredFamilies,
+                new WallClock());
+    }
+
+    private RowDataSerializationSchema(
+            BigtableTableSchema schema,
+            String nullStringLiteral,
+            WritableMetadata[] metadata,
+            boolean truncateCellTimestampToMillis,
+            boolean keepLatest,
+            boolean deleteDeclaredFamilies,
+            CellClock clock) {
         this.clock = clock;
         this.keepLatest = keepLatest;
+        this.deleteDeclaredFamilies = deleteDeclaredFamilies;
         this.rowKeyIndex = schema.getRowKeyIndex();
         this.rowKeyName = schema.getRowKeyName();
         this.timestampMetadataIndex =
@@ -232,6 +272,12 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         ByteString key = rowKey(element);
         RowMutationEntry entry = RowMutationEntry.create(key);
         if (kind == RowKind.DELETE) {
+            if (deleteDeclaredFamilies) {
+                for (Family family : families) {
+                    entry.deleteFamily(family.name);
+                }
+                return entry;
+            }
             return entry.deleteRow();
         }
         writeCells(

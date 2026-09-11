@@ -197,6 +197,102 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void stagedOptionsReachRuntimeAndSqlDeletesPreserveMarkers() throws Exception {
+        Map<String, String> options = stagedOptions();
+        options.put("sink.staged.max-entries", "9");
+        options.put("sink.staged.max-bytes", "2 mb");
+        options.put("sink.in-flight.max-requests", "3");
+        for (String mode : List.of("upsert", "keep-latest")) {
+            options.put("sink.write-mode", mode);
+            DynamicTableSink dynamic = sink(options);
+            assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+            var runtime =
+                    (io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink<
+                                    RowData>)
+                            ((SinkV2Provider)
+                                            dynamic.copy()
+                                                    .getSinkRuntimeProvider(
+                                                            new SinkRuntimeProviderContext(false)))
+                                    .createSink();
+            assertThat(runtime.getStagedOptions().getMaxStagedEntries()).isEqualTo(9);
+            assertThat(runtime.getStagedOptions().getMaxStagedBytes()).isEqualTo(2L << 20);
+            assertThat(runtime.getStagedOptions().getRequestOptions().getMaxInFlightRequests())
+                    .isEqualTo(3);
+            GenericRowData delete = GenericRowData.of(StringData.fromString("row"), null);
+            delete.setRowKind(org.apache.flink.types.RowKind.DELETE);
+            var mutations =
+                    runtime.getConfig()
+                            .getSerializer()
+                            .serialize(delete, null)
+                            .toProto()
+                            .getMutationsList();
+            assertThat(mutations)
+                    .singleElement()
+                    .satisfies(
+                            mutation -> {
+                                assertThat(mutation.hasDeleteFromFamily()).isTrue();
+                                assertThat(mutation.getDeleteFromFamily().getFamilyName())
+                                        .isEqualTo("cf1");
+                            });
+            assertThatThrownBy(
+                            () ->
+                                    dynamic.getSinkRuntimeProvider(
+                                            new SinkRuntimeProviderContext(true)))
+                    .hasMessageContaining("sink.delivery-guarantee");
+        }
+    }
+
+    @Test
+    void stagedValidationNamesTheSqlKeyInTheCauseRatherThanOnlyTheOptionsDump() {
+        Map<String, String> bad =
+                Map.of(
+                        "sink.staged.marker-family",
+                        " ",
+                        "sink.staged.max-entries",
+                        "0",
+                        "sink.staged.max-bytes",
+                        "0 b",
+                        "sink.app-profile-id",
+                        "bad/profile",
+                        "sink.in-flight.max-requests",
+                        "0");
+        bad.forEach(
+                (key, value) -> {
+                    Map<String, String> options = stagedOptions();
+                    options.put(key, value);
+                    assertThatThrownBy(() -> sink(options))
+                            .hasStackTraceContaining("Option '" + key + "' is invalid:");
+                });
+        for (String mode : List.of("insert-if-absent", "append", "increment")) {
+            Map<String, String> options = stagedOptions();
+            options.put("sink.write-mode", mode);
+            assertThatThrownBy(() -> sink(options))
+                    .hasStackTraceContaining("does not support 'sink.write-mode'");
+        }
+        Map<String, String> noProfile = stagedOptions();
+        noProfile.remove("sink.app-profile-id");
+        assertThatThrownBy(() -> sink(noProfile))
+                .hasStackTraceContaining("Option 'sink.app-profile-id' is required");
+        Map<String, String> overlap = stagedOptions();
+        overlap.put("sink.staged.marker-family", "cf1");
+        assertThatThrownBy(() -> sink(overlap))
+                .hasStackTraceContaining("must name a reserved family outside");
+        Map<String, String> eager = stagedOptions();
+        eager.remove("sink.delivery-guarantee");
+        assertThatThrownBy(() -> sink(eager))
+                .hasStackTraceContaining("requires 'sink.delivery-guarantee' = 'exactly-once'");
+    }
+
+    private static Map<String, String> stagedOptions() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.delivery-guarantee", "exactly-once");
+        options.put("sink.staged.marker-family", "markers");
+        options.put("sink.app-profile-id", "transactional");
+        options.put("emulator-endpoint", "localhost:1");
+        return options;
+    }
+
+    @Test
     void buildsASinkFromTheMinimalOptions() {
         assertThat(sink(minimalOptions()))
                 .isInstanceOf(BigtableDynamicSink.class)

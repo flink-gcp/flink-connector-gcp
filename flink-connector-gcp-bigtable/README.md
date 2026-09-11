@@ -11,6 +11,7 @@ checkpoints the service's moving partition topology and continuation tokens.
 | Feature | Status |
 |---|---|
 | Configured-table Source/Sink lineage, including bounded Change Streams and fixed destinations | Implemented ([#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272)) |
+| Checkpoint-owned row mutations with retained replay markers | Experimental implementation; final service recovery and Stage 2 acceptance pending ([#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)) |
 | SinkV2 at-least-once sink over the bulk mutation batcher; `RowMutationEntry` serialization SPI | Implemented ([#33](https://github.com/flink-gcp/flink-connector-gcp/issues/33)) |
 | Conditional sink and async helpers over `CheckAndMutateRow`; connector-owned request and result types | Implemented ([#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179)) |
 | Read-modify-write sink and async helpers over `ReadModifyWriteRow`; ordered append/increment rules and changed-cell results | Implemented ([#1180](https://github.com/flink-gcp/flink-connector-gcp/issues/1180)) |

@@ -48,8 +48,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Staged exactly-once design (`docs/adr/0163`)
 
-- The staged mode is designed, not implemented; #1211 retains its Stage 2 and production acceptance
-  obligations. Read ADR-0163 and its local sizing evidence before implementing either API surface.
+- Read ADR-0163, ADR-0165 and the local sizing evidence before changing staged writes.
+  ADR-0165 permits implementation before final evaluation; #1211 retains production service
+  acceptance and the unrestricted formal Stage 2 release gate.
 - Stage immutable per-envelope identities in Flink committer state, never a row-wide checkpoint
   high-water mark. Preserve all earlier envelope markers on each row and reject whole-row deletes
   and mutations targeting the reserved family. Markers have no automatic GC.

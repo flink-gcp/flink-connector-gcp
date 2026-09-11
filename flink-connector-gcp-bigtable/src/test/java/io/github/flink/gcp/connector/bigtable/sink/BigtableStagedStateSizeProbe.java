@@ -41,12 +41,39 @@ final class BigtableStagedStateSizeProbe {
             throw new IllegalArgumentException("Use 1024/65536 bytes and 100/1000 entries");
         }
         var checkpointDirectory = Files.createTempDirectory("bigtable-staged-sizing-");
-        var test = new BigtableStagedCommitLifecycleTest();
-        var serializer = new StagedMutationTestSink("sizing", 1, 1).getCommittableSerializer();
+        String runId = java.util.UUID.randomUUID().toString();
+        StagedMutationTestSink.PROBES.put(runId, new StagedMutationTestSink.Probe());
+        var sink = new StagedMutationTestSink(runId, 100_000, 256L << 20);
+        var serializer = sink.getCommittableSerializer();
         List<CheckAndMutateRowRequest> staged = new ArrayList<>();
         List<CheckAndMutateRowRequest> restored = new ArrayList<>();
-        try (var writer = test.writer(1, 0);
-                var committer = test.committer(1, 0, true)) {
+        try (var writer =
+                        new org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness<
+                                StagedMutationTestSink.Input,
+                                org.apache.flink.streaming.api.connector.sink2.CommittableMessage<
+                                        CheckAndMutateRowRequest>>(
+                                new org.apache.flink.streaming.runtime.operators.sink
+                                        .SinkWriterOperatorFactory<>(sink),
+                                128,
+                                1,
+                                0);
+                var committer =
+                        new org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness<
+                                org.apache.flink.streaming.api.connector.sink2.CommittableMessage<
+                                        CheckAndMutateRowRequest>,
+                                org.apache.flink.streaming.api.connector.sink2.CommittableMessage<
+                                        CheckAndMutateRowRequest>>(
+                                new org.apache.flink.streaming.runtime.operators.sink
+                                        .CommitterOperatorFactory<>(sink, false, true),
+                                128,
+                                1,
+                                0)) {
+            writer.setup(
+                    org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo.of(
+                                    sink::getCommittableSerializer)
+                            .createSerializer(
+                                    new org.apache.flink.api.common.serialization
+                                            .SerializerConfigImpl()));
             committer.setCheckpointStorage(
                     new FileSystemCheckpointStorage(checkpointDirectory.toUri().toString()));
             writer.open();
@@ -124,7 +151,7 @@ final class BigtableStagedStateSizeProbe {
             Reference.reachabilityFence(staged);
             Reference.reachabilityFence(restored);
         } finally {
-            test.cleanup();
+            StagedMutationTestSink.PROBES.remove(runId);
             FileUtils.deleteDirectory(checkpointDirectory.toFile());
         }
     }

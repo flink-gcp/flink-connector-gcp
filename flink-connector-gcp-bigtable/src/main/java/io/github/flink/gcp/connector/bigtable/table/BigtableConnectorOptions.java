@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.MemorySize;
 
+import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
 
@@ -62,6 +63,40 @@ import java.util.List;
  */
 @PublicEvolving
 public final class BigtableConnectorOptions {
+    /** Selects eager writes or checkpoint-owned row mutations protected by retained markers. */
+    public static final ConfigOption<BigtableDeliveryGuarantee> SINK_DELIVERY_GUARANTEE =
+            ConfigOptions.key("sink.delivery-guarantee")
+                    .enumType(BigtableDeliveryGuarantee.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Selects eager writes or checkpoint-owned row mutations protected by retained markers.");
+
+    /** The reserved raw column family without a GC rule that retains replay markers. */
+    public static final ConfigOption<String> SINK_STAGED_MARKER_FAMILY =
+            ConfigOptions.key("sink.staged.marker-family")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The reserved raw column family without a GC rule that retains replay markers.");
+
+    /** The maximum number of entries staged by one writer between checkpoint preparations. */
+    public static final ConfigOption<Integer> SINK_STAGED_MAX_ENTRIES =
+            ConfigOptions.key("sink.staged.max-entries")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum number of entries staged by one writer between checkpoint preparations.");
+
+    /**
+     * The maximum serialized request bytes plus 256 accounting bytes per entry staged by one
+     * writer.
+     */
+    public static final ConfigOption<MemorySize> SINK_STAGED_MAX_BYTES =
+            ConfigOptions.key("sink.staged.max-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum serialized request bytes plus 256 accounting bytes per entry staged by one writer.");
 
     // ------------------------------------------------------------------------
     //  Destination

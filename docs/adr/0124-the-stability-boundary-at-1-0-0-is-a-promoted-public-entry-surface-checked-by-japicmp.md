@@ -220,3 +220,9 @@ reference with no warning and compared all six connector jars against it, and a 
   accepted.
 - The parent's `fast` profile does not skip this plugin (it targets the stale
   `io.github.zentol.japicmp` fork coordinates); the working switch is `-Djapicmp.skip=true`.
+
+## Bigtable staged API revision (2026-09-11)
+
+ADR-0165 adds `BigtableDeliveryGuarantee`, `BigtableStagedOptions` and its builder as `@Experimental` closure stops reachable from `BigtableSinkBuilder`.
+The final performance and service-recovery acceptance may still constrain this unreleased mode's configuration.
+The existing public builder retains its at-least-once default; no existing public type is demoted.

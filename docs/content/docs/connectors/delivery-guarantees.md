@@ -74,7 +74,7 @@ Adding a committer around an eager non-transactional API does not undo a write m
 
 ## Current sink matrix
 
-All stateless sinks below call `flush()` at a checkpoint and wait for outstanding service requests.
+The eager sinks below call `flush()` at a checkpoint and wait for outstanding service requests; staged modes transfer work to a committer.
 Checkpointing must be enabled in a streaming job for that durability boundary to run.
 
 | Connector and method | Current checkpoint protocol | Effect of replay | Current guarantee |
@@ -85,7 +85,8 @@ Checkpointing must be enabled in a streaming job for that durability boundary to
 | [Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}) sink | Stateless writer flushes SDK publishers and waits for publish acknowledgements | A replay is a new publish with a new service-assigned message ID | At-least-once; no publisher-side idempotent mode |
 | [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) `AT_LEAST_ONCE` | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` or Table API `task-id` metadata |
 | [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) DataStream/Table `EXACTLY_ONCE` | Stateless writer stages immutable named envelopes in committer state; bounded `CreateTask` calls start after checkpoint completion | Restore reuses original queue, name and Task bytes; every send enforces the persisted recovery deadline | Exactly-once task creation per staged envelope within the documented scope and recovery window; no exactly-once handler execution; release acceptance remains pending |
-| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A regenerated `setCell` timestamp can add a version; a stable timestamp targets the same version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once; replay safety depends on the mutation shape |
+| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) default bulk sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A regenerated `setCell` timestamp can add a version; a stable timestamp targets the same version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once; replay safety depends on the mutation shape |
+| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) DataStream/Table `EXACTLY_ONCE` | Stateless writer transfers immutable envelopes to checkpointed committer state; conditional writes start after completion | Restore reuses the original request and marker identity; retained markers suppress repeated effects | Experimental checkpoint-owned row effects within the documented recovery scope; final service acceptance remains pending |
 | [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}#single-row-request-writes) single-row request runtime | Sink surface: stateless writer waits for every `CheckAndMutateRow` or `ReadModifyWriteRow` request. Async surface: Flink's async operator checkpoints un-emitted inputs and replays them | A replayed conditional write re-evaluates its predicate against the state the first attempt left; a replayed read-modify-write applies its increment or append again | At-least-once; neither RPC is idempotent, and the runtime retries neither. Conditional and read-modify-write sink and async entry points are available |
 | [Spanner]({{< relref "docs/connectors/datastream/spanner" >}}) sink | Stateless writer consumes `BatchWrite` responses before the barrier | Spanner documents no replay protection; the selected mutation operation may nevertheless be idempotent | At-least-once; `insertOrUpdate`, `replace`, `update`, and delete effects can be idempotent within their operation constraints |
 
@@ -104,12 +105,13 @@ implements insert-if-absent.
 |---|---|---|---|
 | Spanner Table API | A declared `PRIMARY KEY` selects `insertOrUpdate` and key deletes; without one the sink accepts inserts only and uses `insert` | Replaying one upsert or delete repeats its effect idempotently; `insert` can return `ALREADY_EXISTS` | At-least-once submission; `BatchWrite` does not preserve the order of successive same-key mutation groups |
 | Spanner DataStream API | The serializer chooses the key and `Mutation` operation | Replaying one `insertOrUpdate`, `replace`, `update`, or delete can be idempotent within its operation constraints; `insert` can return `ALREADY_EXISTS` | At-least-once submission; replay safety belongs to each mutation, and `BatchWrite` does not preserve same-key group order |
-| Bigtable Table API, default `upsert` | The one atomic column is always the row key; a declared `PRIMARY KEY` improves planner handling, while `sink.insert-only-input-mode` changes only the accepted changelog | The same row key is physically upserted; a stable explicit cell timestamp targets the same version, while an omitted timestamp uses the writer's wall clock and a Flink replay can create another version | At-least-once submission; this mode performs no atomic existence check |
-| Bigtable Table API, `keep-latest` | The ordinary row-key/family schema with `sink.write-mode = keep-latest`; each written cell is deleted across all versions and set again in one row entry | Replay leaves one replacement per targeted cell but can change its timestamp and overwrite newer values; omitted families and undeclared cells remain untouched | At-least-once submission; atomic replacement does not order separate same-row entries or arbitrate event timestamps |
+| Bigtable Table API, at-least-once `upsert` (default) | The one atomic column is always the row key; a declared `PRIMARY KEY` improves planner handling, while `sink.insert-only-input-mode` changes only the accepted changelog | The same row key is physically upserted; a stable explicit cell timestamp targets the same version, while an omitted timestamp uses the writer's wall clock and a Flink replay can create another version | At-least-once submission; this mode performs no atomic existence check |
+| Bigtable Table API, at-least-once `keep-latest` | The ordinary row-key/family schema with `sink.write-mode = keep-latest`; each written cell is deleted across all versions and set again in one row entry | Replay leaves one replacement per targeted cell but can change its timestamp and overwrite newer values; omitted families and undeclared cells remain untouched | At-least-once submission; atomic replacement does not order separate same-row entries or arbitrate event timestamps |
 | Bigtable Table API, `insert-if-absent` | The ordinary row-key/family schema with `sink.write-mode = insert-if-absent`; only INSERT input is accepted | Any stored cell, including undeclared families, selects an empty branch; an absent row receives the input cells atomically | At-least-once submission; an initial insert followed by replay may be ignored or fail according to the empty-branch policy |
 | Bigtable Table API, `append` or `increment` | The ordinary row-key/family schema with one operation selected by `sink.write-mode`; only INSERT input is accepted | Every repeated input submits another append or increment against the latest cell values; timestamps are service-assigned | At-least-once submission without deduplication; replay can apply an already committed append or increment again |
-| Bigtable Table API, `aggregate` | INSERT-only integer contributions through `AddToCell`; repeated primary keys remain contributions | A stable timestamp selects an aggregate cell, but replay can add SUM inputs again. MIN, MAX and HLL are unchanged by repeating the same input at the same timestamp without intervening deletion or GC; writer-clock timestamps can create new versions | At-least-once submission; no durable input identity or retraction of earlier contributions |
+| Bigtable Table API, at-least-once `aggregate` | INSERT-only integer contributions through `AddToCell`; repeated primary keys remain contributions | A stable timestamp selects an aggregate cell, but replay can add SUM inputs again. MIN, MAX and HLL are unchanged by repeating the same input at the same timestamp without intervening deletion or GC; writer-clock timestamps can create new versions | At-least-once submission; no durable input identity or retraction of earlier contributions |
 | Bigtable DataStream API, bulk sink | The serializer chooses the `RowMutationEntry` row key, mutations, qualifiers, and cell timestamps | Replaying `setCell` with a stable explicit timestamp targets the same version; a regenerated timestamp can create another version. Aggregate Sum inputs or states can contribute again even at the same timestamp | At-least-once submission; replay safety belongs to the mutation shape |
+| Bigtable DataStream/Table API, opt-in `EXACTLY_ONCE` | One random identity per immutable staged row envelope, retained in Flink state | A retained same-row marker makes replay of that envelope a no-op; distinct inputs still have distinct identities | Checkpoint-owned row effects with preserved state and markers; no cross-row visibility or ordering guarantee, and final service acceptance is pending |
 | Bigtable single-row request runtime | The request names the row key; `CheckAndMutateRow` carries a predicate and an ordered mutation list for each branch, `ReadModifyWriteRow` an ordered list of append and increment rules | Repeating a conditional write re-runs the predicate, so a marker it writes can make the second attempt a no-op; repeating a read-modify-write appends or increments again, with no timestamp to target | At-least-once submission, one attempt per request; a conditional write is the only shape here that can be made replay-safe, and only by what the application puts in the row |
 | Cloud Tasks Table API, default `at-least-once` | The sink accepts inserts only; writable `task-id` metadata optionally selects a stable task identity | A remembered ID returns `ALREADY_EXISTS`; the existing task is neither compared nor updated | At-least-once submission; bounded effectively-once task creation when `task-id` is selected |
 | Cloud Tasks DataStream API, default `AT_LEAST_ONCE` | `taskIdExtractor(...)` optionally selects a stable task identity; otherwise Cloud Tasks assigns one | A remembered extracted ID returns `ALREADY_EXISTS`; an unnamed replay creates another task | At-least-once submission; bounded effectively-once task creation with an extractor |
@@ -196,12 +198,12 @@ latency, so its practical recommendation depends on the measured workload.
 
 ### Bigtable
 
-The current sink can make an individual `setCell` effect idempotent when the serializer writes the same value with a stable explicit timestamp.
+The default bulk sink can make an individual `setCell` effect idempotent when the serializer writes the same value with a stable explicit timestamp.
 That does not cover a writer-clock timestamp, arbitrary mutation shapes, or two legitimate events
 that happen to target the same cell version.
 
 That idempotence is a property of Bigtable's storage model, not an exactly-once sink protocol.
-The sink has no committer, no writer state, and no step that makes a replayed record invisible or
+That bulk sink has no committer, no writer state, and no step that makes a replayed record invisible or
 rejected; a replayed `setCell` carrying the same row key, family, qualifier, and timestamp
 overwrites the same cell version, and the overwrite is what makes the duplicate disappear.
 The [Bigtable sink of google/flink-connector-gcp](https://github.com/google/flink-connector-gcp/blob/main/connectors/bigtable/README.md#exactly-once)
@@ -247,8 +249,8 @@ sends `CheckAndMutateRow` and `ReadModifyWriteRow` as one request per row, with 
 and no retry.
 The public conditional request API can express the predicate and mutations for a same-row marker.
 The public read-modify-write sink and async helper apply ordered append and increment rules; they do not implement a marker protocol.
-The connector offers no managed marker mode: callers own the marker identity, retention and
-protected mutations.
+The general conditional API leaves marker identity, retention and protected mutations to callers.
+The separate staged mode below owns its envelope identities.
 The runtime settles the replay boundary underneath that protocol. On its sink surface a completed checkpoint means every request
 up to the barrier was answered. On its async surface — a `RichAsyncFunction` under
 `AsyncDataStream` — the guarantee is Flink's: the async operator checkpoints every input whose
@@ -258,7 +260,7 @@ append again. Both are at-least-once, and a failure that ends a request before t
 (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED`, `CANCELLED`) fails the job saying so rather than
 retrying a request the service may already have applied.
 
-The planned committer-based mode ([#1211]({{< param BookRepo >}}/issues/1211)) is defined by
+The experimental committer-based mode ([#1211]({{< param BookRepo >}}/issues/1211)) is defined by
 [ADR-0163]({{< param BookRepo >}}/blob/main/docs/adr/0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
 It stages immutable mutation envelopes in Flink checkpoint state and applies each through
 `CheckAndMutateRow` after completion, guarded by its own retained marker in the target row.
@@ -266,7 +268,9 @@ Completion authorizes individual row commits; it does not make all rows visible 
 roll back later committed data when an older snapshot is selected.
 The design requires a reserved family without automatic marker deletion and preserved Flink state;
 its savepoint limitations, storage cost and required service evaluation are recorded in the ADR.
-No new Bigtable delivery mode is available yet; the existing sink guarantees above remain current.
+The DataStream builder and compatible Table write modes expose `EXACTLY_ONCE` as experimental development functionality.
+[ADR-0165]({{< param BookRepo >}}/blob/main/docs/adr/0165-bigtable-implementation-precedes-final-stage2-acceptance.md) allows implementation before evaluation, but release and support still require production service recovery acceptance and the unchanged formal Stage 2 gate.
+See the [staged mode configuration]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) for its deployment and recovery requirements.
 
 ### Spanner
 
@@ -333,7 +337,7 @@ more the same day under an amended protocol with every repetition in its own JVM
 The Cloud Tasks task-identity candidate ran again on 2026-09-06.
 These results measure the service primitives, not end-to-end Flink jobs.
 The Cloud Tasks staged DataStream runtime is implemented, but this does not turn its primitive result into a pass or satisfy its remaining release gates.
-Apart from the committer-based Bigtable mode planned under
+Apart from final acceptance of the experimental Bigtable mode under
 [#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks checkpointed-creation work in
 [#1238]({{< param BookRepo >}}/issues/1238), no non-BigQuery exactly-once implementation or
 additional performance stage is planned without a concrete non-idempotent requirement that the
@@ -341,7 +345,7 @@ existing write shapes cannot satisfy.
 
 | Candidate | Stage 1 result | Current decision |
 |---|---|---|
-| Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the committer-based mode planned under [#1211]({{< param BookRepo >}}/issues/1211) |
+| Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the experimental committer-based mode under [#1211]({{< param BookRepo >}}/issues/1211); final service recovery and Stage 2 acceptance remain pending |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
 | Cloud Tasks task identity | All four planned comparisons in the 2026-09-06 repeat were inconclusive: the one-channel replay warm-up stopped before required repetitions and controls finished; the eight-channel configuration never ran | The existing bounded task-creation behavior remains available. The checkpointed-creation protocol for [#1238]({{< param BookRepo >}}/issues/1238) is defined in [ADR-0158]({{< param BookRepo >}}/blob/main/docs/adr/0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md); [ADR-0162]({{< param BookRepo >}}/blob/main/docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) permits implementation while preserving the inconclusive result. Release requires [#1245]({{< param BookRepo >}}/issues/1245)'s recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment. The staged DataStream and Table runtime is implemented; the recovery and performance release gates remain open. |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |

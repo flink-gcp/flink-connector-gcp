@@ -68,6 +68,13 @@ public final class BigtableStage2Probe {
         }
         if (args.length == 2) {
             Stage2Lease lease = new Stage2Lease(Path.of(args[1]));
+            if (lease.productionRecovery
+                    && !(args[0].equals("cleanup")
+                            || args[0].equals("supervise")
+                            || args[0].equals("monitor"))) {
+                throw new IllegalArgumentException(
+                        "Production recovery requires its own entry point");
+            }
             switch (args[0]) {
                 case "create":
                     lease.create();
@@ -90,6 +97,10 @@ public final class BigtableStage2Probe {
         }
         if (args.length == 3 && args[0].equals("service")) {
             Stage2Lease lease = new Stage2Lease(Path.of(args[1]));
+            if (lease.productionRecovery) {
+                throw new IllegalArgumentException(
+                        "Experimental workers cannot use a production recovery lease");
+            }
             String table = args[2];
             lease.claim(table);
             if (table.startsWith("recovery-")) {

@@ -312,6 +312,9 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/BigtableExamples.sql", "aggregate-contributions"),
                         snippet("flink/BigtableExamples.sql", "aggregate-read-state")),
                 scenario(
+                        "Bigtable checkpoint-owned sink",
+                        snippet("flink/BigtableExamples.sql", "staged-sink")),
+                scenario(
                         "Bigtable batch upsert",
                         snippet("flink/BigtableExamples.sql", "batch-upsert")),
                 scenario(
