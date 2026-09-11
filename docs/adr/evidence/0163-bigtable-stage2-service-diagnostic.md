@@ -31,7 +31,7 @@ The [formal Stage 2 protocol](0163-bigtable-staged-performance-protocol.md), its
 Ownership, reservations, supervision, stop conditions and exact-owned deletion/absence checks remain in the shared harness.
 The archived manifest discriminator is exactly `profile=diagnostic-seven-cell-v1`, as written by [the retired profile implementation](https://github.com/flink-gcp/flink-connector-gcp/blob/4a123d60414d8f59bfe456a387fbac476c49ad41/flink-connector-gcp-bigtable/src/test/java/io/github/flink/gcp/connector/bigtable/sink/Stage2Diagnostic.java#L26).
 A manifest with that discriminator is rejected by creation and worker claim; its cleanup journal remains readable.
-The guard does not disable shared preflight, monitoring or supervision helpers; preflight can still make read-only metadata RPCs.
+The guard does not disable shared preflight, monitoring or supervision helpers; preflight can still make read-only metadata RPCs for active profiles.
 Neither these tests nor the historical diagnostics pass the formal gate or close #1211.
 
 The remainder preserves the withdrawn preparation record.

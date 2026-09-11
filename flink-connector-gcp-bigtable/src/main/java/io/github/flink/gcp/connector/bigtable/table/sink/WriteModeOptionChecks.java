@@ -46,25 +46,51 @@ public final class WriteModeOptionChecks {
      * @param mode the selected write mode
      */
     public static void validate(Map<String, String> options, WriteMode mode) {
-        List<ConfigOption<?>> rejected =
-                !usesBatchWriter(mode)
-                        ? List.of(
-                                BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
-                                BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
-                                BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE,
-                                BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE,
-                                BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
-                                BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
-                                BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES,
-                                BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
-                                BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
-                                BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
-                                BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
-                                BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
-                        : List.of(
-                                BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
-                                BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
-                                BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS);
+        validate(options, mode, false);
+    }
+
+    /** Validates the combination of write operation and checkpoint-owned delivery. */
+    public static void validate(Map<String, String> options, WriteMode mode, boolean staged) {
+        if (staged && !usesBatchWriter(mode)) {
+            throw new ValidationException(
+                    "Option 'sink.delivery-guarantee' = 'exactly-once' does not support 'sink.write-mode' = '"
+                            + mode
+                            + "'.");
+        }
+        List<ConfigOption<?>> rejected;
+        if (staged) {
+            rejected =
+                    List.of(
+                            BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
+                            BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
+                            BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
+                            BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES,
+                            BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
+                            BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
+                            BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                            BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                            BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS);
+        } else {
+            rejected =
+                    !usesBatchWriter(mode)
+                            ? List.of(
+                                    BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
+                                    BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
+                                    BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE,
+                                    BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE,
+                                    BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
+                                    BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
+                                    BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES,
+                                    BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
+                                    BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
+                                    BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                                    BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                                    BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
+                            : List.of(
+                                    BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
+                                    BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
+                                    BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS);
+        }
         if (mode == WriteMode.APPEND || mode == WriteMode.INCREMENT) {
             rejected = new ArrayList<>(rejected);
             rejected.add(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY);
@@ -82,7 +108,9 @@ public final class WriteModeOptionChecks {
                                 + option.key()
                                 + "' cannot be used with 'sink.write-mode' = '"
                                 + mode
-                                + "'.");
+                                + "'"
+                                + (staged ? " and 'sink.delivery-guarantee' = 'exactly-once'" : "")
+                                + ".");
             }
         }
     }

@@ -46,8 +46,10 @@ resumes a broken `ReadRows` stream from the last key it saw.
 | `table` | **required**, unless `destinationResolver` is set | Writes every mutation to one fixed table |
 | `destinationResolver` | — | Resolves the table per record. Runs before the serializer; returning `null` fails the job |
 | `serializer` | **required** | Turns a record into a `RowMutationEntry`, or into `null` to skip it |
+| `deliveryGuarantee` | `AT_LEAST_ONCE` | Selects eager writes or experimental checkpoint-owned `EXACTLY_ONCE`; the latter still requires final service acceptance before release |
+| `stagedOptions` | *unset* | Required for `EXACTLY_ONCE`; explicit marker family, interval caps and committer request settings; rejected for at-least-once |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through, which is what selects the routing policy and the request priority. **A Data Boost profile is read-only** — its eligible methods are `ReadRows`, `SampleRowKeys` and `PingAndWarm`, and it carries neither a request priority nor a routing policy of its own — so naming one here breaks writes. The connector cannot tell locally what kind a profile is, which is why this is documented rather than rejected at `build()` |
-| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when each writer starts and shares it with that writer's data and table-admin clients. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when a writer or staged committer creates its service clients. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
@@ -71,6 +73,23 @@ open and closing clients held by each writer subtask; a physical close keeps its
 creation waits interruptibly when every slot is still occupied. The in-flight bounds below are the
 writer's, summed across destinations rather than split among them. See
 [Per-record destinations]({{< relref "docs/connectors/datastream/bigtable" >}}#per-record-destinations).
+
+## `BigtableStagedOptions`
+
+Applies only to [checkpoint-owned writes]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes).
+
+| Option | Default | What it does |
+|---|---|---|
+| `markerFamily` | *required* | Reserved raw family without a GC rule; must exist independently of application families |
+| `maxStagedEntries` | 100,000 | Per-writer entry cap between `prepareCommit()` calls; crossing it fails synchronously |
+| `maxStagedBytes` | 64 MiB | Per-writer serialized request bytes plus 256 accounting bytes per entry; not a heap bound |
+| `requestOptions` | `BigtableRequestOptions.builder().build()` | Committer concurrency, single-attempt deadline, idle timeout, client cap and per-destination counters |
+
+The committer bounds outstanding requests by `maxInFlightRequests` and waits for them on its commit thread.
+Its `maxActiveInstances` counts `(project, instance, original profile)` combinations, including restored profiles.
+At capacity it drains requests and closes the least recently used client before admitting another.
+Idle tables release their cached validation and client lease at the next commit invocation; an owner with no remaining tables closes before its capacity is reused.
+`close()` cancels pending original RPC futures and closes all client owners.
 
 ## `BigtableWriterOptions`
 

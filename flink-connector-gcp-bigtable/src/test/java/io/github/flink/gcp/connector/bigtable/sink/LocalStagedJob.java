@@ -54,6 +54,33 @@ final class LocalStagedJob implements AutoCloseable {
             String restorePath,
             boolean restart)
             throws Exception {
+        this(
+                run,
+                directory,
+                staged,
+                emulator,
+                parallelism,
+                records,
+                intervalMillis,
+                hold,
+                restorePath,
+                restart,
+                null);
+    }
+
+    LocalStagedJob(
+            LocalStagedHarness run,
+            Path directory,
+            boolean staged,
+            boolean emulator,
+            int parallelism,
+            long records,
+            long intervalMillis,
+            boolean hold,
+            String restorePath,
+            boolean restart,
+            org.apache.flink.api.connector.sink2.Sink<Long> productionSink)
+            throws Exception {
         this.run = run;
         Configuration configuration = new Configuration();
         configuration.set(org.apache.flink.configuration.RestOptions.PORT, 0);
@@ -84,9 +111,11 @@ final class LocalStagedJob implements AutoCloseable {
         env.fromSource(run.source(records, hold), WatermarkStrategy.noWatermarks(), "local-input")
                 .uid("local-input")
                 .sinkTo(
-                        staged
-                                ? new LocalStagedHarness.StagedSink(run, emulator)
-                                : new LocalStagedHarness.BulkSink(run, emulator))
+                        productionSink != null
+                                ? productionSink
+                                : staged
+                                        ? new LocalStagedHarness.StagedSink(run, emulator)
+                                        : new LocalStagedHarness.BulkSink(run, emulator))
                 .uid("local-sink");
         var streamGraph = env.getStreamGraph();
         if (staged && run instanceof Stage2Harness && ((Stage2Harness) run).timed) {
@@ -174,15 +203,16 @@ final class LocalStagedJob implements AutoCloseable {
                                 : client.triggerSavepoint(
                                         directory.toUri().toString(),
                                         SavepointFormatType.CANONICAL))
-                        .get(40, TimeUnit.SECONDS);
+                        .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
         if (stop) {
-            result.get(40, TimeUnit.SECONDS);
+            result.get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
         }
         return path;
     }
 
     String checkpoint() throws Exception {
-        return cluster.triggerCheckpoint(client.getJobID()).get(40, TimeUnit.SECONDS);
+        return cluster.triggerCheckpoint(client.getJobID())
+                .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
     }
 
     String checkpointStats() throws Exception {
@@ -206,7 +236,7 @@ final class LocalStagedJob implements AutoCloseable {
 
     void finish() throws Exception {
         run.releaseSource();
-        result.get(40, TimeUnit.SECONDS);
+        result.get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
     }
 
     @Override

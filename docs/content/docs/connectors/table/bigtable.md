@@ -435,11 +435,11 @@ Aggregate input DDL is sink-only: scan and lookup planning reject it.
 Read the same table through a separate DDL without aggregate options, using `BIGINT` for SUM/MIN/MAX state and `BYTES` for HLL sketch state.
 The connector does not extract cardinality from an HLL sketch; Bigtable SQL provides [HLL_COUNT.EXTRACT](https://docs.cloud.google.com/bigtable/docs/reference/sql/hll_functions).
 
-Delivery remains at-least-once.
-A stable timestamp selects a cell but does not deduplicate a SUM contribution: replaying `3, 5, 3` changes SUM from `11` to `22`.
+Delivery defaults to at-least-once; [checkpoint-owned delivery](#checkpoint-owned-delivery) protects each staged contribution with a retained marker.
+Under at-least-once delivery, a stable timestamp selects a cell but does not deduplicate a SUM contribution: replaying `3, 5, 3` changes SUM from `11` to `22`.
 Repeating those values at the same timestamp leaves MIN `3`, MAX `5`, and the HLL result unchanged, provided no deletion or GC intervenes.
 A regenerated timestamp can create another aggregate version, including for those three types.
-Neither batching retries nor a completed checkpoint establish exactly-once aggregation.
+In the default eager mode, neither batching retries nor a completed checkpoint establish exactly-once aggregation.
 
 ### Insert-if-absent
 
@@ -943,11 +943,15 @@ DataStream builder.
 
 | Option | Type | Maps to |
 |---|---|---|
+| `sink.delivery-guarantee` | Enum | `at-least-once` (default) or experimental `exactly-once`; see checkpoint-owned delivery |
+| `sink.staged.marker-family` | String | Required reserved raw family with no GC rule for exactly-once; no default |
+| `sink.staged.max-entries` | Integer | `BigtableStagedOptions.maxStagedEntries(...)`; 100,000 by default |
+| `sink.staged.max-bytes` | MemorySize | `BigtableStagedOptions.maxStagedBytes(...)`; 64 MiB by default |
 | `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, `keep-latest` for atomic replacement of each written cell, `append`, `increment`, or `aggregate` for INSERT-only integer contributions |
 | `sink.aggregate.column-family-types` | Map of String to String | Required in aggregate mode; maps every physical family to `int64-sum`, `int64-min`, `int64-max`, or `int64-hll`. No default; rejected in other modes |
 | `sink.conditional.empty-branch-policy` | Enum | `emptyBranchPolicy(...)`; `ignore` or `fail`, conditional mode only |
-| `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional and read-modify-write modes, at least 1 ms |
-| `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional and read-modify-write modes |
+| `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional, read-modify-write and staged modes, at least 1 ms |
+| `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional, read-modify-write and staged modes |
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
@@ -961,7 +965,7 @@ DataStream builder.
 | `sink.recovery.max-backoff` | Duration | `BigtableWriterOptions.recoveryMaxBackoff(...)` |
 | `sink.recovery.max-attempts` | Integer | `BigtableWriterOptions.recoveryMaxAttempts(...)` |
 | `sink.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)` on the selected runtime options |
-| `sink.max-active-instances` | Integer | `maxActiveInstances(...)` on the selected runtime options. **Inert from SQL**: one DDL sink names one instance, so every valid positive cap already contains it. It exists so the DDL surface stays one key per writer knob |
+| `sink.max-active-instances` | Integer | `maxActiveInstances(...)` on the selected runtime options. One DDL names one instance. The staged committer also counts original profile/instance combinations restored from checkpoint state |
 | `sink.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` on the selected runtime options |
 | `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
 
@@ -991,13 +995,33 @@ Setting either key without `sink.create-disposition` = `create-if-needed` is rej
 ignored. A table that declares no column family is rejected outright, whatever the disposition: a
 mutation with no cell in it is not a write.
 
+## Checkpoint-owned delivery
+
+Set `sink.delivery-guarantee` to `exactly-once` with `upsert`, `keep-latest` or `aggregate` to select the experimental staged runtime.
+Its final service acceptance and formal Stage 2 gate remain pending; it is not yet released or supported.
+The [DataStream staged contract]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) also governs SQL recovery, visibility and marker retention.
+
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="staged-sink" >}}
+
+Provision `cf` and the reserved raw `flink_commit` family before running this example, with no GC rule on `flink_commit` and transactional single-cluster routing on `transactional`.
+Keep the marker family outside the DDL's data families.
+`CREATE_NEVER` is required; table creation and GC-rule options do not configure this mode.
+Batch thresholds, batch in-flight limits and auto-creation recovery knobs are rejected; use `sink.request-timeout` and `sink.in-flight.max-requests` instead.
+General conditional, `insert-if-absent`, `append`, `increment` and async operations cannot select staged delivery.
+
+For staged `upsert` and `keep-latest`, a DELETE removes all cells in the DDL's declared data families.
+The marker family and undeclared families survive, so this is not physical row removal.
+The default at-least-once DELETE still removes the whole row.
+Aggregate mode still accepts only INSERT contributions and validates the declared aggregate family types before writing.
+All declared data families must exist; non-aggregate modes allow raw or typed non-aggregate families and reject aggregate families before staging.
+
 ## Delivery guarantees
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
 for the cross-connector distinction between an insert-only changelog and destination-side
 insert-if-absent behavior.
 
-The sink is **at-least-once** and advertises **upsert** by default, including when the requested
+The sink defaults to **at-least-once** and advertises **upsert** by default, including when the requested
 input contains inserts alone. A Bigtable write is an upsert on the row key by construction —
 `setCell` overwrites — and there is no retract path to offer instead. On Flink 2.x the upsert mode
 says a delete may carry the upsert key alone only when the DDL declares the primary key, which is
@@ -1012,7 +1036,7 @@ With ordinary `upsert`, a stable timestamp makes a replay target the same cell v
 the writer's wall clock and can create a new version after Flink recovery.
 With `keep-latest`, replay replaces all versions of the targeted cells again; the timestamp and winning value can still change.
 
-A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
+With default at-least-once delivery, a `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
 key, so "this key is gone" is what a delete means here; removing only the declared cells would leave
 a row behind made of whatever else was in it.
 
