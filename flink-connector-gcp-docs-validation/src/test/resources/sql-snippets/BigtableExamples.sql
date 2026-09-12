@@ -318,3 +318,26 @@ CREATE TABLE aggregate_state (
 
 SELECT rowkey, totals.q, minimums.q, maximums.q, users.q FROM aggregate_state;
 -- end::aggregate-read-state[]
+
+-- tag::staged-sink[]
+SET 'execution.runtime-mode' = 'streaming';
+SET 'execution.checkpointing.interval' = '10 s';
+SET 'execution.checkpointing.mode' = 'EXACTLY_ONCE';
+SET 'execution.checkpointing.checkpoints-after-tasks-finish' = 'true';
+
+CREATE TABLE staged_orders (
+  rowkey STRING,
+  cf ROW<status STRING>,
+  PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'orders',
+  'sink.delivery-guarantee' = 'exactly-once',
+  'sink.app-profile-id' = 'transactional',
+  'sink.staged.marker-family' = 'flink_commit'
+);
+
+INSERT INTO staged_orders VALUES ('order#1', ROW('created'));
+-- end::staged-sink[]

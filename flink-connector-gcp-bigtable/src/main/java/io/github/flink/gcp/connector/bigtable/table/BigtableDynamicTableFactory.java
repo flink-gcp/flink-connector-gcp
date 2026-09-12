@@ -40,6 +40,8 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
@@ -47,6 +49,7 @@ import io.github.flink.gcp.connector.bigtable.table.sink.AggregateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.ReadModifyWriteSchemaChecks;
 import io.github.flink.gcp.connector.bigtable.table.sink.RequestOptionsMapper;
+import io.github.flink.gcp.connector.bigtable.table.sink.StagedOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.TableCreateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriteModeOptionChecks;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriterOptionsMapper;
@@ -83,15 +86,15 @@ import java.util.stream.Collectors;
  * <p>The identifier {@code bigtable} is also google/flink-connector-gcp's. A classpath carrying
  * both fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
  *
- * <p>Nothing here reads the session configuration. The Bigtable sink is at-least-once in both
- * execution modes, and neither it nor a source has a rule that depends on the runtime mode or the
- * checkpoint interval. A source selects the bounded HBase-compatible row shape, the exact generic
- * Change Streams mutation envelope, or the constrained selected-cell upsert shape; the first is
- * bounded and the other two are unbounded unless an end timestamp bounds them. A source rejects the
- * other mode's options instead of ignoring them, and a Change Streams table is source-only: an
- * {@code INSERT INTO} over one is rejected rather than served as an ordinary upsert sink that
- * discards those options, and a table being written to is refused them too. What a sink keeps are
- * the scan and lookup options of a table it is also read with.
+ * <p>Nothing here reads the session configuration. The default Bigtable sink is at-least-once in
+ * both execution modes. Staged exactly-once delivery validates streaming checkpoint settings when
+ * its runtime graph is translated. A source selects the bounded HBase-compatible row shape, the
+ * exact generic Change Streams mutation envelope, or the constrained selected-cell upsert shape;
+ * the first is bounded and the other two are unbounded unless an end timestamp bounds them. A
+ * source rejects the other mode's options instead of ignoring them, and a Change Streams table is
+ * source-only: an {@code INSERT INTO} over one is rejected rather than served as an ordinary upsert
+ * sink that discards those options, and a table being written to is refused them too. What a sink
+ * keeps are the scan and lookup options of a table it is also read with.
  */
 @Internal
 public class BigtableDynamicTableFactory
@@ -156,6 +159,10 @@ public class BigtableDynamicTableFactory
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
                         BigtableConnectorOptions.SINK_WRITE_MODE,
+                        BigtableConnectorOptions.SINK_DELIVERY_GUARANTEE,
+                        BigtableConnectorOptions.SINK_STAGED_MARKER_FAMILY,
+                        BigtableConnectorOptions.SINK_STAGED_MAX_ENTRIES,
+                        BigtableConnectorOptions.SINK_STAGED_MAX_BYTES,
                         BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES,
                         BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
                         BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
@@ -193,7 +200,12 @@ public class BigtableDynamicTableFactory
         validateCredentialsMode(config);
         checkSinkHasNoChangeStreamOptions(context);
         WriteMode writeMode = config.get(BigtableConnectorOptions.SINK_WRITE_MODE);
-        WriteModeOptionChecks.validate(context.getCatalogTable().getOptions(), writeMode);
+        BigtableDeliveryGuarantee guarantee =
+                config.getOptional(BigtableConnectorOptions.SINK_DELIVERY_GUARANTEE)
+                        .orElse(BigtableDeliveryGuarantee.AT_LEAST_ONCE);
+        boolean staged = guarantee == BigtableDeliveryGuarantee.EXACTLY_ONCE;
+        WriteModeOptionChecks.validate(context.getCatalogTable().getOptions(), writeMode, staged);
+        BigtableStagedOptions stagedOptions = StagedOptionsMapper.map(config, staged);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
@@ -203,8 +215,18 @@ public class BigtableDynamicTableFactory
         checkSinkHasSomewhereToWrite(schema);
         ReadModifyWriteSchemaChecks.validate(schema, writeMode);
         Map<String, ColumnFamilyType> aggregateTypes = AggregateOptionsMapper.map(config, schema);
+        if (staged
+                && schema.getFamilies().stream()
+                        .anyMatch(
+                                family ->
+                                        family.getName().equals(stagedOptions.getMarkerFamily()))) {
+            throw new ValidationException(
+                    "Option 'sink.staged.marker-family' must name a reserved family outside the DDL data families.");
+        }
 
         return BigtableDynamicSink.builder()
+                .deliveryGuarantee(guarantee)
+                .stagedOptions(stagedOptions)
                 .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .schema(schema)
                 .destination(
@@ -219,13 +241,13 @@ public class BigtableDynamicTableFactory
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .writerOptions(
-                        WriteModeOptionChecks.usesBatchWriter(writeMode)
+                        WriteModeOptionChecks.usesBatchWriter(writeMode) && !staged
                                 ? WriterOptionsMapper.map(config)
                                 : BigtableWriterOptions.builder().build())
                 .writeMode(writeMode)
                 .aggregateTypes(aggregateTypes)
                 .requestOptions(
-                        !WriteModeOptionChecks.usesBatchWriter(writeMode)
+                        !WriteModeOptionChecks.usesBatchWriter(writeMode) || staged
                                 ? RequestOptionsMapper.map(config)
                                 : BigtableRequestOptions.builder().build())
                 .emptyBranchPolicy(

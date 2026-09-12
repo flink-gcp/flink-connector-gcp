@@ -60,6 +60,17 @@ final class Stage2Lease {
                     "marker-missing",
                     "marker-gc",
                     "marker-typed");
+    static final List<String> PRODUCTION_RECOVERY_TABLES =
+            List.of(
+                    "recovery-datastream-flink1",
+                    "recovery-table-flink1",
+                    "recovery-datastream-flink2",
+                    "recovery-table-flink2",
+                    "marker-missing",
+                    "marker-gc",
+                    "marker-typed");
+    final List<String> tables;
+    final boolean productionRecovery;
     final Path manifest;
     final String instance;
     final String token;
@@ -76,10 +87,28 @@ final class Stage2Lease {
                 || !properties.getProperty("zone", "").equals("us-central1-b")) {
             throw new IOException("Invalid or unsupported Stage 2 authorization manifest");
         }
+        productionRecovery =
+                properties
+                        .getProperty("profile", "bounded-experiment")
+                        .equals("production-recovery");
+        if (!productionRecovery
+                && !properties
+                        .getProperty("profile", "bounded-experiment")
+                        .equals("bounded-experiment")) {
+            throw new IOException("Unknown Stage 2 lease profile");
+        }
+        tables = productionRecovery ? PRODUCTION_RECOVERY_TABLES : TABLES;
+        if (!properties.getProperty("tables", "").equals(String.join(",", tables))) {
+            throw new IOException("Lease targets differ from the fixed profile");
+        }
         work = this.manifest.getParent().resolve("work");
     }
 
     static Stage2Lease plan(Path manifest) throws IOException {
+        return plan(manifest, false);
+    }
+
+    static Stage2Lease plan(Path manifest, boolean productionRecovery) throws IOException {
         Files.createDirectories(manifest.toAbsolutePath().getParent());
         Properties properties = new Properties();
         String owner = UUID.randomUUID().toString().replace("-", "");
@@ -93,7 +122,16 @@ final class Stage2Lease {
         properties.setProperty("remainingAttempts", "250000");
         properties.setProperty("remainingWriteBytes", Long.toString(1L << 30));
         properties.setProperty("remainingReadBytes", Long.toString(1L << 30));
-        properties.setProperty("tables", String.join(",", TABLES));
+        properties.setProperty(
+                "profile", productionRecovery ? "production-recovery" : "bounded-experiment");
+        properties.setProperty(
+                "tables",
+                String.join(",", productionRecovery ? PRODUCTION_RECOVERY_TABLES : TABLES));
+        if (productionRecovery) {
+            properties.setProperty("remainingAttempts", "8192");
+            properties.setProperty("remainingWriteBytes", "16777216");
+            properties.setProperty("remainingReadBytes", "67108864");
+        }
         try (var output = Files.newOutputStream(manifest, StandardOpenOption.CREATE_NEW)) {
             properties.store(output, "Stage 2 exact-resource authorization; no credentials");
         }
@@ -202,7 +240,7 @@ final class Stage2Lease {
         requireLive();
         if (!table.getProject().equals("flink-gcp")
                 || !table.getInstance().equals(instance)
-                || !TABLES.contains(table.getTable())) {
+                || !tables.contains(table.getTable())) {
             throw new IOException("Destination is not owned by this Stage 2 lease");
         }
     }
@@ -224,6 +262,39 @@ final class Stage2Lease {
                     if (properties.containsKey(key)) {
                         throw new IllegalStateException("Repetition already claimed: " + table);
                     }
+                    if (productionRecovery) {
+                        int cell = tables.indexOf(table);
+                        if (cell < 0 || cell >= 4) {
+                            throw new IllegalStateException(
+                                    "Only the four recovery cells may claim workers");
+                        }
+                        for (int earlier = 0; earlier < cell; earlier++) {
+                            if (!properties
+                                    .getProperty("run." + tables.get(earlier), "")
+                                    .equals("PASS")) {
+                                throw new IllegalStateException(
+                                        "Previous production recovery cell has not passed");
+                            }
+                        }
+                        if (cell > 0
+                                && ProcessHandle.of(
+                                                Long.parseLong(
+                                                        properties.getProperty("workerPid", "0")))
+                                        .filter(
+                                                process ->
+                                                        process.info()
+                                                                .startInstant()
+                                                                .map(Object::toString)
+                                                                .orElse("")
+                                                                .equals(
+                                                                        properties.getProperty(
+                                                                                "workerStarted",
+                                                                                "")))
+                                        .isPresent()) {
+                            throw new IllegalStateException(
+                                    "Previous production worker is still running");
+                        }
+                    }
                     properties.setProperty(key, "STARTED");
                     properties.setProperty(
                             "workerPid", Long.toString(ProcessHandle.current().pid()));
@@ -236,6 +307,25 @@ final class Stage2Lease {
     void create() throws Exception {
         if (!read().getProperty("phase").equals("PLANNED")) {
             throw new IOException("Lease has already attempted creation");
+        }
+        if (productionRecovery) {
+            Properties properties = read();
+            long supervisor = Long.parseLong(properties.getProperty("supervisorPid", "0"));
+            if (supervisor <= 0
+                    || supervisor == ProcessHandle.current().pid()
+                    || ProcessHandle.of(supervisor)
+                            .filter(
+                                    process ->
+                                            process.info()
+                                                    .startInstant()
+                                                    .map(Object::toString)
+                                                    .orElse("")
+                                                    .equals(
+                                                            properties.getProperty(
+                                                                    "supervisorStarted", "")))
+                            .isEmpty()) {
+                throw new IOException("Independent production lease supervisor is not running");
+            }
         }
         try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create("flink-gcp")) {
             try {
@@ -291,7 +381,7 @@ final class Stage2Lease {
         }
         try (BigtableTableAdminClient admin =
                 BigtableTableAdminClient.create("flink-gcp", instance)) {
-            for (String name : TABLES) {
+            for (String name : tables) {
                 requireCreating();
                 CreateTableRequest request = CreateTableRequest.of(name).addFamily("cf");
                 if (name.equals("marker-gc")) {
@@ -560,6 +650,25 @@ final class Stage2Lease {
     }
 
     void supervise() throws Exception {
+        if (productionRecovery) {
+            update(
+                    properties -> {
+                        if (properties.containsKey("supervisorPid")
+                                || !properties.getProperty("phase").equals("PLANNED")) {
+                            throw new IllegalStateException(
+                                    "Production supervisor requires a fresh planned lease");
+                        }
+                        properties.setProperty(
+                                "supervisorPid", Long.toString(ProcessHandle.current().pid()));
+                        properties.setProperty(
+                                "supervisorStarted",
+                                ProcessHandle.current()
+                                        .info()
+                                        .startInstant()
+                                        .orElseThrow()
+                                        .toString());
+                    });
+        }
         System.out.println("STAGE2_SUPERVISOR " + instance);
         while (true) {
             Properties properties = read();

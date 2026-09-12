@@ -150,6 +150,10 @@ class LocalStagedHarness implements AutoCloseable {
                         0, records - 1);
     }
 
+    long checkpointOperationTimeoutMillis() {
+        return 40_000;
+    }
+
     long checkpointTimeoutMillis() {
         return 30_000;
     }

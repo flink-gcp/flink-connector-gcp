@@ -32,12 +32,14 @@ import javax.annotation.Nullable;
  *
  * <p>Required settings: a destination — {@link #table(TableDestination)} for one fixed table, or
  * {@link #destinationResolver(DestinationResolver)} to route per record — and a serialization
- * schema.
+ * schema. Staged exactly-once delivery additionally requires an explicit transactional profile and
+ * reserved marker family through {@link #stagedOptions(BigtableStagedOptions)}.
  *
  * <p>By default the sink creates no table: every table it writes to, and the column families the
  * mutations name, must exist. {@link #createDisposition(CreateDisposition)} with {@link
  * CreateDisposition#CREATE_IF_NEEDED} and {@link #tableCreateOptions(TableCreateOptions)} opts into
- * creating them, from one schema that serves every table the sink creates.
+ * creating them for at-least-once delivery, from one schema that serves every table the sink
+ * creates.
  *
  * @param <T> type of the records written by the sink
  */
@@ -47,14 +49,31 @@ public class BigtableSinkBuilder<T> {
     private DestinationResolver<? super T> destinationResolver;
     private BigtableSerializationSchema<? super T> serializer;
     @Nullable private String appProfileId;
-    private BigtableWriterOptions writerOptions = BigtableWriterOptions.defaults();
+    private BigtableWriterOptions writerOptions = BigtableWriterOptions.builder().build();
+    private boolean writerOptionsExplicit;
     private FailureHandler<? super FailedMutation> failedMutationHandler = FailureHandler.failJob();
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_NEVER;
     @Nullable private TableCreateOptions tableCreateOptions;
+    private BigtableDeliveryGuarantee deliveryGuarantee = BigtableDeliveryGuarantee.AT_LEAST_ONCE;
+    @Nullable private BigtableStagedOptions stagedOptions;
 
     BigtableSinkBuilder() {}
+
+    /**
+     * Selects eager writes or checkpoint-owned writes; final service acceptance remains required.
+     */
+    public BigtableSinkBuilder<T> deliveryGuarantee(BigtableDeliveryGuarantee value) {
+        deliveryGuarantee = Preconditions.checkNotNull(value, "deliveryGuarantee");
+        return this;
+    }
+
+    /** Configures checkpoint-owned writes, including the explicitly provisioned marker family. */
+    public BigtableSinkBuilder<T> stagedOptions(BigtableStagedOptions value) {
+        stagedOptions = Preconditions.checkNotNull(value, "stagedOptions");
+        return this;
+    }
 
     /**
      * Writes every mutation to the given table. Sugar for a {@link DestinationResolver} returning
@@ -125,12 +144,14 @@ public class BigtableSinkBuilder<T> {
 
     /**
      * Sets the writer tuning options (the batch thresholds and the in-flight bounds). Optional;
-     * defaults to {@link BigtableWriterOptions#defaults()}.
+     * defaults to a fresh {@link BigtableWriterOptions#builder() builder}'s values. This setting is
+     * rejected for staged delivery, whose RPC settings belong to {@link BigtableStagedOptions}.
      *
      * @param writerOptions the options
      * @return this builder
      */
     public BigtableSinkBuilder<T> writerOptions(BigtableWriterOptions writerOptions) {
+        this.writerOptionsExplicit = true;
         this.writerOptions =
                 Preconditions.checkNotNull(writerOptions, "writerOptions must not be null");
         return this;
@@ -140,7 +161,8 @@ public class BigtableSinkBuilder<T> {
      * Sets the policy for mutations that terminally fail — a record the serializer rejects, and a
      * mutation Bigtable rejects as malformed or oversized. Defaults to {@link
      * FailureHandler#failJob()}; transient failures never reach it, since the client retries them
-     * and an exhausted retry fails the job.
+     * and an exhausted retry fails the job in the default at-least-once mode. Staged delivery
+     * requires {@code failJob()} and makes one SDK attempt per conditional request.
      *
      * @param failedMutationHandler the handler
      * @return this builder
@@ -155,9 +177,9 @@ public class BigtableSinkBuilder<T> {
 
     /**
      * Authenticates the sink with the service-account JSON key at the given path instead of
-     * application-default credentials. The file is read on each TaskManager when its writer is
-     * created, so every TaskManager that can run the sink must see the same path. Optional; when
-     * unset the sink uses application-default credentials.
+     * application-default credentials. The file is read on each TaskManager when its writer or
+     * staged committer creates service clients, so every eligible TaskManager must see the same
+     * path. Optional; when unset the sink uses application-default credentials.
      *
      * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
      * Workload Identity where the deployment supports one. This setting cannot be combined with
@@ -234,9 +256,11 @@ public class BigtableSinkBuilder<T> {
      * Builds the sink.
      *
      * @return the sink
-     * @throws IllegalStateException if a required option was not set, if the create disposition and
-     *     the table-creation options disagree, or if a service-account key file was combined with
-     *     an emulator endpoint
+     * @throws IllegalStateException if the destination, serializer or required staged options were
+     *     not set, if the create disposition and the table-creation options disagree, or if a
+     *     service-account key file was combined with an emulator endpoint
+     * @throws IllegalArgumentException if the staged configuration is invalid, including a missing
+     *     application profile or incompatible creation/failure-handler settings
      */
     public Sink<T> build() {
         Preconditions.checkState(
@@ -260,7 +284,7 @@ public class BigtableSinkBuilder<T> {
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
                         + " emulator uses a plaintext channel with no credentials. Remove one of"
                         + " the two settings.");
-        return new BigtableMutateRowsSink<>(
+        BigtableSinkConfig<T> config =
                 new BigtableSinkConfig<>(
                         destinationResolver,
                         serializer,
@@ -270,6 +294,18 @@ public class BigtableSinkBuilder<T> {
                         serviceAccountKeyFile,
                         emulatorEndpoint,
                         createDisposition,
-                        tableCreateOptions));
+                        tableCreateOptions);
+        if (deliveryGuarantee == BigtableDeliveryGuarantee.EXACTLY_ONCE) {
+            Preconditions.checkState(
+                    !writerOptionsExplicit,
+                    "EXACTLY_ONCE uses stagedOptions.requestOptions, not writerOptions");
+            Preconditions.checkState(
+                    stagedOptions != null,
+                    "EXACTLY_ONCE requires stagedOptions(...) with an explicit markerFamily");
+            return new io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink<>(
+                    config, stagedOptions);
+        }
+        Preconditions.checkState(stagedOptions == null, "stagedOptions requires EXACTLY_ONCE");
+        return new BigtableMutateRowsSink<>(config);
     }
 }

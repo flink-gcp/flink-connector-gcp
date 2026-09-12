@@ -49,6 +49,10 @@ public final class BigtableMetricNames {
     /** Registered by the sink writer and by the source readers, on their own groups. */
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
+    public static final String STAGED_ENTRIES = "stagedEntries";
+    public static final String STAGED_BYTES = "stagedBytes";
+    public static final String REQUESTS_DEDUPLICATED = "requestsDeduplicated";
+
     public static final String TABLES_CREATED = "tablesCreated";
     public static final String COLUMN_FAMILIES_ADDED = "columnFamiliesAdded";
 

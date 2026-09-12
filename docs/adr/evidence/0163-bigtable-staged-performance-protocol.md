@@ -24,7 +24,7 @@ The [local MiniCluster harness](0163-bigtable-local-staged-harness.md) adds fake
 ## Question and controlled conditions
 
 Measure the complete staged path's sustainable throughput, record visibility latency, checkpoint and recovery cost against the existing at-least-once bulk path.
-Use a Flink test application with the proposed writer/committer protocol and real single-row clients; the production API remains unavailable until the applicable gate passes.
+Use a Flink test application with the staged writer/committer protocol and real single-row clients; implementation ordering now follows Accepted ADR-0165, while this assessment remains a release/support condition.
 Run both arms with the repository-pinned BOM and Flink versions, identical node resources, source data, serializer and TaskManager resources.
 Freeze the source SHA, complete runtime flags, checkpoint storage, heap and client-channel configuration before execution.
 Generate distinct deterministic payloads and fixed millisecond timestamps; one record writes one data cell plus, in the candidate, its replay marker.

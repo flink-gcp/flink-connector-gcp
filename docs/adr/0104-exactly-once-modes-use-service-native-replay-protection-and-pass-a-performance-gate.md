@@ -86,6 +86,7 @@ A committer-based Bigtable mode — a connector-specific committer whose pre-com
 the target table, not the common layer declined above — is defined by ADR-0163 under
 [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
 Its local protocol probes do not constitute production or real-service acceptance.
+[ADR-0165](0165-bigtable-implementation-precedes-final-stage2-acceptance.md) permits Bigtable implementation before final Stage 2 acceptance; release and supported-workload claims still require that acceptance.
 Cloud Tasks checkpointed creation, proposed under [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), is defined by ADR-0158 and may proceed to implementation under ADR-0162's delivery order, with final correctness and performance acceptance required before release.
 The [#1241 repeat](evidence/0104-cloudtasks-stage1-1241.md#result-on-2026-09-06) remains inconclusive and supplies no primitive performance pass.
 Other non-BigQuery exactly-once implementations or additional performance stages require a concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
@@ -141,7 +142,7 @@ exposes no publisher-side replay primitive to add.
 
 If such a requirement reopens the Spanner candidate, it must first repeat Stage 1 with evenly distributed keys.
 For the Cloud Tasks proposal in [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), the approved repeat in [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241) stopped without the required repetitions and supplied no performance pass.
-For candidates other than Cloud Tasks, passing Stage 1 permits Stage 2 measurement, not implementation; ADR-0162 moves Cloud Tasks performance acceptance to the implemented mode's assessment in [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246).
+For candidates other than Cloud Tasks and Bigtable under ADR-0165, passing Stage 1 permits Stage 2 measurement, not implementation; ADR-0162 moves Cloud Tasks performance acceptance to the implemented mode's assessment in [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246).
 Stage 2 would require separate resource and cost approval and would cover 64 KiB payloads, hot
 keys, concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals of 1, 10, and 60
 seconds.
