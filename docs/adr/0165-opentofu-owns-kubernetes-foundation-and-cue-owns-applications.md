@@ -18,11 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-11
-- Updated: 2026-09-12 (CI ownership and initial CRD apply recovery)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38)
+- Updated: 2026-09-12 (CI ownership, initial CRD apply recovery and idle Helm root)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
-- Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [application manifests](../../kubernetes/README.md)
+- Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
 
 ## Context
 
@@ -48,7 +48,7 @@ A new authorization boundary can still require an administrator grant, but routi
 CUE and schema-generation checks remain credential-free, while OpenTofu validation, formatting and TFLint run for each selected root within `tofu-plan`, after initialization and before planning.
 The existing tfaction test action performs those checks with automatic fixes under the App token; a checking-only step runs when that token is unavailable.
 OpenTofu checks are not added to other workflows or general lint.
-Actual WIF identity/permission checks run within the bootstrap plan and apply jobs before OpenTofu executes.
+Actual WIF identity/permission checks run within the bootstrap and Operator plan and apply jobs before OpenTofu executes.
 Keep the manual access diagnostic command, but do not add a separate access workflow: it duplicates those checks and makes application or shared-tool changes depend on an idle cluster.
 Both runners construct dedicated kubeconfigs and a temporary OpenTofu wrapper that isolates provider environment settings; no plan-time token or kubeconfig path is saved in the provider configuration.
 Both identities can list CRD schemas because Kubernetes provider 3.2.1 requires that discovery read during manifest planning.
@@ -61,10 +61,19 @@ Untaint only the four verified CRD instances with state locking enabled, then ge
 Keep destruction protection and conflict detection enabled; resource changes still require reviewed CI apply after merge.
 This incident does not establish automatic untaint or a local apply recovery path.
 
-A separate `tier3-operator` root follows after bootstrap; tfaction will manage its Helm release using the existing plan/apply GSAs.
+A separate `tier3-operator` root follows after bootstrap; tfaction manages its Helm release using the existing plan/apply GSAs and its own state prefix.
 Helm owns Operator Deployment/configuration/KSA/RBAC and release metadata, with replicas zero, webhook disabled, skip_crds true and create_namespace false.
 Its job ServiceAccount/RBAC creation is disabled because the persistent application identity belongs to bootstrap.
 The chart's explicit Operator privileges remain on the installer before it creates/binds chart Roles, avoiding unrestricted bind or escalate.
+
+The Helm root pins the distributed 1.15.0 chart independently of the CRD/schema pin, so updating bootstrap does not simultaneously advance Helm.
+Both runners verify the archive SHA-512 and render the same local archive that the provider consumes.
+The initial inventory is seven namespaced resources plus Helm release Secrets; the chart creates no job identity, webhook, certificate or hook workload.
+The chart's default image tag is a commit abbreviation, so the idle Deployment explicitly names Operator 1.15.0.
+GAR publication and digest selection remain prerequisites to later Pod admission.
+Helm provider 3.3.0 reads its kubeconfig from the execution-time environment, using the shared wrapper and a fixed context, with no saved token or runner path.
+The plan job retains the rendered resources for review; after saved-plan apply, CI checks the deployed release, live configuration/RBAC, idle inventory and an empty refreshed Helm plan.
+Do not use replicas drift suppression or local apply to implement deliberate scale-up in this stage.
 
 CUE owns application deliveries: FlinkDeployments and application-specific configuration, Services, Deployments and Jobs.
 Generated application definitions remain in gen/, standard packages in pkg/, and delivery.resources is rendered by cli_tool.cue in Kind/key order.
@@ -79,7 +88,7 @@ Installer identities must not become application identities.
 ## Consequences
 
 There are separate state and application boundaries for GCP infrastructure, Kubernetes bootstrap, Helm and application runs.
-A bootstrap-only PR receives OpenTofu checks and a visible tfaction plan within the plan job, with an access preflight.
+A bootstrap-only or Operator-only PR receives OpenTofu checks and a visible tfaction plan within the plan job, with an access preflight.
 After merge, CI applies the reviewed artifact and verifies an empty refreshed plan.
 Failed applies use the existing follow-up PR workflow; a local pre-apply or stale-artifact retry is not the recovery path.
 The earlier manual-bootstrap/CI-Helm draft split was revised because it left routine foundation changes outside PR plan/apply review.

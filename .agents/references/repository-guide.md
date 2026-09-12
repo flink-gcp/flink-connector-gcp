@@ -578,6 +578,13 @@ plan / saved-plan apply after merge. OpenTofu checks run inside the plan job aft
 Only the main-push apply identity receives bootstrap writes; paid lifecycle admission remains separate.
 Keep them outside the offline `just lint` recipe. The generator declares its PyYAML dependency in
 PEP 723 metadata and runs with `uv run --no-project`; the tests use the locked project environment.
+The separate `opentofu/tier3-operator` root uses the same authenticated helper with `--root operator`.
+The helper declares its own pinned PyYAML dependency in PEP 723 metadata; run it through
+`uv run --no-project`, while its tests continue using the locked project environment.
+Read its README before changing the idle Helm release: verify and apply bootstrap CRDs before
+advancing its independent chart pin, retain zero replicas and quotas, and review the rendered
+chart artifact alongside the OpenTofu plan. Its post-apply job verifies the release and an empty
+refreshed plan. Image publication and workload admission remain separate.
 
 Migrated to ADR (`docs/adr/0063`, which carries the design, the incidents and the service-agent
 facts); the rules a session needs:

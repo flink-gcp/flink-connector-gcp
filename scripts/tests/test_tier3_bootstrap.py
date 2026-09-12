@@ -297,8 +297,9 @@ def test_authentication_uses_dedicated_adc_config_without_changing_default(
 
 
 @pytest.mark.parametrize("mode", ["plan", "apply"])
+@pytest.mark.parametrize("root", ["bootstrap", "operator"])
 def test_ci_wrapper_refreshes_provider_environment_and_preserves_exit_code(
-    monkeypatch, tmp_path, mode
+    monkeypatch, tmp_path, mode, root
 ):
     path_file = tmp_path / "github-path"
     output = tmp_path / "result.json"
@@ -309,7 +310,9 @@ def test_ci_wrapper_refreshes_provider_environment_and_preserves_exit_code(
         "from pathlib import Path\n"
         f"Path({str(output)!r}).write_text(json.dumps({{"
         "'args': sys.argv[1:], 'config': {key: value for key, value in os.environ.items() "
-        "if key.startswith('KUBE_')}, 'adc': os.environ['GOOGLE_APPLICATION_CREDENTIALS']}))\n"
+        "if key.startswith(('KUBE_', 'HELM_KUBE')) or key == 'KUBECONFIG'}, "
+        "'driver': os.environ['HELM_DRIVER'], "
+        "'adc': os.environ['GOOGLE_APPLICATION_CREDENTIALS']}))\n"
         "sys.exit(2)\n"
     )
     executable.chmod(0o700)
@@ -318,13 +321,19 @@ def test_ci_wrapper_refreshes_provider_environment_and_preserves_exit_code(
     monkeypatch.setenv("KUBE_HOST", "https://wrong-cluster")
     monkeypatch.setenv("KUBE_TOKEN", "synthetic-token")
     monkeypatch.setenv("KUBE_CONFIG_PATH", "wrong-config")
+    monkeypatch.setenv("HELM_KUBETOKEN", "wrong-token")
+    monkeypatch.setenv("KUBECONFIG", "wrong-default")
+    monkeypatch.setenv("HELM_DRIVER", "configmap")
     monkeypatch.setattr(bootstrap.shutil, "which", lambda _: str(executable))
-    cluster = bootstrap.Cluster(tmp_path / "dedicated-config")
+    cluster = bootstrap.Cluster(tmp_path / ("dedicated-" + mode), root)
     calls = []
     monkeypatch.setattr(cluster, "authenticate", lambda: calls.append("auth"))
     monkeypatch.setattr(cluster, "access", lambda value: calls.append(value))
+    monkeypatch.setattr(
+        bootstrap, "prepare_operator_chart", lambda path: calls.append(path)
+    )
     cluster.ci(mode)
-    assert calls == ["auth", mode]
+    assert calls == ["auth", mode] + ([cluster.root_path] if root == "operator" else [])
     wrapper = Path(path_file.read_text().strip()) / "tofu"
     assert wrapper.stat().st_mode & 0o777 == 0o700
     result = subprocess.run([str(wrapper), "plan", "-detailed-exitcode"], check=False)
@@ -332,6 +341,7 @@ def test_ci_wrapper_refreshes_provider_environment_and_preserves_exit_code(
     assert json.loads(output.read_text()) == {
         "args": ["plan", "-detailed-exitcode"],
         "config": {"KUBE_CONFIG_PATH": str(cluster.kubeconfig)},
+        "driver": "secret",
         "adc": "synthetic-adc",
     }
     assert "synthetic-token" not in wrapper.read_text()

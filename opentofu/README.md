@@ -13,6 +13,7 @@ queues) are created and deleted by the tests themselves.
 |---|---|
 | `flink-gcp/` | GCP root module — one GCP project and state |
 | `tier3-bootstrap/` | CI-managed Kubernetes foundation and separate state; [runbook](tier3-bootstrap/README.md) |
+| `tier3-operator/` | Idle Operator Helm release and separate state; [runbook](tier3-operator/README.md) |
 | `flink-gcp/versions.tf` | tofu pin (mirrors `mise.toml`) and provider constraint |
 | `flink-gcp/backend.tf` | GCS state backend (`flink-gcp-opentofu`, native locking) |
 | `flink-gcp/main.tf` | Provider and the pinned GitHub identifiers |
@@ -39,6 +40,7 @@ formatting and TFLint run for each selected root in the plan job.
 
 The bootstrap root also has a tfaction marker: its runbook covers the initial manual
 permission grants, PR plans and saved-plan apply after merge.
+The [Operator root](tier3-operator/README.md) independently manages the idle Helm release through the same workflows.
 
 ## tfaction configuration decisions
 
@@ -142,14 +144,14 @@ Cluster deletion protection prevents accidental removal; deliberate decommission
 ### Operator installation follows the cluster
 
 First verify the foundation's apply succeeded and the root has an empty plan.
-Then install the Flink Kubernetes Operator through an OpenTofu-managed Helm release in a separate Kubernetes root.
+Then install the Flink Kubernetes Operator through the [separate Helm root](tier3-operator/README.md).
 Keeping that release out of the cluster-creation plan avoids asking its provider to connect to an endpoint that does not yet exist.
 The Operator's tracked value is `replicas: 0`, with `webhook.create: false`; cert-manager is unnecessary.
 The [bootstrap root](tier3-bootstrap/README.md) owns namespaces, CRDs, persistent workload ServiceAccounts/RBAC and idle quotas.
 It adopts the initial access resources through import blocks and has separate state, PR plans and merge-triggered CI application.
 The [CUE manifest module](../kubernetes/README.md) provides application definitions, static validation and delivery rendering.
 The [ownership decision](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates these responsibilities.
-Operator installation and application execution remain subsequent stages; the foundation alone does not install a runnable benchmark.
+The Helm root installs only the idle release; image publication and application execution remain subsequent stages.
 
 ### Run and cleanup contract
 
@@ -243,6 +245,7 @@ The generated commit touches `<root>/.tfaction/failed-prs` inside the affected r
 |---|---|---|
 | `opentofu/flink-gcp` | `opentofu__flink-gcp` | `opentofu/flink-gcp/.tfaction/failed-prs` |
 | `opentofu/tier3-bootstrap` | `opentofu__tier3-bootstrap` | `opentofu/tier3-bootstrap/.tfaction/failed-prs` |
+| `opentofu/tier3-operator` | `opentofu__tier3-operator` | `opentofu/tier3-operator/.tfaction/failed-prs` |
 
 The generated record can be removed when other changes in the recovery pull request still select the affected root.
 

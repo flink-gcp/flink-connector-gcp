@@ -19,15 +19,15 @@ limitations under the License.
 This CI-managed OpenTofu root owns the persistent Kubernetes prerequisites for [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38).
 It reuses the existing `flink-tier3` cluster and the state bucket `flink-gcp-opentofu`, with state prefix `tier3-bootstrap`.
 Its `tfaction.yaml` enrolls it in PR plans and saved-plan apply after merge to main.
-The existing GCP root retains GKE, GAR, GSA and IAM ownership; a later `tier3-operator` root will own the Helm release through tfaction.
+The existing GCP root retains GKE, GAR, GSA and IAM ownership; the separate [Operator root](../tier3-operator/README.md) owns the Helm release through tfaction.
 [CUE](../../kubernetes/README.md) owns application deliveries.
 [ADR-0165](../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records this ownership refinement.
 
 ## Resources and identities
 
 This root owns `tier3-system`, `tier3-smoke`, their idle quotas, installer RBAC, the four Flink CRDs and the persistent `tier3-smoke/smoke` ServiceAccount and job RBAC.
-The Helm release will own its Operator Deployment, configuration, ServiceAccount, Roles/RoleBindings and release Secrets.
-Its chart-managed job identity/RBAC, namespace creation and CRD installation will be disabled.
+The Helm release owns its Operator Deployment, configuration, ServiceAccount, Roles/RoleBindings and release Secrets.
+Its chart-managed job identity/RBAC, namespace creation and CRD installation are disabled.
 No resource in this root starts a Pod or allocates a PVC.
 
 | Identity | Added Kubernetes permissions |
@@ -145,7 +145,7 @@ No local service-account impersonation grant is required.
 
 ## Next stage
 
-After bootstrap is applied and its plan is empty, the separate Helm root installs the idle release with `replicas = 0`, `webhook.create = false`, `skip_crds = true` and `create_namespace = false`.
+After bootstrap is applied and its plan is empty, the [separate Helm root](../tier3-operator/README.md) installs the idle release with `replicas = 0`, `webhook.create = false`, `skip_crds = true` and `create_namespace = false`.
 The Operator initially watches `tier3-smoke` only.
 CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the foundation.
 Image publication, lifecycle tooling and a bounded generic smoke run follow separately.
