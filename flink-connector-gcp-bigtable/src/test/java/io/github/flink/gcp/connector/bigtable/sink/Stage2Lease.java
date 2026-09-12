@@ -213,7 +213,15 @@ final class Stage2Lease {
         return table;
     }
 
+    private void rejectRetiredDiagnostic() throws IOException {
+        if (read().getProperty("profile", "").equals("diagnostic-seven-cell-v1")) {
+            throw new IOException(
+                    "The seven-cell diagnostic profile is retired; cleanup remains available");
+        }
+    }
+
     void claim(String table) throws IOException {
+        rejectRetiredDiagnostic();
         requireTarget(TableDestination.of("flink-gcp", instance, table));
         if (System.currentTimeMillis() >= startedAt() + 45 * 60_000L) {
             throw new IOException("Stage 2 admission deadline expired");
@@ -234,6 +242,7 @@ final class Stage2Lease {
     }
 
     void create() throws Exception {
+        rejectRetiredDiagnostic();
         if (!read().getProperty("phase").equals("PLANNED")) {
             throw new IOException("Lease has already attempted creation");
         }
