@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-11
-- Updated: 2026-09-12 (CI ownership after initial permission bootstrap)
+- Updated: 2026-09-12 (CI ownership and initial CRD apply recovery)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -53,6 +53,13 @@ Keep the manual access diagnostic command, but do not add a separate access work
 Both runners construct dedicated kubeconfigs and a temporary OpenTofu wrapper that isolates provider environment settings; no plan-time token or kubeconfig path is saved in the provider configuration.
 Both identities can list CRD schemas because Kubernetes provider 3.2.1 requires that discovery read during manifest planning.
 Existing GCP permissions remain additive and are not reduced by namespace RBAC.
+
+The initial CI apply created all four CRDs, but the provider rejected API responses that omitted the chart's zero printer-column priorities and marked those instances tainted.
+The CRD resource declares only the zero-priority leaf paths as computed, alongside the provider's default labels and annotations; schemas and nonzero priorities remain enforced and the distributed chart payload stays intact.
+For [#1306](https://github.com/flink-gcp/flink-connector-gcp/issues/1306), permit one state-only administrator repair after backing up state and verifying live identity, Established conditions, schemas, field ownership and idle quotas.
+Untaint only the four verified CRD instances with state locking enabled, then generate a fresh CI plan for the recovery PR.
+Keep destruction protection and conflict detection enabled; resource changes still require reviewed CI apply after merge.
+This incident does not establish automatic untaint or a local apply recovery path.
 
 A separate `tier3-operator` root follows after bootstrap; tfaction will manage its Helm release using the existing plan/apply GSAs.
 Helm owns Operator Deployment/configuration/KSA/RBAC and release metadata, with replicas zero, webhook disabled, skip_crds true and create_namespace false.

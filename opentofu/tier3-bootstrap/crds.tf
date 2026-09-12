@@ -21,6 +21,18 @@ locals {
 resource "kubernetes_manifest" "crd" {
   for_each = local.crds
   manifest = each.value
+  # The API omits zero printer priorities from its response. Keep the chart
+  # payload intact and accept the returned value only at those leaf fields.
+  computed_fields = concat(
+    ["metadata.labels", "metadata.annotations"],
+    flatten([
+      for version_index, version in each.value.spec.versions : [
+        for column_index, column in try(version.additionalPrinterColumns, []) :
+        "spec.versions[${version_index}].additionalPrinterColumns[${column_index}].priority"
+        if try(column.priority == 0, false)
+      ]
+    ])
+  )
   field_manager {
     name            = "tier3-bootstrap"
     force_conflicts = false

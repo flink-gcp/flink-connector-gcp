@@ -96,6 +96,26 @@ An immutable RoleBinding change or ownership conflict needs explicit resolution,
 OpenTofu may have persisted earlier successful changes when an apply fails; inspect state and make a fresh plan before retrying.
 Do not rerun a stale saved plan.
 
+### Recovering the initial CRD apply
+
+The [initial apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34670486161) created all four CRDs, but provider 3.2.1 rejected the API response because it omitted the chart's eight `additionalPrinterColumns[].priority: 0` values.
+Kubernetes serializes this optional integer with `omitempty`.
+The CRD resource accepts API-returned values only for those zero-priority leaf fields, in addition to the provider's default computed labels and annotations.
+Nonzero priorities and CRD schemas remain checked against the manifest; the generated chart payload is unchanged.
+
+The failed creation marked all four state instances as tainted, so the follow-up plan requested replacements and stopped at `prevent_destroy`.
+The user-authorized, one-time state repair tracked by [issue #1306](https://github.com/flink-gcp/flink-connector-gcp/issues/1306) is limited to these four instances:
+
+1. Prepare the configuration repair and verify it locally before changing state. Coordinate with other bootstrap changes so no plan/apply overlaps the repair.
+2. Back up the current remote state outside source control with restricted permissions. Record its lineage and serial, the four exact resource addresses, and the live CRD UIDs. The failed state has no populated CRD UIDs, so it cannot establish a UID match by itself.
+3. Use the dedicated kubeconfig and explicit `gke_flink-gcp_us-central1_flink-tier3` context to verify the target and idle quotas. Check each CRD's identity, `Established=True`, complete schema and server-side field ownership. The expected spec owner is `tier3-bootstrap`; investigate any mismatch before proceeding.
+4. Run `tofu untaint` through the bootstrap helper for each verified instance, keeping state locking enabled. The addresses are `kubernetes_manifest.crd["flinkdeployments.flink.apache.org"]`, `kubernetes_manifest.crd["flinksessionjobs.flink.apache.org"]`, `kubernetes_manifest.crd["flinkstatesnapshots.flink.apache.org"]` and `kubernetes_manifest.crd["flinkbluegreendeployments.flink.apache.org"]`. This removes the state failure markers without changing the live objects. Verify that no other state content changed apart from the serial.
+5. Generate and review a fresh CI plan in the recovery PR. Require zero replacements/deletions, unchanged CRD schemas and zero Pod/PVC quotas. The remaining smoke ServiceAccount and RoleBinding are created by CI after merge; the smoke Role already exists.
+6. After CI apply, verify all four CRDs are Established with their recorded UIDs, the smoke identity/RBAC is present, the inventory is idle and the refreshed plan has no changes.
+
+This exception does not authorize local apply, resource deletion, forced field ownership, or automatic untaint on later failures.
+Keep `prevent_destroy` enabled and use a new reviewed recovery plan if another apply fails.
+
 ## CI and static checks
 
 OpenTofu checks run in `tofu-plan` for the selected root, after initialization and before planning.
