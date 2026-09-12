@@ -11,7 +11,8 @@ queues) are created and deleted by the tests themselves.
 
 | Path | Contents |
 |---|---|
-| `flink-gcp/` | The single root module — one GCP project, one state |
+| `flink-gcp/` | GCP root module — one GCP project and state |
+| `tier3-bootstrap/` | CI-managed Kubernetes foundation and separate state; [runbook](tier3-bootstrap/README.md) |
 | `flink-gcp/versions.tf` | tofu pin (mirrors `mise.toml`) and provider constraint |
 | `flink-gcp/backend.tf` | GCS state backend (`flink-gcp-opentofu`, native locking) |
 | `flink-gcp/main.tf` | Provider and the pinned GitHub identifiers |
@@ -32,9 +33,12 @@ queues) are created and deleted by the tests themselves.
 CI: a pull request touching `opentofu/**` gets a plan comment from
 `.github/workflows/tofu-plan.yaml`, which runs as a job of `ci.yaml` — so the
 run that carries the plan file is `ci.yaml`'s; the merge to `main` applies that
-reviewed plan file and comments the result (`tofu-apply.yaml`). Locally, `just
-tofu <args>` runs OpenTofu in the root module and `just lint` checks
-formatting.
+reviewed plan file and comments the result (`tofu-apply.yaml`).
+For direct local commands, see [Local use](#local-use). OpenTofu validation,
+formatting and TFLint run for each selected root in the plan job.
+
+The bootstrap root also has a tfaction marker: its runbook covers the initial manual
+permission grants, PR plans and saved-plan apply after merge.
 
 ## tfaction configuration decisions
 
@@ -51,9 +55,9 @@ why:
 | `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
 | GitHub App | on | The org-owned `flink-gcp-bot` ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121). Each step that pushes mints its own token from `BOT_APP_ID` / `BOT_APP_PRIVATE_KEY`, downscoped below the App's contents/pull-requests/workflows ceiling. Plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them |
-| `test` action (`fmt`, `validate`, check-providers, tflint) | on | Runs in the plan job, after init, under the App token — which is what makes it usable: a fix commit pushed with `GITHUB_TOKEN` would not retrigger CI, so the branch would sit behind checks that ran before the fix. A fixable finding is pushed and the step then fails the run; the push starts the next one. Two rounds when tflint and `fmt` both have work, because tflint throws before `fmt` runs. Skipped when the App credentials are absent (a fork), where `just lint` covers both locally |
+| `test` action (`fmt`, `validate`, check-providers, tflint) | on | Runs in the plan job, after init, under the App token — which is what makes it usable: a fix commit pushed with `GITHUB_TOKEN` would not retrigger CI, so the branch would sit behind checks that ran before the fix. A fixable finding is pushed and the step then fails the run; the push starts the next one. Two rounds when tflint and `fmt` both have work, because tflint throws before `fmt` runs. When the App token is unavailable, the plan job runs checking-only validate, fmt and TFLint commands instead; authentication and init must still succeed |
 | `trivy` inside the `test` action | off | The original bucket-only scan reported five findings. A Trivy 0.74.0 scan on 2026-09-11 with the Tier-3 foundation reports eleven: CMEK on three buckets (LOW), access logging on three (MEDIUM), versioning on two temporary buckets (MEDIUM), two subnet flow-logging checks (LOW/MEDIUM), and master authorized networks on GKE (HIGH). Bucket and flow-log dispositions retain the existing cost policy: no extra key management, log storage or retained temporary-data versions. The GKE finding checks IP authorized networks, while this cluster disables IP endpoints and uses its IAM-authenticated DNS endpoint; adding an IP allowlist would not control that endpoint. tfaction fails on any finding, so the scan remains non-gating. These are configuration findings, not a runtime reachability measurement |
-| `tflint` inside the `test` action | on | Clean against this configuration today, and `fix: true` lets it push the correction rather than only report it. What is bought is the bundled `terraform` ruleset over thirteen `.tf` files — no plugins are configured — so the case for it is modest rather than free: it also puts a PR-controlled plugin loader in a step holding a write token (ADR-0121 records why that is acceptable). Pinned in `mise.toml`, run by `just lint` and by tfaction as a plain PATH command |
+| `tflint` inside the `test` action | on | Clean against this configuration today, and `fix: true` lets it push the correction rather than only report it. It applies the bundled `terraform` ruleset to the selected root's `.tf` files; no plugins are configured. It also puts a PR-controlled plugin loader in a step holding a write token (ADR-0121 records why that is acceptable). Pinned in `mise.toml`, run in the plan job by tfaction or its checking-only fallback as a plain PATH command |
 | `drift_detection` | off (default) | Declined 2026-08-16, no longer for want of a token: it wants three more workflows and apply-job changes, and this configuration changes rarely enough that the detection interval would not repay that surface |
 
 ## Security model
@@ -84,7 +88,13 @@ CLOUDSDK_CONFIG=/Users/<you>/.config/flink-gcp
 GOOGLE_APPLICATION_CREDENTIALS=/Users/<you>/.config/flink-gcp/application_default_credentials.json
 ```
 
-Then `just tofu plan`, `just tofu validate`, `just tofu state list`, etc.
+From the repository root, select the GCP root module explicitly:
+
+```sh
+mise x opentofu -- tofu -chdir=opentofu/flink-gcp plan
+mise x opentofu -- tofu -chdir=opentofu/flink-gcp validate
+mise x opentofu -- tofu -chdir=opentofu/flink-gcp state list
+```
 
 The Cloud Tasks fixture is the exception whose runtime state is managed
 outside OpenTofu. Its App Engine application is permanently located in
@@ -135,9 +145,11 @@ First verify the foundation's apply succeeded and the root has an empty plan.
 Then install the Flink Kubernetes Operator through an OpenTofu-managed Helm release in a separate Kubernetes root.
 Keeping that release out of the cluster-creation plan avoids asking its provider to connect to an endpoint that does not yet exist.
 The Operator's tracked value is `replicas: 0`, with `webhook.create: false`; cert-manager is unnecessary.
-Every other Kubernetes resource, including workload ServiceAccounts, quotas, FlinkDeployment objects and teardown controls, is defined in CUE.
-The [CUE manifest module](../kubernetes/README.md) now provides static validation, hierarchy and CRD rendering.
-Operator installation and applying the CUE resources remain subsequent stages; the foundation alone does not install a runnable benchmark.
+The [bootstrap root](tier3-bootstrap/README.md) owns namespaces, CRDs, persistent workload ServiceAccounts/RBAC and idle quotas.
+It adopts the initial access resources through import blocks and has separate state, PR plans and merge-triggered CI application.
+The [CUE manifest module](../kubernetes/README.md) provides application definitions, static validation and delivery rendering.
+The [ownership decision](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates these responsibilities.
+Operator installation and application execution remain subsequent stages; the foundation alone does not install a runnable benchmark.
 
 ### Run and cleanup contract
 
@@ -158,20 +170,20 @@ Lifecycle expiry is an object fallback, not a workload or queue cleanup mechanis
 
 The backend bucket is managed by this configuration, which is circular on a
 clean project. The order that resolves it, runnable by an owner with ADC and
-no service account at all:
+no service account at all. Run these commands from the repository root:
 
 1. Override the backend locally (uncommitted; `.gitignore` covers it):
 
    ```console
-   $ cat > flink-gcp/backend_override.tf <<'EOF'
+   $ cat > opentofu/flink-gcp/backend_override.tf <<'EOF'
    terraform {
      backend "local" {}
    }
    EOF
-   $ just tofu init
+   $ mise x opentofu -- tofu -chdir=opentofu/flink-gcp init
    ```
 
-2. `just tofu apply` — enables the APIs, creates the state bucket, the
+2. `mise x opentofu -- tofu -chdir=opentofu/flink-gcp apply` — enables the APIs, creates the state bucket, the
    service accounts, WIF and all bindings, and adopts the pre-existing
    `flink-gcp` bucket and `flink_gcp_it` dataset via import blocks (removed
    from `it-resources.tf` once the state held them).
@@ -179,12 +191,12 @@ no service account at all:
 3. Move the state into the bucket that now exists:
 
    ```sh
-   rm flink-gcp/backend_override.tf
-   just tofu init -migrate-state
-   rm flink-gcp/terraform.tfstate flink-gcp/terraform.tfstate.backup
+   rm opentofu/flink-gcp/backend_override.tf
+   mise x opentofu -- tofu -chdir=opentofu/flink-gcp init -migrate-state
+   rm opentofu/flink-gcp/terraform.tfstate opentofu/flink-gcp/terraform.tfstate.backup
    ```
 
-4. `just tofu plan` must report no changes. Commit `.terraform.lock.hcl`.
+4. `mise x opentofu -- tofu -chdir=opentofu/flink-gcp plan` must report no changes. Commit `opentofu/flink-gcp/.terraform.lock.hcl`.
 
 5. The first pull request's plan job is the live check that the read-only
    account's permissions suffice (impersonating it locally would need a

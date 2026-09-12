@@ -46,7 +46,8 @@ the GitHub UI. Around the rule:
   invocation, whichever recipe was asked for; a default *parameter* value runs only when its
   own recipe does — which is why `check-flink-release`'s ceiling is a parameter default.
 - The standing exception is the tfaction pair (ADR-0063): tfaction is itself the named,
-  rerunnable sequence, and `just tofu <args>` is the local equivalent.
+  rerunnable sequence. Direct local OpenTofu commands select their root module with
+  `-chdir`; `opentofu/README.md` documents them.
 
 **Where a tool's version lives decides how CI installs it.** Pin in `mise.toml` and install
 with `jdx/mise-action` + `install_args` when a version skew can fail a pull request that

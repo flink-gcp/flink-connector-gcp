@@ -105,7 +105,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `binary-compat` installs (#27, #61). The weekly E2E workflow (`e2e.yaml`) runs this same
   recipe via WIF; locally the variables come from the uncommitted `.env`, which a fresh
   worktree does not have — run `just worktree-env` once there to symlink the main checkout's
-  copy (#156; the same link also carries `just tofu`'s credentials)
+  copy (#156; the same link also carries credentials for local OpenTofu commands)
 - `just sweep-e2e [--dry-run]` — returns its three billed E2E fixture types to their idle state
   after a hard cancellation: stale Bigtable and Spanner instances are deleted, and the fixed Cloud
   Tasks App Engine version is stopped. It reads the owned identifiers and thresholds from source,
@@ -213,13 +213,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   cover (`relref` validates cross-page links only), and a *cross-page* link carrying a
   `#fragment` is checked by **neither** — it can point at nothing while both stay green, which
   is why #90 resolved them by hand against the built `docs/public` and deferred a checker until
-  the pages actually rot. Also `tofu fmt -check` and `tflint` over `opentofu/` (`tofu validate` is
-  deliberately absent: every PR touching `opentofu/` gets a full plan, which subsumes it).
-  **tflint does not break the offline rule**, and that was measured rather than assumed: the
-  `terraform` ruleset is compiled into the binary, this repository configures no `.tflint.hcl`, so
-  `tflint --init` — which the recipe does not even call — would install nothing. It is here
-  because CI's copy runs inside tfaction's `test` action, where a finding `--fix` cannot fix
-  leaves no commit and no plan comment to read
+  the pages actually rot. OpenTofu validation, formatting and TFLint run in `tofu-plan` after
+  initialization for the selected root, not in general lint. The plan job uses tfaction's test
+  action when an App token is available and checking-only commands otherwise.
   Deliberately does **not** run `just --fmt --check` — an unstable feature, excluded from
   just's compatibility guarantee (ADR-0057). actionlint is handed
   `-shellcheck "$(mise which shellcheck)"` rather than letting it find the runner image's own.
@@ -259,7 +255,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   is argued, and measured, in the justfile
 - `just pin-actions` — pin GitHub Actions to commit SHAs; when to run it is a Workflow rule
   (a workflow added, or an action version changed)
-- `just tofu <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
+- `mise x opentofu -- tofu -chdir=opentofu/flink-gcp <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
   persistent GCP resources (#5). Local escape hatch only: plan/apply normally run in CI (see
   "Infrastructure (OpenTofu and Kubernetes)" below). Credentials come from
   `GOOGLE_APPLICATION_CREDENTIALS` in the uncommitted `.env` — the google provider does not read
@@ -447,7 +443,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   The other skills remain locally owned.
 - **One git worktree per PR** under `/tmp/worktrees/flink-connector-gcp/`; never switch branches
   in the main checkout. Remove the worktree and local branch after merge. If the branch needs the
-  real-GCP ITs or `just tofu`, run `just worktree-env` once in the fresh worktree — it symlinks
+  real-GCP ITs or local OpenTofu commands, run `just worktree-env` once in the fresh worktree — it symlinks
   the main checkout's uncommitted `.env` (#156)
 - All changes go through **draft PRs**; nothing is pushed directly to `main` after the initial
   skeleton
@@ -568,11 +564,18 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 
 ## Infrastructure (OpenTofu and Kubernetes)
 
-Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0063 before changing
-the CUE hierarchy or the CUE/Helm ownership split. `just tier3-check` validates the static layer,
+Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0165 before changing
+the CUE hierarchy or the OpenTofu/CUE ownership split. `just tier3-check` validates the static layer,
 `just tier3-render <leaf>` prints that delivery's resources as a YAML document stream, and
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
+The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
+Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
+dedicated kubeconfig; GKE API discovery verifies that endpoint.
+Read `opentofu/tier3-bootstrap/README.md` before changing bootstrap: an administrator establishes
+initial CI permissions, then its tfaction-marked root imports the prerequisites and follows PR
+plan / saved-plan apply after merge. OpenTofu checks run inside the plan job after initialization.
+Only the main-push apply identity receives bootstrap writes; paid lifecycle admission remains separate.
 Keep them outside the offline `just lint` recipe. The generator declares its PyYAML dependency in
 PEP 723 metadata and runs with `uv run --no-project`; the tests use the locked project environment.
 
@@ -582,9 +585,10 @@ facts); the rules a session needs:
 - `opentofu/flink-gcp` is the single root module for the project's **persistent** GCP resources
   (#5). Fine-grained test resources are created by the tests themselves and never belong here;
   a new connector's API and E2E grants are added in the PR that first needs them, not in advance
-- CI is **tfaction v2**: pull requests touching `opentofu/**` get a plan comment, the merge
+- CI is **tfaction v2**: pull requests touching a tfaction-marked root get a plan comment, the merge
   applies that reviewed plan file from GitHub Artifacts. The standing exception to the
-  just-recipe rule; `just tofu <args>` is the local equivalent. **The apply workflow must set
+  just-recipe rule; direct local commands are documented in `opentofu/README.md`.
+  **The apply workflow must set
   `TFACTION_IS_APPLY: "true"`** — without it, setup silently falls back to the read-only plan
   account, so on any tofu-CI 403 **read the auth step's log first**. **A failed apply is
   recovered by a follow-up pull request**, never by re-running the apply job (the failure makes
@@ -596,7 +600,8 @@ facts); the rules a session needs:
   the next run. Pull before committing again, and expect **two** rounds when tflint and `fmt`
   both have work, because tflint throws before `fmt` runs. A tflint finding `--fix` cannot fix is
   the case with no commit to read: red plan job, and because the plan step never runs, **no plan
-  comment either** — reproduce it with `just lint`, which runs the same pinned tflint. trivy is
+  comment either** — reproduce it with `mise x tflint -- tflint --chdir <root> --call-module-type=all`.
+  trivy is
   off by measurement, not oversight; `opentofu/README.md`'s decisions table carries the current
   findings and their cost
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens, with

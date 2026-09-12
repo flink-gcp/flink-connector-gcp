@@ -44,8 +44,9 @@ limitations under the License.
   Artifacts and comments the result (`tofu-apply.yaml`); both resolve the
   changed root modules through the shared `tofu-list.yaml`. State locking is the GCS
   backend's native locking. These two workflows are the standing exception to the
-  just-recipe rule (ADR-0057): tfaction is itself the named, rerunnable sequence, and
-  `just tofu <args>` is the local equivalent.
+  just-recipe rule (ADR-0057): tfaction is itself the named, rerunnable sequence.
+  Direct local OpenTofu commands select their root module with `-chdir`;
+  `opentofu/README.md` documents them.
 - **Plan, apply, comments and labels run on plain `GITHUB_TOKEN`** and continue to. The App
   was deferred to the dedicated org at go-public time ([#177]; decided with the user on PR
   [#176](https://github.com/flink-gcp/flink-connector-gcp/pull/176), where a
@@ -132,6 +133,9 @@ Cluster deletion protection makes decommissioning a deliberate reviewed action.
 The Operator install, lifecycle smoke/recovery suite and Cloud Tasks measurements remain dependent work; this foundation closes neither issue.
 
 ### CUE manifest management
+
+The persistent Kubernetes ownership in this section is superseded by [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md).
+CUE now owns application deliveries; the original decision below is retained as history.
 
 The shared manifest module lives in `kubernetes/`, with CUE 0.17.1 pinned in `mise.toml`.
 Root and leaf directories use the same package so ancestor files partially define the same `delivery.resources` struct as each leaf.

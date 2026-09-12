@@ -8,7 +8,8 @@ The Apache Software Foundation (https://www.apache.org/):
   project (https://github.com/apache/flink-connector-kafka), licensed under
   the Apache License, Version 2.0.
 
-- The CUE packages under kubernetes/gen/flink/ are generated from the
+- The CUE packages under kubernetes/gen/flink/ and CRD YAML under
+  opentofu/tier3-bootstrap/crds/ are generated from the
   Apache Flink Kubernetes Operator 1.15.0 Helm chart
   (https://github.com/apache/flink-kubernetes-operator), Copyright 2014-2026
   The Apache Software Foundation, licensed under the Apache License,

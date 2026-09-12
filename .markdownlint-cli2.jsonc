@@ -47,6 +47,7 @@
     "CONTRIBUTING.md",
     "flink-*/README.md",
     "opentofu/README.md",
+    "opentofu/*/README.md",
     "kubernetes/README.md"
   ]
 }

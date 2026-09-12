@@ -229,42 +229,6 @@ def test_service_must_remain_cluster_ip(module):
     "api_version,kind,fields",
     [
         ("v1", "ConfigMap", {"data": {"example": "value"}}),
-        ("v1", "ServiceAccount", {}),
-        ("v1", "ResourceQuota", {"spec": {"hard": {"requests.cpu": "2"}}}),
-        (
-            "v1",
-            "LimitRange",
-            {
-                "spec": {
-                    "limits": [
-                        {"type": "Container", "default": {"cpu": "1", "memory": "1Gi"}}
-                    ]
-                }
-            },
-        ),
-        (
-            "rbac.authorization.k8s.io/v1",
-            "Role",
-            {"rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]}]},
-        ),
-        (
-            "rbac.authorization.k8s.io/v1",
-            "RoleBinding",
-            {
-                "roleRef": {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "Role",
-                    "name": "example",
-                },
-                "subjects": [
-                    {
-                        "kind": "ServiceAccount",
-                        "name": "example",
-                        "namespace": "tier3-smoke",
-                    }
-                ],
-            },
-        ),
         (
             "apps/v1",
             "Deployment",
@@ -369,40 +333,11 @@ def test_namespaced_kinds_are_accepted(module, api_version, kind, fields):
         },
     ],
 )
-def test_cluster_scoped_objects_belong_to_bootstrap(module, obj):
-    valid = leaf(
-        module, "bootstrap/valid", {"delivery": {"resources": {"example": obj}}}
-    )
-    result = cue(module, "cmd", "render", valid)
-    assert result.returncode == 0, result.stderr
+def test_cluster_scoped_objects_are_not_application_resources(module, obj):
     document = workload()
     document["delivery"]["resources"]["example"] = obj
     invalid = leaf(module, "runs/invalid", document)
     assert cue(module, "cmd", "render", invalid).returncode != 0
-
-
-def test_crd_bootstrap_has_no_run_metadata_and_exports_stably(module):
-    first = cue(module, "cmd", "render", "./bootstrap/crds")
-    second = cue(module, "cmd", "render", "./bootstrap/crds")
-    assert first.returncode == second.returncode == 0, first.stderr + second.stderr
-    assert first.stdout == second.stdout
-    objects = list(yaml.safe_load_all(first.stdout))
-    assert [x["metadata"]["name"] for x in objects] == [
-        "flinkbluegreendeployments.flink.apache.org",
-        "flinkdeployments.flink.apache.org",
-        "flinksessionjobs.flink.apache.org",
-        "flinkstatesnapshots.flink.apache.org",
-    ]
-    for obj in objects:
-        assert obj["kind"] == "CustomResourceDefinition"
-        assert "namespace" not in obj["metadata"]
-        assert "flink-gcp.io/run-id" not in obj["metadata"]["labels"]
-        assert "flink-gcp.io/expires-at" not in obj["metadata"].get("annotations", {})
-    original = cue(module, "export", "./gen/flink/crds", "-e", "objects")
-    assert original.returncode == 0, original.stderr
-    by_name = json.loads(original.stdout)
-    for obj in objects:
-        assert obj["spec"] == by_name[obj["metadata"]["name"]]["spec"]
 
 
 def test_delivery_renders_only_resources_in_kind_then_key_order(module):
@@ -516,7 +451,7 @@ def test_application_defaults_can_change_within_environment_policy(module):
 
 def render_deliveries(module):
     outputs = {}
-    for tree in ("bootstrap", "runs"):
+    for tree in ("runs",):
         for source in sorted((module / tree).rglob("delivery.cue")):
             for ancestor in source.parent.parents:
                 if ancestor == module:
@@ -552,7 +487,10 @@ def test_ci_renders_concrete_run_inputs(module):
 
 
 def test_committed_deliveries_render():
-    render_deliveries(KUBERNETES)
+    if not render_deliveries(KUBERNETES):
+        pytest.skip(
+            "No committed application deliveries yet; synthetic fixtures cover rendering"
+        )
 
 
 @pytest.mark.parametrize("missing", ["id", "expiresAt", "image"])

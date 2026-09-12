@@ -38,6 +38,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 GENERATED = Path("kubernetes/gen/flink")
+CRD_GENERATED = Path("opentofu/tier3-bootstrap/crds")
 CRDS = {
     "flinkbluegreendeployments": "FlinkBlueGreenDeployment",
     "flinkdeployments": "FlinkDeployment",
@@ -95,7 +96,6 @@ def read_chart(data, pin):
 def generate(documents, output, cue, pin):
     """Generate in isolation so stale version packages cannot survive a refresh."""
     output.mkdir(parents=True)
-    payload = output.parent / "crds.json"
     # cue get crd accepts separate CRD documents rather than a JSON array.
     sources = []
     for name, document in sorted(documents.items()):
@@ -105,22 +105,6 @@ def generate(documents, output, cue, pin):
     subprocess.run(
         [cue, "get", "crd", "--group", "flink.apache.org", *sources],
         cwd=output,
-        check=True,
-    )
-    data_dir = output / "crds"
-    data_dir.mkdir()
-    payload.write_text(json.dumps({"objects": documents}))
-    subprocess.run(
-        [
-            cue,
-            "import",
-            "json:",
-            str(payload),
-            "-p",
-            "crds",
-            "-o",
-            str(data_dir / "crds.cue"),
-        ],
         check=True,
     )
     header = (
@@ -147,6 +131,9 @@ def generate(documents, output, cue, pin):
     for file in output.rglob("*.cue"):
         file.write_text(header + file.read_text())
     subprocess.run([cue, "fmt", "./..."], cwd=output, check=True)
+    return "\n".join(
+        "#" + line[2:] if line.startswith("//") else line for line in header.split("\n")
+    )
 
 
 def generated_files(directory):
@@ -171,9 +158,28 @@ def main():
     documents = read_chart(data, pin)
     with tempfile.TemporaryDirectory(prefix="tier3-schemas-") as temporary:
         output = Path(temporary) / "flink"
-        generate(documents, output, args.cue, pin)
-        expected = generated_files(output)
-        actual = generated_files(ROOT / GENERATED)
+        header = generate(documents, output, args.cue, pin)
+        expected = {
+            GENERATED / path: data for path, data in generated_files(output).items()
+        }
+        expected.update(
+            {
+                CRD_GENERATED / (name + ".yaml"): (
+                    header + yaml.safe_dump(document, sort_keys=False)
+                ).encode()
+                for name, document in documents.items()
+            }
+        )
+        actual = {
+            GENERATED / path: data
+            for path, data in generated_files(ROOT / GENERATED).items()
+        }
+        actual.update(
+            {
+                path.relative_to(ROOT): path.read_bytes()
+                for path in (ROOT / CRD_GENERATED).glob("*.yaml")
+            }
+        )
         if args.mode == "check":
             differences = sorted(
                 path
@@ -183,20 +189,20 @@ def main():
             if differences:
                 parser.exit(
                     1,
-                    "Generated CUE differs; run just tier3-schemas refresh:\n"
+                    "Generated schemas differ; run just tier3-schemas refresh:\n"
                     + "\n".join(map(str, differences))
                     + "\n",
                 )
             print("Operator CRD data and validation packages match the pinned chart.")
         else:
             for path in actual.keys() - expected.keys():
-                (ROOT / GENERATED / path).unlink()
+                (ROOT / path).unlink()
             for path, content in expected.items():
-                destination = ROOT / GENERATED / path
+                destination = ROOT / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(content)
             print(
-                f"Regenerated {len(expected)} CUE files from Operator {pin['version']}."
+                f"Regenerated {len(expected)} schema files from Operator {pin['version']}."
             )
 
 

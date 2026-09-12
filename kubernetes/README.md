@@ -18,7 +18,8 @@ limitations under the License.
 
 This CUE module supplies the static manifest layer for [issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38).
 It reuses the [existing GKE foundation](../opentofu/README.md#tier-3-kubernetes-environment).
-The commands below render and validate data; they do not authenticate to GCP, apply Kubernetes objects or start workloads.
+The render and schema commands remain credential-free.
+The [OpenTofu bootstrap runbook](../opentofu/tier3-bootstrap/README.md) covers persistent prerequisites and authentication.
 
 ## Packages and deliveries
 
@@ -26,12 +27,10 @@ The commands below render and validate data; they do not authenticate to GCP, ap
 kubernetes/
   cue.mod/module.cue             # Module identity and pinned dependencies
   gen/flink/v1beta1/             # Generated CRD validation definitions
-  gen/flink/crds/                # Generated complete CRD objects
   schemas/objects.cue            # Supported Kubernetes kinds
   pkg/flink/application.cue      # Standard Flink application defaults
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
-  bootstrap/crds/delivery.cue
   runs/common.cue                # Run inputs and environment constraints
   tests/                         # CI delivery discovery and synthetic regression cases
   upstream.toml                  # Operator chart version, URL and SHA-512
@@ -56,11 +55,11 @@ The CLI prints only the resources, leaving `cluster`, `run`, `delivery.order` an
 It prints a YAML document stream with `---` separators, suitable for redirecting to one file.
 
 `delivery.order` assigns a priority to each supported Kind, with smaller values first.
-Namespaces and CRDs precede identities, configuration, quotas, RBAC, Services and workloads.
+ConfigMaps precede Services and workloads.
 ConfigMaps precede FlinkDeployments even when their internal keys sort in the opposite order.
 Equal priorities sort by internal resource key.
 The shared root defines these priorities for all deliveries.
-Ordering the YAML does not wait for CRD establishment or workload readiness; those are responsibilities of the later apply/lifecycle implementation.
+Ordering the YAML does not wait for workload readiness; that belongs to the later apply/lifecycle implementation.
 
 ## Standard Flink applications
 
@@ -107,12 +106,8 @@ For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a n
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
 These environment constraints apply even when a delivery changes a package default.
-Services in runs are ClusterIP-only; cluster-scoped resources belong to bootstrap.
+Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
 A future supervisor Job will have its own non-Spot Pod policy.
-
-`bootstrap/` holds persistent Kubernetes prerequisites, currently the four Flink CRDs and later namespaces and shared RBAC.
-These deliveries are applied initially and on updates, and survive routine run cleanup.
-As siblings of `runs/`, they receive common labels without run expiry or a workload namespace.
 
 ## Render and validate
 
@@ -120,7 +115,6 @@ Install the versions in `mise.toml`, then run from the repository root:
 
 ```sh
 mise x -- just tier3-check
-mise x -- just tier3-render bootstrap/crds > /tmp/tier3-crds.yaml
 mise x -- just tier3-schemas check
 ```
 
@@ -140,7 +134,7 @@ Output redirection may create an empty destination file when validation fails; r
 Rendered YAML is build output and must stay outside source control.
 
 `tier3-check` checks CUE formatting and runs the Python validation suite.
-That suite finds every `delivery.cue` under `bootstrap/` and `runs/` and invokes the same `cue cmd render` command separately in each directory.
+That suite finds every `delivery.cue` under `runs/` and invokes the same `cue cmd render` command separately in each directory.
 CI supplies no tags or placeholder inputs.
 Committed deliveries must define all values needed to render their resources; missing values fail validation just as they do in the CLI.
 CI discards the rendered output and never applies it.
@@ -167,14 +161,13 @@ Treat that archive as the CRD source of truth: the source repository's release t
 The 1.15.0 archive's FlinkVersion enum ends at `v2_2`; the planned runtime is Flink 2.2.1 on Java 17.
 
 `just tier3-schemas refresh` verifies the archive hash and chart version, then runs `cue get crd` over all four CRD documents.
-It also imports their complete objects as CUE data.
-The validation definitions alone are insufficient for applying CRDs: the data package preserves the original schemas, subresources and Kubernetes extension fields.
-Only common project labels are added during bootstrap rendering.
+It also writes complete CRD YAML to `opentofu/tier3-bootstrap/crds/` for the Kubernetes provider.
+The validation definitions alone are insufficient for applying CRDs: the YAML preserves the original schemas, subresources and Kubernetes extension fields.
 The generated Apache-derived files retain an Apache licence header; attribution is in the repository [NOTICE](../NOTICE) and the [Apache-2.0 licence](../LICENSE) applies.
 
-For an update, review the new archive and its published checksum, change the pin, run `just tier3-schemas refresh`, and inspect both generated packages.
+For an update, review the new archive and its published checksum, change the pin, run `just tier3-schemas refresh`, and inspect the generated application packages and CRD YAML.
 Then run `just tier3-check` and `just tier3-schemas check`.
-Check mode regenerates into a temporary directory and fails on missing, changed or stale generated CUE files.
+Check mode regenerates into a temporary directory and fails on missing, changed or stale generated CUE or CRD YAML files.
 It does not modify tracked sources.
 A previously downloaded archive can be checked without downloading it again:
 
@@ -184,14 +177,14 @@ mise x cue uv -- uv run --no-project scripts/tier3-schemas.py check --chart /pat
 
 ## Ownership and remaining stages
 
-The accepted split is recorded in [ADR-0063](../docs/adr/0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management).
-CUE owns the four cluster-scoped Flink CRDs, namespaces, workload identities/RBAC, quotas and run objects.
-The separate OpenTofu Helm root will own the Operator release with `skip_crds = true`, `create_namespace = false`, normal `replicas = 0` and `webhook.create = false`.
-Helm's workload ServiceAccount and job RBAC creation will be disabled.
-CRD upgrades must precede Operator upgrades; normal run cleanup must preserve CRDs.
+[ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates application management from the persistent Kubernetes foundation.
+[The OpenTofu bootstrap root](../opentofu/tier3-bootstrap/README.md) owns namespaces, CRDs, persistent workload identities/RBAC and quotas.
+The separate Helm root will own the Operator release with `skip_crds = true`, `create_namespace = false`, normal `replicas = 0` and `webhook.create = false`.
+CUE owns Flink applications and application-specific ConfigMaps, Services, Deployments and Jobs.
+It cannot declare the bootstrap resource kinds, which prevents accidental ownership overlap.
 
-The next stages are credential/RBAC and namespace bootstrap without Pods, the idle Helm release, GAR image and lifecycle tooling, and a separately approved generic smoke run.
+The bootstrap runbook documents credentials, RBAC, initial administrator permission grants, adoption of existing resources and CI plan/apply.
+The idle Helm release, GAR image and lifecycle tooling, and a separately approved generic smoke run follow.
 The Operator namespace is `tier3-system`; initially it watches only `tier3-smoke`.
-The Cloud Tasks namespace and benchmark stay in the later connector work.
+The Cloud Tasks namespace and benchmark remain later connector work.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
-No apply or paid-run command is provided by this static layer.

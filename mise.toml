@@ -9,6 +9,9 @@ go = "1.26"
 # pin the generator/formatter version; review kubernetes/cue.mod/module.cue's
 # language floor when upgrading it.
 cue = "0.17.1"
+# Verified against the standing Tier-3 GKE 1.35 cluster. Recheck client/server
+# version compatibility after REGULAR-channel upgrades.
+kubectl = "1.35.7"
 # Lints scripts/. Pinned rather than taken from the runner image, which carries
 # 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04 — when ubuntu-latest migrates, the
 # newer release's added checks would fail a pull request that changed nothing.
@@ -49,16 +52,13 @@ uv = "0.12.1"
 # major: markdownlint-cli2's behavior is its own version's, and a node patch
 # cannot add a lint rule.
 node = "24"
-# Runs the opentofu/ configuration (locally via `just tofu` and `just lint`,
-# in CI via the tofu-plan/tofu-apply workflows). Exactly pinned, and
-# versions.tf's required_version repeats it, so a skew between local and CI is
-# a loud error — a bump edits both lines together.
+# Runs the opentofu/ roots through their local commands and the
+# tofu-plan/tofu-apply workflows. Each root's required_version repeats this
+# exact pin, so a version bump updates all root constraints together.
 opentofu = "1.12.5"
-# Lints the opentofu/ configuration, in `just lint` and again in CI through
-# tfaction's `test` action, which invokes it as a plain PATH command — so this
-# pin is what both get. Being in `just lint` is what makes a tflint finding
-# reproducible locally: the CI copy can only *fix* what `--fix` fixes, and
-# anything else leaves a red plan job with no commit to read. Exactly pinned for
+# Lints the selected root in the plan job, through tfaction's test action or
+# its checking-only fallback. Reproduce locally with `mise x tflint -- tflint
+# --chdir <root> --call-module-type=all`. Both use this pin. Exactly pinned for
 # the shellcheck reason — a release that gains a rule would fail a pull request
 # that changed nothing, and here it would do so by pushing a commit.
 tflint = "0.64.0"

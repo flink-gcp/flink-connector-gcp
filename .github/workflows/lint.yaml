@@ -2,9 +2,8 @@ name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
 # checkstyle handle the Java sources inside `just verify` (verify.yaml); this
-# is where everything else goes — shellcheck, ruff, actionlint, markdownlint
-# and `tofu fmt -check` today (`tofu validate` is subsumed by the plan the
-# tofu-plan workflow runs whenever a pull request touches opentofu/).
+# runs shellcheck, ruff, actionlint and markdownlint. OpenTofu validation,
+# formatting and TFLint run in tofu-plan for each selected root.
 #
 # A workflow of its own rather than jobs in verify.yaml so it reports in
 # seconds instead of behind the integration tests. On pull requests it runs
@@ -46,9 +45,9 @@ on:
       - 'pom.xml'
       - 'flink-*/pom.xml'
       - 'flink-*/NOTICE.template'
-      # tofu fmt -check reads these (opentofu/README.md doubles as markdownlint
-      # input).
-      - 'opentofu/**'
+      # Markdown and the App Engine Python fixture remain general lint inputs.
+      - 'opentofu/**/*.md'
+      - 'opentofu/flink-gcp/appengine-e2e/*.py'
       # markdownlint reads its config and the rendered markdown — the docs
       # sources, the ADRs, the READMEs and CONTRIBUTING.md. CLAUDE.md files are deliberately
       # outside its globs (see .markdownlint-cli2.jsonc), so they are not
@@ -85,7 +84,7 @@ jobs:
       # install by default, keyed partly on install_args.
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          install_args: shellcheck actionlint ruff opentofu tflint node npm:markdownlint-cli2
+          install_args: shellcheck actionlint ruff node npm:markdownlint-cli2
 
       # just comes from install-action even though mise is right here, so that
       # every workflow installs it the same way. See the note in verify.yaml.
