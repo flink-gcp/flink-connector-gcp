@@ -420,17 +420,14 @@ sweep-e2e *args:
 # `format --check` are separate goals in ruff, and running only the first would
 # leave formatting unchecked.
 #
-# tofu contributes only `fmt -check` here. `tofu validate` needs an init that
-# downloads the google provider — too slow for a lint meant to report in
-# seconds — and every pull request that touches opentofu/ gets a full plan
-# from the tofu-plan workflow, which subsumes validate on exactly the changes
-# that need it. Locally, `just tofu validate` runs it directly.
+# OpenTofu validation, formatting and TFLint run in tofu-plan after init,
+# scoped to the selected root. General lint does not initialize providers.
 #
 # markdownlint's file set, rule deviations and docs/content's MD052 opt-out
 # all live in .markdownlint-cli2.jsonc (#1035), discovered from the working
 # directory.
 #
-# Lint the shell and Python scripts, the workflows, the markdown and OpenTofu.
+# Lint the shell and Python scripts, the workflows and the markdown.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
@@ -440,8 +437,6 @@ lint:
     mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
-    mise x opentofu -- tofu fmt -check -recursive opentofu/
-    mise x tflint -- tflint --chdir opentofu/flink-gcp --call-module-type=all
 
 # Does every skill's frontmatter parse, so Claude Code can load it at all? A
 # broken one is invisible: the file stays valid markdown, no build step reads
@@ -458,18 +453,6 @@ lint:
 check-skill-frontmatter:
     mise x uv -- uv run --no-project scripts/check-skill-frontmatter.py
 
-# The GCP resources behind the real-GCP integration tests (service accounts,
-# WIF, buckets, the dataset) live in opentofu/flink-gcp, planned and applied
-# by CI (tofu-plan.yaml / tofu-apply.yaml). This is the local escape hatch —
-# state inspection, validate, and the bootstrap documented in
-# opentofu/README.md. Credentials come from GOOGLE_APPLICATION_CREDENTIALS,
-# which .env sets — the google provider does not read CLOUDSDK_CONFIG (only
-# the gcloud CLI does; see opentofu/README.md).
-#
-# Run OpenTofu in the flink-gcp root module, e.g. `just tofu plan`.
-tofu *args:
-    mise x opentofu -- tofu -chdir=opentofu/flink-gcp {{ args }}
-
 # Static CUE checks and synthetic manifests; no Kubernetes credentials or workload.
 tier3-check:
     mise x cue -- cue -C kubernetes fmt --check --files . cue.mod/module.cue
@@ -479,6 +462,21 @@ tier3-check:
 [positional-arguments]
 tier3-render leaf:
     mise x cue -- cue -C kubernetes cmd render "./$1"
+
+# Use a dedicated kubeconfig and execution-time ADC/WIF credentials.
+[positional-arguments]
+tier3-auth kubeconfig:
+    mise x kubectl uv -- uv run --locked python -u scripts/tier3-bootstrap.py --kubeconfig "$1" auth
+
+# Check the actual CI identity and its positive/negative Kubernetes permissions.
+[positional-arguments]
+tier3-access kubeconfig mode:
+    mise x kubectl uv -- uv run --locked python -u scripts/tier3-bootstrap.py --kubeconfig "$1" access "$2"
+
+# Local troubleshooting equivalent of the CI-managed bootstrap root.
+[positional-arguments]
+tier3-bootstrap kubeconfig *args:
+    mise x kubectl opentofu uv -- uv run --locked python -u scripts/tier3-bootstrap.py --kubeconfig "$1" tofu "${@:2}"
 
 # Both modes verify the fixed upstream chart hash. Only refresh changes sources.
 [positional-arguments]

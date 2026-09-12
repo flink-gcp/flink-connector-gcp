@@ -25,20 +25,11 @@ cluster: {
 
 // Smaller values render first; resource keys break ties deterministically.
 delivery: order: {
-	Namespace:                0
-	CustomResourceDefinition: 10
-	ServiceAccount:           20
-	ConfigMap:                30
-	ResourceQuota:            40
-	LimitRange:               40
-	ClusterRole:              50
-	Role:                     50
-	ClusterRoleBinding:       60
-	RoleBinding:              60
-	Service:                  70
-	Deployment:               80
-	Job:                      80
-	FlinkDeployment:          90
+	ConfigMap:       30
+	Service:         70
+	Deployment:      80
+	Job:             80
+	FlinkDeployment: 90
 }
 
 // A leaf adds named resources; its ancestors supply constraints.

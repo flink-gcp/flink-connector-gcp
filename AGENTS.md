@@ -48,7 +48,7 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
   examples against the Spanner emulator.
 - `just test-java-snippet-shortcode`: test the Hugo shortcode against synthetic fixtures.
 - `just test-sql-snippet-shortcode`: test the SQL Hugo shortcode against synthetic fixtures.
-- `just lint`: lint scripts, workflows, rendered Markdown, and OpenTofu.
+- `just lint`: lint scripts, workflows and rendered Markdown. OpenTofu checks run before plan.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
   symlink.

@@ -3,10 +3,8 @@ name: List OpenTofu targets
 # Reusable job shared by tofu-plan.yaml and tofu-apply.yaml: tfaction's
 # list-targets action diffs the change against the root modules declared by
 # tfaction.yaml markers and returns the ones affected, which the callers fan
-# out over as a matrix. With a single root module today the matrix has at most
-# one entry, but this is the shape tfaction documents for any module not at
-# the repository root, and a second module (another GCP project, say) slots in
-# without workflow changes.
+# out over as a matrix. GCP and Kubernetes bootstrap have separate state
+# and are selected independently by their changed root-module files.
 on:
   workflow_call:
     outputs:

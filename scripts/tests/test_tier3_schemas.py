@@ -188,7 +188,6 @@ def cli(tmp_path, monkeypatch):
     monkeypatch.setattr(SCHEMAS, "ROOT", tmp_path)
     expected = {
         Path("v1beta1/resource.cue"): b"package v1beta1\n#Resource: {}\n",
-        Path("crds/crds.cue"): b"package crds\nobjects: {}\n",
     }
 
     def generate(documents, output, cue, upstream):
@@ -196,6 +195,7 @@ def cli(tmp_path, monkeypatch):
             file = output / path
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(content)
+        return "# generated\n"
 
     monkeypatch.setattr(SCHEMAS, "generate", generate)
     actual = tmp_path / SCHEMAS.GENERATED
@@ -207,6 +207,7 @@ def cli(tmp_path, monkeypatch):
         )
         SCHEMAS.main()
 
+    invoke("refresh")
     return invoke, actual, expected
 
 
@@ -232,7 +233,7 @@ def test_check_rejects_each_difference_without_repairing(cli, change, capsys):
     with pytest.raises(SystemExit) as error:
         invoke("check")
     assert error.value.code == 1
-    assert "Generated CUE differs" in capsys.readouterr().err
+    assert "Generated schemas differ" in capsys.readouterr().err
     assert SCHEMAS.generated_files(actual) == before
 
 
@@ -262,7 +263,7 @@ def test_generation_failure_does_not_touch_existing_sources(cli, monkeypatch):
     assert SCHEMAS.generated_files(actual) == expected
 
 
-@pytest.mark.parametrize("stage", ["get", "import", "fmt"])
+@pytest.mark.parametrize("stage", ["get", "fmt"])
 def test_each_cue_failure_is_propagated(tmp_path, monkeypatch, stage):
     def run(command, *, check, cwd=None):
         if command[1] == stage:
@@ -273,8 +274,6 @@ def test_each_cue_failure_is_propagated(tmp_path, monkeypatch, stage):
             directory = cwd / "v1beta1"
             directory.mkdir()
             (directory / "resource.cue").write_text("package v1beta1\n")
-        elif command[1] == "import":
-            Path(command[-1]).write_text("package crds\n")
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(SCHEMAS.subprocess, "run", run)
@@ -285,3 +284,23 @@ def test_each_cue_failure_is_propagated(tmp_path, monkeypatch, stage):
         SCHEMAS.generate(documents, tmp_path / "generated", "cue", upstream)
     assert error.value.returncode == 7
     assert error.value.cmd[1] == stage
+
+
+@pytest.mark.parametrize("change", ["changed", "missing", "stale"])
+def test_crd_payload_changes_are_detected_and_refreshable(cli, change):
+    invoke, _, _ = cli
+    directory = SCHEMAS.ROOT / SCHEMAS.CRD_GENERATED
+    original = {p.name: p.read_bytes() for p in directory.glob("*.yaml")}
+    file = directory / next(iter(original))
+    if change == "changed":
+        file.write_text("kind: Changed\n")
+    elif change == "missing":
+        file.unlink()
+    else:
+        (directory / "stale.yaml").write_text("kind: Stale\n")
+    changed = {p.name: p.read_bytes() for p in directory.glob("*.yaml")}
+    with pytest.raises(SystemExit):
+        invoke("check")
+    assert {p.name: p.read_bytes() for p in directory.glob("*.yaml")} == changed
+    invoke("refresh")
+    assert {p.name: p.read_bytes() for p in directory.glob("*.yaml")} == original

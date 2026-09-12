@@ -35,9 +35,8 @@ let flinkPodPolicy = {
 }
 
 delivery: resources: [string]: {
-	// Cluster-scoped resources belong to bootstrap, never to an expiring run.
-	kind: "ConfigMap" | "Deployment" | "FlinkDeployment" | "Job" | "LimitRange" |
-		"ResourceQuota" | "Role" | "RoleBinding" | "Service" | "ServiceAccount"
+	// Foundation resources belong to OpenTofu, never to an expiring run.
+	kind: "ConfigMap" | "Deployment" | "FlinkDeployment" | "Job" | "Service"
 	metadata: {
 		namespace: run.namespace
 		labels: "flink-gcp.io/run-id":          run.id

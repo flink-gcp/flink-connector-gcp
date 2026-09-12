@@ -61,7 +61,10 @@ Fork pull requests are the obvious one.
 Dependabot's are not — its branches live in this repository, so a head-repository guard reads them as trusted, while GitHub swaps in the Dependabot secret store, where these secrets do not exist.
 The third is a half-finished credential rotation, which degrades to checking instead of reddening every pull request.
 Losing the credentials therefore costs the automatic fix, not the check.
-The `test` action, which has no such fallback, is skipped outright on forks; `just lint`'s `tofu fmt -check` continues to cover formatting there.
+The tfaction `test` action requires the App token and is skipped when that token is unavailable.
+The plan job then runs `tofu validate`, `tofu fmt -check -recursive` and TFLint without automatic fixes, after initialization and before planning.
+This fallback still requires the plan job's WIF authentication; it does not enable fork plans.
+OpenTofu checks are consolidated in the plan workflow rather than general lint (2026-09-12 refinement, [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md)).
 
 **`pinact.yaml` stays outside the required `CI passed` gate.**
 Enrolment is opt-in under [ADR-0059](0059-ci-yaml-orchestrates-pull-request-ci-behind-one-required-check.md), and the reason not to take it is the one [ADR-0058](0058-verify-yaml-selects-what-a-pull-request-builds-instead-of-filtering-whether-it-runs.md) already settled: a required check that never reports blocks a pull request forever, and a paths-filtered workflow reports on nothing outside its paths.
