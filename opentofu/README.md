@@ -232,17 +232,21 @@ that plan **stale**. A failed apply can bump the state serial, and an intentiona
 local apply can update the same state before the pull request merges. Do not
 pre-apply a reviewed pull request locally; let the merge workflow apply its
 saved plan. The recovery is a follow-up pull request whose fresh plan picks up
-the current state; rerunning the old job can never succeed. tfaction now opens that
-follow-up pull request itself, as a draft on a
-`follow-up-<pr>-opentofu__flink-gcp-<timestamp>` branch, assigned to the merged
-pull request's author and to whoever merged it when those differ. Review its plan
-alongside the apply error, complete it if the recovery needs more than the
-remainder, and merge it; a follow-up whose plan reports no change can simply be
-closed. The commit it carries touches
-`opentofu/flink-gcp/.tfaction/failed-prs`, which is under the root module, so
-the follow-up pull request selects the target and gets its own plan comment.
+the current state; rerunning the old job can never succeed.
+tfaction opens that follow-up pull request itself as a draft for the affected root module.
+Its branch is `follow-up-<pr>-<target>-<timestamp>`, with `/` in the target replaced by `__`.
+It is assigned to the merged pull request's author and to whoever merged it when those differ.
+Review its plan alongside the apply error, complete it if the recovery needs more than the remainder, and merge it; a follow-up whose plan reports no change can simply be closed.
+The generated commit touches `<root>/.tfaction/failed-prs` inside the affected root module, so the follow-up pull request selects that target and gets its own plan comment.
 
-It was written by hand until
+| Root module | Target in the branch name | Recovery record |
+|---|---|---|
+| `opentofu/flink-gcp` | `opentofu__flink-gcp` | `opentofu/flink-gcp/.tfaction/failed-prs` |
+| `opentofu/tier3-bootstrap` | `opentofu__tier3-bootstrap` | `opentofu/tier3-bootstrap/.tfaction/failed-prs` |
+
+The generated record can be removed when other changes in the recovery pull request still select the affected root.
+
+The follow-up pull request was written by hand until
 [#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177) (ADR-0121),
 and the reason is narrower than "tfaction could not do it": a `GITHUB_TOKEN`
 granted `contents: write` could create the branch and the pull request, but a
