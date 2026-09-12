@@ -17,9 +17,9 @@
 # configuration, nothing more, at the repository root where uv expects a
 # project. The layout is not a Python package's: most code under test lives in
 # scripts/ as executables that are never importable. Java-aware checkers share
-# Tree-sitter and its Java grammar here; check-skill-frontmatter.py and tier3-schemas.py declare
-# PyYAML in their own PEP 723 metadata (hence the dev-group pyyaml below: the
-# suite loads them by path).
+# Tree-sitter and its Java grammar here. check-skill-frontmatter.py,
+# tier3-schemas.py and tier3-bootstrap.py declare PyYAML in PEP 723 metadata;
+# the dev group also supplies it when the suite loads those scripts by path.
 # The App Engine fixture is also loaded by path, so this project is never
 # packaged (`package = false`); `testpaths` below is the one layout
 # customisation that needs saying. pytest's constraint is deliberately loose
@@ -44,8 +44,9 @@ dependencies = [
 package = false
 
 [dependency-groups]
-# pyyaml is a *test* dependency, not the project's: check-skill-frontmatter.py
-# and tier3-schemas.py declare it in their PEP 723 metadata and run through
+# pyyaml is a *test* dependency, not the project's: check-skill-frontmatter.py,
+# tier3-schemas.py and tier3-bootstrap.py declare it in their PEP 723 metadata
+# and run through
 # `uv run --no-project`, but the suite loads those scripts by file path, so the
 # import has to resolve here too. Release workflow tests also use it to parse
 # the YAML program under test; the release helper itself needs only the stdlib.

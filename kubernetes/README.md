@@ -179,12 +179,12 @@ mise x cue uv -- uv run --no-project scripts/tier3-schemas.py check --chart /pat
 
 [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates application management from the persistent Kubernetes foundation.
 [The OpenTofu bootstrap root](../opentofu/tier3-bootstrap/README.md) owns namespaces, CRDs, persistent workload identities/RBAC and quotas.
-The separate Helm root will own the Operator release with `skip_crds = true`, `create_namespace = false`, normal `replicas = 0` and `webhook.create = false`.
+The [separate Helm root](../opentofu/tier3-operator/README.md) owns the Operator release with `skip_crds = true`, `create_namespace = false`, normal `replicas = 0` and `webhook.create = false`.
 CUE owns Flink applications and application-specific ConfigMaps, Services, Deployments and Jobs.
 It cannot declare the bootstrap resource kinds, which prevents accidental ownership overlap.
 
 The bootstrap runbook documents credentials, RBAC, initial administrator permission grants, adoption of existing resources and CI plan/apply.
-The idle Helm release, GAR image and lifecycle tooling, and a separately approved generic smoke run follow.
+The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
 The Operator namespace is `tier3-system`; initially it watches only `tier3-smoke`.
 The Cloud Tasks namespace and benchmark remain later connector work.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.

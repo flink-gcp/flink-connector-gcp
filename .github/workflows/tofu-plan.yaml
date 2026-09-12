@@ -136,20 +136,27 @@ jobs:
           workload_identity_provider: ${{ steps.setup.outputs.gcp_workload_identity_provider }}
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
-      - name: Install Kubernetes bootstrap tools
-        if: matrix.target.working_directory == 'opentofu/tier3-bootstrap'
+      - name: Install Kubernetes tools
+        if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install_args: kubectl uv
+      - name: Install Helm
+        if: matrix.target.working_directory == 'opentofu/tier3-operator'
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: helm
       - name: Install the GKE credential plugin
-        if: matrix.target.working_directory == 'opentofu/tier3-bootstrap'
+        if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         with:
           version: '577.0.0'
           install_components: gke-gcloud-auth-plugin
-      - name: Prepare authenticated bootstrap execution
-        if: matrix.target.working_directory == 'opentofu/tier3-bootstrap'
-        run: uv run --locked python scripts/tier3-bootstrap.py --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" ci plan
+      - name: Prepare authenticated Kubernetes execution
+        if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
+        run: |
+          tier3_root="${TFACTION_WORKING_DIR##*/tier3-}"
+          uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" ci plan
 
       - name: tofu init
         uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
@@ -200,6 +207,15 @@ jobs:
           tofu -chdir="$TFACTION_WORKING_DIR" validate
           tofu -chdir="$TFACTION_WORKING_DIR" fmt -check -recursive
           tflint --chdir "$TFACTION_WORKING_DIR" --call-module-type=all
+
+      - name: Retain the rendered Operator resources for plan review
+        if: matrix.target.working_directory == 'opentofu/tier3-operator'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tier3-operator-manifest
+          path: opentofu/tier3-operator/.terraform/operator-rendered.yaml
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: tofu plan
         uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1

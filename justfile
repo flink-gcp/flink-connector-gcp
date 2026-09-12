@@ -220,9 +220,9 @@ ci-maven-args *args:
 # root uv project (pyproject.toml): uv is pinned in mise.toml like the
 # linters, pytest and the shared Java parser are pinned in uv.lock, and --locked
 # makes a drifted lockfile fail instead of silently re-resolving.
-# check-skill-frontmatter.py and tier3-schemas.py declare PyYAML in their own
-# PEP 723 metadata and run through `uv run --no-project`; because tests load them by
-# file path, that import has to resolve here too, which is why pyyaml is in the
+# check-skill-frontmatter.py, tier3-schemas.py and tier3-bootstrap.py declare
+# PyYAML in their own PEP 723 metadata and run through `uv run --no-project`.
+# Tests load them by file path, so that import must resolve here too: pyyaml is in the
 # dev group and not in the project's dependencies. Release workflow tests also
 # use PyYAML to parse the workflow program before exercising its shell commands.
 #
@@ -466,17 +466,22 @@ tier3-render leaf:
 # Use a dedicated kubeconfig and execution-time ADC/WIF credentials.
 [positional-arguments]
 tier3-auth kubeconfig:
-    mise x kubectl uv -- uv run --locked python -u scripts/tier3-bootstrap.py --kubeconfig "$1" auth
+    PYTHONUNBUFFERED=1 mise x kubectl uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" auth
 
 # Check the actual CI identity and its positive/negative Kubernetes permissions.
 [positional-arguments]
 tier3-access kubeconfig mode:
-    mise x kubectl uv -- uv run --locked python -u scripts/tier3-bootstrap.py --kubeconfig "$1" access "$2"
+    PYTHONUNBUFFERED=1 mise x kubectl uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" access "$2"
 
 # Local troubleshooting equivalent of the CI-managed bootstrap root.
 [positional-arguments]
 tier3-bootstrap kubeconfig *args:
-    mise x kubectl opentofu uv -- uv run --locked python -u scripts/tier3-bootstrap.py --kubeconfig "$1" tofu "${@:2}"
+    PYTHONUNBUFFERED=1 mise x kubectl opentofu uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" tofu "${@:2}"
+
+# Local troubleshooting for the idle Helm release, with the same access preflight.
+[positional-arguments]
+tier3-operator kubeconfig *args:
+    PYTHONUNBUFFERED=1 mise x kubectl helm opentofu uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" --root operator tofu "${@:2}"
 
 # Both modes verify the fixed upstream chart hash. Only refresh changes sources.
 [positional-arguments]

@@ -14,7 +14,7 @@
 #
 # Global tfaction configuration (https://suzuki-shunsuke.github.io/tfaction/).
 # Root modules are the directories carrying a tfaction.yaml: the GCP root
-# and the Tier-3 Kubernetes bootstrap root. The plan runs as ci.yaml's tofu_plan job (which calls
+# and the Tier-3 bootstrap and Operator roots. The plan runs as ci.yaml's tofu_plan job (which calls
 # .github/workflows/tofu-plan.yaml); the apply is tofu-apply.yaml.
 
 # ci.yaml, not tofu-plan.yaml, because this names the *run* that owns the plan
@@ -50,6 +50,7 @@ terraform_command: tofu
 available_providers:
   - name: registry.opentofu.org/hashicorp/google
   - name: registry.opentofu.org/hashicorp/kubernetes
+  - name: registry.opentofu.org/hashicorp/helm
 
 # Every pull request tfaction opens arrives as a draft, matching this
 # repository's draft-first flow. In practice that means the follow-up pull

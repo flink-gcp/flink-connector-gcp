@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml==6.0.3"]
+# ///
 #
 # Copyright 2026 The flink-gcp authors
 #
@@ -13,19 +17,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Authenticate, inspect access, and bootstrap persistent Tier-3 objects without Pods."""
+"""Authenticate and manage the idle Tier-3 bootstrap and Operator roots."""
 
 import argparse
+import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+import urllib.request
 from pathlib import Path
 
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
 NAMESPACES = ("tier3-system", "tier3-smoke")
+MAX_CHART_BYTES = 2 * 1024 * 1024
 CRDS = tuple(
     name + ".flink.apache.org"
     for name in (
@@ -39,6 +51,152 @@ PRINCIPALS = {
     "plan": "opentofu-plan@flink-gcp.iam.gserviceaccount.com",
     "apply": "opentofu@flink-gcp.iam.gserviceaccount.com",
 }
+OPERATOR_RESOURCES = {
+    ("ServiceAccount", "tier3-system", "flink-operator"),
+    ("ConfigMap", "tier3-system", "flink-operator-config"),
+    ("Deployment", "tier3-system", "flink-kubernetes-operator"),
+    ("Role", "tier3-system", "flink-operator"),
+    ("Role", "tier3-smoke", "flink-operator"),
+    ("RoleBinding", "tier3-system", "flink-operator-role-binding"),
+    ("RoleBinding", "tier3-smoke", "flink-operator-role-binding"),
+}
+
+
+def provider_environment(kubeconfig):
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("KUBE_", "HELM_KUBE")) and key != "KUBECONFIG"
+    }
+    environment["KUBE_CONFIG_PATH"] = str(kubeconfig)
+    environment["HELM_DRIVER"] = "secret"
+    return environment
+
+
+def operator_documents(source, version):
+    """Check the actual chart output, including hooks, before it reaches Helm."""
+    documents = [item for item in yaml.safe_load_all(source) if item is not None]
+    identities = [
+        (item["kind"], item["metadata"].get("namespace"), item["metadata"]["name"])
+        for item in documents
+    ]
+    if (
+        len(identities) != len(OPERATOR_RESOURCES)
+        or set(identities) != OPERATOR_RESOURCES
+    ):
+        raise ValueError(
+            "Operator chart must render exactly the seven owned idle resources"
+        )
+    for item in documents:
+        expected_api = {
+            "ServiceAccount": "v1",
+            "ConfigMap": "v1",
+            "Deployment": "apps/v1",
+            "Role": "rbac.authorization.k8s.io/v1",
+            "RoleBinding": "rbac.authorization.k8s.io/v1",
+        }[item["kind"]]
+        if item.get("apiVersion") != expected_api:
+            raise ValueError(
+                "Operator chart contains an unexpected API group or version"
+            )
+        if "helm.sh/hook" in item["metadata"].get("annotations", {}):
+            raise ValueError("Operator release must not contain Helm hooks")
+        if item["kind"] == "Deployment":
+            spec = item["spec"]
+            pod = spec["template"]["spec"]
+            containers = pod["containers"]
+            if (
+                spec.get("replicas") != 0
+                or pod.get("serviceAccountName") != "flink-operator"
+                or pod.get("initContainers")
+                or len(containers) != 1
+                or containers[0].get("image")
+                != "apache/flink-kubernetes-operator:" + version
+                or any(
+                    "persistentVolumeClaim" in volume
+                    for volume in pod.get("volumes", [])
+                )
+            ):
+                raise ValueError(
+                    "Operator Deployment must retain its pinned idle configuration"
+                )
+        if item["kind"] == "ConfigMap":
+            configurations = [
+                yaml.safe_load(data)
+                for name, data in item.get("data", {}).items()
+                if name in ("config.yaml", "flink-conf.yaml")
+            ]
+            if not configurations or any(
+                config.get("kubernetes.operator.watched.namespaces") != "tier3-smoke"
+                for config in configurations
+            ):
+                raise ValueError("Operator configuration must watch only tier3-smoke")
+        if item["kind"] == "RoleBinding" and (
+            item["roleRef"]
+            != {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "Role",
+                "name": "flink-operator",
+            }
+            or item["subjects"]
+            != [
+                {
+                    "kind": "ServiceAccount",
+                    "name": "flink-operator",
+                    "namespace": "tier3-system",
+                }
+            ]
+        ):
+            raise ValueError(
+                "Operator RoleBindings must bind only the Operator ServiceAccount"
+            )
+    return documents
+
+
+def prepare_operator_chart(root, *, download=True):
+    """Use the same verified archive and values for rendering and the Helm provider."""
+    pin = yaml.safe_load((root / "upstream.yaml").read_text())
+    cache = root / ".terraform"
+    archive = cache / "operator-chart.tgz"
+    if download:
+        with urllib.request.urlopen(pin["url"], timeout=60) as response:
+            data = response.read(MAX_CHART_BYTES + 1)
+    else:
+        data = archive.read_bytes()
+    if len(data) > MAX_CHART_BYTES:
+        raise ValueError(f"Operator chart exceeds the {MAX_CHART_BYTES}-byte limit")
+    if hashlib.sha512(data).hexdigest() != pin["sha512"]:
+        raise ValueError("Operator chart SHA-512 does not match the root pin")
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as chart:
+        entry = chart.getmember("flink-kubernetes-operator/Chart.yaml")
+        if not entry.isfile():
+            raise ValueError("Expected an ordinary Operator Chart.yaml file")
+        metadata = yaml.safe_load(chart.extractfile(entry))
+        if (
+            metadata.get("name") != "flink-kubernetes-operator"
+            or metadata.get("version") != pin["version"]
+            or metadata.get("appVersion") != pin["version"]
+        ):
+            raise ValueError("Operator chart version does not match the root pin")
+    cache.mkdir(exist_ok=True)
+    if download:
+        archive.write_bytes(data)
+    rendered = run(
+        [
+            "helm",
+            "template",
+            "flink-kubernetes-operator",
+            str(archive),
+            "--namespace",
+            "tier3-system",
+            "--values",
+            str(root / "values.yaml"),
+        ]
+    ).stdout
+    documents = operator_documents(rendered, pin["version"])
+    (cache / "operator-rendered.yaml").write_text(rendered)
+    print("Verified Operator chart " + pin["version"] + " and seven idle resources")
+    return pin, documents
 
 
 def run(arguments, *, env=None):
@@ -56,7 +214,11 @@ def run(arguments, *, env=None):
 
 
 class Cluster:
-    def __init__(self, kubeconfig):
+    def __init__(self, kubeconfig, root="bootstrap"):
+        if root not in ("bootstrap", "operator"):
+            raise ValueError("Unknown Tier-3 root")
+        self.root = root
+        self.root_path = ROOT / ("opentofu/tier3-" + root)
         self.kubeconfig = Path(kubeconfig).absolute()
         if self.kubeconfig.resolve() == (Path.home() / ".kube/config").resolve():
             raise ValueError("Use a dedicated kubeconfig, not the default kubeconfig")
@@ -305,6 +467,8 @@ class Cluster:
         self.can_i(False, "escalate", "rbac.authorization.k8s.io", "clusterroles")
         self.can_i(False, "bind", "rbac.authorization.k8s.io", "clusterroles")
         self.can_i(False, "create", "apps", "deployments", "default")
+        if self.root == "operator":
+            self.operator_prerequisites()
         print(
             "Verified " + mode + " principal, Kubernetes permissions, and idle quotas"
         )
@@ -313,7 +477,120 @@ class Cluster:
         self.validate_target()
         self.quota()
         self.idle()
-        print("Verified bootstrap target and idle quotas")
+        if self.root == "operator":
+            self.operator_prerequisites()
+        print("Verified " + self.root + " target and idle quotas")
+
+    def operator_prerequisites(self):
+        for name in CRDS:
+            item = json.loads(self.kubectl("get", "crd", name, "-o", "json").stdout)
+            if item["metadata"].get("deletionTimestamp") or not any(
+                condition.get("type") == "Established"
+                and condition.get("status") == "True"
+                for condition in item.get("status", {}).get("conditions", [])
+            ):
+                raise RuntimeError(
+                    "Operator requires Established bootstrap CRDs: " + name
+                )
+        for kind, name in (
+            ("serviceaccount", "smoke"),
+            ("role", "tier3-smoke-job"),
+            ("rolebinding", "tier3-smoke-job"),
+        ):
+            item = json.loads(
+                self.kubectl(
+                    "get", kind, name, "--namespace", "tier3-smoke", "-o", "json"
+                ).stdout
+            )
+            if item["metadata"].get("deletionTimestamp"):
+                raise RuntimeError("Operator requires the persistent smoke identity")
+            if kind == "rolebinding" and (
+                item["roleRef"]
+                != {
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "kind": "Role",
+                    "name": "tier3-smoke-job",
+                }
+                or item["subjects"]
+                != [
+                    {
+                        "kind": "ServiceAccount",
+                        "name": "smoke",
+                        "namespace": "tier3-smoke",
+                    }
+                ]
+            ):
+                raise RuntimeError(
+                    "The smoke RoleBinding does not bind the bootstrap identity"
+                )
+        print("Verified four Established CRDs and the persistent smoke identity")
+
+    def verify_operator(self):
+        self.preflight()
+        pin, documents = prepare_operator_chart(self.root_path, download=False)
+        release = json.loads(
+            run(
+                [
+                    "helm",
+                    "get",
+                    "metadata",
+                    "flink-kubernetes-operator",
+                    "--namespace",
+                    "tier3-system",
+                    "--kubeconfig",
+                    str(self.kubeconfig),
+                    "--kube-context",
+                    CONTEXT,
+                    "--output",
+                    "json",
+                ],
+                env=provider_environment(self.kubeconfig),
+            ).stdout
+        )
+        if (
+            release.get("status") != "deployed"
+            or release.get("chart") != "flink-kubernetes-operator"
+            or release.get("version") != pin["version"]
+            or release.get("appVersion") != pin["version"]
+        ):
+            raise RuntimeError("Operator release is not deployed at the pinned version")
+        for expected in documents:
+            metadata = expected["metadata"]
+            actual = json.loads(
+                self.kubectl(
+                    "get",
+                    expected["kind"],
+                    metadata["name"],
+                    "--namespace",
+                    metadata["namespace"],
+                    "-o",
+                    "json",
+                ).stdout
+            )
+            if actual["metadata"].get("deletionTimestamp"):
+                raise RuntimeError("Operator resource is being deleted")
+            for field in ("data", "rules", "roleRef", "subjects"):
+                if field in expected and actual.get(field) != expected[field]:
+                    raise RuntimeError(
+                        "Operator resource differs from the chart: " + metadata["name"]
+                    )
+            if expected["kind"] == "Deployment" and (
+                actual["spec"].get("replicas") != 0
+                or actual.get("status", {}).get("replicas", 0) != 0
+                or actual["spec"]["template"]["spec"]["serviceAccountName"]
+                != "flink-operator"
+                or [
+                    container["image"]
+                    for container in actual["spec"]["template"]["spec"]["containers"]
+                ]
+                != ["apache/flink-kubernetes-operator:" + pin["version"]]
+            ):
+                raise RuntimeError(
+                    "Live Operator Deployment is not idle at the pinned version"
+                )
+        print(
+            "Verified deployed Operator release, seven owned resources, zero Pods/PVCs and zero replicas"
+        )
 
     def ci(self, mode):
         # tfaction must resolve a fresh executable on each runner. Its saved plan
@@ -324,6 +601,8 @@ class Cluster:
             raise ValueError("CI bootstrap requires GITHUB_PATH and an installed tofu")
         self.authenticate()
         self.access(mode)
+        if self.root == "operator":
+            prepare_operator_chart(self.root_path)
         directory = Path(
             tempfile.mkdtemp(prefix="tier3-tofu-", dir=self.kubeconfig.parent)
         )
@@ -332,28 +611,28 @@ class Cluster:
             "#!/usr/bin/env python3\n"
             "import os, sys\n"
             "environment = {key: value for key, value in os.environ.items() "
-            "if not key.startswith('KUBE_')}\n"
+            "if not key.startswith(('KUBE_', 'HELM_KUBE')) and key != 'KUBECONFIG'}\n"
             f"environment['KUBE_CONFIG_PATH'] = {str(self.kubeconfig)!r}\n"
+            "environment['HELM_DRIVER'] = 'secret'\n"
             f"os.execve({executable!r}, [{executable!r}, *sys.argv[1:]], environment)\n"
         )
         wrapper.chmod(0o700)
         with Path(github_path).open("a") as output:
             output.write(str(directory) + "\n")
-        print("Prepared tfaction bootstrap execution with isolated provider settings")
+        print(
+            "Prepared tfaction "
+            + self.root
+            + " execution with isolated provider settings"
+        )
 
     def tofu(self, arguments):
         self.preflight()
         # Provider environment overrides must not bypass the verified kubeconfig.
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("KUBE_")
-        }
-        environment["KUBE_CONFIG_PATH"] = str(self.kubeconfig)
-        root = Path(__file__).resolve().parents[1] / "opentofu/tier3-bootstrap"
+        if self.root == "operator":
+            prepare_operator_chart(self.root_path)
         return subprocess.run(
-            ["tofu", "-chdir=" + str(root), *arguments],
-            env=environment,
+            ["tofu", "-chdir=" + str(self.root_path), *arguments],
+            env=provider_environment(self.kubeconfig),
             check=False,
             timeout=900,
         ).returncode
@@ -362,6 +641,9 @@ class Cluster:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kubeconfig", required=True)
+    parser.add_argument(
+        "--root", choices=("bootstrap", "operator"), default="bootstrap"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("auth")
     access = commands.add_parser("access")
@@ -369,11 +651,12 @@ def main():
     ci = commands.add_parser("ci")
     ci.add_argument("mode", choices=PRINCIPALS)
     commands.add_parser("preflight")
+    commands.add_parser("verify")
     tofu = commands.add_parser("tofu")
     tofu.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
-        cluster = Cluster(args.kubeconfig)
+        cluster = Cluster(args.kubeconfig, args.root)
         if args.command == "auth":
             cluster.authenticate()
         elif args.command == "access":
@@ -382,6 +665,10 @@ def main():
             cluster.ci(args.mode)
         elif args.command == "tofu":
             return cluster.tofu(args.arguments)
+        elif args.command == "verify":
+            if args.root != "operator":
+                raise ValueError("The verify command requires --root operator")
+            cluster.verify_operator()
         else:
             cluster.preflight()
     except (
@@ -389,6 +676,8 @@ def main():
         RuntimeError,
         subprocess.TimeoutExpired,
         OSError,
+        tarfile.TarError,
+        yaml.YAMLError,
     ) as error:
         print(str(error), file=sys.stderr)
         return 1
