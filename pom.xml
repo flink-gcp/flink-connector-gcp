@@ -1132,6 +1132,12 @@ limitations under the License.
     </build>
 
     <profiles>
+        <profile>
+            <id>tier3-smoke</id>
+            <modules>
+                <module>kubernetes/apps/smoke</module>
+            </modules>
+        </profile>
         <!-- The documentation examples are test sources in an internal-only module. Keeping the
              module behind an explicit profile prevents its five connector dependencies from
              widening every connector's ordinary reactor build. The module also refuses deploy;

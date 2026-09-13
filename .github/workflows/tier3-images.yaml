@@ -57,7 +57,19 @@ jobs:
 
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          install_args: crane
+          install_args: crane cue java
+
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: just
+
+      - name: Verify the smoke application payload
+        run: just tier3-smoke-verify
+
+      - name: Read the reviewed Flink base
+        id: smoke_base
+        run: |
+          echo "image=$(cue -C kubernetes export ./images -e flink --out text)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -95,12 +107,30 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: smoke_meta
+        with:
+          images: ${{ env.GAR }}/smoke
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        id: smoke_build
+        with:
+          context: kubernetes/apps/smoke
+          platforms: linux/amd64
+          build-args: FLINK_IMAGE=${{ steps.smoke_base.outputs.image }}
+          push: true
+          tags: ${{ steps.smoke_meta.outputs.tags }}
+          labels: ${{ steps.smoke_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
+          SMOKE_DIGEST: ${{ steps.smoke_build.outputs.digest }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
             printf '%s@%s\n\n' "${image%:*}" "$digest" >> "$GITHUB_STEP_SUMMARY"
           done
           printf '%s/lifecycle-tools@%s\n' "$GAR" "$LIFECYCLE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

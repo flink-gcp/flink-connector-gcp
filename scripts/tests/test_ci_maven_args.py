@@ -95,6 +95,40 @@ def fake_repo(tmp_path, ci_maven_args, monkeypatch):
     return tmp_path
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/smoke/pom.xml",
+        "kubernetes/apps/smoke/Dockerfile",
+        "kubernetes/apps/smoke/src/main/java/Smoke.java",
+        "pom.xml",
+        "justfile",
+        "mise.toml",
+        ".mvn/wrapper/maven-wrapper.properties",
+        "mvnw",
+        ".github/workflows/verify.yaml",
+        ".github/workflows/tier3-images.yaml",
+        "scripts/ci-maven-args.py",
+        "kubernetes/images/pins.cue",
+    ],
+)
+def test_smoke_application_inputs_select_its_opt_in_build(ci_maven_args, path):
+    assert ci_maven_args.requires_tier3_smoke([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "opentofu/tier3-bootstrap/smoke.tf",
+        "kubernetes/runs/smoke/delivery.cue",
+        "flink-connector-gcp-bigtable/src/main/java/Example.java",
+        "docs/adr/example.md",
+    ],
+)
+def test_unrelated_inputs_do_not_build_smoke(ci_maven_args, path):
+    assert not ci_maven_args.requires_tier3_smoke([path])
+
+
 # --- classification rules, on the synthetic repo ---
 
 
@@ -593,6 +627,7 @@ def test_ignored_only_skips_the_build(ci_maven_args):
     # No build at all, so no lanes: the gate job turns run_build=false into an
     # explicit green rather than leaving a skipped job to read as a pass.
     assert out == {
+        "run_tier3_smoke": "false",
         "run_build": "false",
         "lanes": "[]",
         "check_notice_sources": "false",

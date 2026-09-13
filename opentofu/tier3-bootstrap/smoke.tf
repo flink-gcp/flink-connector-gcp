@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The generic smoke identity has no GSA annotation or GCP data grants.
+# The GCP root owns this workload's GSA, bucket grant and KSA impersonation trust.
 resource "kubernetes_service_account_v1" "smoke" {
   metadata {
     name      = "smoke"
     namespace = kubernetes_namespace_v1.tier3["tier3-smoke"].metadata[0].name
     labels    = local.labels
+    annotations = {
+      "iam.gke.io/gcp-service-account" = "tier3-smoke@flink-gcp.iam.gserviceaccount.com"
+    }
   }
   depends_on = [kubernetes_manifest.crd]
 }

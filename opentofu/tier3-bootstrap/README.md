@@ -44,8 +44,8 @@ No cluster-scoped delete, unrestricted bind/escalate or workload permissions in 
 Expanding the owned namespace/CRD authorization boundary may require an administrator to grant the new permissions first; ordinary changes within it run entirely through CI.
 Both identities can list CRD schemas because Kubernetes provider 3.2.1 requires that discovery read during manifest planning.
 Plan/apply identities are the existing GitHub WIF service accounts, not application service accounts.
-The smoke KSA has no GSA annotation or GCP data grants.
-When an application needs GCP APIs, its KSA annotation belongs here and the corresponding GSA/IAM grants belong to the GCP root; those grants follow that application's design.
+The smoke KSA is annotated for `tier3-smoke@flink-gcp.iam.gserviceaccount.com`.
+The GCP root owns that GSA, its bucket-scoped object grant and the impersonation trust for this KSA; the [application runbook](../../kubernetes/apps/smoke/README.md) describes the storage and runtime boundary.
 
 Both namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclaims: "0"`.
 A quota does not terminate existing Pods, and scaling down the Operator does not stop Flink jobs.

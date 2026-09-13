@@ -26,6 +26,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
 | `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
 | `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket for separately approved Cloud Tasks benchmarks |
+| `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
 | `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |

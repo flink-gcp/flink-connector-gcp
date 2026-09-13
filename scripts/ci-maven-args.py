@@ -35,6 +35,9 @@ The mapping is derived, never configured, in the e2e-gated-its.sh tradition
 * Because everything is derived, a new module is covered from the moment the
   root pom names it; there is no filter file to forget to update.
 
+The opt-in Tier-3 application is outside these connector lanes. Its own build
+is selected by requires_tier3_smoke(), including shared build inputs.
+
 Each changed file is classified by the first matching rule:
 
 1. **Ignored** — any `README.md`, `AGENTS.md` or `CLAUDE.md` (apache-rat's exclude list
@@ -110,6 +113,8 @@ Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
 
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
+  run_tier3_smoke=true|false   selects the opt-in smoke application for its own
+                          inputs and shared build inputs; --full selects it too.
   lanes=<json array>      the build matrix: one object per lane, each with a
                           `name`, the `args` it builds (`-pl .,<modules>` in
                           reactor order; `.` is always included, since the
@@ -188,6 +193,25 @@ SPINE_SUFFIXES = frozenset({"base", "test-utils"})
 
 ROOT_ONLY_PREFIXES = ("docs/", "scripts/", "kubernetes/")
 ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock", "CONTRIBUTING.md"}
+
+
+def requires_tier3_smoke(files: list[str]) -> bool:
+    """Select the opt-in application without adding it to connector release lanes."""
+    inputs = {
+        "pom.xml",
+        "mise.toml",
+        "justfile",
+        "mvnw",
+        "mvnw.cmd",
+        "scripts/ci-maven-args.py",
+        ".github/workflows/verify.yaml",
+        ".github/workflows/ci.yaml",
+        ".github/workflows/tier3-images.yaml",
+        "kubernetes/images/pins.cue",
+    }
+    prefixes = ("kubernetes/apps/smoke/", ".mvn/", "tools/maven/")
+    return any(path in inputs or path.startswith(prefixes) for path in files)
+
 
 # ...except the inputs of the one checker whose CI step the deriver can switch
 # off. `just check-notice` runs inside the build job behind check_notice, so a
@@ -426,6 +450,7 @@ def main() -> None:
     edges = module_dependencies(modules)
 
     if args.full:
+        print("run_tier3_smoke=true")
         emit(
             run_build=True,
             built=modules,
@@ -435,6 +460,7 @@ def main() -> None:
         return
 
     files = changed_files(args)
+    print(f"run_tier3_smoke={'true' if requires_tier3_smoke(files) else 'false'}")
     fetch = any(moves_a_licence_source(f.strip().lstrip("/")) for f in files)
     ignored, selected, root_only, everything = classify(files, modules)
     print(

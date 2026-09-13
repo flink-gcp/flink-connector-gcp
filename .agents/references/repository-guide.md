@@ -565,7 +565,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 ## Infrastructure (OpenTofu and Kubernetes)
 
 Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0165 before changing
-the CUE hierarchy or the OpenTofu/CUE ownership split. `just tier3-check` validates the static layer,
+the CUE hierarchy or the OpenTofu/CUE ownership split. Before changing the smoke application,
+its image or workload identity, also read `kubernetes/apps/smoke/README.md`. Use
+`just tier3-smoke-verify` for its opt-in Maven build and local recovery tests.
+`just tier3-check` validates the static layer,
 `just tier3-render <leaf>` prints that delivery's resources as a YAML document stream, and
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
