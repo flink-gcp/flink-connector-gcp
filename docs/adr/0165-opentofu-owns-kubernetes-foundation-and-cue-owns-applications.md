@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-09-11
 - Updated: 2026-09-12 (CI ownership, initial CRD apply recovery and idle Helm root)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307)
+- Updated: 2026-09-13 (digest-pinned GAR publication and seven-day image expiry)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -84,6 +85,29 @@ CRD upgrades precede Helm upgrades and ordinary run cleanup preserves the founda
 Future GCP-using applications receive a dedicated workload identity: the KSA annotation belongs to bootstrap, while its GSA impersonation/data grants belong to the GCP root.
 The generic smoke KSA currently has no GCP annotation or data grants.
 Installer identities must not become application identities.
+
+### Image publication
+
+The GCP root owns a separate Tier-3 image publisher with repository-scoped Artifact Registry Writer access.
+Its WIF binding selects the exact main-only manual publication workflow and repository ID; the provider condition checks the repository and owner IDs.
+The workflow copies fixed AMD64 Operator and Flink images with crane and builds the Python/kubectl runtime with Docker's BuildKit actions.
+The workflow and Dockerfile hold the source pins; metadata-action supplies the built image's tags and labels.
+Registry tools handle digest-addressed content, so publication needs no custom content inspector, intermediate JSON receipts or capacity-admission implementation.
+The fixed image inventory, serialized manual workflow and 30-minute timeout define the publication scope as recorded in the [image runbook](../../kubernetes/images/README.md).
+The supervisor environment does not implement workload lifecycle behavior; that remains the lifecycle issue's responsibility.
+
+All GAR versions, including the currently selected digests, become deletion-eligible seven days after creation.
+There is no keep rule, immutable tags remain disabled and vulnerability scanning is explicitly disabled to preserve the cost boundary.
+This resting state was chosen over retaining current and previous versions because the rig runs intermittently.
+The publisher cannot delete image versions or change infrastructure.
+The cleanup service runs asynchronously, so deletion eligibility is not a precise deletion deadline or a storage quota.
+Repeated publication of an existing digest does not establish a renewed retention period.
+The later lifecycle preflight must check live image existence and sufficient remaining retention for the run and cleanup margin.
+
+Publication code and IAM land before the first manual publication.
+The successful workflow's job summary supplies digest references for a separate reviewed Helm/CUE pin change; no placeholder GAR output digest is committed in the publication-foundation PR.
+The idle Helm release continues to use its existing image reference until that follow-up lands, retaining zero replicas and quotas.
+Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
 ## Consequences
 

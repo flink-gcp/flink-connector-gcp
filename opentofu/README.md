@@ -71,7 +71,10 @@ why:
 - Per-account bindings narrow further: the plan account is reachable from any
   event of this repository (and is read-only plus state-lock writes); the
   apply account only from a `push` to `main`; the E2E account from
-  `push` / `schedule` / `workflow_dispatch` on `main`. Fork pull requests are
+  `push` / `schedule` / `workflow_dispatch` on `main`; the
+  [image publisher](../kubernetes/images/README.md) only from `workflow_dispatch`
+  on `main` through `tier3-images.yaml`, with Writer access to the Tier-3 GAR repository only.
+  Fork pull requests are
   excluded outright — GitHub does not grant `id-token: write` to runs
   triggered from forks.
 
@@ -121,6 +124,7 @@ The root creates the regional `flink-tier3` Autopilot cluster in `us-central1`, 
 Nodes have private addresses, and operator access uses the IAM-authenticated DNS endpoint with IP endpoints disabled.
 There is no Cloud NAT, bastion or IAP SSH firewall.
 Mirror the pinned Operator and Flink images into `us-central1-docker.pkg.dev/flink-gcp/flink-tier3` before starting Pods; public registries are outside this network path.
+The [image publication runbook](../kubernetes/images/README.md) describes the dedicated WIF publisher, digest-pinned mirrors, BuildKit build and seven-day deletion.
 The node identity has telemetry permissions and read access to that repository.
 It has no connector data permissions.
 Autopilot's required managed Prometheus collection stays enabled, with automatic workload monitoring disabled.
