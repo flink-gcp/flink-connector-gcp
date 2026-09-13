@@ -111,7 +111,8 @@ The [image publication path](images/README.md) prepares the Operator, Flink and 
 [Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.
 The Flink base image has no application JAR; each actual delivery still supplies its own complete image, and admission/retention checks belong to the lifecycle stage.
 The [generic smoke application](apps/smoke/README.md) supplies that JAR, a dedicated workload identity and a reusable `pkg/smoke.#Application` definition.
-Its concrete delivery inputs and smoke image pin follow the first successful application publication; the synthetic tests already exercise the initial and upgrade definitions independently.
+Its committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries share concrete run inputs and the published `images.smoke` pin.
+They update the same deployment sequentially; the [application runbook](apps/smoke/README.md#deployment-and-storage) records the planned window, expiry and independent render commands.
 The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
@@ -136,7 +137,7 @@ mise x cue -- cue -C kubernetes cmd render ./runs/example \
 ```
 
 Here `RUN_ID`, `EXPIRES_AT` and `IMAGE_DIGEST` are the chosen run identifier, deadline and full GAR image URL including its digest.
-The example delivery path is illustrative; this stage has no committed run delivery.
+The example delivery path is illustrative; the committed generic smoke deliveries already define their inputs and render without tags.
 Render one directory per invocation so one delivery maps to one output file.
 Output redirection may create an empty destination file when validation fails; require a successful command exit before consuming it.
 Rendered YAML is build output and must stay outside source control.

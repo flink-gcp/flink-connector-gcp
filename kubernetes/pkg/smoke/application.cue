@@ -16,7 +16,7 @@ package smoke
 
 import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 
-// The publication follow-up supplies concrete run inputs and the smoke image digest.
+// Each delivery supplies concrete run inputs and a published smoke image digest.
 #Application: {
 	run: {
 		id:    string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
