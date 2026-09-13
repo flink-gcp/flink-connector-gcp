@@ -104,6 +104,8 @@ The root supplies common project labels.
 `runs/common.cue` adds the run ID, RFC 3339 expiry and `tier3-smoke` namespace to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount, parallelism from one to two, `v2_2` and `allowNonRestoredState: false`.
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
+The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
+Its first infrastructure stage does not yet supply committed GAR output digests or extend application admission checks.
 The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.

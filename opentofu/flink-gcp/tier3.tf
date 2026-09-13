@@ -144,6 +144,23 @@ resource "google_artifact_registry_repository" "tier3" {
   description   = "Digest-pinned Flink Tier-3 runtime images"
   format        = "DOCKER"
 
+  # Even the current image expires. Republish and verify before the next run.
+  cleanup_policy_dry_run = false
+  cleanup_policies {
+    id     = "delete-after-seven-days"
+    action = "DELETE"
+    condition {
+      tag_state  = "ANY"
+      older_than = "604800s"
+    }
+  }
+  docker_config {
+    immutable_tags = false
+  }
+  vulnerability_scanning_config {
+    enablement_config = "DISABLED"
+  }
+
   depends_on = [
     google_project_service.this["artifactregistry.googleapis.com"],
     google_project_iam_member.opentofu["roles/artifactregistry.admin"],

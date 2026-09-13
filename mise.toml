@@ -14,6 +14,8 @@ cue = "0.17.1"
 kubectl = "1.35.7"
 # Match the Helm library used by the pinned Operator root provider.
 helm = "3.20.2"
+# Copies the selected OCI manifest without changing its digest.
+crane = "0.22.1"
 # Lints scripts/. Pinned rather than taken from the runner image, which carries
 # 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04 — when ubuntu-latest migrates, the
 # newer release's added checks would fail a pull request that changed nothing.
