@@ -102,6 +102,7 @@ class BigtableOptionParityTest {
         map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
         map.put("createDisposition", BigtableConnectorOptions.SINK_CREATE_DISPOSITION);
+        map.put("deliveryGuarantee", BigtableConnectorOptions.SINK_DELIVERY_GUARANTEE);
         return Collections.unmodifiableMap(map);
     }
 
@@ -119,6 +120,7 @@ class BigtableOptionParityTest {
         map.put(
                 "failedMutationHandler",
                 "no table connector in this repository exposes a failure policy in a DDL");
+        map.put("stagedOptions", "takes StagedOptionsMapper output, covered by its own table");
         map.put("writerOptions", "takes WriterOptionsMapper's output, covered by its own table");
         map.put(
                 "tableCreateOptions",
@@ -327,6 +329,23 @@ class BigtableOptionParityTest {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
+    private static final Map<String, ConfigOption<?>> STAGED_OPTIONS =
+            Map.of(
+                    "markerFamily", BigtableConnectorOptions.SINK_STAGED_MARKER_FAMILY,
+                    "maxStagedEntries", BigtableConnectorOptions.SINK_STAGED_MAX_ENTRIES,
+                    "maxStagedBytes", BigtableConnectorOptions.SINK_STAGED_MAX_BYTES);
+
+    @Test
+    void everyStagedKnobIsMappedOrIsTheSharedRequestOptionsObject() {
+        Set<String> expected = new HashSet<>(STAGED_OPTIONS.keySet());
+        expected.add("requestOptions");
+        assertThat(
+                        publicSettersOf(
+                                io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions
+                                        .Builder.class))
+                .isEqualTo(expected);
+    }
+
     @Test
     void everyWriterKnobHasAnOption() {
         assertThat(publicSettersOf(BigtableWriterOptions.Builder.class))
@@ -459,6 +478,7 @@ class BigtableOptionParityTest {
         SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
         CHANGE_STREAM_SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
         REQUEST_OPTIONS.values().forEach(o -> mapped.add(o.key()));
+        STAGED_OPTIONS.values().forEach(o -> mapped.add(o.key()));
         mapped.add(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY.key());
         mapped.addAll(NOT_A_SETTER.keySet());
 

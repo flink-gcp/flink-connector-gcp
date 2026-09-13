@@ -24,10 +24,10 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 /**
  * Entry point for building a Bigtable sink.
  *
- * <p>The sink applies one row mutation per record through the client's bulk {@code MutateRows}
- * batcher, at-least-once, and waits for every outstanding mutation at each checkpoint barrier. A
- * replayed record overwrites the same cells only when the serializer sets explicit cell timestamps;
- * see {@code BigtableSerializationSchema}.
+ * <p>By default the sink applies one row mutation per record through the client's bulk {@code
+ * MutateRows} batcher, at-least-once, and waits for every outstanding mutation at each checkpoint
+ * barrier. A replayed record overwrites the same cells only when the serializer sets explicit cell
+ * timestamps; see {@code BigtableSerializationSchema}.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
  * Under a dropping policy configured through {@link
@@ -43,6 +43,13 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
  * CreateDisposition#CREATE_IF_NEEDED} and {@link
  * BigtableSinkBuilder#tableCreateOptions(TableCreateOptions)} opts into creating them, from one
  * schema that serves every table the sink creates.
+ *
+ * <p>{@link BigtableSinkBuilder#deliveryGuarantee(BigtableDeliveryGuarantee)} can instead select
+ * experimental checkpoint-owned writes. That mode stages immutable envelopes and applies each after
+ * checkpoint completion through a same-row retained marker, with no cross-row atomicity or
+ * rollback. It requires an explicit transactional profile, a pre-provisioned marker family without
+ * a GC rule, and preserved checkpoint state. Final service recovery and performance acceptance
+ * remain required before release; see {@link BigtableStagedOptions}.
  *
  * <p>The builder-returned sink implements {@code LineageVertexProvider}. Its effective fixed
  * destination reports namespace {@code bigtable://{project}/{instance}}, name {@code {table}} and a

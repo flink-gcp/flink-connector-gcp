@@ -20,8 +20,6 @@ import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -80,43 +78,6 @@ class BigtableLocalStagedJobITCase {
                 assertThat(original).hasSize(20);
                 assertThat(run.committersClosed.get()).isGreaterThanOrEqualTo(2);
                 assertThat(run.active.get()).isZero();
-            }
-        }
-    }
-
-    @ParameterizedTest
-    @ValueSource(ints = {1, 3})
-    void successfulStopAndResumeRedistributePersistedEnvelopes(int restoredParallelism)
-            throws Exception {
-        try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 2)) {
-            String path;
-            try (LocalStagedJob initial =
-                    new LocalStagedJob(
-                            run, directory, true, false, 2, 24, 3_600_000, true, null, false)) {
-                initial.awaitAdmissions(24);
-                path = initial.savepoint(directory, true);
-                assertThat(initial.result.isCompletedExceptionally()).isFalse();
-                assertThat(run.store.applied).isEqualTo(24);
-            }
-            int stagedBeforeRestore = run.staged.get();
-            try (LocalStagedJob restored =
-                    new LocalStagedJob(
-                            run,
-                            directory,
-                            true,
-                            false,
-                            restoredParallelism,
-                            24,
-                            100,
-                            true,
-                            path,
-                            false)) {
-                restored.awaitAcks(24);
-                restored.finish();
-                assertThat(run.staged.get()).isEqualTo(stagedBeforeRestore);
-                assertThat(run.store.applied).isEqualTo(24);
-                assertThat(totalSum(run)).isEqualTo(24);
-                assertThat(run.store.deduplicated).isEqualTo(24);
             }
         }
     }

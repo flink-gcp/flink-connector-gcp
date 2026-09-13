@@ -29,9 +29,11 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
@@ -42,6 +44,7 @@ import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy
 import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteSink;
 import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
 import io.github.flink.gcp.connector.bigtable.table.WriteMode;
@@ -84,6 +87,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private final WriteMode writeMode;
     private final Map<String, ColumnFamilyType> aggregateTypes;
     private final BigtableRequestOptions requestOptions;
+    private final BigtableDeliveryGuarantee deliveryGuarantee;
+    @Nullable private final BigtableStagedOptions stagedOptions;
     @Nullable private final EmptyBranchPolicy emptyBranchPolicy;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
@@ -112,6 +117,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         this.aggregateTypes =
                 Collections.unmodifiableMap(new java.util.LinkedHashMap<>(builder.aggregateTypes));
         this.requestOptions = builder.requestOptions;
+        this.deliveryGuarantee = builder.deliveryGuarantee;
+        this.stagedOptions = builder.stagedOptions;
         this.emptyBranchPolicy = builder.emptyBranchPolicy;
         this.createDisposition = builder.createDisposition;
         this.tableCreateOptions = builder.tableCreateOptions;
@@ -194,6 +201,11 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
+        boolean staged = deliveryGuarantee == BigtableDeliveryGuarantee.EXACTLY_ONCE;
+        if (staged && context.isBounded()) {
+            throw new ValidationException(
+                    "Option 'sink.delivery-guarantee' = 'exactly-once' requires STREAMING execution with exactly-once checkpoints.");
+        }
         WritableMetadata[] selected =
                 metadataKeys.stream().map(WritableMetadata::of).toArray(WritableMetadata[]::new);
         if (writeMode == WriteMode.APPEND || writeMode == WriteMode.INCREMENT) {
@@ -260,8 +272,13 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                                                 nullStringLiteral,
                                                 selected,
                                                 truncateCellTimestampToMillis,
-                                                writeMode == WriteMode.KEEP_LATEST))
-                        .writerOptions(writerOptions);
+                                                writeMode == WriteMode.KEEP_LATEST,
+                                                staged));
+        if (staged) {
+            builder.deliveryGuarantee(deliveryGuarantee).stagedOptions(stagedOptions);
+        } else {
+            builder.writerOptions(writerOptions);
+        }
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
         }
@@ -276,6 +293,19 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
+        }
+        if (staged) {
+            Map<String, ColumnFamilyType> expected = new java.util.LinkedHashMap<>();
+            schema.getFamilies()
+                    .forEach(
+                            family ->
+                                    expected.put(
+                                            family.getName(),
+                                            aggregateTypes.getOrDefault(
+                                                    family.getName(), ColumnFamilyType.RAW)));
+            BigtableStagedSink<RowData> sink = (BigtableStagedSink<RowData>) builder.build();
+            return SinkV2Provider.of(
+                    sink.withTableConfiguration(expected, lineageTableName), parallelism);
         }
         BigtableMutateRowsSink<RowData> sink = (BigtableMutateRowsSink<RowData>) builder.build();
         if (writeMode == WriteMode.AGGREGATE) {
@@ -301,6 +331,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .writeMode(writeMode)
                 .aggregateTypes(aggregateTypes)
                 .requestOptions(requestOptions)
+                .deliveryGuarantee(deliveryGuarantee)
+                .stagedOptions(stagedOptions)
                 .emptyBranchPolicy(emptyBranchPolicy)
                 .createDisposition(createDisposition)
                 .tableCreateOptions(tableCreateOptions)
@@ -337,6 +369,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && writeMode == that.writeMode
                 && aggregateTypes.equals(that.aggregateTypes)
                 && requestOptions.equals(that.requestOptions)
+                && deliveryGuarantee == that.deliveryGuarantee
+                && Objects.equals(stagedOptions, that.stagedOptions)
                 && emptyBranchPolicy == that.emptyBranchPolicy
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
@@ -361,6 +395,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 writeMode,
                 aggregateTypes,
                 requestOptions,
+                deliveryGuarantee,
+                stagedOptions,
                 emptyBranchPolicy,
                 createDisposition,
                 tableCreateOptions,
@@ -384,6 +420,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private WriteMode writeMode = WriteMode.UPSERT;
         private Map<String, ColumnFamilyType> aggregateTypes = Collections.emptyMap();
         private BigtableRequestOptions requestOptions = BigtableRequestOptions.builder().build();
+        private BigtableDeliveryGuarantee deliveryGuarantee =
+                BigtableDeliveryGuarantee.AT_LEAST_ONCE;
+        @Nullable private BigtableStagedOptions stagedOptions;
         @Nullable private EmptyBranchPolicy emptyBranchPolicy;
         @Nullable private CreateDisposition createDisposition;
         @Nullable private TableCreateOptions tableCreateOptions;
@@ -397,6 +436,18 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private String lineageTableName;
 
         private Builder() {}
+
+        /** Selects eager or checkpoint-owned delivery. */
+        public Builder deliveryGuarantee(BigtableDeliveryGuarantee value) {
+            this.deliveryGuarantee = value;
+            return this;
+        }
+
+        /** Sets the staged settings when checkpoint-owned delivery is selected. */
+        public Builder stagedOptions(@Nullable BigtableStagedOptions value) {
+            this.stagedOptions = value;
+            return this;
+        }
 
         /**
          * Sets the catalog identifier supplied by the Table factory, or null for direct

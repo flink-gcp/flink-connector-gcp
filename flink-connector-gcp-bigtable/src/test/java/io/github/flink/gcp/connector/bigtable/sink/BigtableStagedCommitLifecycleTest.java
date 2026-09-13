@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.apache.flink.api.common.serialization.SerializerConfigImpl;
-import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo;
@@ -30,32 +29,69 @@ import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import com.google.bigtable.v2.Mutation;
 import com.google.bigtable.v2.Value;
+import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
+import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Recovery evidence for the design probe, not a production Bigtable sink acceptance suite. */
+/** Production writer, metadata clients, SDK transport and Flink collector recovery on loopback. */
 class BigtableStagedCommitLifecycleTest {
     static final String TABLE = "projects/p/instances/i/tables/t";
-    private final String runId = UUID.randomUUID().toString();
-    private final StagedMutationTestSink.Probe probe = new StagedMutationTestSink.Probe();
-    private final StagedMutationTestSink sink =
-            new StagedMutationTestSink(runId, 100_000, 256L << 20);
+    private final StagedMutationTestSink.Probe probe;
+    private final StagedRpcTestService service;
+    private final BigtableStagedSink<StagedMutationTestSink.Input> sink;
 
-    BigtableStagedCommitLifecycleTest() {
-        StagedMutationTestSink.PROBES.put(runId, probe);
+    BigtableStagedCommitLifecycleTest() throws Exception {
+        service = new StagedRpcTestService();
+        probe = service.probe;
+        sink = sink(100_000, 64L << 20);
+    }
+
+    private BigtableStagedSink<StagedMutationTestSink.Input> sink(int maxEntries, long maxBytes) {
+        return (BigtableStagedSink<StagedMutationTestSink.Input>)
+                BigtableSink.<StagedMutationTestSink.Input>builder()
+                        .destinationResolver(
+                                (input, context) ->
+                                        TableDestination.of(
+                                                "p",
+                                                "i",
+                                                input.table().substring(TABLE.length() - 1)))
+                        .serializer(
+                                (input, context) ->
+                                        RowMutationEntry.createFromMutationUnsafe(
+                                                input.row(),
+                                                com.google.cloud.bigtable.data.v2.models.Mutation
+                                                        .fromProtoUnsafe(input.mutations())))
+                        .appProfileId("original-profile")
+                        .emulatorEndpoint("localhost:" + service.server.getPort())
+                        .deliveryGuarantee(BigtableDeliveryGuarantee.EXACTLY_ONCE)
+                        .stagedOptions(
+                                BigtableStagedOptions.builder()
+                                        .markerFamily("flink_commit")
+                                        .maxStagedEntries(maxEntries)
+                                        .maxStagedBytes(maxBytes)
+                                        .requestOptions(
+                                                BigtableRequestOptions.builder()
+                                                        .maxInFlightRequests(1)
+                                                        .build())
+                                        .build())
+                        .build();
     }
 
     @AfterEach
-    void cleanup() {
-        StagedMutationTestSink.PROBES.remove(runId);
+    void cleanup() throws Exception {
+        service.close();
     }
 
     @Test
@@ -95,7 +131,7 @@ class BigtableStagedCommitLifecycleTest {
             probe.loseNextAnswer = true;
             assertThatThrownBy(() -> committer.notifyOfCompletedCheckpoint(1))
                     .isInstanceOf(IOException.class)
-                    .hasMessageContaining("response lost");
+                    .hasStackTraceContaining("response lost");
             assertThat(probe.sum(TABLE, "r")).isEqualTo(2);
         }
         CheckAndMutateRowRequest lost = probe.sent.get(0);
@@ -236,9 +272,9 @@ class BigtableStagedCommitLifecycleTest {
 
     @Test
     void markerMutationIsLastAndUnsupportedMutationsFailBeforeStaging() throws Exception {
-        var writer = sink.createWriter((WriterInitContext) null);
+        var writer = sink.createWriter(new StubWriterInitContext(0));
         writer.write(increment("r", 2), null);
-        CheckAndMutateRowRequest request = writer.prepareCommit().iterator().next();
+        CheckAndMutateRowRequest request = writer.prepareCommit().iterator().next().getRequest();
         assertThat(request.getTrueMutationsList()).isEmpty();
         assertThat(request.getFalseMutationsCount()).isEqualTo(2);
         assertThat(request.getFalseMutations(0)).isEqualTo(increment("r", 2).mutations().get(0));
@@ -280,8 +316,8 @@ class BigtableStagedCommitLifecycleTest {
     void stagingCapsFailSynchronouslyAndPrepareCommitReleasesTheBudget() throws Exception {
         for (var writer :
                 List.of(
-                        new StagedMutationTestSink.Writer(1, Long.MAX_VALUE),
-                        new StagedMutationTestSink.Writer(10, 700))) {
+                        sink(1, Long.MAX_VALUE).createWriter(new StubWriterInitContext(0)),
+                        sink(10, 800).createWriter(new StubWriterInitContext(0)))) {
             writer.write(increment("r", 2), null);
             assertThatThrownBy(() -> writer.write(increment("r", 3), null))
                     .isInstanceOf(IOException.class)
@@ -350,7 +386,7 @@ class BigtableStagedCommitLifecycleTest {
     @Test
     void stateFormatRejectsOtherVersionsAndPreservesResolvedDestinationAndTimestamp()
             throws Exception {
-        var writer = sink.createWriter((WriterInitContext) null);
+        var writer = sink.createWriter(new StubWriterInitContext(0));
         Mutation cell =
                 Mutation.newBuilder()
                         .setSetCell(
@@ -364,15 +400,37 @@ class BigtableStagedCommitLifecycleTest {
                 new StagedMutationTestSink.Input(
                         TABLE + "2", ByteString.copyFromUtf8("r"), List.of(cell)),
                 null);
-        CheckAndMutateRowRequest request = writer.prepareCommit().iterator().next();
+        CheckAndMutateRowRequest request = writer.prepareCommit().iterator().next().getRequest();
         var serializer = sink.getCommittableSerializer();
-        byte[] bytes = serializer.serialize(request);
-        assertThat(serializer.deserialize(1, bytes)).isEqualTo(request);
+        byte[] bytes = serializer.serialize(new BigtableCommittable(request));
+        assertThat(serializer.deserialize(1, bytes).getRequest()).isEqualTo(request);
         assertThat(request.getTableName()).isEqualTo(TABLE + "2");
         assertThat(request.getFalseMutations(0)).isEqualTo(cell);
         assertThatThrownBy(() -> serializer.deserialize(2, bytes))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("Unsupported probe version");
+                .hasMessageContaining("Unsupported Bigtable committable version");
+    }
+
+    @Test
+    void restoredCollectorChecksRemotePolicyBeforeSendingDuringInitializeState() throws Exception {
+        OperatorSubtaskState state;
+        try (var writer = writer(1, 0);
+                var committer = committer(1, 0, true)) {
+            writer.open();
+            committer.open();
+            writer.processElement(increment("r", 2), 0);
+            barrier(writer, committer, 1);
+            state = committer.snapshot(1, 0);
+        }
+        service.invalidProfile = true;
+        try (var restored = committer(1, 0, true)) {
+            restored.setRestoredCheckpointId(1);
+            assertThatThrownBy(() -> restored.initializeState(state))
+                    .hasStackTraceContaining("transactional");
+        }
+        assertThat(service.metadata)
+                .contains("projects/p/instances/i/appProfiles/original-profile");
+        assertThat(probe.sent).isEmpty();
     }
 
     static StagedMutationTestSink.Input increment(String row, long value) {
@@ -392,11 +450,11 @@ class BigtableStagedCommitLifecycleTest {
     }
 
     OneInputStreamOperatorTestHarness<
-                    StagedMutationTestSink.Input, CommittableMessage<CheckAndMutateRowRequest>>
+                    StagedMutationTestSink.Input, CommittableMessage<BigtableCommittable>>
             writer(int parallelism, int index) throws Exception {
         var harness =
                 new OneInputStreamOperatorTestHarness<
-                        StagedMutationTestSink.Input, CommittableMessage<CheckAndMutateRowRequest>>(
+                        StagedMutationTestSink.Input, CommittableMessage<BigtableCommittable>>(
                         new SinkWriterOperatorFactory<>(sink), 128, parallelism, index);
         harness.setup(
                 CommittableMessageTypeInfo.of(sink::getCommittableSerializer)
@@ -405,8 +463,8 @@ class BigtableStagedCommitLifecycleTest {
     }
 
     OneInputStreamOperatorTestHarness<
-                    CommittableMessage<CheckAndMutateRowRequest>,
-                    CommittableMessage<CheckAndMutateRowRequest>>
+                    CommittableMessage<BigtableCommittable>,
+                    CommittableMessage<BigtableCommittable>>
             committer(int parallelism, int index, boolean checkpointing) throws Exception {
         return new OneInputStreamOperatorTestHarness<>(
                 new CommitterOperatorFactory<>(sink, false, checkpointing),
@@ -417,12 +475,11 @@ class BigtableStagedCommitLifecycleTest {
 
     static void barrier(
             OneInputStreamOperatorTestHarness<
-                            StagedMutationTestSink.Input,
-                            CommittableMessage<CheckAndMutateRowRequest>>
+                            StagedMutationTestSink.Input, CommittableMessage<BigtableCommittable>>
                     writer,
             OneInputStreamOperatorTestHarness<
-                            CommittableMessage<CheckAndMutateRowRequest>,
-                            CommittableMessage<CheckAndMutateRowRequest>>
+                            CommittableMessage<BigtableCommittable>,
+                            CommittableMessage<BigtableCommittable>>
                     committer,
             long checkpoint)
             throws Exception {
@@ -430,14 +487,9 @@ class BigtableStagedCommitLifecycleTest {
         forward(writer, committer);
     }
 
-    static void forward(
-            OneInputStreamOperatorTestHarness<
-                            StagedMutationTestSink.Input,
-                            CommittableMessage<CheckAndMutateRowRequest>>
-                    writer,
-            OneInputStreamOperatorTestHarness<
-                            CommittableMessage<CheckAndMutateRowRequest>,
-                            CommittableMessage<CheckAndMutateRowRequest>>
+    static <T, C> void forward(
+            OneInputStreamOperatorTestHarness<T, CommittableMessage<C>> writer,
+            OneInputStreamOperatorTestHarness<CommittableMessage<C>, CommittableMessage<C>>
                     committer)
             throws Exception {
         for (var message : writer.extractOutputValues()) {

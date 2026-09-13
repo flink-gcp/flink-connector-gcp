@@ -22,7 +22,7 @@ limitations under the License.
 
 # Bigtable Connector
 
-Writes a DataStream into Cloud Bigtable, one row mutation per record, at-least-once, into a
+Writes a DataStream into Cloud Bigtable, one row mutation per record, at-least-once by default, into a
 fixed table or one each record names. Every
 option is in the [Bigtable reference]({{< relref "docs/reference/bigtable" >}}); the runnable job is
 the [quickstart]({{< relref "docs/quickstart/bigtable" >}}); implementation status is the table in
@@ -54,6 +54,44 @@ them into writes whose completion is awaited before the next begins.
 order.
 Upstream aggregation avoids this collision only when it emits at most one mutation per key for the entire write, not merely per window.
 ADR-0093 records the measurement and decision.
+
+## Checkpoint-owned writes
+
+`BigtableDeliveryGuarantee.EXACTLY_ONCE` selects the experimental staged runtime.
+Final production-service recovery acceptance and the formal Stage 2 performance assessment are pending under #1211; this mode is not yet released or supported.
+The at-least-once path remains the default.
+
+Provision a dedicated raw marker family with no GC rule and an explicit application profile using single-cluster routing with transactional writes enabled.
+Grant data mutation permission plus metadata read permission for the application profile and table schema (`bigtable.appProfiles.get` and `bigtable.tables.get`).
+The runtime reads these properties before sending to each target, including restored work before operator `open`.
+Keep the routing policy and marker family unchanged while the deployment or any supported restore can use them.
+The connector never creates the marker family or deletes its markers.
+
+{{< java-snippet file="BigtableStagedWrites.java" tag="bigtable-staged-writes" >}}
+
+The example assumes the table, data family and marker family already exist and the environment is the job's environment.
+The graph requires `STREAMING` execution (the default), enabled exactly-once checkpoints and checkpoints after finished tasks; bounded input in streaming mode is allowed, `BATCH` and `AUTOMATIC` are rejected.
+The DataStream serializer may return `null` to skip before staging.
+Every other result becomes one immutable envelope with its original row key, profile, ordered mutations, timestamps and random identity.
+It may contain up to 99,999 user mutations, followed by its replay marker.
+Whole-row deletion and any mutation of the reserved family are rejected.
+
+Checkpoint completion authorizes row commits individually; it provides no simultaneous visibility, cross-row transaction, ordering between concurrent envelopes or rollback.
+Distinct inputs receive distinct identities even when their content is identical.
+An ambiguous RPC failure fails the commit; restoring its checkpoint resends the same bytes, and a retained marker suppresses another application of that envelope.
+Custom failure handlers and batch `writerOptions` cannot be used in this mode; configure single-attempt RPC deadlines and concurrency through `stagedOptions.requestOptions`.
+
+Restore the latest completed checkpoint with all sink state, or resume a successfully finished stop-with-savepoint from that savepoint.
+Discarding committer state can lose writes.
+Restoring an older snapshot can replay source inputs with new identities and cannot undo later writes.
+If stop-with-savepoint fails after completion notification, resume its completed savepoint explicitly; falling back to the preceding checkpoint is outside the guarantee.
+External marker deletion, table/family recreation and concurrent deployments that alter marker cells also invalidate replay protection.
+
+The writer limits one interval to 100,000 entries and 64 MiB of serialized requests plus 256 accounting bytes per entry.
+Exceeding either cap fails synchronously so the task does not wait for a barrier it is preventing.
+These charges are not a Java heap bound: the committer can retain multiple pending intervals and snapshot copies.
+Size the checkpoint interval, heap and timeout for the complete work accumulated before a completion notification, including older checkpoint collections.
+Retained markers grow with the number of envelopes; hot-row growth and storage costs remain part of the pending service assessment.
 
 ## Credential file deployment
 
@@ -599,7 +637,7 @@ family fails immediately with the table and family named instead of spending the
 recovery attempts. A `NOT_FOUND` that does not specifically identify a missing family keeps the
 existing bounded retry behaviour ([#432]({{< param BookRepo >}}/issues/432)).
 
-**The garbage-collection rule is the decision that matters.** This sink is at-least-once: a replay
+**The garbage-collection rule is the decision that matters.** The default sink is at-least-once: a replay
 whose serializer sets no explicit cell timestamps writes duplicate cell versions, and the family's
 rule is what decides whether those accumulate forever. A family declared without a rule keeps
 Bigtable's default of collecting nothing;
@@ -858,6 +896,8 @@ skipping a table with a request in flight.
 
 ## Delivery guarantees and state
 
+This section describes the default bulk sink; [checkpoint-owned writes](#checkpoint-owned-writes) have a separate state and replay contract.
+
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
 for the Table and DataStream API comparison.
 
@@ -1090,6 +1130,24 @@ rejections never count toward
 they say nothing about the service's view of the stream — where a stream the *service* refuses
 wholesale fails the job at that bound. It counts records rather than batches: a rejection is
 [confirmed against one mutation](#error-handling) before the handler sees it.
+
+## Staged metrics
+
+These metrics apply to the experimental checkpoint-owned mode.
+Writer gauges exclude the committer's pending checkpoint collections.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `stagedEntries` | gauge | Entries held by this writer before transfer to the committer |
+| `stagedBytes` | gauge | Serialized request bytes plus the per-entry admission allowance held by this writer |
+| `requestsDeduplicated` | counter | Successful commits whose retained marker already existed |
+| `requestsCompleted` | counter | Successful conditional responses, including deduplicated envelopes |
+| `requestsFailed` | counter | Commit invocations that fail, including validation and interruption |
+| `recordsSkipped` | counter | Serializer results skipped before staging |
+
+When enabled, per-destination `recordsSend` counts submitted attempts and `sendErrors` counts response failures observed while draining futures under the committer's `destination` metric group.
+Outstanding requests cancelled when the commit fails or is interrupted are not counted by `sendErrors`.
+An RPC failure does not establish whether the row was applied.
 
 ## Metrics
 

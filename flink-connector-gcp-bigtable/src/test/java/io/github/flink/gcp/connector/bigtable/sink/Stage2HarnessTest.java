@@ -39,12 +39,23 @@ class Stage2HarnessTest {
 
     @Test
     void retiredDiagnosticCannotCreateOrAdmitWorkButKeepsItsCleanupJournal() throws Exception {
-        Stage2Lease lease = Stage2Lease.plan(directory.resolve("lease.properties"));
-        lease.update(p -> p.setProperty("profile", "diagnostic-seven-cell-v1"));
+        Stage2Lease planned = Stage2Lease.plan(directory.resolve("lease.properties"));
+        planned.update(
+                p -> {
+                    p.setProperty("profile", "diagnostic-seven-cell-v1");
+                    p.setProperty(
+                            "tables",
+                            "serialized,bulk-r1,staged-r1,staged-r2,bulk-r2,bulk-r3,staged-r3");
+                });
+        Stage2Lease lease = new Stage2Lease(planned.manifest);
+        assertThat(lease.tables).isEmpty();
         assertThatThrownBy(lease::create).hasMessageContaining("profile is retired");
         assertThatThrownBy(() -> lease.claim("bulk-r1")).hasMessageContaining("profile is retired");
         assertThat(Files.readString(lease.manifest)).contains("phase=PLANNED");
         assertThat(lease.manifest.resolveSibling("stop")).doesNotExist();
+        lease.update(p -> p.setProperty("profile", "bounded-experiment"));
+        assertThatThrownBy(lease::create).hasMessageContaining("profile is retired");
+        assertThatThrownBy(() -> lease.claim("bulk-r1")).hasMessageContaining("profile is retired");
         lease.cleanup();
         assertThat(lease.manifest).exists();
     }
