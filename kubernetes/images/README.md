@@ -67,7 +67,7 @@ Docker's login action logs out when the job ends.
 
 A successful run lists all four GAR digest references in the GitHub Actions job summary.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
-The smoke image's first publication is still pending; adopt its successful digest in the same images package together with concrete smoke deliveries through the follow-up PR.
+The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
 The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
@@ -86,6 +86,9 @@ GAR reads confirmed all three references; the mirrored digests match their sourc
 The Operator pin is in [Helm values](../../opentofu/tier3-operator/values.yaml), and CUE deliveries can import [pins.cue](pins.cue) as `github.com/flink-gcp/flink-connector-gcp/kubernetes/images`.
 The `flink` field supplies the base runtime for the application-image work in [#1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309); it contains no application JAR.
 The `lifecycleTools` field supplies the Python/kubectl runtime for [#1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
+The [first successful smoke publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34768916308) built main commit `053e23835782059830f871ca53f90fba43efa324` on 2026-09-14 JST, after the GCP/bootstrap applies succeeded and their refreshed plans were empty.
+A GAR read of its full-commit tag confirmed `sha256:29cc0533b2e1a984343a51315cdfe4110aa028a6c040d2275a103c3cfa591a3d`, now selected by `images.smoke`.
+This adoption leaves the earlier Operator, Flink and lifecycle-tools pins unchanged.
 For a shell or Docker build argument, read a pin with:
 
 ```sh

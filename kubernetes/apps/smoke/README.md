@@ -54,9 +54,22 @@ Local tests cover state continuity and the missing-state rejection, not GKE sche
 
 `pkg/smoke.#Application` in the [CUE module](../../README.md) accepts `run.id`, `run.image` and `run.phase` and exposes the FlinkDeployment as `resource`.
 Only a `smoke@sha256:...` reference in the existing GAR repository is accepted.
-Concrete `initial` and `upgrade` deliveries follow the first successful publication and use the same resource name and run inputs.
+The committed [`initial`](../../runs/generic-smoke/initial/delivery.cue) and [`upgrade`](../../runs/generic-smoke/upgrade/delivery.cue) deliveries select the published `images.smoke` digest and share their [run inputs](../../runs/generic-smoke/common.cue).
 They are sequential updates of one deployment, not two applications to run together.
 The upgrade changes the phase and requires restored state while retaining the savepoint upgrade mode and `allowNonRestoredState=false`.
+
+The planned run ID is `smoke-1309-20260916`, with expiry `2026-09-16T16:30:00Z` (September 17, 01:30 JST), for execution within two to three days of September 14.
+Render each phase independently from the repository root:
+
+```sh
+mise x -- just tier3-render runs/generic-smoke/initial > /tmp/smoke-initial.yaml
+mise x -- just tier3-render runs/generic-smoke/upgrade > /tmp/smoke-upgrade.yaml
+```
+
+Rendering supplies no execution authorization and does not contact the cluster.
+The expiry is an admission and supervision input, not a scheduled start or an automatic stop implemented by these manifests.
+If execution is postponed beyond this window, review a fresh run ID and deadline and recheck live image availability and retention before admission.
+Do not reuse this run ID for a separate experiment: it also identifies the recovery state in GCS.
 
 The definition requests one JM and one TM, each with 1 CPU and 2 GiB, one TM slot and parallelism one.
 The common run policy selects AMD64 Spot nodes and adds the run label and expiry annotation.
@@ -80,8 +93,11 @@ The lifecycle stage must export evidence before cleanup and keep the run within 
 Merge the reviewed application/identity change and verify the GCP and bootstrap CI applies and empty refreshed plans before publishing.
 Review the exact new bucket/GSA and the publication scope before approving those operations.
 Publication uses the existing serialized, main-only workflow with its 30-minute timeout and seven-day GAR cleanup policy.
-After a successful run, verify the recorded smoke digest in GAR and adopt it with concrete run IDs and expiries in a separate reviewed delivery change.
+After a successful publication, verify the recorded smoke digest in GAR and adopt it with concrete run IDs and expiries in a separate reviewed delivery change.
 Do not insert a stand-in digest or create `ci.cue` to make a delivery render before publication.
+
+The [successful smoke publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34768916308) built main commit `053e23835782059830f871ca53f90fba43efa324` after successful GCP/bootstrap applies and empty refreshed plans.
+A GAR read confirmed the digest now selected in [pins.cue](../../images/pins.cue); both committed phases consume that pin without command-line tags.
 
 This preparation leaves the Operator at zero replicas and both namespaces' Pod/PVC quotas at zero.
 [Issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310) supplies admission, expiry/failure supervision and cleanup; [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) supplies separately approved GKE execution.

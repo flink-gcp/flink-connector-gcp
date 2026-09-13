@@ -21,6 +21,7 @@ limitations under the License.
 - Updated: 2026-09-12 (CI ownership, initial CRD apply recovery and idle Helm root)
 - Updated: 2026-09-13 (digest-pinned GAR publication and seven-day image expiry)
 - Updated: 2026-09-14 (generic stateful smoke artifact and workload storage identity)
+- Updated: 2026-09-14 (published smoke digest and concrete initial/upgrade deliveries)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -98,7 +99,10 @@ The workload receives `roles/storage.objectUser` on that bucket, which permits o
 Checkpoint, savepoint and Kubernetes HA paths are separated beneath each run ID.
 One-day object expiry bounds retained state after explicit cleanup; it neither preserves permanent evidence nor stops Pods.
 The application definition retains Spot placement, one JM/TM with bounded resources and savepoint upgrades that reject discarded state.
-Initial and upgrade deliveries target the same resource and arrive after a successful smoke image publication supplies its concrete digest.
+The committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries target the same resource sequentially and consume the published `images.smoke` digest.
+Their shared inputs select a concrete run ID and expiry; each directory renders independently without injected tags.
+The [application runbook](../../kubernetes/apps/smoke/README.md#deployment-and-storage) records the execution window and the required review of fresh inputs when execution is postponed.
+These definitions do not admit, schedule or terminate workloads; lifecycle supervision and GKE execution remain separate work.
 
 ### Image publication
 
@@ -122,6 +126,7 @@ The later lifecycle preflight must check live image existence and sufficient rem
 Publication code and IAM land before the first manual publication.
 The successful workflow's job summary supplies digest references for a reviewed Helm/CUE pin change.
 The first publication completed on 2026-09-13; Helm values select its Operator digest and the CUE images package exposes its Flink and lifecycle-tools references.
+The first smoke publication subsequently built main commit `053e23835782059830f871ca53f90fba43efa324` after the workload identity applies and empty refreshed plans; a GAR read confirmed the selected application digest.
 The idle Helm release retains zero replicas and quotas while adopting the GAR reference.
 Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
