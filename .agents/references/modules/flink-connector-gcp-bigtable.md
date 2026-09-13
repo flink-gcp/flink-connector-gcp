@@ -113,12 +113,24 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   helper that takes the name as a parameter.
 - `FailedRequest.getPayloadBytes()` remains `null`: the conditional model's job-graph encoding
   is not a dead-letter format (ADR-0152). `sink.write-mode` selects ordinary `upsert`, atomic cell
-  replacement through `keep-latest` (ADR-0153), conditional `insert-if-absent`, read-modify-write
-  `append`/`increment` (ADR-0155), or aggregate contributions (ADR-0156). Keep request options mapped through
-  `RequestOptionsMapper` and guard explicit mode-incompatible options with `WriteModeOptionChecks`.
-- Conditional SQL keeps the ordinary family/qualifier schema and codec. Its unset RPC predicate
+  replacement through `keep-latest` (ADR-0153), row-absence insertion through `insert-if-absent`,
+  DDL-defined conditional commands through `conditional` (ADR-0167), read-modify-write
+  `append`/`increment` (ADR-0155), or contributions through `aggregate` (ADR-0156).
+  Keep request options mapped through `RequestOptionsMapper` and guard explicit mode-incompatible
+  options with `WriteModeOptionChecks`.
+- The insert-if-absent SQL mode keeps the ordinary family/qualifier schema and codec. Its unset RPC predicate
   tests the entire stored row, including undeclared families. Keep INSERT-only changelog handling,
   preserve repeated inputs through the planner and retain ADR-0149's per-cell writer clock.
+
+## DDL-defined conditional SQL commands (`docs/adr/0167`)
+
+The DDL-defined `conditional` sink is a separate shared-source surface (ADR-0167).
+Keep its exact physical-column bindings, runtime rejection of referenced NULLs in both branches,
+and INSERT-only/write-only schema distinct from the Flink 2.x function contract below.
+Validate command DDL before ordinary BigtableTableSchema derivation; keep the ordered templates
+serializable without captured codec lambdas and reuse the conditional request runtime.
+Aggregate timestamps are explicit nonnegative buckets; only SetCell can use a writer-clock default
+or the explicit -1 server-time sentinel. Empty deletion intervals must not become unbounded.
 
 ## Async SQL functions (`docs/adr/0161`)
 

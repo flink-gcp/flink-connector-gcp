@@ -35,7 +35,7 @@ by cell, and the cell encoding is the HBase ecosystem's rather than a choice.
 The selected-cell Change Streams mode is the exception because one cell holds a serialized logical
 row and `value.format` decodes it.
 
-A column family is a *column name*, so it has to be a legal SQL identifier — a reserved word such as
+In the ordinary family/qualifier schema, a column family is a *column name*, so it has to be a legal SQL identifier — a reserved word such as
 `identity` needs backticks, or a different name.
 
 {{< sql-snippet file="flink/BigtableTableReference.sql" tag="overview" >}}
@@ -125,7 +125,7 @@ Ordinary scans, Change Streams scans in both changelog modes, and every sink wri
 Flink uses the SQL catalog identifier as the dataset name and retains namespace `bigtable://{project}/{instance}` with a `gcp` facet containing the physical project, instance and table (kind `bigtable-table`).
 The physical table name can differ from the SQL catalog name.
 
-The `upsert`, `keep-latest` and `aggregate` modes report their MutateRows destination; `insert-if-absent` reports its Conditional destination; `append` and `increment` report their ReadModifyWrite destination.
+The `upsert`, `keep-latest` and `aggregate` modes report their MutateRows destination; `insert-if-absent` and `conditional` report their Conditional destination; `append` and `increment` report their ReadModifyWrite destination.
 Metadata inspection does not start aggregate family validation, evaluate a conditional predicate or infer whether an RPC changed a row.
 Projection, filtering, row ranges, app profiles and column families retain the same table identity.
 Change Streams names only the configured data table, and its lineage boundedness follows the configured end timestamp.
@@ -135,6 +135,9 @@ Flink 1.20 provides connector metadata for direct inspection, without automatic 
 See [Lineage]({{< relref "docs/connectors/lineage" >}}) for listener configuration, physical-resource facet access and class loader requirements.
 
 ## The schema
+
+The schema below applies to the ordinary family/qualifier modes.
+The write-only [conditional command schema](#ddl-defined-conditional-commands) instead binds named input columns to a DDL-defined request.
 
 The DDL model is Flink's HBase connector's, so a table definition moves between the two with its
 schema intact and a table written by either is readable by the other:
@@ -153,7 +156,7 @@ the row key whether or not the DDL says so. If one is declared it must be the ro
 nothing else.
 
 The updating-query discussion below applies to ordinary `upsert` and `keep-latest` writes.
-Aggregate, insert-if-absent, append and increment modes accept only INSERT input.
+Aggregate, insert-if-absent, conditional, append and increment modes accept only INSERT input.
 
 **Declaring it makes an updating query cheaper.** A delete has to reach the sink carrying the row
 key, and which of two ways that is arranged depends on the primary key. With one declared, the sink
@@ -469,6 +472,104 @@ The scan and lookup paths remain available for this ordinary schema.
 `ON CONFLICT` controls Flink planner/job behavior; it is not the destination's atomic existence test.
 The planner and ordering discussion below applies to `upsert` and `keep-latest`.
 
+### DDL-defined conditional commands
+
+Set `sink.write-mode` to `conditional` when each input describes a command with a fixed predicate and two ordered mutation branches.
+The DDL fixes the operation kinds, target cells and order; input columns supply values.
+Compute and convert values in ordinary SELECT expressions.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="conditional-command" >}}
+
+The `profile` and `audit` families must exist, and `stats` must already be an int64-sum family for this example.
+The application profile must use single-cluster routing with single-row transactions enabled.
+A profile ID alone does not trigger an admin lookup; service rejections retain their cause and explain this prerequisite.
+
+This is a command-input schema.
+`sink.conditional.row-key-column` names one top-level physical column with a supported [cell encoding](#type-mapping).
+Each value-column or timestamp-column names a top-level physical column exactly, including case; nested paths and expressions are not parsed in option strings.
+PRIMARY KEY and metadata declarations are rejected.
+Unused physical columns do not affect the request.
+The table is write-only: declare a separate ordinary table to scan or look up stored cells.
+
+#### Predicates
+
+| Predicate | Required attributes under `sink.conditional.predicate.` | Meaning |
+|---|---|---|
+| `row-exists` | None | Checks for any stored cell, including undeclared families, using the RPC's unset predicate |
+| `cell-exists` | `family` and one qualifier representation | Checks whether the fixed cell has any version |
+| `latest-cell-value-equals` | `family`, one qualifier representation and one value binding | Selects the cell, keeps its latest version, then compares exact bytes; a matching historical value cannot make a different latest value match |
+
+A qualifier is exactly one of `qualifier` (UTF-8) and `qualifier-base64` (canonical padded RFC 4648 Base64).
+An empty qualifier is valid.
+A value binding is exactly one of `value-column`, `value-utf8`, `value-base64` and `value-int64`.
+For predicates and SetCell, columns use their declared cell encoding, UTF-8 and Base64 literals bind bytes, and int64 literals encode eight big-endian bytes.
+Empty byte values are valid.
+Row existence rejects cell and comparison attributes; cell existence rejects comparison values.
+Arbitrary composable filters remain available through the DataStream conditional API.
+
+#### Ordered branches
+
+Use expanded map keys such as `sink.conditional.then.0.operation`.
+Indexes are canonical nonnegative integers, consecutive from zero within each branch, and execute in numeric order.
+The standard Flink packed map spelling is also accepted, but mixing packed and expanded spellings within a branch is rejected.
+An omitted branch is empty; at least one branch must contain a mutation.
+Each branch permits at most 100,000 mutations.
+
+| Operation | Required attributes after the index | Optional attributes |
+|---|---|---|
+| `set-cell` | `family`, one qualifier representation, one value binding | One timestamp binding |
+| `add-to-cell` | `family`, one qualifier representation, one typed value binding, one explicit timestamp binding | None |
+| `merge-to-cell` | `family`, one qualifier representation, one typed value binding, one explicit timestamp binding | None |
+| `delete-cells` | `family`, one qualifier representation | One start bound and one end bound |
+| `delete-family` | `family` | None |
+| `delete-row` | None | None |
+
+AddToCell and MergeToCell value columns must be BIGINT or BYTES.
+BIGINT and `value-int64` use the service's typed int64 value; BYTES, `value-utf8` and `value-base64` use its typed bytes value.
+INT is not widened and bytes are not reinterpreted as integers.
+The service checks these inputs against the pre-existing aggregate family.
+For Int64 Sum MergeToCell, read the accumulator bytes from a stored aggregate cell; do not assume their encoding.
+The int64-sum service measurement does not establish support for every aggregate type.
+
+#### Timestamps and nulls
+
+A timestamp binding is exactly one of `timestamp-micros`, a signed integral literal, and `timestamp-column`, a BIGINT column containing microseconds.
+SetCell without a binding reads a millisecond-aligned writer clock for each cell.
+An explicit SetCell timestamp of `-1` requests server time; other negative values are rejected.
+AddToCell and MergeToCell require an explicit nonnegative timestamp, including zero.
+An aggregate timestamp never defaults to the writer clock.
+Explicit timestamps are passed unchanged, so a table-granularity mismatch remains a service error.
+
+DeleteCells bounds use `start-timestamp-micros` or `start-timestamp-column`, and `end-timestamp-micros` or `end-timestamp-column`.
+The start is inclusive and nonnegative; the end is exclusive.
+An omitted bound is unbounded.
+Empty or reversed intervals are rejected before the RPC, including an explicit end of zero in the nonnegative timestamp domain.
+
+NULL in any referenced column is an error before submission, including values or timestamps in the branch the service will not select.
+Both branches form the request and must be valid.
+NULL never deletes a cell, omits a mutation or selects a timestamp default.
+The nullable family/cell behavior of `insert-if-absent` is separate.
+
+#### Outcomes and delivery
+
+Plain `INSERT VALUES` and `INSERT SELECT` are supported; updating and retracting input is rejected.
+The sink submits requests asynchronously, drains accepted requests at checkpoints, discards the Boolean result and records predicate match, predicate miss and selected-empty-branch counters.
+A false result succeeds and can execute a nonempty otherwise branch.
+`sink.conditional.empty-branch-policy=ignore` accepts an empty selected branch; `fail` fails the job after counting the completed RPC and its outcome.
+It tests whether the selected list is empty, not whether the mutations changed stored bytes, and remains valid but inactive with two nonempty branches.
+
+The runtime uses one SDK deadline and no automatic retry.
+Delivery is at-least-once: recovery can replay an applied request whose acknowledgement was lost and select a different branch.
+With `empty-branch-policy=fail`, a successful insertion can therefore fail repeatedly on replay.
+Checkpoints drain accepted requests; they do not provide exactly-once effects or transactions across rows.
+Separate RPCs for the same row have no ordering guarantee.
+Flink ON CONFLICT does not express the Bigtable predicate.
+
+Request timeout, in-flight request count, idle timeout, instance cap, per-destination metrics, credentials, endpoint, application profile and sink parallelism use the existing conditional runtime settings.
+Explicit batching, entry/byte flow control, table creation/repair, insert-only compatibility, legacy timestamp truncation, null-cell encoding, decode, aggregate-family creation and scan/lookup options are rejected for this command schema.
+Staged exactly-once delivery is unavailable for this mode.
+Command-template options are rejected in every other write mode.
+
 ### Keep-latest
 
 Set `sink.write-mode` to `keep-latest` to replace all versions of each cell the input writes.
@@ -574,7 +675,7 @@ the session is intentional.
 
 ### Two rows for one key in one batch have no defined winner
 
-The writer hands entries to the client's bulk-mutation batcher, and Bigtable's own contract for
+With at-least-once `upsert`, `keep-latest` and `aggregate`, the writer hands entries to the client's bulk-mutation batcher, and Bigtable's own contract for
 `MutateRows` is that its entries "may be applied in arbitrary order (even between entries for the
 same row)". So when a job produces two changelog rows for the same key close enough together to
 share a request, which one lands last is not defined — and if they share a millisecond they also
@@ -607,10 +708,11 @@ existing bulk path and this explicit caveat.
 
 ### Cell timestamps
 
-The sink exposes writable metadata named `timestamp` with type `TIMESTAMP_LTZ(6)`.
+The ordinary cell sink exposes writable metadata named `timestamp` with type `TIMESTAMP_LTZ(6)`.
+The conditional command schema uses its [per-mutation timestamp bindings](#timestamps-and-nulls) and rejects metadata declarations.
 One value is applied to every cell written by that row; a delete ignores it because `deleteRow`
 has no cell timestamp.
-In both write modes, metadata before the Unix epoch is rejected as a serialization failure.
+In modes that accept this metadata, a value before the Unix epoch is rejected as a serialization failure.
 A negative SQL timestamp cannot request server time; use `NULL` for the writer clock.
 
 {{< sql-snippet file="flink/BigtableTableReference.sql" tag="cell-timestamps" >}}
@@ -947,7 +1049,18 @@ DataStream builder.
 | `sink.staged.marker-family` | String | Required reserved raw family with no GC rule for exactly-once; no default |
 | `sink.staged.max-entries` | Integer | `BigtableStagedOptions.maxStagedEntries(...)`; 100,000 by default |
 | `sink.staged.max-bytes` | MemorySize | `BigtableStagedOptions.maxStagedBytes(...)`; 64 MiB by default |
-| `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, `keep-latest` for atomic replacement of each written cell, `append`, `increment`, or `aggregate` for INSERT-only integer contributions |
+| `sink.write-mode` | Enum | Destination operation: `upsert` (default), `insert-if-absent`, `conditional` for DDL-defined conditional commands, `keep-latest` for atomic replacement of each written cell, `append`, `increment`, or `aggregate` for INSERT-only integer contributions |
+| `sink.conditional.row-key-column` | String | The top-level physical input column encoding the conditional request row key. Required for conditional. |
+| `sink.conditional.predicate` | String | The conditional predicate: row-exists, cell-exists or latest-cell-value-equals. Required for conditional. |
+| `sink.conditional.predicate.family` | String | The fixed column family selected by the conditional predicate. See the conditional command contract for required combinations. |
+| `sink.conditional.predicate.qualifier` | String | The UTF-8 column qualifier selected by the conditional predicate. See the conditional command contract for required combinations. |
+| `sink.conditional.predicate.qualifier-base64` | String | The canonical padded Base64 column qualifier selected by the conditional predicate. See the conditional command contract for required combinations. |
+| `sink.conditional.predicate.value-column` | String | The top-level physical input column encoding the predicate comparison value. See the conditional command contract for required combinations. |
+| `sink.conditional.predicate.value-utf8` | String | The UTF-8 literal bytes used as the predicate comparison value. See the conditional command contract for required combinations. |
+| `sink.conditional.predicate.value-base64` | String | The canonical padded Base64 literal bytes used as the predicate comparison value. See the conditional command contract for required combinations. |
+| `sink.conditional.predicate.value-int64` | String | The signed int64 literal encoded as eight big-endian bytes for predicate comparison. See the conditional command contract for required combinations. |
+| `sink.conditional.then` | Map | Ordered mutations when the predicate matches, using expanded keys such as sink.conditional.then.0.operation. See the conditional command contract for required combinations. |
+| `sink.conditional.otherwise` | Map | Ordered mutations when the predicate misses, using expanded keys such as sink.conditional.otherwise.0.operation. See the conditional command contract for required combinations. |
 | `sink.aggregate.column-family-types` | Map of String to String | Required in aggregate mode; maps every physical family to `int64-sum`, `int64-min`, `int64-max`, or `int64-hll`. No default; rejected in other modes |
 | `sink.conditional.empty-branch-policy` | Enum | `emptyBranchPolicy(...)`; `ignore` or `fail`, conditional mode only |
 | `sink.request-timeout` | Duration | `BigtableRequestOptions.requestTimeout(...)`; conditional, read-modify-write and staged modes, at least 1 ms |

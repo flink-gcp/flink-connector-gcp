@@ -240,6 +240,116 @@ class BigtableConditionalRealGcpITCase extends AbstractBigtableRealGcpITCase {
         assertThat(readRows(table)).isEmpty();
     }
 
+    @Test
+    void sqlCommandsExecuteBothBranchesAndOrderedTypedAggregateMutations() throws Exception {
+        TableDestination table = tableDestination("conditional-command-aggregate");
+        try (BigtableTableAdminClient admin =
+                BigtableTableAdminClient.create(PROJECT, table.getInstance())) {
+            admin.createTable(
+                    CreateTableRequest.of(table.getTable())
+                            .addFamily("cf")
+                            .addFamily("sum", Type.int64Sum()));
+        }
+        mutateRow(
+                table,
+                bytes("existing"),
+                mutation ->
+                        mutation.setCell("cf", "q", 1000, "seed").addToCell("sum", "count", 0, 3));
+        ByteString accumulator = readRows(table).get(0).getCells("sum", "count").get(0).getValue();
+        String encoded = java.util.HexFormat.of().formatHex(accumulator.toByteArray());
+        TableEnvironment env = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        env.executeSql(
+                "CREATE TABLE commands (k STRING, delta BIGINT, accumulator BYTES) WITH ("
+                        + commandOptions(table, ENABLED)
+                        + ", 'sink.conditional.predicate'='row-exists'"
+                        + ", 'sink.conditional.then.0.operation'='delete-row'"
+                        + ", 'sink.conditional.then.1.operation'='set-cell'"
+                        + ", 'sink.conditional.then.1.family'='cf'"
+                        + ", 'sink.conditional.then.1.qualifier'='done'"
+                        + ", 'sink.conditional.then.1.value-utf8'='then'"
+                        + ", 'sink.conditional.then.2.operation'='add-to-cell'"
+                        + ", 'sink.conditional.then.2.family'='sum'"
+                        + ", 'sink.conditional.then.2.qualifier'='count'"
+                        + ", 'sink.conditional.then.2.timestamp-micros'='0'"
+                        + ", 'sink.conditional.then.2.value-column'='delta'"
+                        + ", 'sink.conditional.then.3.operation'='merge-to-cell'"
+                        + ", 'sink.conditional.then.3.family'='sum'"
+                        + ", 'sink.conditional.then.3.qualifier'='count'"
+                        + ", 'sink.conditional.then.3.timestamp-micros'='0'"
+                        + ", 'sink.conditional.then.3.value-column'='accumulator'"
+                        + ", 'sink.conditional.otherwise.0.operation'='set-cell'"
+                        + ", 'sink.conditional.otherwise.0.family'='cf'"
+                        + ", 'sink.conditional.otherwise.0.qualifier'='done'"
+                        + ", 'sink.conditional.otherwise.0.value-utf8'='otherwise')");
+        env.executeSql(
+                        "INSERT INTO commands VALUES ('existing', 2, X'"
+                                + encoded
+                                + "'), ('absent', 2, X'"
+                                + encoded
+                                + "')")
+                .await();
+        List<Row> rows = readRows(table);
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getCells("cf", "done").get(0).getValue())
+                .isEqualTo(bytes("otherwise"));
+        assertThat(rows.get(0).getCells("sum", "count")).isEmpty();
+        assertThat(rows.get(1).getCells("cf", "q")).isEmpty();
+        assertThat(rows.get(1).getCells("cf", "done").get(0).getValue()).isEqualTo(bytes("then"));
+        assertThat(
+                        ByteBuffer.wrap(
+                                        rows.get(1)
+                                                .getCells("sum", "count")
+                                                .get(0)
+                                                .getValue()
+                                                .toByteArray())
+                                .getLong())
+                .isEqualTo(5);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"conditional-disabled", "conditional-multi"})
+    void sqlCommandsPreserveRoutingRejections(String profile) {
+        TableDestination table = createTable("command-routing-" + profile);
+        TableEnvironment env = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        env.executeSql(
+                "CREATE TABLE commands (k STRING) WITH ("
+                        + commandOptions(table, profile)
+                        + ", 'sink.conditional.predicate'='row-exists'"
+                        + ", 'sink.conditional.otherwise.0.operation'='set-cell'"
+                        + ", 'sink.conditional.otherwise.0.family'='cf'"
+                        + ", 'sink.conditional.otherwise.0.qualifier'='q'"
+                        + ", 'sink.conditional.otherwise.0.value-utf8'='value')");
+        Throwable failure =
+                catchThrowable(() -> env.executeSql("INSERT INTO commands VALUES ('row')").await());
+        assertThat(failure).isNotNull().hasStackTraceContaining("single-cluster routing");
+        Throwable service =
+                ExceptionUtils.findThrowableWithMessage(failure, "INVALID_ARGUMENT:")
+                        .or(
+                                () ->
+                                        ExceptionUtils.findThrowableWithMessage(
+                                                failure, "FAILED_PRECONDITION:"))
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "Missing Bigtable rejection status", failure));
+        assertThat(service.getMessage())
+                .containsPattern(
+                        "(?is).*(transaction|conditional|single.cluster|check.?and.?mutate).*");
+        assertThat(readRows(table)).isEmpty();
+    }
+
+    private static String commandOptions(TableDestination table, String profile) {
+        return "'connector'='bigtable', 'project'='"
+                + PROJECT
+                + "', 'instance'='"
+                + table.getInstance()
+                + "', 'table'='"
+                + table.getTable()
+                + "', 'sink.app-profile-id'='"
+                + profile
+                + "', 'sink.write-mode'='conditional', 'sink.conditional.row-key-column'='k'";
+    }
+
     private static ByteString bytes(String value) {
         return ByteString.copyFromUtf8(value);
     }

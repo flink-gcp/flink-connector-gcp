@@ -505,15 +505,15 @@ public final class BigtableConnectorOptions {
 
     /**
      * The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', atomic
-     * replacement of written cells with 'keep-latest', 'append', 'increment', or integer
-     * contributions with 'aggregate'.
+     * replacement of written cells with 'keep-latest', 'append', 'increment', DDL-defined
+     * conditional commands with 'conditional', or integer contributions with 'aggregate'.
      */
     public static final ConfigOption<WriteMode> SINK_WRITE_MODE =
             ConfigOptions.key("sink.write-mode")
                     .enumType(WriteMode.class)
                     .defaultValue(WriteMode.UPSERT)
                     .withDescription(
-                            "The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', atomic replacement of written cells with 'keep-latest', 'append', 'increment', or integer contributions with 'aggregate'.");
+                            "The destination-side write operation: 'upsert', atomic whole-row 'insert-if-absent', atomic replacement of written cells with 'keep-latest', 'append', 'increment', DDL-defined conditional commands with 'conditional', or integer contributions with 'aggregate'.");
 
     /**
      * The policy when a successful conditional request selects an empty mutation branch: 'ignore'
@@ -525,6 +525,100 @@ public final class BigtableConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The policy when a successful conditional request selects an empty mutation branch: 'ignore' or 'fail'.");
+
+    /** The top-level physical input column encoding the conditional request row key. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_ROW_KEY_COLUMN =
+            ConfigOptions.key("sink.conditional.row-key-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The top-level physical input column encoding the conditional request row key.");
+
+    /** The conditional predicate: row-exists, cell-exists or latest-cell-value-equals. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE =
+            ConfigOptions.key("sink.conditional.predicate")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The conditional predicate: row-exists, cell-exists or latest-cell-value-equals.");
+
+    /** The fixed column family selected by the conditional predicate. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_FAMILY =
+            ConfigOptions.key("sink.conditional.predicate.family")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The fixed column family selected by the conditional predicate.");
+
+    /** The UTF-8 column qualifier selected by the conditional predicate. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_QUALIFIER =
+            ConfigOptions.key("sink.conditional.predicate.qualifier")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The UTF-8 column qualifier selected by the conditional predicate.");
+
+    /** The canonical padded Base64 column qualifier selected by the conditional predicate. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_QUALIFIER_BASE64 =
+            ConfigOptions.key("sink.conditional.predicate.qualifier-base64")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The canonical padded Base64 column qualifier selected by the conditional predicate.");
+
+    /** The top-level physical input column encoding the predicate comparison value. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_VALUE_COLUMN =
+            ConfigOptions.key("sink.conditional.predicate.value-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The top-level physical input column encoding the predicate comparison value.");
+
+    /** The UTF-8 literal bytes used as the predicate comparison value. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_VALUE_UTF8 =
+            ConfigOptions.key("sink.conditional.predicate.value-utf8")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The UTF-8 literal bytes used as the predicate comparison value.");
+
+    /** The canonical padded Base64 literal bytes used as the predicate comparison value. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_VALUE_BASE64 =
+            ConfigOptions.key("sink.conditional.predicate.value-base64")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The canonical padded Base64 literal bytes used as the predicate comparison value.");
+
+    /** The signed int64 literal encoded as eight big-endian bytes for predicate comparison. */
+    public static final ConfigOption<String> SINK_CONDITIONAL_PREDICATE_VALUE_INT64 =
+            ConfigOptions.key("sink.conditional.predicate.value-int64")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The signed int64 literal encoded as eight big-endian bytes for predicate comparison.");
+
+    /**
+     * Ordered mutations when the predicate matches, using expanded keys such as
+     * sink.conditional.then.0.operation.
+     */
+    public static final ConfigOption<java.util.Map<String, String>> SINK_CONDITIONAL_THEN =
+            ConfigOptions.key("sink.conditional.then")
+                    .mapType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Ordered mutations when the predicate matches, using expanded keys such as sink.conditional.then.0.operation.");
+
+    /**
+     * Ordered mutations when the predicate misses, using expanded keys such as
+     * sink.conditional.otherwise.0.operation.
+     */
+    public static final ConfigOption<java.util.Map<String, String>> SINK_CONDITIONAL_OTHERWISE =
+            ConfigOptions.key("sink.conditional.otherwise")
+                    .mapType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Ordered mutations when the predicate misses, using expanded keys such as sink.conditional.otherwise.0.operation.");
 
     /** The deadline for a single conditional or read-modify-write RPC, with no retry. */
     public static final ConfigOption<Duration> SINK_REQUEST_TIMEOUT =

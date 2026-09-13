@@ -62,10 +62,15 @@ class BigtableTableLineageTest {
         if (mode == WriteMode.AGGREGATE) {
             options.put("sink.aggregate.column-family-types", "cf:int64-sum");
         }
-        var dynamic =
-                FactoryMocks.createTableSink(
-                        schema(mode == WriteMode.APPEND ? DataTypes.STRING() : DataTypes.BIGINT()),
-                        options);
+        ResolvedSchema inputSchema =
+                schema(mode == WriteMode.APPEND ? DataTypes.STRING() : DataTypes.BIGINT());
+        if (mode == WriteMode.CONDITIONAL) {
+            inputSchema = ResolvedSchema.of(Column.physical("rowkey", DataTypes.STRING()));
+            options.put("sink.conditional.row-key-column", "rowkey");
+            options.put("sink.conditional.predicate", "row-exists");
+            options.put("sink.conditional.then.0.operation", "delete-row");
+        }
+        var dynamic = FactoryMocks.createTableSink(inputSchema, options);
         var copy = dynamic.copy();
         assertThat(copy).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
         for (var candidate : List.of(dynamic, copy)) {
@@ -77,6 +82,7 @@ class BigtableTableLineageTest {
             Class<?> expected;
             switch (mode) {
                 case INSERT_IF_ABSENT:
+                case CONDITIONAL:
                     expected = BigtableConditionalSink.class;
                     break;
                 case APPEND:

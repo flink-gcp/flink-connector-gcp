@@ -233,6 +233,39 @@ class BigtableOptionParityTest {
     private static Map<String, String> notASetter() {
         Map<String, String> map = new LinkedHashMap<>();
         map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_ROW_KEY_COLUMN.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_FAMILY.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_QUALIFIER.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_QUALIFIER_BASE64.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_COLUMN.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_UTF8.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_BASE64.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_INT64.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_THEN.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
+                BigtableConnectorOptions.SINK_CONDITIONAL_OTHERWISE.key(),
+                "compiles the DDL-defined conditional command template");
+        map.put(
                 BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES.key(),
                 "declares the input contract and the per-family value types used by table creation");
         map.put(

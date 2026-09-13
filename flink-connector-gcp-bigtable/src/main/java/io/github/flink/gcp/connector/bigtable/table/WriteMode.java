@@ -25,6 +25,8 @@ public enum WriteMode {
     UPSERT("upsert"),
     /** Atomically writes input cells only when the entire stored row has no cell. */
     INSERT_IF_ABSENT("insert-if-absent"),
+    /** Executes a DDL-defined predicate and ordered mutation branches for each input row. */
+    CONDITIONAL("conditional"),
     /** Atomically deletes all versions of each written cell before setting its replacement. */
     KEEP_LATEST("keep-latest"),
     /** Atomically appends each nonnull input cell to its latest stored value. */
