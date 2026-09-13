@@ -20,6 +20,7 @@ This plan exercises the production factories delivered under Accepted ADR-0166.
 It is a correctness lease, not the seven-cell admission diagnostic or the unrestricted formal performance assessment.
 The owner authorized verification on the implementation branch and charging on 2026-09-11; the existing USD 20 aggregate ceiling still applies.
 No service result is recorded here.
+Remaining production-service and formal acceptance is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) after implementation issue #1211.
 
 ## Fixed resources and workload
 

@@ -19,7 +19,8 @@ limitations under the License.
 This test-only instrument implements the timed path of the [Stage 2 protocol](0163-bigtable-staged-performance-protocol.md).
 It follows Accepted [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
 Neither the local calibration nor the bounded service observations below constitute the formal performance gate.
-[#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) remains open; there is no production checkpointed-write API.
+These observations preceded the production checkpointed-write API implemented under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+Current production-service and formal acceptance is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
 
 ## Instrument and limits
 

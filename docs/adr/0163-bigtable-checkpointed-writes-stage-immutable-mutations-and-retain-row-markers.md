@@ -24,7 +24,7 @@ limitations under the License.
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
 The staged runtime and both API surfaces are implemented under [ADR-0166](0166-bigtable-implementation-precedes-final-stage2-acceptance.md), which moves final Stage 2 acceptance after implementation.
-Release and the full service evaluation remain pending under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+Release and the full service evaluation remain pending under [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
 
 ## Context
 
@@ -36,7 +36,7 @@ That changes the premise, while retaining ADR-0104's performance gates and the o
 The owner clarified two requirements during design.
 Recovery means resuming checkpoint-owned work without applying it twice, not rolling Bigtable back when an operator manually selects an older snapshot.
 Replay markers are retained without automatic deletion; their storage cost is measured and documented instead of imposing a time-limited recovery window.
-This first change records the design and local protocol evidence; it exposes no new sink mode and leaves #1211 open.
+The initial design delivery recorded local protocol evidence without exposing a new sink mode; the subsequent production implementation is covered by ADR-0166.
 
 ## Delivery contract
 
@@ -181,10 +181,10 @@ Real-service recovery acceptance must exercise the actual production factory and
 
 ## Delivery sequence
 
-1. Preserve the accepted protocol and historical diagnostic evidence; keep #1211 open.
-2. Implement and locally verify the production runtime, DataStream/Table APIs and operational documentation under ADR-0166.
-3. Reconcile the existing aggregate cost authorization, freeze the reviewed production source and service plan, then perform actual-factory recovery acceptance and the unchanged formal Stage 2 evaluation.
-4. Record the verdict, supported workload limits and verified cleanup before release or closing #1211.
+1. Preserve the accepted protocol and historical diagnostic evidence.
+2. Close the implementation issue #1211 after the merged runtime, DataStream/Table APIs and local verification are delivered and remaining acceptance is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) under ADR-0166.
+3. Under #1319, reconcile the existing aggregate cost authorization, freeze the reviewed production source and service plan, then perform actual-factory recovery acceptance and the unchanged formal Stage 2 evaluation.
+4. Record the verdict, supported workload limits and verified cleanup before release or closing #1319.
 
 ## Alternatives declined
 
