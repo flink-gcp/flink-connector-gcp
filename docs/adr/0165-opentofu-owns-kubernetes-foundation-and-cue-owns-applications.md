@@ -20,6 +20,7 @@ limitations under the License.
 - Date: 2026-09-11
 - Updated: 2026-09-12 (CI ownership, initial CRD apply recovery and idle Helm root)
 - Updated: 2026-09-13 (digest-pinned GAR publication and seven-day image expiry)
+- Updated: 2026-09-14 (generic stateful smoke artifact and workload storage identity)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -83,14 +84,28 @@ Complete CRD installation YAML moves to the bootstrap root; the same checksum-pi
 CRD upgrades precede Helm upgrades and ordinary run cleanup preserves the foundation.
 
 Future GCP-using applications receive a dedicated workload identity: the KSA annotation belongs to bootstrap, while its GSA impersonation/data grants belong to the GCP root.
-The generic smoke KSA currently has no GCP annotation or data grants.
+The generic smoke KSA is annotated for its dedicated `tier3-smoke` GSA, whose bucket grant and KSA impersonation trust belong to the GCP root.
 Installer identities must not become application identities.
+
+The generic application for [#1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309) uses a deterministic, rate-limited sequence and four keyed counters with stable operator UIDs.
+Its operator state preserves the run ID, lineage and progress so later recovery checks can distinguish a restored job from a fresh restart.
+It fixes parallelism at one; connector and rescaling scenarios remain separate.
+The opt-in Maven profile builds a thin application JAR and retains Datagen as an unchanged Apache JAR in the image.
+The connector release reactor does not include this application.
+
+Its STANDARD GCS bucket is regional, uses uniform access and public access prevention, and disables soft delete and versioning.
+The workload receives `roles/storage.objectUser` on that bucket, which permits obsolete checkpoint deletion without granting object IAM or retention changes.
+Checkpoint, savepoint and Kubernetes HA paths are separated beneath each run ID.
+One-day object expiry bounds retained state after explicit cleanup; it neither preserves permanent evidence nor stops Pods.
+The application definition retains Spot placement, one JM/TM with bounded resources and savepoint upgrades that reject discarded state.
+Initial and upgrade deliveries target the same resource and arrive after a successful smoke image publication supplies its concrete digest.
 
 ### Image publication
 
 The GCP root owns a separate Tier-3 image publisher with repository-scoped Artifact Registry Writer access.
 Its WIF binding selects the exact main-only manual publication workflow and repository ID; the provider condition checks the repository and owner IDs.
 The workflow copies fixed AMD64 Operator and Flink images with crane and builds the Python/kubectl runtime with Docker's BuildKit actions.
+It also builds the smoke application over the reviewed Flink base, with its JARs and GCS plugin available before Pod startup.
 The workflow and Dockerfile hold the source pins; metadata-action supplies the built image's tags and labels.
 Registry tools handle digest-addressed content, so publication needs no custom content inspector, intermediate JSON receipts or capacity-admission implementation.
 The fixed image inventory, serialized manual workflow and 30-minute timeout define the publication scope as recorded in the [image runbook](../../kubernetes/images/README.md).

@@ -49,6 +49,7 @@
     "opentofu/README.md",
     "opentofu/*/README.md",
     "kubernetes/README.md",
-    "kubernetes/images/README.md"
+    "kubernetes/images/README.md",
+    "kubernetes/apps/*/README.md"
   ]
 }

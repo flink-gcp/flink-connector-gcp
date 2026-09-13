@@ -453,6 +453,10 @@ lint:
 check-skill-frontmatter:
     mise x uv -- uv run --no-project scripts/check-skill-frontmatter.py
 
+# Build the image payload and run local recovery tests; no GCP or Kubernetes access.
+tier3-smoke-verify:
+    just verify -P tier3-smoke -pl kubernetes/apps/smoke -am clean
+
 # Static CUE checks and synthetic manifests; no Kubernetes credentials or workload.
 tier3-check:
     mise x cue -- cue -C kubernetes fmt --check --files . cue.mod/module.cue

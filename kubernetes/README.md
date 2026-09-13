@@ -29,6 +29,8 @@ kubernetes/
   gen/flink/v1beta1/             # Generated CRD validation definitions
   schemas/objects.cue            # Supported Kubernetes kinds
   pkg/flink/application.cue      # Standard Flink application defaults
+  pkg/smoke/application.cue      # Generic stateful smoke application contract
+  apps/smoke/                    # Internal Java application and image payload
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
@@ -108,6 +110,8 @@ Images in extra Pod-template containers and generic Jobs/Deployments are not con
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
 [Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.
 The Flink base image has no application JAR; each actual delivery still supplies its own complete image, and admission/retention checks belong to the lifecycle stage.
+The [generic smoke application](apps/smoke/README.md) supplies that JAR, a dedicated workload identity and a reusable `pkg/smoke.#Application` definition.
+Its concrete delivery inputs and smoke image pin follow the first successful application publication; the synthetic tests already exercise the initial and upgrade definitions independently.
 The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.

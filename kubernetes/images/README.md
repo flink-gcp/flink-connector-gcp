@@ -26,19 +26,20 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | `operator` | [Flink Kubernetes Operator 1.15.0](https://github.com/apache/flink-kubernetes-operator/tree/release-1.15.0), Java and Operator/standalone JARs | Copy the AMD64 digest pinned in the workflow |
 | `flink` | [Flink 2.2.1, Scala 2.12, Java 17](https://github.com/apache/flink-docker/tree/983be3455636eb12cd1d3dee1efc8e32c4b875db/2.2/scala_2.12-java17-ubuntu), including `opt/flink-gs-fs-hadoop-2.2.1.jar` | Copy the AMD64 digest pinned in the workflow |
 | `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), standard library and CA certificates, plus kubectl 1.35.7 | Build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
+| `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
 Digest-addressed content and transfer integrity are handled by the registry tools.
 The lifecycle Dockerfile adds kubectl and runs as UID/GID 65532.
 Docker's setup-buildx, metadata and build-push actions build it, apply a full-commit `sha-...` tag and OCI labels, and publish it.
-The build context is only `kubernetes/images/lifecycle`.
+The lifecycle build context is only `kubernetes/images/lifecycle`; the smoke context is `kubernetes/apps/smoke`, with `.dockerignore` allowing only the Dockerfile and two packaged JARs.
 
 Source images retain their upstream notices, licenses and OS package metadata.
 Flink and Operator use Apache-2.0, Python uses PSF-2.0, and kubectl uses Apache-2.0; the base distributions retain their component licenses.
 
 The idle Operator configuration requires no init container, sidecar, webhook or certificate image.
-The application JAR belongs to [#1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309).
-Its application image must include the JAR locally and enable the bundled GCS plugin, for example through `ENABLE_BUILT_IN_PLUGINS=flink-gs-fs-hadoop-2.2.1.jar`.
+The application JAR is built by `just tier3-smoke-verify` for [#1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309).
+Its image includes the JAR locally and enables the bundled GCS plugin through `ENABLE_BUILT_IN_PLUGINS=flink-gs-fs-hadoop-2.2.1.jar`.
 Supervisor logic and its Kubernetes permissions belong to [#1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310); `lifecycle-tools` supplies only that program's runtime tools.
 Required packages and JARs are present in images before admission, so startup does not download them from public endpoints.
 
@@ -59,13 +60,14 @@ gh workflow run tier3-images.yaml --repo flink-gcp/flink-connector-gcp \
   --ref main -f expected_sha="$REVIEWED_MAIN_SHA"
 ```
 
-The workflow authenticates with WIF and Docker's login action, copies Operator and Flink, then builds and pushes the lifecycle tools with BuildKit.
+The workflow verifies the smoke JAR and local recovery tests before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes the lifecycle tools and smoke images with BuildKit.
 It uses one standard Ubuntu runner, permits one publication at a time and has a 30-minute job timeout.
 The fixed source digests define what is transferred; there is no custom image-content inspector, capacity quota or intermediate receipt format.
 Docker's login action logs out when the job ends.
 
-A successful run lists all three GAR digest references in the GitHub Actions job summary.
+A successful run lists all four GAR digest references in the GitHub Actions job summary.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
+The smoke image's first publication is still pending; adopt its successful digest in the same images package together with concrete smoke deliveries through the follow-up PR.
 The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
