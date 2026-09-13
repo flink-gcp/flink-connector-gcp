@@ -145,6 +145,7 @@ regardless.
 ## `BigtableConditionalSink.builder()`
 
 A key file and an emulator endpoint cannot be combined; `build()` rejects that configuration.
+The Table API's `insert-if-absent` and [DDL-defined conditional commands]({{< ref "/docs/connectors/table/bigtable" >}}#ddl-defined-conditional-commands) both use this sink and its request options.
 
 | Option | Default | What it does |
 |---|---|---|

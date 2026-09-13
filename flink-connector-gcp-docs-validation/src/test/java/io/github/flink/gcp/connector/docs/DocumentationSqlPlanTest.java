@@ -429,6 +429,9 @@ public class DocumentationSqlPlanTest {
                         "Bigtable table reference insert-if-absent",
                         snippet("flink/BigtableTableReference.sql", "insert-if-absent")),
                 scenario(
+                        "Bigtable table reference conditional command",
+                        snippet("flink/BigtableTableReference.sql", "conditional-command")),
+                scenario(
                         "Bigtable table reference change stream envelope",
                         snippet("flink/BigtableTableReference.sql", "change-stream-envelope"),
                         snippet(

@@ -46,6 +46,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.table.sink.AggregateOptionsMapper;
+import io.github.flink.gcp.connector.bigtable.table.sink.BigtableConditionalDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.ReadModifyWriteSchemaChecks;
 import io.github.flink.gcp.connector.bigtable.table.sink.RequestOptionsMapper;
@@ -165,6 +166,17 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SINK_STAGED_MAX_BYTES,
                         BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES,
                         BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_ROW_KEY_COLUMN,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_FAMILY,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_QUALIFIER,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_QUALIFIER_BASE64,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_COLUMN,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_UTF8,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_BASE64,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_PREDICATE_VALUE_INT64,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_THEN,
+                        BigtableConnectorOptions.SINK_CONDITIONAL_OTHERWISE,
                         BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,
                         BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_REQUESTS,
                         BigtableConnectorOptions.SINK_APP_PROFILE_ID,
@@ -208,6 +220,9 @@ public class BigtableDynamicTableFactory
         BigtableStagedOptions stagedOptions = StagedOptionsMapper.map(config, staged);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
+        if (writeMode == WriteMode.CONDITIONAL) {
+            return BigtableConditionalDynamicSink.create(context, config);
+        }
         DataType physicalDataType = context.getPhysicalRowDataType();
         BigtableTableSchema schema =
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
@@ -657,6 +672,7 @@ public class BigtableDynamicTableFactory
 
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
+        BigtableConditionalDynamicSink.rejectRead(context.getCatalogTable().getOptions());
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
         // helper.getOptions() returns the same object throughout, so these two reads are the
         // configuration every line below sees. They happen before validate() because a value

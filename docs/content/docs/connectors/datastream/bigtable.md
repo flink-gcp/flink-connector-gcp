@@ -1582,8 +1582,8 @@ gated suite.
 ## Scope
 
 The [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) return conditional outcomes and changed cells in Flink 2.x streaming mode.
-DDL-defined conditional SQL commands with named predicates and numbered mutation options remain in
-[#1226]({{< param BookRepo >}}/issues/1226); composable filters are available through DataStream and the async SQL functions.
+The [conditional SQL sink]({{< relref "docs/connectors/table/bigtable" >}}#ddl-defined-conditional-commands) accepts DDL-defined commands with named predicates and numbered mutation options on Flink 1.20 and 2.x.
+Composable filters are available through DataStream and the async SQL functions.
 
 ## Provenance and attribution
 

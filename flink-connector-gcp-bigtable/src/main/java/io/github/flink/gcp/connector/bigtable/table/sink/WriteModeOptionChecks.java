@@ -51,6 +51,7 @@ public final class WriteModeOptionChecks {
 
     /** Validates the combination of write operation and checkpoint-owned delivery. */
     public static void validate(Map<String, String> options, WriteMode mode, boolean staged) {
+        validateConditionalCommandOptions(options, mode);
         if (staged && !usesBatchWriter(mode)) {
             throw new ValidationException(
                     "Option 'sink.delivery-guarantee' = 'exactly-once' does not support 'sink.write-mode' = '"
@@ -96,6 +97,13 @@ public final class WriteModeOptionChecks {
             rejected.add(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY);
             rejected.add(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS);
         }
+        if (mode == WriteMode.CONDITIONAL) {
+            rejected = new ArrayList<>(rejected);
+            rejected.add(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS);
+            rejected.add(BigtableConnectorOptions.SINK_AGGREGATE_COLUMN_FAMILY_TYPES);
+            rejected.add(BigtableConnectorOptions.NULL_STRING_LITERAL);
+            rejected.add(BigtableConnectorOptions.DECODE_TRAILING_BYTES);
+        }
         if (mode == WriteMode.AGGREGATE) {
             rejected = new ArrayList<>(rejected);
             rejected.add(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE);
@@ -113,5 +121,29 @@ public final class WriteModeOptionChecks {
                                 + ".");
             }
         }
+    }
+
+    private static void validateConditionalCommandOptions(
+            Map<String, String> options, WriteMode mode) {
+        for (String key : new java.util.TreeSet<>(options.keySet())) {
+            if (mode != WriteMode.CONDITIONAL && isConditionalCommandOption(key)) {
+                throw new ValidationException(
+                        "Option '" + key + "' requires 'sink.write-mode' = 'conditional'.");
+            }
+            if (mode == WriteMode.CONDITIONAL
+                    && (key.startsWith("scan.")
+                            || key.startsWith("lookup.")
+                            || key.startsWith("value."))) {
+                throw new ValidationException(
+                        "Option '"
+                                + key
+                                + "' cannot be used with 'sink.write-mode' = 'conditional'.");
+            }
+        }
+    }
+
+    static boolean isConditionalCommandOption(String key) {
+        return key.startsWith("sink.conditional.")
+                && !key.equals(BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY.key());
     }
 }

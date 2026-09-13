@@ -20,6 +20,7 @@ limitations under the License.
 - Date: 2026-09-05
 - Issue: #1179; general SQL commands follow in #1226
 - Refines: ADR-0148
+- Refined by: [ADR-0167](0167-bigtable-conditional-sql-commands-compile-ddl-into-request-templates.md), DDL-defined SQL commands
 
 ## Context
 

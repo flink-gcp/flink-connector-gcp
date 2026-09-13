@@ -12,6 +12,50 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
+
+-- tag::conditional-command[]
+CREATE TABLE conditional_updates (
+  row_key STRING,
+  expected_status BYTES,
+  new_status BYTES,
+  activation_delta BIGINT,
+  mismatch_reason BYTES
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'users',
+  'sink.app-profile-id' = 'single-cluster',
+  'sink.write-mode' = 'conditional',
+  'sink.conditional.row-key-column' = 'row_key',
+  'sink.conditional.predicate' = 'latest-cell-value-equals',
+  'sink.conditional.predicate.family' = 'profile',
+  'sink.conditional.predicate.qualifier' = 'status',
+  'sink.conditional.predicate.value-column' = 'expected_status',
+  'sink.conditional.then.0.operation' = 'set-cell',
+  'sink.conditional.then.0.family' = 'profile',
+  'sink.conditional.then.0.qualifier' = 'status',
+  'sink.conditional.then.0.value-column' = 'new_status',
+  'sink.conditional.then.1.operation' = 'add-to-cell',
+  'sink.conditional.then.1.family' = 'stats',
+  'sink.conditional.then.1.qualifier' = 'activated',
+  'sink.conditional.then.1.timestamp-micros' = '0',
+  'sink.conditional.then.1.value-column' = 'activation_delta',
+  'sink.conditional.otherwise.0.operation' = 'set-cell',
+  'sink.conditional.otherwise.0.family' = 'audit',
+  'sink.conditional.otherwise.0.qualifier' = 'reason',
+  'sink.conditional.otherwise.0.value-column' = 'mismatch_reason'
+);
+
+INSERT INTO conditional_updates VALUES (
+  'u1',
+  CAST('pending' AS BYTES),
+  CAST('active' AS BYTES),
+  1,
+  CAST('status mismatch' AS BYTES)
+);
+-- end::conditional-command[]
+
 -- tag::overview[]
 CREATE TABLE profiles (
   rowkey STRING,
