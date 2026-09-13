@@ -20,6 +20,7 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -36,7 +37,9 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -113,6 +116,8 @@ class BigQueryMultiStreamRealGcpITCase {
     private static final AtomicBoolean CHECKPOINTED_AFTER_RECORDS = new AtomicBoolean();
     private static final Set<Integer> SUBTASKS_THAT_READ = ConcurrentHashMap.newKeySet();
 
+    @TempDir Path checkpointDirectory;
+
     @Test
     void readsEveryRowExactlyOnceAcrossAFailureOverSeveralStreams() throws Exception {
         FAILED_ONCE.set(false);
@@ -128,6 +133,11 @@ class BigQueryMultiStreamRealGcpITCase {
         long expected = rowCountAsOf(snapshot);
 
         Configuration configuration = new Configuration();
+        // The collect sink checkpoints its buffered results, which can exceed the default
+        // memory-backed storage's 5 MiB limit even though the iterator only counts rows.
+        configuration.set(CheckpointingOptions.CHECKPOINT_STORAGE, "filesystem");
+        configuration.set(
+                CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDirectory.toUri().toString());
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 2);
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY, Duration.ZERO);
