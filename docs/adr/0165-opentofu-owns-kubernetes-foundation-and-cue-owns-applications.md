@@ -70,7 +70,7 @@ The chart's explicit Operator privileges remain on the installer before it creat
 The Helm root pins the distributed 1.15.0 chart independently of the CRD/schema pin, so updating bootstrap does not simultaneously advance Helm.
 Both runners verify the archive SHA-512 and render the same local archive that the provider consumes.
 The initial inventory is seven namespaced resources plus Helm release Secrets; the chart creates no job identity, webhook, certificate or hook workload.
-The chart's default image tag is a commit abbreviation, so the idle Deployment explicitly names Operator 1.15.0.
+The chart's default image tag is a commit abbreviation; the idle Deployment selects the published GAR digest for Operator 1.15.0.
 GAR publication and digest selection remain prerequisites to later Pod admission.
 Helm provider 3.3.0 reads its kubeconfig from the execution-time environment, using the shared wrapper and a fixed context, with no saved token or runner path.
 The plan job retains the rendered resources for review; after saved-plan apply, CI checks the deployed release, live configuration/RBAC, idle inventory and an empty refreshed Helm plan.
@@ -105,8 +105,9 @@ Repeated publication of an existing digest does not establish a renewed retentio
 The later lifecycle preflight must check live image existence and sufficient remaining retention for the run and cleanup margin.
 
 Publication code and IAM land before the first manual publication.
-The successful workflow's job summary supplies digest references for a separate reviewed Helm/CUE pin change; no placeholder GAR output digest is committed in the publication-foundation PR.
-The idle Helm release continues to use its existing image reference until that follow-up lands, retaining zero replicas and quotas.
+The successful workflow's job summary supplies digest references for a reviewed Helm/CUE pin change.
+The first publication completed on 2026-09-13; Helm values select its Operator digest and the CUE images package exposes its Flink and lifecycle-tools references.
+The idle Helm release retains zero replicas and quotas while adopting the GAR reference.
 Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
 ## Consequences
@@ -118,5 +119,5 @@ Failed applies use the existing follow-up PR workflow; a local pre-apply or stal
 The earlier manual-bootstrap/CI-Helm draft split was revised because it left routine foundation changes outside PR plan/apply review.
 The two idle quotas forbid Pods and PVCs throughout this foundation stage.
 The bootstrap inventory is a preflight, not an exhaustive controller audit or lifecycle supervisor.
-Image publication, lifecycle tooling and a bounded generic smoke run still require later work; paid execution needs separate limits, stop conditions and approval.
+Image publication and runtime pin selection are established; lifecycle tooling and a bounded generic smoke run still require later work with separate limits, stop conditions and approval.
 Cloud Tasks implementation/benchmarks and BigQuery-specific verification remain outside this foundation change.

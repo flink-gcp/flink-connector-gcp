@@ -148,5 +148,6 @@ No local service-account impersonation grant is required.
 After bootstrap is applied and its plan is empty, the [separate Helm root](../tier3-operator/README.md) installs the idle release with `replicas = 0`, `webhook.create = false`, `skip_crds = true` and `create_namespace = false`.
 The Operator initially watches `tier3-smoke` only.
 CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the foundation.
-Image publication, lifecycle tooling and a bounded generic smoke run follow separately.
+The [image publication path](../../kubernetes/images/README.md) supplies GAR runtime pins.
+Lifecycle tooling and a bounded generic smoke run follow separately.
 Cloud Tasks implementation/benchmarks and BigQuery verification are outside this bootstrap change.
