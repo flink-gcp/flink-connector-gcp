@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0166: Bigtable implementation precedes final Stage 2 acceptance
 
 - Status: Accepted
-- Date: 2026-09-11
-- Issue: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211)
+- Date: 2026-09-11; refined 2026-09-13
+- Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319)
 - Supersedes: only the implementation-start ordering in ADR-0104 and ADR-0163 for Bigtable staged writes
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
@@ -28,7 +28,7 @@ limitations under the License.
 The owner selected implementation before final evaluation on 2026-09-11 after reviewing the remaining delivery work.
 Implement the ADR-0163 runtime, DataStream entry point, Table mapping, operational documentation and production-path local tests together.
 The implementation PR may be reviewed and merged before the service evaluation.
-Release, supported-workload claims and closing #1211 still require production-factory recovery acceptance on both supported Flink lines and the full formal Stage 2 assessment.
+Release, supported-workload claims and closing #1319 still require production-factory recovery acceptance on both supported Flink lines and the full formal Stage 2 assessment.
 This accepts the risk that the completed implementation may prove unsuitable for some workloads.
 
 The retained protocol is unchanged: 108 performance cells, three measured repetitions per arm, the preregistered warm-up and observation periods, throughput/p95 thresholds and variability rule, correctness acceptance, hot-row growth and marker storage measurements.
@@ -76,4 +76,15 @@ Missing financial evidence blocks charging, not local implementation.
 
 The next completion evidence must come from the implemented mode and both API entry points.
 It must establish recovery after ambiguous responses, aggregate contributions, retained-marker behavior, routing rejection and cleanup, then report the formal performance verdict and supported workload boundaries.
-Neither local green tests nor a Ready implementation PR alone closes #1211.
+Neither local green tests nor a merged implementation PR establishes this acceptance.
+
+## Acceptance tracking refinement (2026-09-13)
+
+The owner requested a separate follow-up for the remaining acceptance after [#1298](https://github.com/flink-gcp/flink-connector-gcp/pull/1298) merged.
+The implementation issue #1211 may close once its remaining obligations are transferred to [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
+That follow-up owns production-service recovery acceptance on both supported Flink lines, native remote transport evidence, production-path integration of the formal harness, the unrestricted Stage 2 assessment and the supported-workload verdict.
+The release/support conditions, protocol thresholds and aggregate cost authorization are unchanged.
+
+Reuse matching sink deployment evidence from [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) with its source, runtime and oracle limitations; GKE is not a prerequisite when the approved local host can establish the required observation.
+[#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) covers Change Streams source deployment recovery and does not discharge sink acceptance.
+Historical handovers and measurements retain their original issue references; current acceptance is tracked by #1319.

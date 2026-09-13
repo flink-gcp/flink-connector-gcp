@@ -269,7 +269,7 @@ roll back later committed data when an older snapshot is selected.
 The design requires a reserved family without automatic marker deletion and preserved Flink state;
 its savepoint limitations, storage cost and required service evaluation are recorded in the ADR.
 The DataStream builder and compatible Table write modes expose `EXACTLY_ONCE` as experimental development functionality.
-[ADR-0166]({{< param BookRepo >}}/blob/main/docs/adr/0166-bigtable-implementation-precedes-final-stage2-acceptance.md) allows implementation before evaluation, but release and support still require production service recovery acceptance and the unchanged formal Stage 2 gate.
+[ADR-0166]({{< param BookRepo >}}/blob/main/docs/adr/0166-bigtable-implementation-precedes-final-stage2-acceptance.md) allows implementation before evaluation, but release and support still require production service recovery acceptance and the unchanged formal Stage 2 gate, tracked in [#1319]({{< param BookRepo >}}/issues/1319).
 See the [staged mode configuration]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) for its deployment and recovery requirements.
 
 ### Spanner
@@ -338,14 +338,14 @@ The Cloud Tasks task-identity candidate ran again on 2026-09-06.
 These results measure the service primitives, not end-to-end Flink jobs.
 The Cloud Tasks staged DataStream runtime is implemented, but this does not turn its primitive result into a pass or satisfy its remaining release gates.
 Apart from final acceptance of the experimental Bigtable mode under
-[#1211]({{< param BookRepo >}}/issues/1211) and the Cloud Tasks checkpointed-creation work in
+[#1319]({{< param BookRepo >}}/issues/1319) and the Cloud Tasks checkpointed-creation work in
 [#1238]({{< param BookRepo >}}/issues/1238), no non-BigQuery exactly-once implementation or
 additional performance stage is planned without a concrete non-idempotent requirement that the
 existing write shapes cannot satisfy.
 
 | Candidate | Stage 1 result | Current decision |
 |---|---|---|
-| Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the experimental committer-based mode under [#1211]({{< param BookRepo >}}/issues/1211); final service recovery and Stage 2 acceptance remain pending |
+| Bigtable same-row conditional marker | Passed on 2026-09-05 under the amended protocol: 146.7% of baseline throughput at 0.65x baseline p95 with run-to-run ranges of at most 2.4%, after the same-day repeat had exceeded the 10% limit twice at 110.0% and 100.4% | The eager marker mode is not built; the conditional write is the commit path of the experimental committer-based mode under [#1211]({{< param BookRepo >}}/issues/1211); final service recovery and Stage 2 acceptance remain pending under [#1319]({{< param BookRepo >}}/issues/1319) |
 | Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
 | Cloud Tasks task identity | All four planned comparisons in the 2026-09-06 repeat were inconclusive: the one-channel replay warm-up stopped before required repetitions and controls finished; the eight-channel configuration never ran | The existing bounded task-creation behavior remains available. The checkpointed-creation protocol for [#1238]({{< param BookRepo >}}/issues/1238) is defined in [ADR-0158]({{< param BookRepo >}}/blob/main/docs/adr/0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md); [ADR-0162]({{< param BookRepo >}}/blob/main/docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) permits implementation while preserving the inconclusive result. Release requires [#1245]({{< param BookRepo >}}/issues/1245)'s recovery acceptance and [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment. The staged DataStream and Table runtime is implemented; the recovery and performance release gates remain open. |
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |

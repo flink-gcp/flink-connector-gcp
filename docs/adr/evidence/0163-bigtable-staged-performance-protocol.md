@@ -16,7 +16,8 @@ limitations under the License.
 
 # Bigtable staged-write Stage 2 protocol
 
-This is the preregistered experimental design for [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md) and [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+This is the preregistered experimental design for [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md) and the implementation in [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
+The outstanding assessment is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
 It does not authorize a service run or record a result.
 The local sizing probe is separate; it neither runs this benchmark nor measures Bigtable capacity.
 The [local MiniCluster harness](0163-bigtable-local-staged-harness.md) adds fake and emulator preparation without creating service resources; its fixed-input observations are not this protocol's service result.

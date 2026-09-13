@@ -18,8 +18,9 @@ limitations under the License.
 
 This historical follow-up to the [checkpoint-stall investigation](0163-bigtable-stage2-checkpoint-stalls.md) added a local diagnostic input control under Accepted [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
 The owner selected an explicit outstanding-input limit for diagnostic comparisons while retaining the original source as a control.
-The [formal Stage 2 protocol](0163-bigtable-staged-performance-protocol.md), its thresholds and its delivery order are unchanged.
-No production API or real-service performance acceptance is delivered here; [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) remains open.
+The diagnostic preserved the [formal Stage 2 protocol](0163-bigtable-staged-performance-protocol.md), its thresholds and the delivery order in force at that time.
+No production API or real-service performance acceptance was delivered by this diagnostic; [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) remained open at that point.
+Current acceptance following the production implementation is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
 
 On 2026-09-11 the owner retired the diagnostic credit control and its proposed seven-cell service run.
 The measurements and original proposal below remain historical evidence; their credit-enabled commands are no longer available.

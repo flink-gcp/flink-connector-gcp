@@ -58,7 +58,7 @@ ADR-0093 records the measurement and decision.
 ## Checkpoint-owned writes
 
 `BigtableDeliveryGuarantee.EXACTLY_ONCE` selects the experimental staged runtime.
-Final production-service recovery acceptance and the formal Stage 2 performance assessment are pending under #1211; this mode is not yet released or supported.
+Final production-service recovery acceptance and the formal Stage 2 performance assessment are pending under [#1319]({{< param BookRepo >}}/issues/1319); this mode is not yet released or supported.
 The at-least-once path remains the default.
 
 Provision a dedicated raw marker family with no GC rule and an explicit application profile using single-cluster routing with transactional writes enabled.
