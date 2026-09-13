@@ -52,7 +52,7 @@ final class Stage2Harness extends LocalStagedHarness {
     final Stage2Ledger ledger;
     final Stage2Lease lease;
     final Stage2CommitProgress commits = new Stage2CommitProgress();
-    final Stage2Admission admission;
+    final Stage2NotificationProgress notifications = new Stage2NotificationProgress();
     final AtomicBoolean censored = new AtomicBoolean();
     final AtomicLong sourcePollNanos = new AtomicLong();
     final AtomicLong committerWaitNanos = new AtomicLong();
@@ -102,48 +102,11 @@ final class Stage2Harness extends LocalStagedHarness {
             boolean timed,
             Stage2Lease lease)
             throws IOException {
-        this(
-                table,
-                endpoint,
-                ledgerPath,
-                capacity,
-                bytes,
-                hot,
-                aggregate,
-                inFlight,
-                timed,
-                lease,
-                0);
-    }
-
-    Stage2Harness(
-            TableDestination table,
-            String endpoint,
-            Path ledgerPath,
-            int capacity,
-            int bytes,
-            boolean hot,
-            boolean aggregate,
-            int inFlight,
-            boolean timed,
-            Stage2Lease lease,
-            int maxPendingInputsPerSubtask)
-            throws IOException {
         super(table, endpoint, bytes, hot, aggregate, inFlight);
         this.lease = lease;
         this.timed = timed;
         this.wireLimit = (long) capacity * (bytes + 1024) * 4;
         try {
-            if (maxPendingInputsPerSubtask < 0
-                    || maxPendingInputsPerSubtask > capacity
-                    || (maxPendingInputsPerSubtask > 0 && (lease != null || !timed))) {
-                throw new IllegalArgumentException(
-                        "Admission credits require local timed diagnostic mode");
-            }
-            admission =
-                    maxPendingInputsPerSubtask == 0
-                            ? null
-                            : new Stage2Admission(maxPendingInputsPerSubtask);
             this.attemptLimit =
                     lease == null ? (long) capacity * 4 : lease.reserve(capacity * 4L, wireLimit);
             ledger = new Stage2Ledger(ledgerPath, capacity, 64L * 1024 * 1024);
@@ -162,12 +125,6 @@ final class Stage2Harness extends LocalStagedHarness {
         measureStart = Math.addExact(now, warmupNanos);
         admissionEnd = Math.addExact(measureStart, measurementNanos);
         ledger.window(measureStart, admissionEnd);
-        if (admission != null) {
-            receiver.schedule(
-                    admission::endWindow,
-                    Math.max(0, admissionEnd - System.nanoTime()),
-                    TimeUnit.NANOSECONDS);
-        }
         allowInputs();
     }
 
@@ -188,6 +145,7 @@ final class Stage2Harness extends LocalStagedHarness {
     @Override
     void commitStarted(Object committer, int entries) {
         commits.started(committer, entries, System.nanoTime());
+        notifications.invocation(entries);
     }
 
     @Override
@@ -207,9 +165,7 @@ final class Stage2Harness extends LocalStagedHarness {
     @Override
     synchronized void acknowledged(long sequence, long now) {
         try {
-            if (ledger.acknowledge(sequence, now) && admission != null) {
-                admission.acknowledge(sequence);
-            }
+            ledger.acknowledge(sequence, now);
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }
@@ -618,9 +574,6 @@ final class Stage2Harness extends LocalStagedHarness {
         try {
             super.close();
         } finally {
-            if (admission != null) {
-                admission.close();
-            }
             try {
                 ledger.close();
             } catch (IOException failure) {

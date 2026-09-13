@@ -26,6 +26,7 @@ Neither the local calibration nor the bounded service observations below constit
 `BigtableStage2Probe` runs the existing production bulk writer or the experimental staged writer/committer in an owned MiniCluster.
 The finite [local harness](0163-bigtable-local-staged-harness.md) retains its literal-loopback endpoint restriction.
 Only an explicit, separately planned `Stage2Lease` enables the service factories.
+The [seven-cell diagnostic proposal was retired](0163-bigtable-stage2-service-diagnostic.md); complete-notification instrumentation remains, and the historical lease and observations below are unchanged.
 
 A continuous source admits through Flink backpressure until a wall-clock window ends.
 Its deterministic sequence is also bounded by a safety input capacity.
@@ -41,7 +42,7 @@ A 10,000-input histogram checks the fixed generator before each timed run.
 There is no intentional rate limiter.
 Disk-ledger access, allocation, serialization, REST sampling and the chained source itself can limit throughput; no-service calibration exercises these costs.
 Service lease checks additionally reload the manifest twice per staged send and once per bulk wire request; the local calibration does not cover that asymmetric cost.
-Its effect on the service comparison was not measured separately.
+The subsequent [admission diagnostic](0163-bigtable-stage2-admission-diagnostics.md#local-lease-read-contribution) isolates the local file-read component; it does not correct the historical service measurements.
 
 The numerator counts distinct measured inputs from the ledger.
 The denominator ends at the last measured acknowledgement, including its checkpoint wait and drain.
@@ -60,6 +61,7 @@ No cap is raised automatically.
 
 The sampler records checkpoint REST responses, staged entries/bytes, active conditional requests, and the available pending-committable/busy/backpressure/idle metrics once per second.
 The [checkpoint-stall follow-up](0163-bigtable-stage2-checkpoint-stalls.md) adds input totals and active commit-invocation sizes/ages without retaining completed request history.
+The retained [notification instrument](0163-bigtable-stage2-service-diagnostic.md#complete-notification-instrumentation) adds separate `notificationProgress` samples and the terminal `STAGE2_NOTIFICATION_FINAL` record for complete synchronous committer notifications.
 An initial checkpoint response is written before admission opens, so even an immediate workload failure retains that baseline.
 It rediscovers metric names because committer registration may lag task registration.
 Missing metrics remain missing.

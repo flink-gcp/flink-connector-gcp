@@ -16,16 +16,21 @@ limitations under the License.
 
 # Bigtable Stage 2 admission diagnostics
 
-This follow-up to the [checkpoint-stall investigation](0163-bigtable-stage2-checkpoint-stalls.md) adds a local diagnostic input control under Accepted [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
+This historical follow-up to the [checkpoint-stall investigation](0163-bigtable-stage2-checkpoint-stalls.md) added a local diagnostic input control under Accepted [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
 The owner selected an explicit outstanding-input limit for diagnostic comparisons while retaining the original source as a control.
 The [formal Stage 2 protocol](0163-bigtable-staged-performance-protocol.md), its thresholds and its delivery order are unchanged.
 No production API or real-service performance acceptance is delivered here; [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) remains open.
 
+On 2026-09-11 the owner retired the diagnostic credit control and its proposed seven-cell service run.
+The measurements and original proposal below remain historical evidence; their credit-enabled commands are no longer available.
+The [retirement record](0163-bigtable-stage2-service-diagnostic.md) identifies retained notification instrumentation and shared safety checks.
+
 ## Input ownership and observation
 
-The optional final argument of `BigtableStage2Probe local` is `maxPendingInputsPerSubtask`.
-Omitting it, or specifying zero, retains the existing unrestricted source.
-A positive value enables diagnostic credits only for a local timed run; the service command and finite recovery harness do not enable this control.
+The retired optional final argument of `BigtableStage2Probe local` was `maxPendingInputsPerSubtask`.
+Omitting it, or specifying zero, retained the unrestricted source.
+A positive value enabled diagnostic credits for a local timed run.
+The separately identified [seven-cell service profile](0163-bigtable-stage2-service-diagnostic.md) also fixed positive credits in its manifest before being withdrawn; the earlier service profile and finite recovery harness did not enable this control.
 The source records each sequence's owning reader before handing it downstream and releases its credit only after the ledger records that input's first acknowledgement.
 This ordering covers synchronous acknowledgements, and a repeated acknowledgement cannot release another input's credit.
 Only outstanding sequence-to-reader entries and per-reader counters/futures are retained.
@@ -86,7 +91,8 @@ The two arms of a condition use the same credit limit.
 These fake delays calibrate the instrument; they do not model a service latency distribution.
 No Maven build or second calibration JVM runs alongside a timed observation.
 
-For reproduction, obtain the test classpath as described in the [timed harness instructions](0163-bigtable-stage2-experiment-harness.md#local-execution), then append the credit limit to the existing local command:
+The following historical reproduction command requires the archived pre-retirement source and classpath; it is no longer executable against the current tree.
+It appended the credit limit to the former local command:
 
 ```bash
 java -Xmx2g -XX:ActiveProcessorCount=4 \
@@ -174,6 +180,8 @@ Retain that asymmetry when interpreting future service throughput; do not subtra
 
 ## Next service experiment
 
+This proposal was withdrawn on 2026-09-11 before service execution; it is retained here as historical context.
+
 The next experiment asks whether the bounded diagnostic source admits measured inputs with real conditional RPC latency, how long a complete synchronous notification occupies the task, and how that changes visibility latency relative to bulk writes.
 The fake delay cannot answer those service questions, nor establish server CPU, actual billing or settled physical marker storage.
 It does establish a local comparison with explicit input ownership, an uncensored measured population and retained failure observations.
@@ -181,8 +189,9 @@ Local cancellation, snapshot/restore behavior and checkpoint-manager iteration d
 
 ### Prerequisites before charging
 
-The current service command deliberately refuses diagnostic credits.
-Before execution, implement and review a separately identified diagnostic lease profile that fixes the seven cells below, their credit limits and reservations in a new manifest, preserves the existing safety checks, and labels every result `DIAGNOSTIC_OBSERVATION` or `CENSORED`.
+The earlier service profile deliberately refuses diagnostic credits.
+The unmerged [diagnostic lease profile](0163-bigtable-stage2-service-diagnostic.md) fixed the seven cells below, their credit limits and reservations in a new manifest, preserved the existing safety checks, and would label observations `DIAGNOSTIC_OBSERVATION` or `CENSORED`.
+It was withdrawn before service execution; the following prerequisites record that withdrawn plan and do not authorize a current execution path.
 Do not repurpose a historical manifest or silently change the unrestricted formal protocol.
 Exercise that profile's reservation, stop, deletion and failed-evidence paths locally first, and freeze the reviewed source, classpath, exact resource IDs and command arguments before creating anything.
 

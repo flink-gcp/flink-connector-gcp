@@ -33,20 +33,19 @@ class Stage2JobITCase {
     @TempDir Path directory;
 
     @Test
-    void diagnosticCreditsYieldToCheckpointsAndResumeBothSourceSubtasks() throws Exception {
+    void emptyCheckpointNotificationsAreObservedForBothSourceSubtasks() throws Exception {
         try (Stage2Harness run =
                 new Stage2Harness(
                         TableDestination.of("local-project", "local-instance", "local-table"),
                         "127.0.0.1:1",
-                        directory.resolve("credits"),
-                        100,
+                        directory.resolve("notifications"),
+                        4,
                         1024,
                         false,
                         false,
                         1,
                         true,
-                        null,
-                        2)) {
+                        null)) {
             try (LocalStagedJob job =
                     new LocalStagedJob(
                             run,
@@ -54,73 +53,34 @@ class Stage2JobITCase {
                             true,
                             false,
                             2,
-                            100,
+                            4,
                             3_600_000,
                             true,
                             null,
                             false)) {
                 await(
-                        "both diagnostic readers started",
+                        "both source readers started",
                         Duration.ofSeconds(20),
                         () -> run.readersStarted.get() == 2);
-                // Only checkpoint-driven credit release is under test; outlive the test timeout.
-                run.startWindow(System.nanoTime(), 0, TimeUnit.MINUTES.toNanos(5));
-                await(
-                        "both source credit windows full",
-                        Duration.ofSeconds(20),
-                        () -> run.ledger.admittedCount() == 4);
-                assertThat(run.ledger.acknowledgedCount()).isZero();
                 job.checkpoint();
                 await(
-                        "both source credit windows refilled",
+                        "both completion notifications returned",
                         Duration.ofSeconds(10),
-                        () -> run.ledger.admittedCount() == 8);
-                assertThat(run.ledger.acknowledgedCount()).isEqualTo(4);
-                job.checkpoint();
-                await(
-                        "second credit release",
-                        Duration.ofSeconds(10),
-                        () -> run.ledger.admittedCount() == 12);
-                assertThat(run.ledger.acknowledgedCount()).isEqualTo(8);
+                        () -> {
+                            String sample = run.notifications.sample(System.nanoTime());
+                            return sample.contains("\"finishedNotifications\":2,")
+                                    && sample.contains("\"activeNotifications\":[]");
+                        });
                 var sample =
                         new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind
                                         .ObjectMapper()
-                                .readTree(run.admission.sample());
-                assertThat(sample.path("peakPendingPerSubtask").asInt()).isEqualTo(2);
-                assertThat(sample.path("peakPendingInputs").asInt()).isEqualTo(4);
-                assertThat(sample.path("availabilityWaits").asInt()).isPositive();
+                                .readTree(run.notifications.sample(System.nanoTime()));
+                assertThat(sample.path("maxNotificationEntries").asLong()).isZero();
+                assertThat(sample.path("outsideNotificationInvocations").asLong()).isZero();
+                assertThat(run.ledger.admittedCount()).isZero();
             }
             assertThat(run.active.get()).isZero();
         }
-    }
-
-    @Test
-    void diagnosticTimedRunLabelsSamplesAndDrainsAtTheUnchangedDeadline() throws Exception {
-        Path work = directory.resolve("diagnostic");
-        BigtableStage2Probe.timed(
-                null,
-                "local-table",
-                work,
-                true,
-                false,
-                "127.0.0.1:1",
-                1024,
-                1,
-                1,
-                60_000,
-                0,
-                1000,
-                1000,
-                1,
-                false,
-                4);
-        assertThat(work).doesNotExist();
-        String samples =
-                java.nio.file.Files.readString(directory.resolve("diagnostic-samples.jsonl"));
-        assertThat(samples)
-                .contains(
-                        "\"admissionMode\":\"diagnostic-credit\"",
-                        "\"maxPendingInputsPerSubtask\":4");
     }
 
     @Test
@@ -255,6 +215,8 @@ class Stage2JobITCase {
                 assertThat(run.active.get()).isZero();
                 assertThat(run.attempts).isEmpty();
                 assertThat(run.originalFutures).isEmpty();
+                assertThat(run.notifications.sample(System.nanoTime()))
+                        .contains("\"startedNotifications\":0");
             }
         }
     }

@@ -38,6 +38,18 @@ class Stage2HarnessTest {
     @TempDir Path directory;
 
     @Test
+    void retiredDiagnosticCannotCreateOrAdmitWorkButKeepsItsCleanupJournal() throws Exception {
+        Stage2Lease lease = Stage2Lease.plan(directory.resolve("lease.properties"));
+        lease.update(p -> p.setProperty("profile", "diagnostic-seven-cell-v1"));
+        assertThatThrownBy(lease::create).hasMessageContaining("profile is retired");
+        assertThatThrownBy(() -> lease.claim("bulk-r1")).hasMessageContaining("profile is retired");
+        assertThat(Files.readString(lease.manifest)).contains("phase=PLANNED");
+        assertThat(lease.manifest.resolveSibling("stop")).doesNotExist();
+        lease.cleanup();
+        assertThat(lease.manifest).exists();
+    }
+
+    @Test
     void unavailableAllocationRemainsUnavailableAfterLaterSuccess() {
         var total = new java.util.concurrent.atomic.AtomicLong();
         Stage2Harness.recordAllocation(total, 10, 30);
@@ -412,6 +424,50 @@ class Stage2HarnessTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void unrestrictedReaderPreservesItsSplitAndDistinguishesCapacityFromWindowEnd(
+            boolean exhaustCapacity) throws Exception {
+        try (Stage2Harness run = local(true);
+                var reader =
+                        new Stage2Source(run.id, 4)
+                                .createReader(
+                                        new io.github.flink.gcp.connector.testutils
+                                                .FakeSourceReaderContext(null))) {
+            reader.start();
+            reader.addSplits(
+                    List.of(
+                            new org.apache.flink.api.connector.source.lib.NumberSequenceSource
+                                    .NumberSequenceSplit("0", 0, 3)));
+            reader.notifyNoMoreSplits();
+            var output = new io.github.flink.gcp.connector.testutils.CollectingReaderOutput<Long>();
+            run.startWindow(System.nanoTime(), 0, java.util.concurrent.TimeUnit.MINUTES.toNanos(5));
+            assertThat(reader.pollNext(output))
+                    .isEqualTo(org.apache.flink.core.io.InputStatus.MORE_AVAILABLE);
+            assertThat(reader.snapshotState(1)).hasSize(1);
+            assertThat(reader.snapshotState(1).get(0).getIterator().next()).isEqualTo(1L);
+            if (exhaustCapacity) {
+                org.apache.flink.core.io.InputStatus status =
+                        org.apache.flink.core.io.InputStatus.MORE_AVAILABLE;
+                for (int remainingPolls = 4;
+                        remainingPolls > 0
+                                && status != org.apache.flink.core.io.InputStatus.END_OF_INPUT;
+                        remainingPolls--) {
+                    status = reader.pollNext(output);
+                }
+                assertThat(status).isEqualTo(org.apache.flink.core.io.InputStatus.END_OF_INPUT);
+                assertThat(output.records()).containsExactly(0L, 1L, 2L, 3L);
+            } else {
+                run.startWindow(
+                        System.nanoTime() - java.util.concurrent.TimeUnit.MINUTES.toNanos(1), 0, 1);
+                assertThat(reader.pollNext(output))
+                        .isEqualTo(org.apache.flink.core.io.InputStatus.END_OF_INPUT);
+                assertThat(output.records()).containsExactly(0L);
+            }
+            assertThat(run.censored.get()).isEqualTo(exhaustCapacity);
+        }
+    }
+
     @Test
     void frozenWindowAndDistributionHaveDeterministicBoundaries() throws Exception {
         Stage2Harness.checkDistribution();
@@ -664,6 +720,83 @@ class Stage2HarnessTest {
         @Override
         public boolean listed() {
             return owner != null;
+        }
+    }
+
+    @Test
+    void phaseProgressCountsDistinctInputsAndReportsEmptyMeasurementExplicitly() throws Exception {
+        try (Stage2Ledger ledger = new Stage2Ledger(directory.resolve("ledger"), 4, 256)) {
+            ledger.window(100, 200);
+            ledger.admit(0, 90);
+            var empty =
+                    new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind
+                                    .ObjectMapper()
+                            .readTree(ledger.sample());
+            assertThat(empty.path("firstMeasuredAdmissionOffsetNanos").asLong()).isEqualTo(-1);
+            ledger.admit(1, 100);
+            ledger.admit(1, 120);
+            ledger.admit(2, 199);
+            ledger.admit(3, 200);
+            ledger.acknowledge(0, 201);
+            ledger.acknowledge(0, 202);
+            var sample =
+                    new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind
+                                    .ObjectMapper()
+                            .readTree(ledger.sample());
+            assertThat(sample.path("pendingInputs").asInt()).isEqualTo(3);
+            assertThat(sample.path("warmupInputs").asInt()).isEqualTo(1);
+            assertThat(sample.path("measuredInputs").asInt()).isEqualTo(2);
+            assertThat(sample.path("tailInputs").asInt()).isEqualTo(1);
+            assertThat(sample.path("firstMeasuredAdmissionOffsetNanos").asLong()).isZero();
+            assertThat(sample.path("lastMeasuredAdmissionOffsetNanos").asLong()).isEqualTo(99);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void closeWaitsForReceiverAcknowledgementBeforeClosingLedger() throws Exception {
+        var closer = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (Stage2Harness run =
+                new Stage2Harness(
+                        TableDestination.of("local-project", "local-instance", "local-table"),
+                        "127.0.0.1:1",
+                        directory.resolve("closing-inventory"),
+                        1,
+                        1024,
+                        false,
+                        false,
+                        1,
+                        true,
+                        null)) {
+            run.admitted(0);
+            java.util.concurrent.Future<?> acknowledged;
+            java.util.concurrent.Future<?> closed;
+            synchronized (run) {
+                var started = new java.util.concurrent.CountDownLatch(1);
+                acknowledged =
+                        run.receiver.submit(
+                                () -> {
+                                    started.countDown();
+                                    run.acknowledged(0, System.nanoTime());
+                                });
+                assertThat(started.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                closed =
+                        closer.submit(
+                                () -> {
+                                    run.close();
+                                    return null;
+                                });
+                io.github.flink.gcp.connector.testutils.Awaits.await(
+                        "receiver shutdown while acknowledgement waits for the harness monitor",
+                        java.time.Duration.ofSeconds(5),
+                        run.receiver::isShutdown);
+            }
+            acknowledged.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            closed.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(run.ledger.acknowledgedCount()).isEqualTo(1);
+        } finally {
+            closer.shutdownNow();
+            assertThat(closer.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
         }
     }
 }
