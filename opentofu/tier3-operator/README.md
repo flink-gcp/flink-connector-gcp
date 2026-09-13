@@ -35,8 +35,9 @@ The root's `upstream.yaml` fixes the archive URL, version and SHA-512.
 Both runners download and verify that archive into `.terraform/operator-chart.tgz`; the resource uses this checkout-relative path and `values.yaml`.
 The helper checks the chart's version and appVersion and renders the same archive before OpenTofu runs.
 The distributed chart defaults to `ghcr.io/apache/flink-kubernetes-operator:79d730b`.
-The idle values deliberately use the Docker Hub release-style reference `apache/flink-kubernetes-operator:1.15.0` to record the intended Operator version.
-[Image publication](https://github.com/flink-gcp/flink-connector-gcp/issues/1308) must replace it with a verified GAR digest before any Pod starts; this installation does not establish runtime image availability.
+The idle values select the Operator 1.15.0 GAR digest from the [successful publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704).
+The image verifier requires the Tier-3 GAR Operator repository and a SHA-256 digest, compares chart output with that reference, and compares the live Deployment with the rendered expectation.
+The [seven-day cleanup policy](../../kubernetes/images/README.md#retention-and-acceptance) still requires a fresh image-availability check before Pod admission.
 
 Helm owns seven rendered resources: a Deployment, ConfigMap and Operator ServiceAccount in `tier3-system`, and an Operator Role and RoleBinding in each of `tier3-system` and `tier3-smoke`.
 The release also stores its metadata in Secrets in `tier3-system`, retaining up to five revisions.
@@ -66,7 +67,8 @@ OpenTofu validation, formatting and TFLint run inside the selected plan job afte
 No OpenTofu checks or cluster access are added to general lint or a separate workflow.
 
 Review the PR's OpenTofu plan together with the `tier3-operator-manifest` artifact from the same CI run.
-The first plan must contain one Helm release addition and no changes or deletions.
+The initial installation plan contained one Helm release addition.
+A digest update must contain only an in-place release update, with zero replicas and the same seven owned resources.
 After merge, CI applies that saved plan using a freshly verified copy of the pinned chart.
 It reads the release status and versions through `helm get metadata`, then verifies live configuration/RBAC, zero Deployment replicas, zero Pods/PVCs in both owned namespaces and unchanged idle quotas.
 Post-apply verification rechecks the runner-local archive's checksum and renders it again, without depending on another download.
@@ -96,6 +98,6 @@ Then update this root's independent chart/image pins and review the rendered RBA
 Do not automatically advance Helm when the shared CRD/schema pin changes.
 A new ownership or authorization boundary requires an explicit bootstrap change before the Helm change.
 
-Deliberate scale-up, numeric workload limits, image publication and lifecycle cleanup remain separate work.
+Deliberate scale-up, numeric workload limits and lifecycle cleanup remain separate work.
 Both idle quotas continue to forbid Pods and PVCs.
 Scaling down the Operator would not stop an existing Flink job, and an idle installation is not an unconditional zero-cost guarantee.

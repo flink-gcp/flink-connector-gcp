@@ -50,7 +50,7 @@ Its WIF binding selects this repository's exact `tier3-images.yaml` workflow, `w
 Publication does not use infrastructure or workload credentials.
 
 Review and merge the infrastructure PR, let normal CI apply finish, and require an empty refreshed plan before the first publication.
-The new publisher and first publication require the agreed execution approval; the existing foundation does not require creation approval again.
+The first publication was authorized and completed on 2026-09-13 after an empty refreshed GCP plan.
 
 Dispatch the workflow against the reviewed main commit:
 
@@ -65,7 +65,7 @@ The fixed source digests define what is transferred; there is no custom image-co
 Docker's login action logs out when the job ends.
 
 A successful run lists all three GAR digest references in the GitHub Actions job summary.
-Copy those references into the follow-up Helm/CUE pin PR.
+Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
 The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
@@ -79,7 +79,17 @@ Adding a tag or copying an existing digest does not establish a renewed retentio
 Before a workload run, the lifecycle preflight must check image availability and enough remaining retention for the run end plus 24 hours.
 If a required digest is near expiry, wait for cleanup and republish.
 
-This PR supplies publication and IAM; it does not yet commit real GAR output pins.
-The follow-up must cover Operator, Flink and every auxiliary Pod-template image, retain zero Operator replicas and zero Pod/PVC quotas, and verify the idle release after apply.
+The [first successful publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704) used main commit `78e96a9a0d765412ee5f7ef2b66b63cababd19a0` on 2026-09-13.
+GAR reads confirmed all three references; the mirrored digests match their sources.
+The Operator pin is in [Helm values](../../opentofu/tier3-operator/values.yaml), and CUE deliveries can import [pins.cue](pins.cue) as `github.com/flink-gcp/flink-connector-gcp/kubernetes/images`.
+The `flink` field supplies the base runtime for the application-image work in [#1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309); it contains no application JAR.
+The `lifecycleTools` field supplies the Python/kubectl runtime for [#1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
+For a shell or Docker build argument, read a pin with:
+
+```sh
+mise x cue -- cue -C kubernetes export ./images -e flink --out text
+```
+
+Pin updates retain zero Operator replicas and zero Pod/PVC quotas and require the existing post-apply idle-release verification and empty refreshed Helm plan.
+Every future auxiliary Pod-template image must also be available in GAR before admission.
 Publication does not start workload Pods or prove GKE runtime behavior.
-[#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308) remains open until successful publication and the pin adoption are complete.

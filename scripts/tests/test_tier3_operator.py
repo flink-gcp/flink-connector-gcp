@@ -32,6 +32,10 @@ SPEC = importlib.util.spec_from_file_location(
 operator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(operator)
 
+IMAGE_REPOSITORY = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator"
+IMAGE_DIGEST = "sha256:" + "a" * 64
+IMAGE = IMAGE_REPOSITORY + "@" + IMAGE_DIGEST
+
 
 def result(value):
     return subprocess.CompletedProcess([], 0, json.dumps(value), "")
@@ -105,7 +109,7 @@ def documents():
                             "containers": [
                                 {
                                     "name": "operator",
-                                    "image": "apache/flink-kubernetes-operator:1.15.0",
+                                    "image": IMAGE,
                                 }
                             ],
                         }
@@ -146,7 +150,14 @@ def prepare_inputs(monkeypatch, tmp_path, data=None):
         "sha512": hashlib.sha512(data).hexdigest(),
     }
     (tmp_path / "upstream.yaml").write_text(yaml.safe_dump(pin))
-    (tmp_path / "values.yaml").write_text("replicas: 0\n")
+    (tmp_path / "values.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "replicas": 0,
+                "image": {"repository": IMAGE_REPOSITORY, "digest": IMAGE_DIGEST},
+            }
+        )
+    )
     monkeypatch.setattr(
         operator.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(data)
     )
@@ -189,6 +200,52 @@ def test_chart_preparation_checks_exact_bytes_and_passes_root_values(
         )
         == documents()
     )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        None,
+        {},
+        {"image": []},
+        {"image": {"repository": IMAGE_REPOSITORY}},
+        {
+            "image": {
+                "repository": "docker.io/apache/flink-kubernetes-operator",
+                "digest": IMAGE_DIGEST,
+            }
+        },
+        {"image": {"repository": IMAGE_REPOSITORY, "digest": ""}},
+        {"image": {"repository": IMAGE_REPOSITORY, "digest": "sha256:short"}},
+        {"image": {"repository": IMAGE_REPOSITORY, "digest": 123}},
+    ],
+)
+def test_invalid_operator_image_is_rejected_before_rendering(
+    monkeypatch, tmp_path, values
+):
+    prepare_inputs(monkeypatch, tmp_path)
+    (tmp_path / "values.yaml").write_text(yaml.safe_dump(values))
+    monkeypatch.setattr(operator, "run", lambda _: pytest.fail("Helm must not run"))
+    with pytest.raises(ValueError, match="Tier-3 GAR operator repository.*sha256"):
+        operator.prepare_operator_chart(tmp_path)
+
+
+def test_rendered_image_must_match_values_digest(monkeypatch, tmp_path):
+    prepare_inputs(monkeypatch, tmp_path)
+    (tmp_path / "values.yaml").write_text(
+        yaml.safe_dump(
+            {"image": {"repository": IMAGE_REPOSITORY, "digest": "sha256:" + "b" * 64}}
+        )
+    )
+    monkeypatch.setattr(
+        operator,
+        "run",
+        lambda _: subprocess.CompletedProcess(
+            [], 0, yaml.safe_dump_all(documents()), ""
+        ),
+    )
+    with pytest.raises(ValueError, match="pinned idle configuration"):
+        operator.prepare_operator_chart(tmp_path)
 
 
 @pytest.mark.parametrize("tampered", [False, True])
@@ -310,7 +367,7 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
     else:
         objects[1]["roleRef"]["kind"] = "ClusterRole"
     with pytest.raises(ValueError):
-        operator.operator_documents(yaml.safe_dump_all(objects), "1.15.0")
+        operator.operator_documents(yaml.safe_dump_all(objects), IMAGE)
 
 
 @pytest.mark.parametrize(
@@ -410,6 +467,7 @@ def test_unknown_root_is_rejected(tmp_path):
         "wrong-chart",
         "status-output",
         "live-replicas",
+        "live-image",
         "live-config",
         "live-rbac",
     ],
@@ -459,6 +517,10 @@ def test_post_apply_verification_reads_release_and_live_resources(
         )
         if case == "live-replicas" and actual["kind"] == "Deployment":
             actual["status"] = {"replicas": 1}
+        if case == "live-image" and actual["kind"] == "Deployment":
+            actual["spec"]["template"]["spec"]["containers"][0]["image"] = (
+                IMAGE_REPOSITORY + "@sha256:" + "b" * 64
+            )
         if case == "live-config" and actual["kind"] == "ConfigMap":
             actual["data"] = {}
         if case == "live-rbac" and actual["kind"] == "Role":

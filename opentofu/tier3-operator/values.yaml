@@ -18,9 +18,9 @@ watchNamespaces:
 webhook:
   create: false
 image:
-  repository: apache/flink-kubernetes-operator
+  repository: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator
   tag: "1.15.0"
-  digest: ""
+  digest: "sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78"
 operatorServiceAccount:
   create: true
   name: flink-operator

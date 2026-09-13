@@ -155,7 +155,8 @@ The [bootstrap root](tier3-bootstrap/README.md) owns namespaces, CRDs, persisten
 It adopts the initial access resources through import blocks and has separate state, PR plans and merge-triggered CI application.
 The [CUE manifest module](../kubernetes/README.md) provides application definitions, static validation and delivery rendering.
 The [ownership decision](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates these responsibilities.
-The Helm root installs only the idle release; image publication and application execution remain subsequent stages.
+The Helm root installs only the idle release and selects a published GAR digest.
+Application execution remains a separate stage.
 
 ### Run and cleanup contract
 

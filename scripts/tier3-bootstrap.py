@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -73,7 +74,7 @@ def provider_environment(kubeconfig):
     return environment
 
 
-def operator_documents(source, version):
+def operator_documents(source, expected_image):
     """Check the actual chart output, including hooks, before it reaches Helm."""
     documents = [item for item in yaml.safe_load_all(source) if item is not None]
     identities = [
@@ -110,8 +111,7 @@ def operator_documents(source, version):
                 or pod.get("serviceAccountName") != "flink-operator"
                 or pod.get("initContainers")
                 or len(containers) != 1
-                or containers[0].get("image")
-                != "apache/flink-kubernetes-operator:" + version
+                or containers[0].get("image") != expected_image
                 or any(
                     "persistentVolumeClaim" in volume
                     for volume in pod.get("volumes", [])
@@ -181,6 +181,18 @@ def prepare_operator_chart(root, *, download=True):
     cache.mkdir(exist_ok=True)
     if download:
         archive.write_bytes(data)
+    values = yaml.safe_load((root / "values.yaml").read_text())
+    image = values.get("image") if isinstance(values, dict) else None
+    repository = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator"
+    if (
+        not isinstance(image, dict)
+        or image.get("repository") != repository
+        or not isinstance(image.get("digest"), str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", image["digest"])
+    ):
+        raise ValueError(
+            "Operator image must use the Tier-3 GAR operator repository and a sha256 digest"
+        )
     rendered = run(
         [
             "helm",
@@ -193,7 +205,7 @@ def prepare_operator_chart(root, *, download=True):
             str(root / "values.yaml"),
         ]
     ).stdout
-    documents = operator_documents(rendered, pin["version"])
+    documents = operator_documents(rendered, repository + "@" + image["digest"])
     (cache / "operator-rendered.yaml").write_text(rendered)
     print("Verified Operator chart " + pin["version"] + " and seven idle resources")
     return pin, documents
@@ -583,7 +595,10 @@ class Cluster:
                     container["image"]
                     for container in actual["spec"]["template"]["spec"]["containers"]
                 ]
-                != ["apache/flink-kubernetes-operator:" + pin["version"]]
+                != [
+                    container["image"]
+                    for container in expected["spec"]["template"]["spec"]["containers"]
+                ]
             ):
                 raise RuntimeError(
                     "Live Operator Deployment is not idle at the pinned version"
