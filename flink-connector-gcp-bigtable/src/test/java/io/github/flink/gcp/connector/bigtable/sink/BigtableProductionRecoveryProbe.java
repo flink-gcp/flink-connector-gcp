@@ -37,7 +37,6 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -144,17 +143,14 @@ public final class BigtableProductionRecoveryProbe {
                 "Production preflight accepted invalid metadata: " + table + " " + profile);
     }
 
-    private static void service(Stage2Lease lease, String table) throws Exception {
-        lease.update(
-                properties -> {
-                    if (!properties.getProperty("productionPreflight", "").equals("PASS")) {
-                        throw new IllegalStateException(
-                                "Production metadata preflight must pass before worker admission");
-                    }
-                });
-        lease.reserve(2048, 2048L * 2048);
-        lease.reserveRead(8L << 20);
-        var destination = lease.table(table);
+    /**
+     * The proxy backend's own data client: one 20-second attempt per conditional write, no retries,
+     * and no retries on the three row-read entry points. The pinned SDK requires the single-row,
+     * multi-row and bulk read settings to carry the same retry codes and enforces that when the
+     * settings are built; attempt 1 of the recovery plan (2026-09-14) failed there with only the
+     * multi-row codes cleared.
+     */
+    static BigtableDataSettings.Builder backendSettings(TableDestination destination) {
         var settings =
                 BigtableDataSettings.newBuilder()
                         .setProjectId(destination.getProject())
@@ -166,6 +162,27 @@ public final class BigtableProductionRecoveryProbe {
         settings.stubSettings()
                 .readRowsSettings()
                 .setRetryableCodes(java.util.Collections.emptySet());
+        settings.stubSettings()
+                .readRowSettings()
+                .setRetryableCodes(java.util.Collections.emptySet());
+        settings.stubSettings()
+                .bulkReadRowsSettings()
+                .setRetryableCodes(java.util.Collections.emptySet());
+        return settings;
+    }
+
+    private static void service(Stage2Lease lease, String table) throws Exception {
+        lease.update(
+                properties -> {
+                    if (!properties.getProperty("productionPreflight", "").equals("PASS")) {
+                        throw new IllegalStateException(
+                                "Production metadata preflight must pass before worker admission");
+                    }
+                });
+        lease.reserve(2048, 2048L * 2048);
+        lease.reserveRead(8L << 20);
+        var destination = lease.table(table);
+        var settings = backendSettings(destination);
         Path directory = lease.work.resolve(table);
         Files.createDirectories(lease.work);
         Files.createDirectory(directory);
@@ -213,6 +230,12 @@ public final class BigtableProductionRecoveryProbe {
                             return response;
                         }
                     };
+            System.out.println(
+                    "PRODUCTION_WORKER jvmFlags="
+                            + java.lang.management.ManagementFactory.getRuntimeMXBean()
+                                    .getInputArguments()
+                            + " flink="
+                            + org.apache.flink.runtime.util.EnvironmentInformation.getVersion());
             try (var proxy =
                     new ProductionRecoveryProxy(
                             backend,
@@ -232,6 +255,7 @@ public final class BigtableProductionRecoveryProbe {
                                 throw new IOException("Recovery local storage cap exhausted");
                             }
                         });
+                proxy.requireReplayBounds();
             }
         }
         lease.update(properties -> properties.setProperty("run." + table, "PASS"));
@@ -245,10 +269,7 @@ public final class BigtableProductionRecoveryProbe {
             proxy.requireHealthy();
             envelopes = Map.copyOf(proxy.envelopes);
         }
-        Map<ByteString, Long> expected = new HashMap<>();
-        for (long number = 0; number < 128; number++) {
-            expected.merge(run.input(number).row(), 1L, Long::sum);
-        }
+        Map<ByteString, Long> expected = ProductionRecoveryJob.expectedContributions(run, 128);
         Set<ByteString> observedRows = new HashSet<>();
         Set<ByteString> markers = new HashSet<>();
         long bytes = 0;
@@ -277,7 +298,7 @@ public final class BigtableProductionRecoveryProbe {
                         throw new IOException(
                                 "Recovery SUM differs from distinct input contributions");
                     }
-                } else if (cell.getFamily().equals("flink_commit")) {
+                } else if (cell.getFamily().equals(StagedMutationTestSink.MARKER_FAMILY)) {
                     CheckAndMutateRowRequest envelope = envelopes.get(cell.getQualifier());
                     if (envelope == null
                             || !envelope.getRowKey().equals(row.getKey())

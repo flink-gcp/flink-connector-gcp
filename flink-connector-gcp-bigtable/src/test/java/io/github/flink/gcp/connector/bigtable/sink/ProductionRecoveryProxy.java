@@ -208,6 +208,21 @@ final class ProductionRecoveryProxy implements AutoCloseable {
         }
     }
 
+    /**
+     * Holds the plan's replay arithmetic: 128 first applications plus two complete 128-envelope
+     * rescale replays plus the discarded response's replay bound the duplicates from below, and the
+     * wire attempts fall between that floor and the reservation this proxy enforces on the wire.
+     */
+    synchronized void requireReplayBounds() throws IOException {
+        if (duplicates < 257 || attempts < 385 || attempts > 2048) {
+            throw new IOException(
+                    "Recovery replay counts outside the plan's bounds: duplicates="
+                            + duplicates
+                            + " wireAttempts="
+                            + attempts);
+        }
+    }
+
     private synchronized void fail(Throwable failure) {
         if (fatal == null) {
             fatal = failure;

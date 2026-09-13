@@ -89,6 +89,14 @@ class LocalStagedHarness implements AutoCloseable {
             new java.util.concurrent.atomic.AtomicLong();
     final AtomicInteger peakWriterEntries = new AtomicInteger();
     final AtomicInteger staged = new AtomicInteger();
+
+    /**
+     * Every commit request a {@code MappedSink} delegating committer observed, whether or not it
+     * forwarded it to the production committer.
+     */
+    final List<ProductionRecoveryJob.CommitObservation> productionCommits =
+            Collections.synchronizedList(new ArrayList<>());
+
     final AtomicBoolean allowInputs = new AtomicBoolean(true);
     final CompletableFuture<Void> inputsAllowed = new CompletableFuture<>();
     final AtomicInteger readersStarted = new AtomicInteger();
@@ -101,6 +109,14 @@ class LocalStagedHarness implements AutoCloseable {
     final boolean aggregate;
     final int inFlight;
     volatile long delayMillis;
+
+    /**
+     * Minimum pause between periodic checkpoints for jobs started after it is set. Flink picks the
+     * first periodic trigger uniformly between this pause and the interval, so a held job that must
+     * complete no checkpoint before its explicit savepoint sets it equal to the interval.
+     */
+    volatile long minPauseMillis;
+
     volatile boolean hang;
     volatile int loseAnswerAt = -1;
     volatile int maxEntries = 100_000;

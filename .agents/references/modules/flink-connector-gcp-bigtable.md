@@ -49,8 +49,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Staged exactly-once design (`docs/adr/0163`)
 
 - Read ADR-0163, ADR-0166 and the local sizing evidence before changing staged writes.
-  ADR-0166 permits implementation before final evaluation; #1319 retains production service
-  acceptance and the unrestricted formal Stage 2 release gate.
+  ADR-0166 permits implementation before final evaluation; #1319 recorded production service
+  correctness acceptance on 2026-09-14, and #1327 owns the unrestricted formal Stage 2 release gate.
 - Stage immutable per-envelope identities in Flink committer state, never a row-wide checkpoint
   high-water mark. Preserve all earlier envelope markers on each row and reject whole-row deletes
   and mutations targeting the reserved family. Markers have no automatic GC.
@@ -58,6 +58,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   synchronous savepoint. The original probes simulate Flink operator hooks. The subsequent local harness
   exercises MiniCluster recovery and emulator transport; its evidence and remaining service gates
   are in `docs/adr/evidence/0163-bigtable-local-staged-harness.md`. Neither is production acceptance.
+- `BigtableStagedSinkRealGcpITCase` is the native-transport half of that acceptance; its scope
+  and the paths it cannot reach are in `docs/adr/evidence/0163-bigtable-native-transport-acceptance.md`.
 
 ## Single-row request runtime (`docs/adr/0148`)
 

@@ -58,7 +58,7 @@ ADR-0093 records the measurement and decision.
 ## Checkpoint-owned writes
 
 `BigtableDeliveryGuarantee.EXACTLY_ONCE` selects the experimental staged runtime.
-Final production-service recovery acceptance and the formal Stage 2 performance assessment are pending under [#1319]({{< param BookRepo >}}/issues/1319); this mode is not yet released or supported.
+Production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319); the formal Stage 2 performance assessment is pending under [#1327]({{< param BookRepo >}}/issues/1327), and this mode is not yet released or supported.
 The at-least-once path remains the default.
 
 Provision a dedicated raw marker family with no GC rule and an explicit application profile using single-cluster routing with transactional writes enabled.
@@ -91,7 +91,7 @@ The writer limits one interval to 100,000 entries and 64 MiB of serialized reque
 Exceeding either cap fails synchronously so the task does not wait for a barrier it is preventing.
 These charges are not a Java heap bound: the committer can retain multiple pending intervals and snapshot copies.
 Size the checkpoint interval, heap and timeout for the complete work accumulated before a completion notification, including older checkpoint collections.
-Retained markers grow with the number of envelopes; hot-row growth and storage costs remain part of the pending service assessment.
+Retained markers grow with the number of envelopes; hot-row growth and storage costs remain part of the pending Stage 2 assessment ([#1327]({{< param BookRepo >}}/issues/1327)).
 
 ## Credential file deployment
 
@@ -1519,6 +1519,16 @@ between you and a new instance. The gated suite shows:
   The merge uses an explicit protobuf `bytes_value` input after the service rejected SDK 2.82.0's convenience overload for Int64 Sum on 2026-09-05 (ADR-0041).
   It also checks immediate column replacement, replay with no intervening write, and that a rejected compound entry preserves the original versions.
   Its replay cases submit a reserialized input in a second completed job; they do not simulate an SDK retry or a checkpoint restore.
+- **The checkpoint-owned mode over the native client path.** Every emulator and proxy test of
+  `EXACTLY_ONCE` passes `emulatorEndpoint(...)`, so the gated staged class is where the production
+  DataStream and Table sinks dial the service themselves over application-default credentials. It
+  checks that 24 inputs staged at parallelism 2 reach the table only through a stop-with-savepoint,
+  that restoring that savepoint at parallelism 1 and 3 leaves the SUM and the 24 retained markers
+  unchanged without serializing anything again, that the metadata validation rejects a
+  non-transactional or multi-cluster profile and a missing, GC-managed or typed marker family
+  before any target write, and that a missing table is `NOT_FOUND` on both the admin and the data
+  path. It cannot discard a successful response; that oracle stays with the proxy lease recorded
+  in ADR-0166.
 - **How same-row entries behaved in one `MutateRows` request under a bounded campaign**
   ([#471]({{< param BookRepo >}}/issues/471), ADR-0093): 86,196 pairs across mirrored submission
   arms and request sizes from 2 through 19,998 produced zero reversals. The probe was deliberately

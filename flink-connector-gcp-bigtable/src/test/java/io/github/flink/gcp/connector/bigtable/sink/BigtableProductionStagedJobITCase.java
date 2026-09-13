@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -28,6 +29,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Timeout(120)
 class BigtableProductionStagedJobITCase {
@@ -64,6 +66,84 @@ class BigtableProductionStagedJobITCase {
                 }
             }
         }
+    }
+
+    /**
+     * The replay oracle the native gated class relies on must reject a restore whose committer
+     * sends nothing, and a restore that produces no commit requests at all, because the readback
+     * alone cannot tell a skipped replay from an absorbed one.
+     */
+    @Test
+    void replayOracleRejectsARestoreThatSendsNothing() throws Exception {
+        try (var service = new StagedRpcTestService();
+                var run = ProductionRecoveryJob.newRun(TableDestination.of("p", "i", "t"))) {
+            var sink =
+                    ProductionRecoveryJob.sink(
+                            run,
+                            "127.0.0.1:" + service.server.getPort(),
+                            false,
+                            LocalStagedHarness.PROFILE);
+            String savepoint;
+            run.minPauseMillis = 3_600_000;
+            try (var job = productionJob(run, sink, 2, 3_600_000, null)) {
+                job.awaitAdmissions(24);
+                savepoint = job.savepoint(directory.resolve("stop"), true);
+            }
+            run.minPauseMillis = 0;
+            var inventory = ProductionRecoveryJob.requireCommitted(run.productionCommits, 0, 24);
+
+            // The suppressed restore runs first and stops with a savepoint, because releasing the
+            // held source for a finish() is a run-wide flag that would end every later job at once.
+            int suppressed = run.productionCommits.size();
+            try (var restored = productionJob(run, sink.suppressingCommits(), 1, 1000, savepoint)) {
+                ProductionRecoveryJob.awaitRunning(restored);
+                restored.savepoint(directory.resolve("stop-suppressed"), true);
+            }
+            synchronized (service.probe) {
+                assertThat(service.probe.deduplicated).as("nothing reached the service").isZero();
+            }
+            // Asserted before the successful restore adds its observations, so the phase holds
+            // only the suppressed requests, and an outcome check that stopped working could not
+            // hide behind a duplicate-identity rejection of the later replay.
+            int afterSuppressed = run.productionCommits.size();
+            assertThat(afterSuppressed - suppressed)
+                    .as("the suppressed restore replayed each retained envelope once")
+                    .isEqualTo(24);
+            assertThatThrownBy(
+                            () ->
+                                    ProductionRecoveryJob.requireReplayed(
+                                            run.productionCommits, suppressed, inventory))
+                    .hasMessageContaining("not a deduplicated replay")
+                    .hasMessageContaining("=UNSENT");
+            int none = run.productionCommits.size();
+            assertThatThrownBy(
+                            () ->
+                                    ProductionRecoveryJob.requireReplayed(
+                                            run.productionCommits, none, inventory))
+                    .as("a restore that produced no commit request at all")
+                    .hasMessageContaining("Restore replayed 0 of 24");
+
+            int mark = run.productionCommits.size();
+            try (var restored = productionJob(run, sink, 3, 1000, savepoint)) {
+                ProductionRecoveryJob.awaitRunning(restored);
+                restored.finish();
+            }
+            ProductionRecoveryJob.requireReplayed(run.productionCommits, mark, inventory);
+            synchronized (service.probe) {
+                assertThat(service.probe.deduplicated).isEqualTo(24);
+            }
+        }
+    }
+
+    private LocalStagedJob productionJob(
+            LocalStagedHarness run,
+            ProductionRecoveryJob.MappedSink<?> sink,
+            int parallelism,
+            long interval,
+            String restore)
+            throws Exception {
+        return new LocalStagedJob(
+                run, directory, true, false, parallelism, 24, interval, true, restore, false, sink);
     }
 
     private LocalStagedJob job(

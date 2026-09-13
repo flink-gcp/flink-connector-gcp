@@ -241,8 +241,7 @@ public abstract class AbstractBigtableRealGcpITCase {
 
     /** Creates a table with the shared column family and returns its destination. */
     protected static TableDestination createTable(String tableId) {
-        tableAdmin.createTable(CreateTableRequest.of(tableId).addFamily(FAMILY));
-        return TableDestination.of(PROJECT, instanceId, tableId);
+        return createTable(tableId, request -> request.addFamily(FAMILY));
     }
 
     /** Creates a table whose Change Streams history is retained for one day. */
@@ -341,11 +340,45 @@ public abstract class AbstractBigtableRealGcpITCase {
 
     /** Creates an application profile routing to and returns the instance's only cluster. */
     protected static String createSingleClusterAppProfile(String appProfileId) {
+        return createSingleClusterAppProfile(appProfileId, false);
+    }
+
+    /**
+     * Creates a single-cluster application profile and returns the instance's only cluster.
+     *
+     * <p>The single-argument overload creates the routing-only shape the source tests need. A
+     * conditional or staged write additionally needs {@code allowTransactionalWrites}, which the
+     * service refuses to enable on a multi-cluster profile and which the staged sink's metadata
+     * validation requires before its first target write.
+     */
+    protected static String createSingleClusterAppProfile(
+            String appProfileId, boolean allowTransactionalWrites) {
         String clusterId = instanceAdmin.listClusters(instanceId).get(0).getId();
         instanceAdmin.createAppProfile(
                 CreateAppProfileRequest.of(instanceId, appProfileId)
-                        .setRoutingPolicy(AppProfile.SingleClusterRoutingPolicy.of(clusterId))
-                        .setDescription("flink-connector-gcp source integration test"));
+                        .setRoutingPolicy(
+                                AppProfile.SingleClusterRoutingPolicy.of(
+                                        clusterId, allowTransactionalWrites))
+                        .setDescription("flink-connector-gcp integration test"));
         return clusterId;
+    }
+
+    /**
+     * Creates a multi-cluster application profile, the routing a single-row transaction rejects.
+     */
+    protected static void createMultiClusterAppProfile(String appProfileId) {
+        instanceAdmin.createAppProfile(
+                CreateAppProfileRequest.of(instanceId, appProfileId)
+                        .setRoutingPolicy(AppProfile.MultiClusterRoutingPolicy.of())
+                        .setDescription("flink-connector-gcp integration test"));
+    }
+
+    /** Creates a table whose families the caller declares, and returns its destination. */
+    protected static TableDestination createTable(
+            String tableId, Consumer<CreateTableRequest> families) {
+        CreateTableRequest request = CreateTableRequest.of(tableId);
+        families.accept(request);
+        tableAdmin.createTable(request);
+        return tableDestination(tableId);
     }
 }
