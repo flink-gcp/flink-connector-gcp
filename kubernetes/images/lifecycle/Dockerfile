@@ -16,6 +16,10 @@
 FROM python@sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef
 ADD --checksum=sha256:12e97f9d23a9f6cbb87b89becd6bd291e1a858a3379a4e11e2c822c4c1530052 --chmod=0555 \
     https://dl.k8s.io/release/v1.35.7/bin/linux/amd64/kubectl /usr/local/bin/kubectl
+COPY target/requirements.txt /opt/lifecycle/requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/lifecycle/requirements.txt \
+    && pip check \
+    && python -c "import google.auth; import google.cloud.storage; import kubernetes.client"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp
 USER 65532:65532
 WORKDIR /tmp

@@ -13,8 +13,8 @@
 # limitations under the License.
 #
 # The uv project behind `just test-scripts` (decided with the owner on PR
-# #247): dependency management for the scripts/tests suite and pytest
-# configuration, nothing more, at the repository root where uv expects a
+# #247): dependency management for the scripts/tests suite, Tier-3 lifecycle
+# tools and pytest configuration, at the repository root where uv expects a
 # project. The layout is not a Python package's: most code under test lives in
 # scripts/ as executables that are never importable. Java-aware checkers share
 # Tree-sitter and its Java grammar here. check-skill-frontmatter.py,
@@ -44,15 +44,20 @@ dependencies = [
 package = false
 
 [dependency-groups]
-# pyyaml is a *test* dependency, not the project's: check-skill-frontmatter.py,
-# tier3-schemas.py and tier3-bootstrap.py declare it in their PEP 723 metadata
-# and run through
-# `uv run --no-project`, but the suite loads those scripts by file path, so the
-# import has to resolve here too. Release workflow tests also use it to parse
-# the YAML program under test; the release helper itself needs only the stdlib.
+# Standalone schema/bootstrap scripts retain their PEP 723 metadata. Tests load
+# them by path, so their PyYAML import resolves through the included lifecycle
+# group, as do the shared runtime's SDK imports.
 dev = [
     "pytest>=9",
-    "pyyaml>=6",
+    {include-group = "tier3-lifecycle"},
+]
+
+# Shared by the lifecycle CLI, its image export and tests that import it by path.
+tier3-lifecycle = [
+    "google-auth==2.58.0",
+    "google-cloud-storage==3.14.1",
+    "kubernetes==36.0.3",
+    "pyyaml==6.0.3",
 ]
 
 [tool.pytest.ini_options]
