@@ -22,6 +22,7 @@ limitations under the License.
 - Updated: 2026-09-13 (digest-pinned GAR publication and seven-day image expiry)
 - Updated: 2026-09-14 (generic stateful smoke artifact and workload storage identity)
 - Updated: 2026-09-14 (published smoke digest and concrete initial/upgrade deliveries)
+- Updated: 2026-09-14 (idle lifecycle identities, evidence storage and Operator resource limits)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -131,6 +132,38 @@ The idle Helm release retains zero replicas and quotas while adopting the GAR re
 Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
 ## Consequences
+
+### Lifecycle foundation
+
+Prepare lifecycle admission in two stages for [#1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
+The first stage establishes persistent identities, storage and Operator resource requests while replicas and Pod/PVC quotas remain zero.
+Apply it through the three existing CI-managed roots and require idle inventory and empty refreshed plans before implementing the dependent runner and supervisor.
+
+Use a dedicated main-workflow runner GSA and a separate GKE supervisor GSA/KSA.
+Place the supervisor KSA, Job and source ConfigMap in `tier3-system`.
+The smoke KSA creates Pods and Deployments only in `tier3-smoke`; keeping the supervisor in the other namespace prevents those workloads from selecting its more privileged identity.
+Their namespaced lifecycle Roles permit smoke admission and owned workload cleanup, while system writes cover supervisor Jobs/ConfigMaps, the existing Operator scale target and quota, plus Pod deletion for cleanup.
+Accept the runner and supervisor as trusted Operator administrators: a Job they create in `tier3-system` can select the chart's `flink-operator` KSA and reach its smoke-namespace permissions, including Secret access and Pod creation.
+The direct lifecycle Role grants therefore do not isolate those identities from the Operator's authority; the namespace boundary isolates the smoke workload from these management identities.
+RBAC cannot constrain dynamically named Pod deletion by label or owner UID; the later lifecycle implementation must enforce that ownership check.
+The existing bootstrap reader binding supplies only shared foundation metadata reads.
+The installer receives its new Job, log/proxy and system cleanup/scale permissions through a reviewed additive administrator grant before it delegates the Roles in CI.
+Do not add unrestricted bind, escalate or impersonate.
+
+Store durable evidence in a separate regional STANDARD bucket.
+Runtime identities can append and read `runs/` evidence but cannot overwrite or delete it; those objects become deletion-eligible after 30 days.
+Keep mutable lifecycle records in `_control/`, outside automatic expiry.
+The plan identity's additional object-write permission names only the environment lock, extending its existing state-lock exception without adding infrastructure mutation rights.
+That identity and the runtime control writers can still update or delete the lock; its absence is not proof of a clean environment.
+Admission must check durable run records and live inventory before acquiring a new lock.
+The later runner must remove completed control records and coordinate infrastructure operations through conditional object updates.
+The pinned actionlint rejects GitHub's newer `concurrency.queue` field, so that syntax is not the coordination mechanism.
+
+The Operator container receives explicit requests and limits of 1 CPU, 2 GiB memory and 1 GiB ephemeral storage in its idle Helm values.
+The [foundation runbook](../../opentofu/tier3-bootstrap/README.md#lifecycle-foundation) records the exact grants and apply boundary.
+This stage does not implement or validate workload admission, supervision, shared locking, teardown or the separately approved [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) execution.
+
+### Ownership boundaries
 
 There are separate state and application boundaries for GCP infrastructure, Kubernetes bootstrap, Helm and application runs.
 A bootstrap-only or Operator-only PR receives OpenTofu checks and a visible tfaction plan within the plan job, with an access preflight.

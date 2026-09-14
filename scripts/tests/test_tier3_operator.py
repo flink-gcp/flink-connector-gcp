@@ -110,6 +110,18 @@ def documents():
                                 {
                                     "name": "operator",
                                     "image": IMAGE,
+                                    "resources": {
+                                        "requests": {
+                                            "cpu": "1",
+                                            "memory": "2Gi",
+                                            "ephemeral-storage": "1Gi",
+                                        },
+                                        "limits": {
+                                            "cpu": "1",
+                                            "memory": "2Gi",
+                                            "ephemeral-storage": "1Gi",
+                                        },
+                                    },
                                 }
                             ],
                         }
@@ -323,6 +335,10 @@ def test_bad_chart_never_reaches_helm(monkeypatch, tmp_path, case):
         "watch-extra",
         "binding-subject",
         "binding-role",
+        "missing-resources",
+        "cpu-limit",
+        "memory-request",
+        "storage-request",
     ],
 )
 def test_rendered_chart_rejects_ownership_or_idle_violations(case):
@@ -364,6 +380,14 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
         )
     elif case == "binding-subject":
         objects[1]["subjects"][0]["namespace"] = "default"
+    elif case == "missing-resources":
+        pod["containers"][0].pop("resources")
+    elif case == "cpu-limit":
+        pod["containers"][0]["resources"]["limits"]["cpu"] = "2"
+    elif case == "memory-request":
+        pod["containers"][0]["resources"]["requests"]["memory"] = "4Gi"
+    elif case == "storage-request":
+        pod["containers"][0]["resources"]["requests"].pop("ephemeral-storage")
     else:
         objects[1]["roleRef"]["kind"] = "ClusterRole"
     with pytest.raises(ValueError):
@@ -470,6 +494,7 @@ def test_unknown_root_is_rejected(tmp_path):
         "live-image",
         "live-config",
         "live-rbac",
+        "live-resources",
     ],
 )
 def test_post_apply_verification_reads_release_and_live_resources(
@@ -525,6 +550,10 @@ def test_post_apply_verification_reads_release_and_live_resources(
             actual["data"] = {}
         if case == "live-rbac" and actual["kind"] == "Role":
             actual["rules"] = []
+        if case == "live-resources" and actual["kind"] == "Deployment":
+            actual["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"][
+                "memory"
+            ] = "4Gi"
         return result(actual)
 
     monkeypatch.setattr(operator, "run", run)

@@ -39,8 +39,9 @@ resource "google_iam_workload_identity_pool_provider" "github_actions" {
     # A principalSet member can match only one attribute value, so the
     # event/ref scoping the apply and E2E accounts need is a single
     # concatenated attribute rather than three conditions.
-    "attribute.event_ref"       = "assertion.repository_id + \":\" + assertion.event_name + \":\" + assertion.ref"
-    "attribute.image_publisher" = "assertion.repository_id + \":\" + assertion.event_name + \":\" + assertion.ref + \":\" + assertion.workflow_ref"
+    "attribute.event_ref"        = "assertion.repository_id + \":\" + assertion.event_name + \":\" + assertion.ref"
+    "attribute.image_publisher"  = "assertion.repository_id + \":\" + assertion.event_name + \":\" + assertion.ref + \":\" + assertion.workflow_ref"
+    "attribute.lifecycle_runner" = "assertion.repository_id + \":\" + assertion.event_name + \":\" + assertion.ref + \":\" + assertion.workflow_ref"
   }
 
   attribute_condition = "assertion.repository_id == \"${local.github_repository_id}\" && assertion.repository_owner_id == \"${local.github_repository_owner_id}\""

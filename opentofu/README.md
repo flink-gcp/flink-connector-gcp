@@ -27,6 +27,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
 | `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket for separately approved Cloud Tasks benchmarks |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
+| `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
 | `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |
@@ -158,6 +159,18 @@ The [CUE manifest module](../kubernetes/README.md) provides application definiti
 The [ownership decision](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates these responsibilities.
 The Helm root installs only the idle release and selects a published GAR digest.
 Application execution remains a separate stage.
+
+### Lifecycle foundation
+
+The [lifecycle foundation runbook](tier3-bootstrap/README.md#lifecycle-foundation) describes the identities, permissions and storage prepared for [issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
+The GCP root adds `tier3-runner` and `tier3-supervisor` service accounts and the regional STANDARD bucket `flink-gcp-tier3-evidence`.
+Run evidence under `runs/` becomes deletion-eligible after 30 days, with soft delete and versioning disabled.
+Runtime identities can create and read that evidence but cannot overwrite or delete it.
+Mutable coordination records live under `_control/` and are excluded from automatic expiry.
+Authorized control writers, including the plan identity for the environment lock, can still update or delete those records.
+Admission must check durable run records and live inventory even when the lock is absent.
+The lifecycle implementation must explicitly remove completed control records.
+These resources carry no workload admission or execution by themselves.
 
 ### Run and cleanup contract
 
