@@ -232,3 +232,50 @@ This runtime is not yet the complete campaign execution package.
 The external controller still needs to bind the frozen Linux runtime and source to the actual host, launch and monitor these processes, capture and validate settled physical-storage evidence before calling cell cleanup, and execute the separately budgeted serialized control and sustained hot-row phase.
 The package also needs its concrete host provisioning, automatic termination, retained evidence transfer and final host/disk absence verification.
 No trial or Compute Engine resource was created by this implementation, and no service measurement or supported-workload verdict is recorded here.
+
+## Separately reserved auxiliary observations
+
+`auxiliary.properties` adds two optional primitive reservations to the retained journal: `serialized`, then `sustained`, both after matrix cell 107 and its retained evidence.
+A complete execution package must require this file and freeze its digest with the campaign; a matrix-only journal remains useful for focused preparation tests and does not establish full protocol completion.
+Activation records the auxiliary digest, reopening binds the same bytes, and heartbeats detect a changed or removed snapshot.
+The complete matrix CSV, six-run cell order, observation periods, acceptance thresholds and variability rule are unchanged.
+
+Both auxiliary phases use 1 KiB payloads, one subtask, one-second checkpoints and ten seconds of warm-up through the production staged instrument.
+The serialized control uses evenly distributed keys and one conditional request in flight; it includes staging and checkpoint waiting and is not a primitive-RPC performance verdict.
+The sustained phase uses four conditional requests in flight and the existing 90% hot-row distribution with distinct envelope identities.
+The exact observation duration and capacity inputs are preregistered separately; none of the test fixtures constitutes actual-host calibration.
+
+The auxiliary snapshot has exactly these numeric fields, all positive:
+
+| Field | Meaning |
+| --- | --- |
+| `serializedSeconds` | Serialized control admission duration, from 30 through 300 seconds. |
+| `sustainedSeconds` | Sustained hot-row admission duration, from 600 through 3,600 seconds. |
+| `runOverheadSeconds` | Per-phase worker startup, final checkpoint, drain, readback and teardown allowance; at least each phase's checkpoint timeout plus drain limit. |
+| `storageAndCleanupSeconds` | Per-phase settled physical-storage collection, evidence retention and exact-table cleanup allowance. |
+| `otherPreparationSeconds` | Remaining creation, calibration, idle and terminal cleanup allowance within the existing campaign overhead. |
+| `<phase>.inventoryEntries`, `<phase>.inventoryBytes`, `<phase>.stagedEntries`, `<phase>.stagedBytes`, `<phase>.workBytes`, `<phase>.checkpointTimeoutMillis`, `<phase>.drainMillis` | The seven existing local limits, separately calibrated for each phase. Replace `<phase>` with `serialized` or `sustained`. |
+| `<phase>.writeAttempts`, `<phase>.writeBytes`, `<phase>.readBytes` | Separately journalled operation and byte ceilings, sufficient for the phase inventory and four-attempt allowance. |
+
+The sum of both complete phase bounds and `otherPreparationSeconds` must fit `campaignOverheadSeconds`; adding this file does not enlarge the offline cost reservation or host deadline.
+The work limits must cover inventory plus the phase's sample reservation.
+Ordinary and matrix observations retain their five-minute maximum and 8 MiB sample cap.
+The sustained entry point permits at most one hour and reserves at most 64 MiB for samples; its complete observation-plus-drain window must be expressible in nanoseconds before work is created.
+This upper bound is a capability, not the selected service duration or a completed sustained measurement.
+
+`service-auxiliary campaign-directory serialized|sustained` claims one fresh, separately budgeted worker with the exact frozen JVM flags.
+The controller and supervisor cannot claim that worker identity.
+The existing supervisor sees its PID/start instant and deadline in the same active state, so terminal cleanup retains controller-before-worker termination and ownership-checked instance deletion.
+A failed, empty or censored auxiliary observation stops the whole campaign and cannot be retried or substituted by a matrix outcome.
+
+Each phase uses one fresh table (`stage2-serialized` or `stage2-sustained`) plus `weather-data`.
+The resource adapter verifies exact inventory before creation and deletion and uses the same data and raw marker families as the matrix.
+After successful drain/readback, the controller retains physical-storage and observation evidence, verifies table absence, then removes the phase work directory and records its evidence digest before admitting the next phase.
+Deletion remains outside the publication lock and rechecks stop and controller identity before publishing completion.
+With auxiliary reservations present, the last cleaned matrix cell enters `AUXILIARY_READY` instead of terminal `MATRIX_COMPLETE`.
+The two phase outcomes and evidence records are separate from `run-N.properties`; `nextRun` stays at 648 throughout these observations.
+The last retained auxiliary phase enters `CAMPAIGN_COMPLETE`, after which terminal cleanup applies.
+
+These additions remain execution primitives.
+The external package must still enforce actual host/runtime binding, calibrated capacities, bounded process/log handling, settled physical metrics and evidence transfer before invoking the trusted completion callbacks.
+No service result or supported-workload verdict is established by the auxiliary unit fixtures or short no-service wiring test.

@@ -28,6 +28,11 @@ final class Stage2CampaignTestPlan {
     }
 
     static Path write(Path directory, String jvmFlags) throws Exception {
+        return write(directory, jvmFlags, 600);
+    }
+
+    static Path write(Path directory, String jvmFlags, long campaignOverheadSeconds)
+            throws Exception {
         Path input =
                 Files.writeString(
                         directory.resolve("inputs.properties"),
@@ -39,7 +44,9 @@ final class Stage2CampaignTestPlan {
                                 + "\nruntimeSha256="
                                 + "b".repeat(64)
                                 + "\nleaseLimitSeconds=3600\nrunOverheadSeconds=300\nleaseOverheadSeconds=60\n"
-                                + "campaignOverheadSeconds=600\nhostMicrousdPerHour=3600\notherCostMicrousd=1000000\n"
+                                + "campaignOverheadSeconds="
+                                + campaignOverheadSeconds
+                                + "\nhostMicrousdPerHour=3600\notherCostMicrousd=1000000\n"
                                 + "costCeilingMicrousd=20000000\nmaxWriteAttemptsPerRun=1000000\n"
                                 + "maxWriteBytesPerRun=1073741824\nmaxReadBytesPerRun=1073741824\n"
                                 + "maxPhysicalStorageBytes=1073741824\n");

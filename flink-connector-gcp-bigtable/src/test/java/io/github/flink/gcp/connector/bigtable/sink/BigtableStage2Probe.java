@@ -31,6 +31,9 @@ import static io.github.flink.gcp.connector.testutils.Awaits.await;
 
 /** Standalone Stage 2 entry point; service commands require a separately created lease manifest. */
 public final class BigtableStage2Probe {
+    static final long ORDINARY_SAMPLE_BYTES = 8L * 1024 * 1024;
+    static final long SUSTAINED_SAMPLE_BYTES = 64L * 1024 * 1024;
+
     private BigtableStage2Probe() {}
 
     public static void main(String[] args) throws Exception {
@@ -57,6 +60,10 @@ public final class BigtableStage2Probe {
     }
 
     private static void execute(String[] args) throws Exception {
+        if (args.length == 3 && args[0].equals("service-auxiliary")) {
+            Stage2CampaignWorker.executeAuxiliary(Path.of(args[1]), args[2]);
+            return;
+        }
         if (args.length == 3 && args[0].equals("service-formal")) {
             Stage2CampaignWorker.execute(Path.of(args[1]), args[2]);
             return;
@@ -202,6 +209,7 @@ public final class BigtableStage2Probe {
                 "Commands: plan-campaign inputs.properties limits.properties new-directory; "
                         + "plan-formal output.csv; local-formal directory table limits.properties; "
                         + "service-formal campaign-directory table; "
+                        + "service-auxiliary campaign-directory serialized|sustained; "
                         + "plan|create|cleanup|supervise|preflight manifest; "
                         + "service manifest table; local directory arm bytes parallelism inFlight checkpointMillis "
                         + "warmupMillis measureMillis capacity delayMillis keys");
@@ -298,6 +306,81 @@ public final class BigtableStage2Probe {
             boolean hot,
             Stage2RunLimits limits)
             throws Exception {
+        return timedRun(
+                lease,
+                table,
+                directory,
+                staged,
+                emulator,
+                endpoint,
+                bytes,
+                parallelism,
+                inFlight,
+                intervalMillis,
+                warmupMillis,
+                measurementMillis,
+                capacity,
+                delayMillis,
+                hot,
+                limits,
+                300_000L,
+                ORDINARY_SAMPLE_BYTES);
+    }
+
+    /** Runs a separately reserved hot-row phase through the same production instrument. */
+    static boolean sustainedHotRun(
+            Stage2RunLease lease,
+            String table,
+            Path directory,
+            int bytes,
+            int parallelism,
+            int inFlight,
+            long intervalMillis,
+            long warmupMillis,
+            long measurementMillis,
+            Stage2RunLimits limits)
+            throws Exception {
+        return timedRun(
+                lease,
+                table,
+                directory,
+                true,
+                false,
+                lease == null ? "127.0.0.1:1" : "",
+                bytes,
+                parallelism,
+                inFlight,
+                intervalMillis,
+                warmupMillis,
+                measurementMillis,
+                limits.inventoryEntries,
+                0,
+                true,
+                limits,
+                3_600_000L,
+                SUSTAINED_SAMPLE_BYTES);
+    }
+
+    private static boolean timedRun(
+            Stage2RunLease lease,
+            String table,
+            Path directory,
+            boolean staged,
+            boolean emulator,
+            String endpoint,
+            int bytes,
+            int parallelism,
+            int inFlight,
+            long intervalMillis,
+            long warmupMillis,
+            long measurementMillis,
+            int capacity,
+            long delayMillis,
+            boolean hot,
+            Stage2RunLimits limits,
+            long maximumMeasurementMillis,
+            long maximumSampleBytes)
+            throws Exception {
         if ((bytes != 1024 && bytes != 65536)
                 || parallelism < 1
                 || parallelism > 16
@@ -308,7 +391,7 @@ public final class BigtableStage2Probe {
                 || warmupMillis < 0
                 || warmupMillis > 60_000
                 || measurementMillis < 1
-                || measurementMillis > 300_000
+                || measurementMillis > maximumMeasurementMillis
                 || delayMillis < 0
                 || delayMillis > 1000
                 || capacity < 1
@@ -316,6 +399,9 @@ public final class BigtableStage2Probe {
             throw new IllegalArgumentException(
                     "Stage 2 local calibration configuration is outside its limits");
         }
+        Math.multiplyExact(
+                Math.addExact(Math.addExact(warmupMillis, measurementMillis), limits.drainMillis),
+                1_000_000L);
         Stage2Harness.checkDistribution();
         Files.createDirectories(directory.getParent());
         Files.createDirectory(directory);
@@ -371,7 +457,7 @@ public final class BigtableStage2Probe {
                     (initialSample + System.lineSeparator())
                             .getBytes(java.nio.charset.StandardCharsets.UTF_8)
                             .length;
-            if (sampleBytes > 8L * 1024 * 1024) {
+            if (sampleBytes > maximumSampleBytes) {
                 throw new IOException("Stage 2 checkpoint/measurement storage cap exhausted");
             }
             samples.println(initialSample);
@@ -395,6 +481,8 @@ public final class BigtableStage2Probe {
                             + delayMillis
                             + " "
                             + limits.describe()
+                            + " sampleBytes="
+                            + maximumSampleBytes
                             + " jvmFlags="
                             + ManagementFactory.getRuntimeMXBean().getInputArguments());
             if (lease != null) {
@@ -460,7 +548,7 @@ public final class BigtableStage2Probe {
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)
                                     .length;
                     requireWorkWithinLimit(lease, directory, limits.workBytes);
-                    if (sampleBytes > 8L * 1024 * 1024) {
+                    if (sampleBytes > maximumSampleBytes) {
                         throw new IOException(
                                 "Stage 2 checkpoint/measurement storage cap exhausted");
                     }
@@ -539,7 +627,7 @@ public final class BigtableStage2Probe {
             }
             run.ledger.sync();
             samples.flush();
-            preserveSamples(lease, directory, false);
+            preserveSamples(lease, directory, false, maximumSampleBytes);
             return !run.censored.get() && run.ledger.measuredCount() > 0;
         } catch (Exception failure) {
             boolean workloadLimit = false;
@@ -556,7 +644,7 @@ public final class BigtableStage2Probe {
             System.out.println(
                     "STAGE2_TERMINAL " + (workloadLimit ? "CENSORED_WORKLOAD_LIMIT" : "FAILED"));
             try {
-                preserveSamples(lease, directory, true);
+                preserveSamples(lease, directory, true, maximumSampleBytes);
             } catch (IOException evidenceFailure) {
                 failure.addSuppressed(evidenceFailure);
             }
@@ -569,7 +657,8 @@ public final class BigtableStage2Probe {
         }
     }
 
-    private static void preserveSamples(Stage2RunLease lease, Path directory, boolean failed)
+    static void preserveSamples(
+            Stage2RunLease lease, Path directory, boolean failed, long maximumSampleBytes)
             throws IOException {
         Path source = directory.resolve("samples.jsonl");
         if (!Files.isRegularFile(source, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
@@ -578,7 +667,7 @@ public final class BigtableStage2Probe {
             }
             throw new IOException("Stage 2 measurement file is missing");
         }
-        if (Files.size(source) > 8L * 1024 * 1024) {
+        if (Files.size(source) > maximumSampleBytes) {
             throw new IOException("Stage 2 sample evidence exceeds its storage cap");
         }
         Path evidence =

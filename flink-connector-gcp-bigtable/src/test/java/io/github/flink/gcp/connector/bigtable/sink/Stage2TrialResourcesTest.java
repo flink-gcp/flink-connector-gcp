@@ -224,8 +224,91 @@ class Stage2TrialResourcesTest {
         assertThat(delegate.mutations).isEmpty();
     }
 
+    @Test
+    void auxiliaryTablesAreRetainedAndDeletedSeparatelyAfterMatrixCompletion() throws Exception {
+        Stage2CampaignJournal journal = journal(true);
+        FakeApi api = new FakeApi();
+        Stage2TrialResources resources = new Stage2TrialResources(journal, api);
+        resources.adopt();
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal,
+                OWNER,
+                ProcessHandle.current().pid(),
+                ProcessHandle.current().info().startInstant().orElseThrow().toString(),
+                System.currentTimeMillis());
+        completeMatrixFixture(journal);
+        int index = 0;
+        for (String name : Stage2AuxiliaryPlan.NAMES) {
+            resources.createAuxiliary(name);
+            assertThat(api.tables).containsExactlyInAnyOrder("weather-data", "stage2-" + name);
+            assertThatThrownBy(() -> resources.deleteAuxiliary(name))
+                    .hasMessageContaining("incomplete");
+            long workerPid = 999999990L + index++;
+            Stage2CampaignWorker.executeAuxiliary(
+                    journal,
+                    name,
+                    workerPid,
+                    "worker",
+                    "-Xmx2g",
+                    (lease, phase) -> {
+                        assertThat(lease.table(phase.table()).getTable())
+                                .isEqualTo("stage2-" + name);
+                        Files.createDirectories(lease.workDirectory());
+                        lease.reserve(1, 1024);
+                        return true;
+                    });
+            resources.deleteAuxiliary(name);
+            assertThat(api.tables).containsExactly("weather-data");
+            journal.auxiliaryCleaned(name, "f".repeat(64));
+        }
+        assertThat(api.tables).containsExactly("weather-data");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("648");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("CAMPAIGN_COMPLETE");
+    }
+
+    @Test
+    void foreignTablePreventsAuxiliaryDeletion() throws Exception {
+        Stage2CampaignJournal journal = journal(true);
+        FakeApi api = new FakeApi();
+        Stage2TrialResources resources = new Stage2TrialResources(journal, api);
+        resources.adopt();
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal,
+                OWNER,
+                ProcessHandle.current().pid(),
+                ProcessHandle.current().info().startInstant().orElseThrow().toString(),
+                System.currentTimeMillis());
+        completeMatrixFixture(journal);
+        resources.createAuxiliary("serialized");
+        journal.claimAuxiliary("serialized", 999999999L, "worker");
+        journal.finishAuxiliary("serialized", 999999999L, "worker", true);
+        api.tables.add("foreign");
+        int mutations = api.mutations.size();
+        assertThatThrownBy(() -> resources.deleteAuxiliary("serialized"))
+                .hasMessageContaining("incomplete");
+        assertThat(api.mutations).hasSize(mutations);
+        assertThat(api.tables).contains("foreign", "stage2-serialized");
+    }
+
+    private static void completeMatrixFixture(Stage2CampaignJournal journal) throws Exception {
+        var state = journal.read();
+        state.setProperty("nextRun", "648");
+        state.setProperty("cell", "107");
+        state.setProperty("phase", "AUXILIARY_READY");
+        try (var output = Files.newOutputStream(journal.directory.resolve("state.properties"))) {
+            state.store(output, "Synthetic matrix completion; not an observation record");
+        }
+    }
+
     private Stage2CampaignJournal journal() throws Exception {
-        Path campaign = Stage2CampaignTestPlan.write(directory);
+        return journal(false);
+    }
+
+    private Stage2CampaignJournal journal(boolean auxiliary) throws Exception {
+        Path campaign =
+                auxiliary
+                        ? Stage2AuxiliaryTestPlan.write(directory)
+                        : Stage2CampaignTestPlan.write(directory);
         Files.writeString(
                 campaign.resolve("trial.properties"),
                 "owner="
