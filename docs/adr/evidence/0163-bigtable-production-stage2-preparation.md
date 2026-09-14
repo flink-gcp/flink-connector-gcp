@@ -99,7 +99,8 @@ If the full assessment cannot fit that ceiling, finish local preparation and lea
 
 As checked on 2026-09-14, [Bigtable free trials](https://docs.cloud.google.com/bigtable/docs/free-trial-instance) are available to existing customers and provide one SSD node, up to 500 GB and at most ten tables.
 The trial is available once per project; deleting it does not allow another trial.
-Eligibility and availability in `us-central1` remain unverified for this execution.
+On 2026-09-14, the owner confirmed that the `flink-gcp` Console offers a free trial in `us-central1`.
+That confirms the offered creation path; the created instance and its expiry still require a separate Console record before adoption.
 The [documented creation procedure](https://docs.cloud.google.com/bigtable/docs/create-free-trial-instance) uses the console; the ordinary instance-creation API is not evidence of free-trial pricing.
 Create the trial only after the instrument, execution package and supervision are ready, and do not upgrade it to a paid instance automatically.
 
@@ -168,3 +169,57 @@ The retained result must include the full matrix and sustained hot-row phase, ph
 Logical marker bytes do not establish physical storage or billing.
 Reuse matching #1319 and #1316 evidence with its pinned configuration and oracle limits; record every unmeasured or failed workload explicitly.
 Record the final verdict and update user-facing support guidance only from the retained acceptance evidence.
+
+## Retained campaign runtime
+
+`Stage2CampaignJournal` adds a durable state machine for the 648 ordered matrix workers.
+Activation revalidates the complete offline reservation, records the supervisor PID and start instant, and counts the host deadline from the supplied host creation time, including preparation already spent.
+The execution package must independently verify that timestamp and the actual host's configuration and automatic deletion deadline; this local journal does not query Compute Engine or enforce its billing.
+The journal atomically publishes its initial state after a durable one-shot activation marker, then replaces a forced state file under a publication lock.
+An interrupted initial publication cannot admit workers or restart activation; terminal cleanup archives any partial initial snapshot and proceeds through ownership-checked deletion.
+A remaining `state.next` after an interrupted publication prevents further admission instead of silently overwriting the interrupted transition.
+Terminal cleanup archives that interrupted file before publishing stop, so a failed publication does not prevent resource deletion.
+Completed run snapshots (`run-N.properties`) and cell evidence digests (`cell-N.properties`) are retained separately from the fixed-size active state used by measured liveness checks.
+The supervisor checks the frozen manifest digest on each heartbeat; reopening workers validate and parse the same input bytes and bind that manifest to the activated state.
+
+Before adoption, the runtime rejects per-run reservations that cannot cover the inventory's four-attempt write allowance and full readback for the largest matrix payload, and a work cap too small for six inventory files.
+These are minimum structural checks, not host-capacity calibration or a guarantee that a service observation will fit.
+A cell is claimed before its tables are created, and each worker is claimed once in the preregistered order.
+Each worker reserves its write attempts, declared write bytes and readback bytes from fixed per-run bounds before submitting data.
+Failed reservations do not partially consume one of the paired write budgets, and reopening the journal does not restore spent allowances.
+A different target, expired worker or cell, stopped journal, missing supervisor process, or heartbeat at least twenty seconds old refuses further admission.
+The journal permits the next cell only after all six observations finish, the previous worker exits, and the controller records a retained-evidence digest after exact-table deletion and absence verification.
+The measurement loop checks `workBytes` across the campaign's complete `work` root, including prior workers' files, and checks it again after drain.
+After the controller preserves the cell's required evidence and verifies table absence, the journal removes that cell's six work directories before admitting the next cell; outcome snapshots and the evidence digest remain outside that work root.
+Checkpoint-tree deletion runs outside the publication lock so heartbeats can continue; completion rechecks the same retained cell and live state before publishing its evidence digest and next-cell admission.
+A deletion failure publishes neither completion nor a digest, and a stop during deletion cannot be overwritten by completion.
+These controller callbacks are trusted orchestration boundaries: the journal does not establish the physical-metric contents or transferred evidence from a digest alone.
+
+`service-formal campaign-directory table` runs one fresh process through the same production instrument as local formal calibration, using the cell's original periods and the exact recorded JVM flags.
+It requires an already activated and supervised journal; an offline plan alone cannot invoke service clients.
+The retained-campaign guard and a legacy-lease adapter share the existing measurement path without changing the legacy instance lifecycle.
+The worker publishes an observation only after drain, readback and sample preservation succeed and the observation is nonempty and uncensored.
+A failed or censored worker stops the campaign, and an observation remains a measurement rather than a throughput/latency acceptance verdict.
+
+`Stage2TrialResources` provides the control-plane adapter, with a bounded response body and HTTP request completion deadline.
+Credential acquisition and refresh occur outside that HTTP timeout; the execution package must also bound the control-plane process through independent supervision.
+Its operator-supplied `trial.properties` has exactly `owner`, `instanceCreateTime`, `freeTrialConfirmedAt` and `freeTrialExpiresAt`.
+These values are a Console attestation, not an API-derived proof of free pricing; retain the actual creation record with the execution package.
+Adoption requires the recorded instance creation timestamp, a complete cluster inventory containing one ready SSD node in the planned compute zone, only the automatically created `weather-data` table, and no nondefault application profile or existing owner label.
+It adds only the owner label and the transactional single-cluster application profile; it has no instance-create, upgrade or resize operation.
+Each cell gets its six exact fresh tables with a data family and a raw marker family without GC, keeping seven tables including the sample.
+Final deletion checks both the creation timestamp and owner label again, then verifies absence by exact GET and an independent instance list; permission failures and incomplete inventory are not absence.
+
+`Stage2CampaignSupervisor` supplies the independent supervision step and cleanup order.
+Polling begins only after activation returns; failed adoption or setup invokes terminal cleanup explicitly.
+A premature poll before activation is rejected without deleting the adopted trial.
+Once active, an ownership-verification error, expired supervision, or a backwards wall-clock step stops the campaign; even a transient control-plane failure can therefore end the one-shot trial.
+The runtime does not retry failed observations or extend deadlines to recover from these conditions.
+It publishes stop before terminating the recorded worker, preserves reused PIDs, requires the original process to exit before cloud deletion, and records `ABSENT` only after resource absence and owned checkpoint-directory removal.
+A failed deletion leaves the journal stopped and preserves remaining local work for investigation.
+The control-plane adapter and supervision step are exercised with hand-written fakes, including foreign ownership, interrupted adoption, missing workers, incomplete deletion and response-size exhaustion.
+
+This runtime is not yet the complete campaign execution package.
+The external controller still needs to bind the frozen Linux runtime and source to the actual host, launch and monitor these processes, capture and validate settled physical-storage evidence before calling cell cleanup, and execute the separately budgeted serialized control and sustained hot-row phase.
+The package also needs its concrete host provisioning, automatic termination, retained evidence transfer and final host/disk absence verification.
+No trial or Compute Engine resource was created by this implementation, and no service measurement or supported-workload verdict is recorded here.

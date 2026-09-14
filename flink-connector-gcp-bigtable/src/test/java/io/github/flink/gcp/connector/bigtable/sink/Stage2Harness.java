@@ -48,7 +48,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Sustained instrument sharing the local harness's writer/committer and production bulk seam. */
 final class Stage2Harness extends LocalStagedHarness {
     final Stage2Ledger ledger;
-    final Stage2Lease lease;
+    final Stage2RunLease lease;
     final Stage2RunLimits limits;
     final Stage2CommitProgress commits = new Stage2CommitProgress();
     final Stage2NotificationProgress notifications = new Stage2NotificationProgress();
@@ -118,7 +118,7 @@ final class Stage2Harness extends LocalStagedHarness {
                 aggregate,
                 inFlight,
                 timed,
-                lease,
+                Stage2RunLease.legacy(lease),
                 Stage2RunLimits.historical(capacity));
     }
 
@@ -132,10 +132,12 @@ final class Stage2Harness extends LocalStagedHarness {
             boolean aggregate,
             int inFlight,
             boolean timed,
-            Stage2Lease lease,
+            Stage2RunLease lease,
             Stage2RunLimits limits)
             throws IOException {
-        super(table, endpoint, bytes, hot, aggregate, inFlight);
+        // Service clients are selected explicitly by the lease below. The inherited local
+        // options still require an emulator endpoint and must never select ADC implicitly.
+        super(table, lease == null ? endpoint : "127.0.0.1:1", bytes, hot, aggregate, inFlight);
         this.lease = lease;
         this.limits = limits;
         this.maxEntries = limits.stagedEntries;
@@ -287,13 +289,17 @@ final class Stage2Harness extends LocalStagedHarness {
         if (lease != null) {
             lease.requireTarget(table);
         }
-        attempt(bytes);
+        countAttempt(1, bytes);
     }
 
     private void attempt(long entries, long bytes) throws IOException {
         if (lease != null) {
             lease.requireLive();
         }
+        countAttempt(entries, bytes);
+    }
+
+    private void countAttempt(long entries, long bytes) throws IOException {
         if (attemptsCount.addAndGet(entries) > attemptLimit
                 || wireBytes.addAndGet(bytes) > wireLimit) {
             censored.set(true);
