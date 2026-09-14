@@ -41,6 +41,21 @@ class Stage2CampaignJournalTest {
             ProcessHandle.current().info().startInstant().orElseThrow().toString();
 
     @Test
+    void activationRejectsItsOwnSupervisorBeforePublishingAnything() throws Exception {
+        Stage2CampaignJournal journal = prepare();
+        assertThatThrownBy(
+                        () ->
+                                journal.start(
+                                        "a".repeat(32),
+                                        supervisor,
+                                        supervisorStart,
+                                        clock.millis()))
+                .hasMessageContaining("supervisor must be a different process");
+        assertThat(journal.directory.resolve("activation.started")).doesNotExist();
+        assertThat(journal.directory.resolve("state.properties")).doesNotExist();
+    }
+
+    @Test
     void modifiedSnapshotAndModifiedCostSummaryCannotStart() throws Exception {
         Stage2CampaignJournal journal = prepare();
         Path input = journal.directory.resolve("inputs.properties");
@@ -261,7 +276,8 @@ class Stage2CampaignJournalTest {
     void timeSpentBeforeActivationIsNotGrantedAgain() throws Exception {
         Stage2CampaignJournal journal = prepare();
         long started = clock.millis() - journal.hostBoundSeconds() * 1000 + 50_000;
-        journal.start("a".repeat(32), supervisor, supervisorStart, started);
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal, "a".repeat(32), supervisor, supervisorStart, started);
         assertThat(journal.read().getProperty("deadline"))
                 .isEqualTo(Long.toString(clock.millis() + 50_000));
         assertThatThrownBy(() -> journal.prepareCell(0))
@@ -405,7 +421,8 @@ class Stage2CampaignJournalTest {
     }
 
     private void start(Stage2CampaignJournal journal) throws IOException {
-        journal.start("a".repeat(32), supervisor, supervisorStart, clock.millis());
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal, "a".repeat(32), supervisor, supervisorStart, clock.millis());
     }
 
     private Stage2CampaignJournal prepare() throws Exception {

@@ -65,15 +65,22 @@ class Stage2CampaignSupervisorTest {
                         journal,
                         resources,
                         (pid, start) -> {
+                            if (pid == ProcessHandle.current().pid()) {
+                                assertThat(journal.read().getProperty("phase"))
+                                        .isEqualTo("STOPPED");
+                                events.add("stop-controller");
+                                return;
+                            }
                             assertThat(pid).isEqualTo(999_999_999L);
                             events.add("stop-worker");
                         });
         assertThatThrownBy(supervisor::tick).hasMessageContaining("disappeared");
-        assertThat(events).containsExactly("verify", "stop-worker", "delete-and-verify");
+        assertThat(events)
+                .containsExactly("verify", "stop-controller", "stop-worker", "delete-and-verify");
         assertThat(journal.read().getProperty("phase")).isEqualTo("ABSENT");
         assertThatThrownBy(worker::requireLive).hasMessageContaining("stopped");
         assertThat(supervisor.tick()).isFalse();
-        assertThat(events).hasSize(3);
+        assertThat(events).hasSize(4);
         try (var files = Files.list(journal.directory)) {
             var interrupted =
                     files.filter(
@@ -88,6 +95,51 @@ class Stage2CampaignSupervisorTest {
                         .isEqualTo("interrupted publication");
             }
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void disappearedControllerStopsAdmissionBetweenWorkers(boolean reusedPid) throws Exception {
+        Stage2CampaignJournal journal = active();
+        Path retained = Files.createDirectories(journal.directory.resolve("work"));
+        var state = journal.read();
+        long controllerPid = reusedPid ? ProcessHandle.current().pid() : 999_999_999L;
+        state.setProperty("controllerPid", Long.toString(controllerPid));
+        state.setProperty("controllerStart", "disappeared-controller");
+        try (var output = Files.newOutputStream(journal.directory.resolve("state.properties"))) {
+            state.store(output, "Disappeared controller between workers");
+        }
+        List<String> events = new ArrayList<>();
+        var supervisor =
+                new Stage2CampaignSupervisor(
+                        journal,
+                        new Stage2CampaignSupervisor.Resources() {
+                            @Override
+                            public void verifyOwned() {
+                                events.add("verify");
+                            }
+
+                            @Override
+                            public void deleteOwnedAndVerifyAbsent() throws Exception {
+                                assertThat(journal.read().getProperty("phase"))
+                                        .isEqualTo("STOPPED");
+                                assertThat(journal.directory.resolve("stop")).exists();
+                                assertThat(retained).exists();
+                                events.add("delete-and-verify");
+                            }
+                        },
+                        (pid, start) -> {
+                            assertThat(pid).isEqualTo(controllerPid);
+                            assertThat(start).isEqualTo("disappeared-controller");
+                            Stage2CampaignSupervisor.stopProcess(pid, start);
+                            events.add("controller-gone");
+                        });
+        assertThatThrownBy(supervisor::tick).hasMessageContaining("controller disappeared");
+        assertThat(events).containsExactly("verify", "controller-gone", "delete-and-verify");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("ABSENT");
+        assertThat(journal.directory.resolve("stop")).exists();
+        assertThat(retained).doesNotExist();
+        assertThat(ProcessHandle.current().isAlive()).isTrue();
     }
 
     @Test
@@ -111,7 +163,7 @@ class Stage2CampaignSupervisorTest {
                         journal,
                         resources,
                         (pid, start) -> {
-                            throw new AssertionError("No worker has been claimed");
+                            assertThat(pid).isEqualTo(ProcessHandle.current().pid());
                         });
         assertThatThrownBy(supervisor::tick)
                 .isInstanceOf(IOException.class)
@@ -121,8 +173,9 @@ class Stage2CampaignSupervisorTest {
         assertThat(retained).exists();
     }
 
-    @Test
-    void workerTerminationFailurePreventsCloudDeletion() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void processTerminationFailurePreventsCloudDeletion(boolean controllerFails) throws Exception {
         Stage2CampaignJournal journal = active();
         journal.prepareCell(0);
         journal.tablesReady();
@@ -142,9 +195,42 @@ class Stage2CampaignSupervisorTest {
                         journal,
                         resources,
                         (pid, start) -> {
+                            if (!controllerFails && pid == ProcessHandle.current().pid()) {
+                                return;
+                            }
                             throw new IOException("Worker did not exit");
                         });
         assertThatThrownBy(supervisor::cleanup).hasMessageContaining("did not exit");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
+    }
+
+    @Test
+    void missingControllerIdentityCannotBeTreatedAsVerifiedTermination() throws Exception {
+        Stage2CampaignJournal journal = active();
+        var state = journal.read();
+        state.remove("controllerPid");
+        try (var output = Files.newOutputStream(journal.directory.resolve("state.properties"))) {
+            state.store(output, "Incomplete controller identity");
+        }
+        var resources =
+                new Stage2CampaignSupervisor.Resources() {
+                    @Override
+                    public void verifyOwned() {}
+
+                    @Override
+                    public void deleteOwnedAndVerifyAbsent() {
+                        throw new AssertionError("Controller termination has not been verified");
+                    }
+                };
+        var supervisor =
+                new Stage2CampaignSupervisor(
+                        journal,
+                        resources,
+                        (pid, start) -> {
+                            throw new AssertionError("Unknown controller must not be signalled");
+                        });
+        assertThatThrownBy(supervisor::cleanup)
+                .hasMessageContaining("controller identity is missing");
         assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
     }
 
@@ -176,7 +262,8 @@ class Stage2CampaignSupervisorTest {
         }
         assertThatThrownBy(
                         () ->
-                                journal.start(
+                                Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                                        journal,
                                         "a".repeat(32),
                                         ProcessHandle.current().pid(),
                                         ProcessHandle.current()
@@ -228,7 +315,8 @@ class Stage2CampaignSupervisorTest {
     private Stage2CampaignJournal active() throws Exception {
         Stage2CampaignJournal journal =
                 new Stage2CampaignJournal(Stage2CampaignTestPlan.write(directory));
-        journal.start(
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal,
                 "a".repeat(32),
                 ProcessHandle.current().pid(),
                 ProcessHandle.current().info().startInstant().orElseThrow().toString(),

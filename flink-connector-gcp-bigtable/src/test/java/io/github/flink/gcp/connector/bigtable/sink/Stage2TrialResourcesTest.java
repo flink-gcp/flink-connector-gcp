@@ -51,7 +51,8 @@ class Stage2TrialResourcesTest {
         FakeApi api = new FakeApi();
         Stage2TrialResources resources = new Stage2TrialResources(journal, api);
         resources.adopt();
-        journal.start(
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal,
                 OWNER,
                 ProcessHandle.current().pid(),
                 ProcessHandle.current().info().startInstant().orElseThrow().toString(),
@@ -196,7 +197,8 @@ class Stage2TrialResourcesTest {
         assertThatThrownBy(supervisor::tick).hasMessageContaining("requires campaign activation");
         assertThat(api.mutations).isEqualTo(mutations);
         assertThat(journal.directory.resolve("stop")).doesNotExist();
-        journal.start(
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal,
                 OWNER,
                 ProcessHandle.current().pid(),
                 ProcessHandle.current().info().startInstant().orElseThrow().toString(),
