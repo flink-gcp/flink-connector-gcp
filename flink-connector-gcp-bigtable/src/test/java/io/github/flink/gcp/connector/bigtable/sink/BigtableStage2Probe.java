@@ -57,6 +57,16 @@ public final class BigtableStage2Probe {
     }
 
     private static void execute(String[] args) throws Exception {
+        if (args.length == 3 && args[0].equals("service-formal")) {
+            Stage2CampaignWorker.execute(Path.of(args[1]), args[2]);
+            return;
+        }
+        if (args.length == 4 && args[0].equals("plan-campaign")) {
+            Stage2CampaignPlan.write(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]));
+            System.out.println(
+                    "STAGE2_CAMPAIGN_PLAN leases=108 runs=648; preparation only, no service authorization");
+            return;
+        }
         if (args.length == 4 && args[0].equals("local-formal")) {
             Stage2AssessmentPlan.Run run = Stage2AssessmentPlan.run(args[2]);
             Stage2AssessmentPlan.Cell cell = run.cell;
@@ -189,7 +199,9 @@ public final class BigtableStage2Probe {
             return;
         }
         throw new IllegalArgumentException(
-                "Commands: plan-formal output.csv; local-formal directory table limits.properties; "
+                "Commands: plan-campaign inputs.properties limits.properties new-directory; "
+                        + "plan-formal output.csv; local-formal directory table limits.properties; "
+                        + "service-formal campaign-directory table; "
                         + "plan|create|cleanup|supervise|preflight manifest; "
                         + "service manifest table; local directory arm bytes parallelism inFlight checkpointMillis "
                         + "warmupMillis measureMillis capacity delayMillis keys");
@@ -233,6 +245,43 @@ public final class BigtableStage2Probe {
 
     static void timed(
             Stage2Lease lease,
+            String table,
+            Path directory,
+            boolean staged,
+            boolean emulator,
+            String endpoint,
+            int bytes,
+            int parallelism,
+            int inFlight,
+            long intervalMillis,
+            long warmupMillis,
+            long measurementMillis,
+            int capacity,
+            long delayMillis,
+            boolean hot,
+            Stage2RunLimits limits)
+            throws Exception {
+        timedRun(
+                Stage2RunLease.legacy(lease),
+                table,
+                directory,
+                staged,
+                emulator,
+                endpoint,
+                bytes,
+                parallelism,
+                inFlight,
+                intervalMillis,
+                warmupMillis,
+                measurementMillis,
+                capacity,
+                delayMillis,
+                hot,
+                limits);
+    }
+
+    static boolean timedRun(
+            Stage2RunLease lease,
             String table,
             Path directory,
             boolean staged,
@@ -348,11 +397,8 @@ public final class BigtableStage2Probe {
                             + limits.describe()
                             + " jvmFlags="
                             + ManagementFactory.getRuntimeMXBean().getInputArguments());
-            if (lease != null
-                    && System.currentTimeMillis() + warmupMillis + measurementMillis
-                            > lease.startedAt() + 45 * 60_000L) {
-                throw new IOException(
-                        "Full observation no longer fits the admission lease; leave it unmeasured");
+            if (lease != null) {
+                lease.requireWindow(Math.addExact(warmupMillis, measurementMillis));
             }
             long gcBefore = gcMillis();
             long started = System.nanoTime();
@@ -413,9 +459,8 @@ public final class BigtableStage2Probe {
                             (record + System.lineSeparator())
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)
                                     .length;
-                    if (sampleBytes > 8L * 1024 * 1024
-                            || directorySize(lease == null ? directory : lease.work)
-                                    > limits.workBytes) {
+                    requireWorkWithinLimit(lease, directory, limits.workBytes);
+                    if (sampleBytes > 8L * 1024 * 1024) {
                         throw new IOException(
                                 "Stage 2 checkpoint/measurement storage cap exhausted");
                     }
@@ -438,6 +483,7 @@ public final class BigtableStage2Probe {
                 }
             }
             job.result.get();
+            requireWorkWithinLimit(lease, directory, limits.workBytes);
             long gc = gcMillis() - gcBefore;
             if (run.ledger.measuredCount() == 0 && run.censored.get()) {
                 if (run.ledger.admittedCount() != run.ledger.acknowledgedCount()) {
@@ -494,6 +540,7 @@ public final class BigtableStage2Probe {
             run.ledger.sync();
             samples.flush();
             preserveSamples(lease, directory, false);
+            return !run.censored.get() && run.ledger.measuredCount() > 0;
         } catch (Exception failure) {
             boolean workloadLimit = false;
             for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
@@ -522,7 +569,7 @@ public final class BigtableStage2Probe {
         }
     }
 
-    private static void preserveSamples(Stage2Lease lease, Path directory, boolean failed)
+    private static void preserveSamples(Stage2RunLease lease, Path directory, boolean failed)
             throws IOException {
         Path source = directory.resolve("samples.jsonl");
         if (!Files.isRegularFile(source, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
@@ -535,13 +582,20 @@ public final class BigtableStage2Probe {
             throw new IOException("Stage 2 sample evidence exceeds its storage cap");
         }
         Path evidence =
-                (lease == null ? directory.getParent() : lease.manifest.getParent())
+                (lease == null ? directory.getParent() : lease.evidenceDirectory())
                         .resolve(
                                 directory.getFileName()
                                         + (failed ? "-failed" : "")
                                         + "-samples.jsonl");
         Files.copy(source, evidence);
         System.out.println("STAGE2_SAMPLES " + evidence);
+    }
+
+    static void requireWorkWithinLimit(Stage2RunLease lease, Path directory, long bytes)
+            throws IOException {
+        if (directorySize(lease == null ? directory : lease.workRoot()) > bytes) {
+            throw new IOException("Stage 2 checkpoint/measurement storage cap exhausted");
+        }
     }
 
     static long directorySize(Path directory) throws IOException {
