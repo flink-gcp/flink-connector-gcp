@@ -106,3 +106,10 @@ Record any unremoved resource immediately and stop further work on that lease.
 Changing node count, region, cell coverage, experiment timing, repetition count, or budget requires a new authorization before the change is run.
 The [bounded experiment record](0163-bigtable-stage2-experiment-harness.md) identifies the implemented instrument, local calibration, authorized small lease and its results.
 It does not authorize the full matrix.
+
+## Production instrument preparation (2026-09-14)
+
+The [production preparation record](0163-bigtable-production-stage2-preparation.md) describes the integrated instrument, offline 648-run inventory and explicit local calibration capacities.
+It also records the owner's additional USD 20 ceiling and preference for a single retained free-trial instance with bounded worker leases.
+That lifecycle requires its own reviewed execution package; the existing per-instance lease commands do not implement it.
+The matrix, observation periods and acceptance thresholds above remain unchanged, and no service performance result is recorded by that preparation.

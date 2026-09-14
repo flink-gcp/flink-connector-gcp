@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.apache.flink.api.connector.source.Source;
-import org.apache.flink.core.io.SimpleVersionedSerializer;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.SettableApiFuture;
@@ -32,8 +31,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcherFactory;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.Stage2BudgetedBatcherFactory;
-import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
-import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.DefaultSingleRowClientFactory;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -51,6 +49,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class Stage2Harness extends LocalStagedHarness {
     final Stage2Ledger ledger;
     final Stage2Lease lease;
+    final Stage2RunLimits limits;
     final Stage2CommitProgress commits = new Stage2CommitProgress();
     final Stage2NotificationProgress notifications = new Stage2NotificationProgress();
     final AtomicBoolean censored = new AtomicBoolean();
@@ -69,7 +68,14 @@ final class Stage2Harness extends LocalStagedHarness {
     private volatile long admissionEnd = Long.MAX_VALUE;
     private volatile long measureStart;
     private volatile boolean preflightDone;
-    MetadataValidator metadataValidator = Stage2Preflight::read;
+    MetadataValidator metadataValidator = Stage2Harness::readMetadata;
+    io.github.flink.gcp.connector.bigtable.sink.tables.StagedTableAdmin localTableAdmin =
+            (destination, profile, marker, families) -> {};
+
+    static void readMetadata(TableDestination destination, String profile) throws IOException {
+        new io.github.flink.gcp.connector.bigtable.sink.tables.BigtableStagedTableAdmin(null, null)
+                .validate(destination, profile, StagedMutationTestSink.MARKER_FAMILY, Map.of());
+    }
 
     interface MetadataValidator {
         void validate(TableDestination destination, String profile) throws IOException;
@@ -102,14 +108,44 @@ final class Stage2Harness extends LocalStagedHarness {
             boolean timed,
             Stage2Lease lease)
             throws IOException {
+        this(
+                table,
+                endpoint,
+                ledgerPath,
+                capacity,
+                bytes,
+                hot,
+                aggregate,
+                inFlight,
+                timed,
+                lease,
+                Stage2RunLimits.historical(capacity));
+    }
+
+    Stage2Harness(
+            TableDestination table,
+            String endpoint,
+            Path ledgerPath,
+            int capacity,
+            int bytes,
+            boolean hot,
+            boolean aggregate,
+            int inFlight,
+            boolean timed,
+            Stage2Lease lease,
+            Stage2RunLimits limits)
+            throws IOException {
         super(table, endpoint, bytes, hot, aggregate, inFlight);
         this.lease = lease;
+        this.limits = limits;
+        this.maxEntries = limits.stagedEntries;
+        this.maxBytes = limits.stagedBytes;
         this.timed = timed;
         this.wireLimit = (long) capacity * (bytes + 1024) * 4;
         try {
             this.attemptLimit =
                     lease == null ? (long) capacity * 4 : lease.reserve(capacity * 4L, wireLimit);
-            ledger = new Stage2Ledger(ledgerPath, capacity, 64L * 1024 * 1024);
+            ledger = new Stage2Ledger(ledgerPath, capacity, limits.inventoryBytes);
         } catch (IOException | RuntimeException failure) {
             receiver.shutdownNow();
             RUNS.remove(id, this);
@@ -139,7 +175,7 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     long checkpointTimeoutMillis() {
-        return 60_000;
+        return limits.checkpointTimeoutMillis;
     }
 
     @Override
@@ -221,7 +257,7 @@ final class Stage2Harness extends LocalStagedHarness {
     @Override
     void prepared(Collection<CheckAndMutateRowRequest> requests) throws IOException {
         for (CheckAndMutateRowRequest request : requests) {
-            Stage2Preflight.envelope(request);
+            new BigtableCommittable(request);
             ledger.marker(
                     sequence(request.getFalseMutationsList()),
                     request.getFalseMutations(request.getFalseMutationsCount() - 1)
@@ -230,13 +266,6 @@ final class Stage2Harness extends LocalStagedHarness {
                             .toStringUtf8());
         }
         ledger.sync();
-    }
-
-    @Override
-    void beforeSend(CheckAndMutateRowRequest wire) throws IOException {
-        Stage2Preflight.envelope(wire);
-        preflight();
-        attempt(wire.getSerializedSize());
     }
 
     @Override
@@ -252,6 +281,13 @@ final class Stage2Harness extends LocalStagedHarness {
 
     private void attempt(long bytes) throws IOException {
         attempt(1, bytes);
+    }
+
+    void beforeProductionSend(long bytes) throws IOException {
+        if (lease != null) {
+            lease.requireTarget(table);
+        }
+        attempt(bytes);
     }
 
     private void attempt(long entries, long bytes) throws IOException {
@@ -281,15 +317,6 @@ final class Stage2Harness extends LocalStagedHarness {
     }
 
     @Override
-    DefaultSingleRowClientFactory singleRowFactory() throws IOException {
-        preflight(true);
-        return lease == null
-                ? super.singleRowFactory()
-                : new DefaultSingleRowClientFactory(
-                        PROFILE, BigtableRequestOptions.builder().build(), null, null);
-    }
-
-    @Override
     MutationBatcherFactory batcherFactory() throws IOException {
         preflight(true);
         return lease == null
@@ -309,6 +336,7 @@ final class Stage2Harness extends LocalStagedHarness {
                         });
     }
 
+    // The isolated progress tests still use the historical committer without retaining its trace.
     @Override
     void trace(CheckAndMutateRowRequest wire, ApiFuture<Boolean> future) {}
 
@@ -358,42 +386,7 @@ final class Stage2Harness extends LocalStagedHarness {
         return answer;
     }
 
-    @Override
-    SimpleVersionedSerializer<CheckAndMutateRowRequest> serializer() {
-        SimpleVersionedSerializer<CheckAndMutateRowRequest> delegate = super.serializer();
-        return new SimpleVersionedSerializer<>() {
-
-            @Override
-            public int getVersion() {
-                return delegate.getVersion();
-            }
-
-            @Override
-            public byte[] serialize(CheckAndMutateRowRequest request) throws IOException {
-                long before = allocatedBytes();
-                try {
-                    return delegate.serialize(request);
-                } finally {
-                    allocationDelta(serializationAllocatedBytes, before);
-                }
-            }
-
-            @Override
-            public CheckAndMutateRowRequest deserialize(int version, byte[] bytes)
-                    throws IOException {
-                long before = allocatedBytes();
-                try {
-                    CheckAndMutateRowRequest request = delegate.deserialize(version, bytes);
-                    Stage2Preflight.envelope(request);
-                    return request;
-                } finally {
-                    allocationDelta(restoreAllocatedBytes, before);
-                }
-            }
-        };
-    }
-
-    private static long allocatedBytes() {
+    static long allocatedBytes() {
         java.lang.management.ThreadMXBean bean =
                 java.lang.management.ManagementFactory.getThreadMXBean();
         if (bean instanceof com.sun.management.ThreadMXBean) {
@@ -406,7 +399,7 @@ final class Stage2Harness extends LocalStagedHarness {
         return -1;
     }
 
-    private static void allocationDelta(AtomicLong total, long before) {
+    static void allocationDelta(AtomicLong total, long before) {
         long after = allocatedBytes();
         recordAllocation(total, before, after);
     }

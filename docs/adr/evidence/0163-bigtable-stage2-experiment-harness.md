@@ -16,6 +16,9 @@ limitations under the License.
 
 # Stage 2 experiment harness and bounded service lease
 
+The implementation and limits described below belong to the historical experimental instrument at the recorded source revisions.
+The [production preparation record](0163-bigtable-production-stage2-preparation.md) describes the current timed instrument and calibration commands; this migration does not relabel the earlier results as production measurements.
+
 This test-only instrument implements the timed path of the [Stage 2 protocol](0163-bigtable-staged-performance-protocol.md).
 It follows Accepted [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
 Neither the local calibration nor the bounded service observations below constitute the formal performance gate.

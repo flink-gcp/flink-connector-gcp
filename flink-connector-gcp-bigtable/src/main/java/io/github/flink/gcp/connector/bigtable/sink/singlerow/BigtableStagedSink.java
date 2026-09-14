@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink.singlerow;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.api.connector.sink2.CommitterInitContext;
@@ -49,6 +50,7 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.committer.BigtableS
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.BigtableStagedWriter;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.DefaultSingleRowClientFactory;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableStagedTableAdmin;
+import io.github.flink.gcp.connector.bigtable.sink.tables.StagedTableAdmin;
 
 import javax.annotation.Nullable;
 
@@ -155,17 +157,26 @@ public final class BigtableStagedSink<T>
         validate();
         CredentialsProvider credentials =
                 BigtableCredentials.loadAll(config.getServiceAccountKeyFile());
-        return new BigtableStagedCommitter(
-                options,
+        return createCommitter(
+                context,
                 new BigtableStagedTableAdmin(config.getEmulatorEndpoint(), credentials),
                 profile ->
                         new DefaultSingleRowClientFactory(
                                 profile,
                                 options.getRequestOptions(),
                                 config.getEmulatorEndpoint(),
-                                credentials),
-                expectedFamilies,
-                context.metricGroup());
+                                credentials));
+    }
+
+    /** Creates the same committer with observable metadata and client transports for tests. */
+    @VisibleForTesting
+    public Committer<BigtableCommittable> createCommitter(
+            CommitterInitContext context,
+            StagedTableAdmin tableAdmin,
+            BigtableStagedCommitter.ClientFactories factories) {
+        validate();
+        return new BigtableStagedCommitter(
+                options, tableAdmin, factories, expectedFamilies, context.metricGroup());
     }
 
     @Override

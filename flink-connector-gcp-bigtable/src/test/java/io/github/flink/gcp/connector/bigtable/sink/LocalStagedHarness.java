@@ -32,7 +32,6 @@ import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
 
 import com.google.api.core.ApiFuture;
-import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
@@ -662,27 +661,15 @@ class LocalStagedHarness implements AutoCloseable {
                     } else {
                         future = batcher.add(entry);
                     }
-                    run.peakActive.accumulateAndGet(run.active.incrementAndGet(), Math::max);
-                    ApiFutures.addCallback(
+                    return new Stage2ObservedFuture<>(
                             future,
-                            new ApiFutureCallback<Void>() {
-
-                                @Override
-                                public void onSuccess(Void ignored) {
-                                    long now = System.nanoTime();
-                                    run.clientCompleted(
-                                            sequence(wire.getMutationsList()), now - started, now);
-                                    run.acknowledged(sequence(wire.getMutationsList()), now);
-                                    run.active.decrementAndGet();
-                                }
-
-                                @Override
-                                public void onFailure(Throwable failure) {
-                                    run.active.decrementAndGet();
-                                }
+                            run,
+                            (ignored, now) -> {
+                                long sequence = sequence(wire.getMutationsList());
+                                run.clientCompleted(sequence, now - started, now);
+                                run.acknowledged(sequence, now);
                             },
-                            Runnable::run);
-                    return future;
+                            false);
                 }
 
                 @Override
