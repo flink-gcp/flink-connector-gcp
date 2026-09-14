@@ -171,7 +171,7 @@ final class Stage2CampaignPlan {
         }
     }
 
-    private static Properties read(byte[] bytes) throws IOException {
+    static Properties read(byte[] bytes) throws IOException {
         Properties settings =
                 new Properties() {
                     @Override
@@ -218,7 +218,7 @@ final class Stage2CampaignPlan {
         return Math.addExact(product / 3600, product % 3600 == 0 ? 0 : 1);
     }
 
-    private static String sha256(byte[] bytes) {
+    static String sha256(byte[] bytes) {
         try {
             return String.format(
                     Locale.ROOT,
