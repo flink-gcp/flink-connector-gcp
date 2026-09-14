@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -71,8 +72,12 @@ final class Stage2RunLimits {
     }
 
     static Stage2RunLimits read(Path path) throws IOException {
+        return read(Files.readAllBytes(path));
+    }
+
+    static Stage2RunLimits read(byte[] snapshot) throws IOException {
         Properties values = new Properties();
-        try (var input = Files.newInputStream(path)) {
+        try (var input = new ByteArrayInputStream(snapshot)) {
             values.load(input);
         }
         if (!values.stringPropertyNames()

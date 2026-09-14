@@ -57,6 +57,12 @@ public final class BigtableStage2Probe {
     }
 
     private static void execute(String[] args) throws Exception {
+        if (args.length == 4 && args[0].equals("plan-campaign")) {
+            Stage2CampaignPlan.write(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]));
+            System.out.println(
+                    "STAGE2_CAMPAIGN_PLAN leases=108 runs=648; preparation only, no service authorization");
+            return;
+        }
         if (args.length == 4 && args[0].equals("local-formal")) {
             Stage2AssessmentPlan.Run run = Stage2AssessmentPlan.run(args[2]);
             Stage2AssessmentPlan.Cell cell = run.cell;
@@ -189,7 +195,8 @@ public final class BigtableStage2Probe {
             return;
         }
         throw new IllegalArgumentException(
-                "Commands: plan-formal output.csv; local-formal directory table limits.properties; "
+                "Commands: plan-campaign inputs.properties limits.properties new-directory; "
+                        + "plan-formal output.csv; local-formal directory table limits.properties; "
                         + "plan|create|cleanup|supervise|preflight manifest; "
                         + "service manifest table; local directory arm bytes parallelism inFlight checkpointMillis "
                         + "warmupMillis measureMillis capacity delayMillis keys");
