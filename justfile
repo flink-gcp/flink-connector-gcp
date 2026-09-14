@@ -457,6 +457,11 @@ check-skill-frontmatter:
 tier3-smoke-verify:
     just verify -P tier3-smoke -pl kubernetes/apps/smoke -am clean
 
+# Export image inputs from the same uv lock used by the lifecycle CLI and tests.
+tier3-lifecycle-requirements:
+    mkdir -p kubernetes/images/lifecycle/target
+    mise x uv -- uv export --locked --only-group tier3-lifecycle --format requirements.txt --output-file kubernetes/images/lifecycle/target/requirements.txt
+
 # Static CUE checks and synthetic manifests; no Kubernetes credentials or workload.
 tier3-check:
     mise x cue -- cue -C kubernetes fmt --check --files . cue.mod/module.cue

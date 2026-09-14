@@ -174,3 +174,14 @@ The two idle quotas forbid Pods and PVCs throughout this foundation stage.
 The bootstrap inventory is a preflight, not an exhaustive controller audit or lifecycle supervisor.
 Image publication and runtime pin selection are established; lifecycle tooling and a bounded generic smoke run still require later work with separate limits, stop conditions and approval.
 Cloud Tasks implementation/benchmarks and BigQuery-specific verification remain outside this foundation change.
+
+### Official Python SDK image dependencies
+
+Bundle google-auth, google-cloud-storage and the Kubernetes Python client in the lifecycle tools image for the dependent lifecycle implementation.
+Define the lifecycle dependency group once in the root uv project and resolve it in `uv.lock`.
+Export that group with hashes into an ignored `target/requirements.txt` build input; do not maintain a separate requirements lock.
+The CLI selects the same group, and the test group includes it.
+Install wheels at build time and validate imports before publication.
+The shared runner and supervisor retain lifecycle policy; official SDKs supply authentication and API transport.
+Publish through the existing reviewed-main workflow before adopting its GAR digest in the runtime change.
+This image preparation does not change the selected runtime digest or admit a workload.

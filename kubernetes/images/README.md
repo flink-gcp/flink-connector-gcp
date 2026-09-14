@@ -25,12 +25,28 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | --- | --- | --- |
 | `operator` | [Flink Kubernetes Operator 1.15.0](https://github.com/apache/flink-kubernetes-operator/tree/release-1.15.0), Java and Operator/standalone JARs | Copy the AMD64 digest pinned in the workflow |
 | `flink` | [Flink 2.2.1, Scala 2.12, Java 17](https://github.com/apache/flink-docker/tree/983be3455636eb12cd1d3dee1efc8e32c4b875db/2.2/scala_2.12-java17-ubuntu), including `opt/flink-gs-fs-hadoop-2.2.1.jar` | Copy the AMD64 digest pinned in the workflow |
-| `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), standard library and CA certificates, plus kubectl 1.35.7 | Build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
+| `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), CA certificates, kubectl 1.35.7 and the [locked official Python SDKs](../../pyproject.toml) | Export the lifecycle dependency group, then build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
 | `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
 Digest-addressed content and transfer integrity are handled by the registry tools.
-The lifecycle Dockerfile adds kubectl and runs as UID/GID 65532.
+The lifecycle Dockerfile adds kubectl, google-auth, google-cloud-storage and the Kubernetes Python client, then runs as UID/GID 65532.
+The `tier3-lifecycle` dependency group in [pyproject.toml](../../pyproject.toml) defines the CLI/image dependencies; [uv.lock](../../uv.lock) pins their transitive versions and artifact hashes.
+The test dependency group includes this same group.
+Before the image build, `uv export --locked --only-group tier3-lifecycle` generates `lifecycle/target/requirements.txt`, including hashes and platform markers, without pytest or the project's Java parsers.
+This generated file is an ignored build input; it is never edited or locked separately.
+Installation permits only binary distributions and checks dependency consistency and SDK imports during the image build.
+The installed distributions retain their bundled license and notice files, including certifi's MPL-2.0 certificate bundle.
+SDK dependencies are installed before publication, so supervisor startup needs no PyPI access.
+After editing the lifecycle dependency group, update the root lock and regenerate the image input from the repository root:
+
+```sh
+mise x uv -- uv lock
+mise x -- just tier3-lifecycle-requirements
+```
+
+Run the export recipe before a local Docker build as well; the publication workflow runs it before cloud authentication.
+The locked export fails when dependency declarations and `uv.lock` disagree.
 Docker's setup-buildx, metadata and build-push actions build it, apply a full-commit `sha-...` tag and OCI labels, and publish it.
 The lifecycle build context is only `kubernetes/images/lifecycle`; the smoke context is `kubernetes/apps/smoke`, with `.dockerignore` allowing only the Dockerfile and two packaged JARs.
 
