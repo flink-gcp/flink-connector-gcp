@@ -116,6 +116,47 @@ This is not a full-run estimate or proof that 16 GiB is sufficient.
 The existing GKE execution lifecycle is still being prepared, and [Spot Pods can be evicted](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/autopilot-spot-pods); the small example compute saving does not establish a lower cost for a completed assessment.
 Calibrate the required host size and reserve the full bounded execution before provisioning it.
 
+## Offline campaign lease planning
+
+`plan-campaign inputs.properties limits.properties new-directory` groups the unchanged matrix into 108 proposed leases, one cell and six fresh-JVM runs per lease, retaining the declared arm order.
+It creates five local files: the two input snapshots, `matrix.csv`, `leases.csv` and a final `campaign.properties` manifest with SHA-256 digests of the other four files.
+An existing output directory is refused; invalid inputs, an oversized lease or an excessive reservation fail before the directory is created.
+An interrupted file write can leave a partial directory, which must not be treated as a completed plan.
+The properties manifest includes its generation timestamp, so compare its fields and recorded file digests rather than expecting identical manifest bytes across generations.
+The command makes no service calls.
+
+The campaign inputs contain exactly these fields; all numeric fields are positive integers.
+A micro-USD is one millionth of a US dollar.
+The seven fields of `limits.properties` are the local calibration limits documented above.
+
+| Fields | Meaning |
+| --- | --- |
+| `project`, `instance` | Exact proposed owner project and retained trial instance. |
+| `gceZone`, `gceMachineType`, `jvmFlags` | Co-located `us-central1` compute and complete proposed JVM flags, selected from host calibration. |
+| `sourceSha`, `runtimeSha256` | Full lowercase source commit and runtime artifact digest. The planner checks their shape; source review, merge ancestry and artifact contents require separate verification. |
+| `leaseLimitSeconds` | Maximum permitted duration of an individual proposed matrix lease. The output gives each lease its own smaller or equal host-time bound. |
+| `runOverheadSeconds` | Bound per fresh JVM for startup, final checkpoint, drain, readback and teardown. It must cover at least the configured checkpoint timeout plus drain limit, rounded up to seconds. |
+| `leaseOverheadSeconds` | Bound per lease for resource setup, physical-storage metric settlement, evidence collection, exact-table cleanup and worker termination confirmation. |
+| `campaignOverheadSeconds` | Additional host-time bound for creation, on-host calibration, the serialized control, sustained hot-row work, pauses while the host remains billable and final cleanup. Their exact commands and separate operation budgets remain part of service admission. |
+| `hostMicrousdPerHour` | Conservative hourly price bound for the selected regular GCE host, obtained from current official prices before admission. |
+| `otherCostMicrousd` | Positive aggregate reservation for disk, transfer, monitoring and all other costs, including costs while workers are stopped. |
+| `costCeilingMicrousd` | Total ceiling, at most `20000000` under the owner's separate allowance. |
+| `maxWriteAttemptsPerRun`, `maxWriteBytesPerRun`, `maxReadBytesPerRun` | Proposed per-run service limits, sized from calibration. These values are recorded, not enforced by this offline command. |
+| `maxPhysicalStorageBytes` | Proposed physical Bigtable storage limit; it is separate from inventory and checkpoint-file limits and requires service monitoring. |
+
+For each matrix lease, the host-time bound is the sum of its six unchanged warm-up/admission periods, six per-run overheads and one lease overhead.
+The planner rounds each lease and the campaign overhead to at least 60 seconds, rounds each host reservation up to a whole micro-USD, then adds the other-cost reservation.
+Arithmetic overflow and duplicate campaign fields are rejected.
+The limits snapshot retains the existing Java properties interpretation, including the last value winning for a duplicate key; it is interpreted identically by the local calibration command.
+The reservation assumes a verified free Bigtable trial; the output says `PREPARATION_ONLY` and `VERIFIED_BIGTABLE_FREE_TRIAL_REQUIRED`, even when its arithmetic fits the ceiling.
+Input prices and time bounds must be justified independently; the planner neither queries prices nor establishes sufficient capacity or trial eligibility.
+Its host-time accounting requires the future supervisor to enforce the emitted bounds, including billable idle time.
+
+The proposed table lifecycle keeps six new measurement tables for one cell until readback and physical-storage evidence are retained, then deletes and verifies all six before admitting the next cell.
+Together with the trial's sample table this requires at most seven tables, conditional on a preflight rejecting any other table inventory.
+The trial instance survives matrix-lease cleanup and is deleted only when the entire campaign completes, fails or is abandoned.
+These are the lifecycle requirements recorded by the plan; resource ownership checks, durable admission and outcome journaling, worker dispatch, supervision and cleanup adapters are still required before service execution.
+
 ## Remaining service admission conditions
 
 The production instrument must be reviewed and merged before final measurement, and the #1319 session must finish its service work and resource cleanup before this campaign starts.
