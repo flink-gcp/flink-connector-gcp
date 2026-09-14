@@ -173,7 +173,10 @@ Record the final verdict and update user-facing support guidance only from the r
 ## Retained campaign runtime
 
 `Stage2CampaignJournal` adds a durable state machine for the 648 ordered matrix workers.
-Activation revalidates the complete offline reservation, records the supervisor PID and start instant, and counts the host deadline from the supplied host creation time, including preparation already spent.
+Activation revalidates the complete offline reservation, records the supervisor PID and start instant and the calling controller JVM's actual PID and start instant, and counts the host deadline from the supplied host creation time, including preparation already spent.
+The controller calls activation and waits for it to return before supervisor polling begins; activation rejects the calling JVM as its own supervisor before publishing the one-shot marker.
+Only that controller can prepare a cell, publish table readiness or perform cell checkpoint cleanup.
+A supervisor heartbeat also rejects a disappeared controller.
 The execution package must independently verify that timestamp and the actual host's configuration and automatic deletion deadline; this local journal does not query Compute Engine or enforce its billing.
 The journal atomically publishes its initial state after a durable one-shot activation marker, then replaces a forced state file under a publication lock.
 An interrupted initial publication cannot admit workers or restart activation; terminal cleanup archives any partial initial snapshot and proceeds through ownership-checked deletion.
@@ -215,9 +218,15 @@ Polling begins only after activation returns; failed adoption or setup invokes t
 A premature poll before activation is rejected without deleting the adopted trial.
 Once active, an ownership-verification error, expired supervision, or a backwards wall-clock step stops the campaign; even a transient control-plane failure can therefore end the one-shot trial.
 The runtime does not retry failed observations or extend deadlines to recover from these conditions.
-It publishes stop before terminating the recorded worker, preserves reused PIDs, requires the original process to exit before cloud deletion, and records `ABSENT` only after resource absence and owned checkpoint-directory removal.
+It publishes stop before terminating the recorded controller and then the recorded worker, preserving reused PIDs and requiring their termination checks to succeed before cloud deletion.
+Stopping the controller quiesces its in-progress cell checkpoint cleanup before terminal cleanup removes the parent work root.
+A controller that reaches cell cleanup after stop is refused before deletion, and one stopped during deletion cannot publish cell completion.
+An activated journal without its controller identity cannot proceed to resource deletion; interrupted initial publication remains eligible for terminal cleanup because no cell could have been admitted.
+`ABSENT` is recorded only after resource absence and owned checkpoint-directory removal.
 A failed deletion leaves the journal stopped and preserves remaining local work for investigation.
 The control-plane adapter and supervision step are exercised with hand-written fakes, including foreign ownership, interrupted adoption, missing workers, incomplete deletion and response-size exhaustion.
+Separate child-JVM tests hold an actual checkpoint tree before, during and after cell cleanup, including a controller with a blocked shutdown hook that requires forced termination.
+They verify controller exit before cloud cleanup, work-root absence, stop preservation and the absence of premature cell evidence.
 
 This runtime is not yet the complete campaign execution package.
 The external controller still needs to bind the frozen Linux runtime and source to the actual host, launch and monitor these processes, capture and validate settled physical-storage evidence before calling cell cleanup, and execute the separately budgeted serialized control and sustained hot-row phase.

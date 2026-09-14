@@ -57,4 +57,24 @@ final class Stage2CampaignTestPlan {
     private static String escapeValue(String value) {
         return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r");
     }
+
+    /**
+     * Builds an in-JVM state fixture for fake supervisor callbacks. Real process activation and
+     * termination are covered separately by the child-JVM tests.
+     */
+    static void startWithSimulatedSupervisor(
+            Stage2CampaignJournal journal,
+            String owner,
+            long supervisorPid,
+            String supervisorStart,
+            long hostStartedAt)
+            throws java.io.IOException {
+        journal.start(owner, Long.MAX_VALUE, "synthetic-supervisor", hostStartedAt);
+        var state = journal.read();
+        state.setProperty("supervisorPid", Long.toString(supervisorPid));
+        state.setProperty("supervisorStart", supervisorStart);
+        try (var output = Files.newOutputStream(journal.directory.resolve("state.properties"))) {
+            state.store(output, "In-JVM supervisor fixture; not an execution identity");
+        }
+    }
 }

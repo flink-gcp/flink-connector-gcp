@@ -99,6 +99,9 @@ final class Stage2CampaignJournal {
         if (!owner.matches("[a-f0-9]{32}") || supervisorPid <= 0 || supervisorStart.isBlank()) {
             throw new IllegalArgumentException("Missing campaign owner or supervisor identity");
         }
+        if (supervisorPid == ProcessHandle.current().pid()) {
+            throw new IllegalArgumentException("Campaign supervisor must be a different process");
+        }
         validatePlan();
         long now = clock.millis();
         long deadline = Math.addExact(hostStartedAt, Math.multiplyExact(hostBoundSeconds(), 1000));
@@ -110,6 +113,10 @@ final class Stage2CampaignJournal {
         state.setProperty("owner", owner);
         state.setProperty("supervisorPid", Long.toString(supervisorPid));
         state.setProperty("supervisorStart", supervisorStart);
+        state.setProperty("controllerPid", Long.toString(ProcessHandle.current().pid()));
+        state.setProperty(
+                "controllerStart",
+                ProcessHandle.current().info().startInstant().orElseThrow().toString());
         state.setProperty("startedAt", Long.toString(hostStartedAt));
         state.setProperty("activatedAt", Long.toString(now));
         state.setProperty("deadline", Long.toString(deadline));
@@ -271,6 +278,10 @@ final class Stage2CampaignJournal {
                             || !supervisorStart.equals(state.getProperty("supervisorStart"))) {
                         throw new IllegalStateException("Different campaign supervisor");
                     }
+                    if (!sameProcessAlive(
+                            number(state, "controllerPid"), state.getProperty("controllerStart"))) {
+                        throw new IllegalStateException("Campaign controller disappeared");
+                    }
                     if ("STARTED".equals(state.getProperty("runStatus"))
                             && (!sameProcessAlive(
                                             number(state, "workerPid"),
@@ -287,6 +298,7 @@ final class Stage2CampaignJournal {
         update(
                 state -> {
                     live(state);
+                    requireController(state);
                     if (!state.getProperty("phase").equals("READY")
                             || cell < 0
                             || cell >= 108
@@ -321,6 +333,7 @@ final class Stage2CampaignJournal {
         update(
                 state -> {
                     live(state);
+                    requireController(state);
                     if (!state.getProperty("phase").equals("PREPARING")) {
                         throw new IllegalStateException("No table creation is pending");
                     }
@@ -532,10 +545,23 @@ final class Stage2CampaignJournal {
 
     private void requireRetainedCell(Properties state, String evidenceSha256) {
         live(state);
+        requireController(state);
         if (!state.getProperty("phase").equals("RETAINING")
                 || !evidenceSha256.matches("[a-f0-9]{64}")
                 || sameProcessAlive(number(state, "workerPid"), state.getProperty("workerStart"))) {
             throw new IllegalStateException("Cell evidence or worker termination is incomplete");
+        }
+    }
+
+    private static void requireController(Properties state) {
+        ProcessHandle current = ProcessHandle.current();
+        if (current.pid() != number(state, "controllerPid")
+                || !current.info()
+                        .startInstant()
+                        .orElseThrow()
+                        .toString()
+                        .equals(state.getProperty("controllerStart"))) {
+            throw new IllegalStateException("Different campaign controller");
         }
     }
 

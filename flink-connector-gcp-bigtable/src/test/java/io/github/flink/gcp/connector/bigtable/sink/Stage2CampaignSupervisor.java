@@ -76,6 +76,16 @@ final class Stage2CampaignSupervisor {
         }
         journal.stop();
         Properties state = journal.read();
+        // Cell checkpoint deletion runs in the registered controller, outside the publication
+        // lock. It must be quiescent before terminal cleanup can remove the parent work root.
+        // No controller can clean a cell before the initial state has been published.
+        if (state.containsKey("supervisorPid")) {
+            long controllerPid = Long.parseLong(state.getProperty("controllerPid", "0"));
+            if (controllerPid <= 0 || state.getProperty("controllerStart", "").isBlank()) {
+                throw new IllegalStateException("Campaign controller identity is missing");
+            }
+            workers.stopAndVerifyGone(controllerPid, state.getProperty("controllerStart"));
+        }
         long pid = Long.parseLong(state.getProperty("workerPid", "0"));
         if (pid > 0) {
             workers.stopAndVerifyGone(pid, state.getProperty("workerStart"));
@@ -119,7 +129,7 @@ final class Stage2CampaignSupervisor {
                     }
                 });
         if (Stage2CampaignJournal.sameProcessAlive(pid, started)) {
-            throw new IllegalStateException("Original campaign worker is still alive");
+            throw new IllegalStateException("Original campaign process is still alive");
         }
     }
 }

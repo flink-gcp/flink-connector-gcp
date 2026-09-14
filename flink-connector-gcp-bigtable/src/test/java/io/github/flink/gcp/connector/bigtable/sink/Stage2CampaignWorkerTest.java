@@ -107,7 +107,8 @@ class Stage2CampaignWorkerTest {
     private Stage2CampaignJournal active() throws Exception {
         Stage2CampaignJournal journal =
                 new Stage2CampaignJournal(Stage2CampaignTestPlan.write(directory));
-        journal.start(
+        Stage2CampaignTestPlan.startWithSimulatedSupervisor(
+                journal,
                 "a".repeat(32),
                 ProcessHandle.current().pid(),
                 ProcessHandle.current().info().startInstant().orElseThrow().toString(),
