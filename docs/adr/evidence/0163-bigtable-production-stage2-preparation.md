@@ -19,7 +19,7 @@ limitations under the License.
 This record tracks the production instrument and execution preparation for [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327).
 The [formal protocol](0163-bigtable-staged-performance-protocol.md) retains all 108 cells, three repetitions per arm, observation periods, thresholds and variability rules.
 This preparation records no service performance verdict and does not close the assessment.
-Production recovery acceptance through both API entry points and both Flink lines remains owned by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
+Production recovery acceptance through both API entry points and both Flink lines was recorded under [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) on 2026-09-14.
 
 ## Production instrumentation
 
@@ -160,7 +160,7 @@ These are the lifecycle requirements recorded by the plan; resource ownership ch
 
 ## Remaining service admission conditions
 
-The production instrument must be reviewed and merged before final measurement, and the #1319 session must finish its service work and resource cleanup before this campaign starts.
+The production instrument must be reviewed and merged before final measurement; the #1319 service work and its resource cleanup finished on 2026-09-14, before this campaign starts.
 Freeze source SHA, Linux runtime classpath or image digest, resource identities, exact commands, table/family names, worker leases, operations/storage limits and the cost reservation together.
 Prepare independent supervision and loss-of-resource handling, and validate the retained-instance lifecycle before using the one-time trial.
 A failure, empty or censored row, interruption or exhausted reservation stops execution without automatic retries, recreation, extension or capacity increases.

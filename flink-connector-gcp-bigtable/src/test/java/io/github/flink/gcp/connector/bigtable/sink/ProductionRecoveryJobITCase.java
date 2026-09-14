@@ -54,7 +54,7 @@ class ProductionRecoveryJobITCase {
                                     run, proxy, backend.rows()));
             assertThat(proxy.discarded).isEqualTo(1);
             assertThat(backend.probe.applied).isEqualTo(128);
-            assertThat(proxy.duplicates).isGreaterThanOrEqualTo(257);
+            proxy.requireReplayBounds();
             var first = backend.probe.sent.get(0);
             var withoutMarker =
                     first.toBuilder()

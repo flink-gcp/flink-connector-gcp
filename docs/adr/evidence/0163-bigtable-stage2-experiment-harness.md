@@ -23,7 +23,7 @@ This test-only instrument implements the timed path of the [Stage 2 protocol](01
 It follows Accepted [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md).
 Neither the local calibration nor the bounded service observations below constitute the formal performance gate.
 These observations preceded the production checkpointed-write API implemented under [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
-Current production-service and formal acceptance is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319).
+Production-service correctness acceptance was recorded in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) on 2026-09-14; the formal assessment is tracked in [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327).
 
 ## Instrument and limits
 

@@ -108,6 +108,9 @@ final class LocalStagedJob implements AutoCloseable {
         env.setMaxParallelism(16);
         env.enableCheckpointing(intervalMillis);
         env.getCheckpointConfig().setCheckpointTimeout(run.checkpointTimeoutMillis());
+        if (run.minPauseMillis > 0) {
+            env.getCheckpointConfig().setMinPauseBetweenCheckpoints(run.minPauseMillis);
+        }
         env.fromSource(run.source(records, hold), WatermarkStrategy.noWatermarks(), "local-input")
                 .uid("local-input")
                 .sinkTo(

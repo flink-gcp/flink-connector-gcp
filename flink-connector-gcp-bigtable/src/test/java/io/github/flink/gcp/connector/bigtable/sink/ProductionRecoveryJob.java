@@ -16,12 +16,14 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.api.connector.sink2.CommitterInitContext;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -36,15 +38,20 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -58,6 +65,17 @@ final class ProductionRecoveryJob {
 
     static LocalStagedHarness newRun(
             io.github.flink.gcp.connector.bigtable.TableDestination destination) {
+        return newRun(destination, 90_000);
+    }
+
+    /**
+     * A run with the plan's fixed input shape and a caller-chosen bound on checkpoint and savepoint
+     * control futures; the recovery lease keeps 90 seconds, the native gated class allows more
+     * after its initial stop exceeded 90 seconds on both entry points on 2026-09-14.
+     */
+    static LocalStagedHarness newRun(
+            io.github.flink.gcp.connector.bigtable.TableDestination destination,
+            long controlTimeoutMillis) {
         return new LocalStagedHarness(destination, "127.0.0.1:1", 32, true, true, 1) {
             @Override
             long checkpointTimeoutMillis() {
@@ -66,13 +84,214 @@ final class ProductionRecoveryJob {
 
             @Override
             long checkpointOperationTimeoutMillis() {
-                return 90_000;
+                return controlTimeoutMillis;
             }
         };
     }
 
+    /** One line per outcome with its count, for a diagnostic log of the commit observations. */
+    static String summarizeCommits(LocalStagedHarness run, int from) {
+        var counts =
+                new java.util.EnumMap<CommitObservation.Outcome, Integer>(
+                        CommitObservation.Outcome.class);
+        for (CommitObservation observation : phase(run.productionCommits, from)) {
+            counts.merge(observation.outcome, 1, Integer::sum);
+        }
+        return "commitObservations=" + counts;
+    }
+
     interface Readback {
         void verify() throws Exception;
+    }
+
+    /** One commit request seen at the delegating committer boundary, with how it ended. */
+    static final class CommitObservation {
+        enum Outcome {
+            /** Recorded but never handed to the production committer, or not yet returned. */
+            UNSENT,
+            /** The production committer returned without a signal: the service applied it. */
+            APPLIED,
+            /** The production committer signalled that the marker already existed. */
+            ALREADY_COMMITTED,
+            FAILED,
+            RETRY
+        }
+
+        final ByteString identity;
+        final ByteString row;
+        volatile Outcome outcome = Outcome.UNSENT;
+
+        CommitObservation(BigtableCommittable committable) {
+            var request = committable.getRequest();
+            var mutations = request.getFalseMutationsList();
+            this.identity = mutations.get(mutations.size() - 1).getSetCell().getColumnQualifier();
+            this.row = request.getRowKey();
+        }
+    }
+
+    /**
+     * Requires the observations after {@code from} to be exactly {@code count} first applications
+     * with distinct identities, and returns the identity-to-row inventory they established.
+     */
+    static Map<ByteString, ByteString> requireCommitted(
+            List<CommitObservation> observations, int from, int count) throws IOException {
+        Map<ByteString, ByteString> inventory = new HashMap<>();
+        List<CommitObservation> phase = phase(observations, from);
+        for (CommitObservation observation : phase) {
+            if (observation.outcome != CommitObservation.Outcome.APPLIED
+                    || inventory.put(observation.identity, observation.row) != null) {
+                throw new IOException(
+                        "Initial commit did not apply a distinct envelope once: "
+                                + describe(phase));
+            }
+        }
+        if (inventory.size() != count) {
+            throw new IOException(
+                    "Initial commit applied " + inventory.size() + " envelopes, expected " + count);
+        }
+        return inventory;
+    }
+
+    /**
+     * Requires the observations after {@code from} to replay exactly the inventory's identities on
+     * their original rows, each absorbed by its retained marker. A restore that commits nothing, or
+     * commits under fresh identities, fails here even though the readback would be unchanged.
+     */
+    static void requireReplayed(
+            List<CommitObservation> observations, int from, Map<ByteString, ByteString> inventory)
+            throws IOException {
+        Map<ByteString, ByteString> replayed = new HashMap<>();
+        List<CommitObservation> phase = phase(observations, from);
+        for (CommitObservation observation : phase) {
+            if (observation.outcome != CommitObservation.Outcome.ALREADY_COMMITTED
+                    || !observation.row.equals(inventory.get(observation.identity))
+                    || replayed.put(observation.identity, observation.row) != null) {
+                throw new IOException(
+                        "Restored commit was not a deduplicated replay of the original envelope: "
+                                + describe(phase));
+            }
+        }
+        if (!replayed.keySet().equals(inventory.keySet())) {
+            throw new IOException(
+                    "Restore replayed "
+                            + replayed.size()
+                            + " of "
+                            + inventory.size()
+                            + " restored envelopes: "
+                            + describe(phase));
+        }
+    }
+
+    private static List<CommitObservation> phase(List<CommitObservation> observations, int from) {
+        synchronized (observations) {
+            return List.copyOf(observations.subList(from, observations.size()));
+        }
+    }
+
+    private static String describe(List<CommitObservation> phase) {
+        StringBuilder text = new StringBuilder(phase.size() + " observations");
+        for (CommitObservation observation : phase) {
+            text.append(' ')
+                    .append(observation.row.toStringUtf8())
+                    .append('/')
+                    .append(observation.identity.toStringUtf8())
+                    .append('=')
+                    .append(observation.outcome);
+        }
+        return text.toString();
+    }
+
+    /** Waits until every vertex is RUNNING, which for a restored committer follows its replay. */
+    static void awaitRunning(LocalStagedJob job) throws Exception {
+        await(
+                "restored vertices running",
+                Duration.ofMillis(job.run.checkpointOperationTimeoutMillis()),
+                () -> allRunning(job),
+                () -> "status=" + job.client.getJobStatus().join());
+    }
+
+    /**
+     * True once the job and every vertex are RUNNING; rethrows a terminated job's failure. The job
+     * status is checked first because the dispatcher answers an execution-graph request for a job
+     * whose JobManager is still initializing with a graph that has no vertices yet, which an
+     * all-vertices loop alone would accept.
+     */
+    private static boolean allRunning(LocalStagedJob job) {
+        if (job.result.isDone()) {
+            job.result.join();
+        }
+        if (job.client.getJobStatus().join() != JobStatus.RUNNING) {
+            return false;
+        }
+        int vertices = 0;
+        for (var vertex :
+                job.cluster
+                        .getExecutionGraph(job.client.getJobID())
+                        .join()
+                        .getAllExecutionVertices()) {
+            vertices++;
+            if (vertex.getExecutionState() != ExecutionState.RUNNING) {
+                return false;
+            }
+        }
+        return vertices > 0;
+    }
+
+    /**
+     * Waits for the job to terminate and returns every failure text it left behind: the job status,
+     * the caller's direct exception, the job result's failure and each execution's own failure
+     * info. A stop-with-savepoint that fails during stopping reports a {@code
+     * StopWithSavepointStoppingException} on both the operation and the job result; among what the
+     * archived execution graph exposes, the task's cause survives only on the failed execution's
+     * failure info, so a rejection message must be read from there. Call it before the cluster
+     * closes; a job that does not terminate fails the assertion naming its state.
+     */
+    static String failureText(LocalStagedJob job, @Nullable Throwable direct) throws Exception {
+        Throwable terminal;
+        try {
+            terminal =
+                    job.result
+                            .handle((result, failure) -> failure)
+                            .get(
+                                    job.run.checkpointOperationTimeoutMillis(),
+                                    java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            throw new AssertionError(
+                    "The job did not terminate: status="
+                            + job.client.getJobStatus().join()
+                            + " admissions="
+                            + job.run.admissions.size()
+                            + " acknowledgements="
+                            + job.run.acknowledgements.size(),
+                    timeout);
+        }
+        StringBuilder text =
+                new StringBuilder("jobStatus=" + job.client.getJobStatus().join()).append('\n');
+        if (direct != null) {
+            text.append(ExceptionUtils.stringifyException(direct)).append('\n');
+        }
+        if (terminal != null) {
+            text.append(ExceptionUtils.stringifyException(terminal)).append('\n');
+        }
+        var graph = job.cluster.getExecutionGraph(job.client.getJobID()).join();
+        if (graph.getFailureInfo() != null) {
+            text.append(graph.getFailureInfo().getExceptionAsString()).append('\n');
+        }
+        for (var vertex : graph.getAllExecutionVertices()) {
+            vertex.getCurrentExecutionAttempt()
+                    .getFailureInfo()
+                    .ifPresent(info -> text.append(info.getExceptionAsString()).append('\n'));
+        }
+        return text.toString();
+    }
+
+    /** Distinct contributions per row for the first {@code inputs} sequence numbers of a run. */
+    static Map<ByteString, Long> expectedContributions(LocalStagedHarness run, int inputs) {
+        Map<ByteString, Long> expected = new HashMap<>();
+        for (long number = 0; number < inputs; number++) {
+            expected.merge(run.input(number).row(), 1L, Long::sum);
+        }
+        return expected;
     }
 
     static void run(
@@ -174,18 +393,8 @@ final class ProductionRecoveryJob {
                 "production recovery acknowledgements",
                 Duration.ofSeconds(90),
                 () -> {
-                    if (job.result.isDone()) {
-                        job.result.join();
-                    }
-                    for (var vertex :
-                            job.cluster
-                                    .getExecutionGraph(job.client.getJobID())
-                                    .join()
-                                    .getAllExecutionVertices()) {
-                        if (vertex.getExecutionState()
-                                != org.apache.flink.runtime.execution.ExecutionState.RUNNING) {
-                            return false;
-                        }
+                    if (!allRunning(job)) {
+                        return false;
                     }
                     synchronized (proxy) {
                         if (proxy.fatal != null) {
@@ -198,20 +407,39 @@ final class ProductionRecoveryJob {
                 () -> "wireAttempts=" + proxy.attempts + " duplicates=" + proxy.duplicates);
     }
 
-    @SuppressWarnings("unchecked")
+    /** Builds the production sink against the loopback proxy under the transactional profile. */
     static MappedSink<?> sink(LocalStagedHarness run, String endpoint, boolean tableApi) {
+        return sink(run, endpoint, tableApi, LocalStagedHarness.PROFILE);
+    }
+
+    /**
+     * Builds one of the two production API entry points for the shared scenario.
+     *
+     * @param endpoint the loopback emulator endpoint the connector dials, or {@code null} to leave
+     *     the builder and Table options without one so the connector takes its native TLS and
+     *     application-default-credentials branch against the real service
+     * @param profile the application profile the sink declares; the recovery plan uses the
+     *     transactional one, the native acceptance also passes a rejected shape
+     */
+    @SuppressWarnings("unchecked")
+    static MappedSink<?> sink(
+            LocalStagedHarness run, @Nullable String endpoint, boolean tableApi, String profile) {
         if (!tableApi) {
             String runId = run.id;
+            var builder =
+                    BigtableSink.<Long>builder()
+                            .table(run.table)
+                            .appProfileId(profile)
+                            .deliveryGuarantee(BigtableDeliveryGuarantee.EXACTLY_ONCE);
+            if (endpoint != null) {
+                builder.emulatorEndpoint(endpoint);
+            }
             var sink =
                     (BigtableStagedSink<Long>)
-                            BigtableSink.<Long>builder()
-                                    .table(run.table)
-                                    .emulatorEndpoint(endpoint)
-                                    .appProfileId(LocalStagedHarness.PROFILE)
-                                    .deliveryGuarantee(BigtableDeliveryGuarantee.EXACTLY_ONCE)
-                                    .stagedOptions(
+                            builder.stagedOptions(
                                             BigtableStagedOptions.builder()
-                                                    .markerFamily("flink_commit")
+                                                    .markerFamily(
+                                                            StagedMutationTestSink.MARKER_FAMILY)
                                                     .requestOptions(
                                                             BigtableRequestOptions.builder()
                                                                     .maxInFlightRequests(1)
@@ -235,12 +463,14 @@ final class ProductionRecoveryJob {
         options.put("project", run.table.getProject());
         options.put("instance", run.table.getInstance());
         options.put("table", run.table.getTable());
-        options.put("emulator-endpoint", endpoint);
-        options.put("sink.app-profile-id", LocalStagedHarness.PROFILE);
+        if (endpoint != null) {
+            options.put("emulator-endpoint", endpoint);
+        }
+        options.put("sink.app-profile-id", profile);
         options.put("sink.write-mode", "aggregate");
         options.put("sink.aggregate.column-family-types", "agg:int64-sum");
         options.put("sink.delivery-guarantee", "exactly-once");
-        options.put("sink.staged.marker-family", "flink_commit");
+        options.put("sink.staged.marker-family", StagedMutationTestSink.MARKER_FAMILY);
         options.put("sink.in-flight.max-requests", "1");
         var schema =
                 ResolvedSchema.of(
@@ -269,7 +499,7 @@ final class ProductionRecoveryJob {
     }
 
     /** Adapts only input representation; all committer and topology methods delegate unchanged. */
-    private static final class MappedSink<T>
+    static final class MappedSink<T>
             implements CrossVersionSink<Long>,
                     SupportsCommitter<BigtableCommittable>,
                     SupportsPreCommitTopology<BigtableCommittable, BigtableCommittable> {
@@ -277,11 +507,35 @@ final class ProductionRecoveryJob {
         private final BigtableStagedSink<T> delegate;
         private final String runId;
         private final boolean tableApi;
+        private final boolean suppressCommits;
 
         MappedSink(BigtableStagedSink<T> delegate, String runId, boolean tableApi) {
+            this(delegate, runId, tableApi, false);
+        }
+
+        private MappedSink(
+                BigtableStagedSink<T> delegate,
+                String runId,
+                boolean tableApi,
+                boolean suppressCommits) {
             this.delegate = delegate;
             this.runId = runId;
             this.tableApi = tableApi;
+            this.suppressCommits = suppressCommits;
+        }
+
+        /**
+         * A copy whose committer records every request but sends none, so the replay assertion can
+         * be shown to fail when a restore commits nothing. Only the local control uses it; it sends
+         * nothing to any service.
+         */
+        MappedSink<T> suppressingCommits() {
+            return new MappedSink<>(delegate, runId, tableApi, true);
+        }
+
+        /** The configuration the production sink was built with, for asserting its transport. */
+        BigtableSinkConfig<T> config() {
+            return delegate.getConfig();
         }
 
         @Override
@@ -329,7 +583,48 @@ final class ProductionRecoveryJob {
         @Override
         public Committer<BigtableCommittable> createCommitter(CommitterInitContext context)
                 throws IOException {
-            return delegate.createCommitter(context);
+            var committer = delegate.createCommitter(context);
+            String runId = this.runId;
+            boolean suppress = suppressCommits;
+            return new Committer<>() {
+                @Override
+                public void commit(Collection<CommitRequest<BigtableCommittable>> requests)
+                        throws IOException, InterruptedException {
+                    var run = LocalStagedHarness.run(runId);
+                    List<ObservedRequest> observed = new ArrayList<>();
+                    for (var request : requests) {
+                        observed.add(new ObservedRequest(request));
+                    }
+                    // Published before the production committer runs, so a stalled commit stage
+                    // is visible as UNSENT observations rather than as an empty phase.
+                    for (var request : observed) {
+                        run.productionCommits.add(request.observation);
+                    }
+                    try {
+                        if (!suppress) {
+                            committer.commit(new ArrayList<>(observed));
+                            for (var request : observed) {
+                                if (request.observation.outcome
+                                        == CommitObservation.Outcome.UNSENT) {
+                                    request.observation.outcome = CommitObservation.Outcome.APPLIED;
+                                }
+                            }
+                        }
+                    } catch (IOException | InterruptedException | RuntimeException failure) {
+                        for (var request : observed) {
+                            if (request.observation.outcome == CommitObservation.Outcome.UNSENT) {
+                                request.observation.outcome = CommitObservation.Outcome.FAILED;
+                            }
+                        }
+                        throw failure;
+                    }
+                }
+
+                @Override
+                public void close() throws Exception {
+                    committer.close();
+                }
+            };
         }
 
         @Override
@@ -346,6 +641,58 @@ final class ProductionRecoveryJob {
         public DataStream<CommittableMessage<BigtableCommittable>> addPreCommitTopology(
                 DataStream<CommittableMessage<BigtableCommittable>> stream) {
             return delegate.addPreCommitTopology(stream);
+        }
+    }
+
+    /** Forwards every signal to Flink's request and records which one the committer chose. */
+    private static final class ObservedRequest
+            implements Committer.CommitRequest<BigtableCommittable> {
+        private final Committer.CommitRequest<BigtableCommittable> delegate;
+        final CommitObservation observation;
+
+        ObservedRequest(Committer.CommitRequest<BigtableCommittable> delegate) {
+            this.delegate = delegate;
+            this.observation = new CommitObservation(delegate.getCommittable());
+        }
+
+        @Override
+        public BigtableCommittable getCommittable() {
+            return delegate.getCommittable();
+        }
+
+        @Override
+        public int getNumberOfRetries() {
+            return delegate.getNumberOfRetries();
+        }
+
+        @Override
+        public void signalFailedWithKnownReason(Throwable t) {
+            observation.outcome = CommitObservation.Outcome.FAILED;
+            delegate.signalFailedWithKnownReason(t);
+        }
+
+        @Override
+        public void signalFailedWithUnknownReason(Throwable t) {
+            observation.outcome = CommitObservation.Outcome.FAILED;
+            delegate.signalFailedWithUnknownReason(t);
+        }
+
+        @Override
+        public void retryLater() {
+            observation.outcome = CommitObservation.Outcome.RETRY;
+            delegate.retryLater();
+        }
+
+        @Override
+        public void updateAndRetryLater(BigtableCommittable committable) {
+            observation.outcome = CommitObservation.Outcome.RETRY;
+            delegate.updateAndRetryLater(committable);
+        }
+
+        @Override
+        public void signalAlreadyCommitted() {
+            observation.outcome = CommitObservation.Outcome.ALREADY_COMMITTED;
+            delegate.signalAlreadyCommitted();
         }
     }
 }

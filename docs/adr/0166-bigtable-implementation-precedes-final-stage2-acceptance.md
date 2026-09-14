@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0166: Bigtable implementation precedes final Stage 2 acceptance
 
 - Status: Accepted
-- Date: 2026-09-11; refined 2026-09-13
-- Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319)
+- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14)
+- Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319), [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327)
 - Supersedes: only the implementation-start ordering in ADR-0104 and ADR-0163 for Bigtable staged writes
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
@@ -28,7 +28,8 @@ limitations under the License.
 The owner selected implementation before final evaluation on 2026-09-11 after reviewing the remaining delivery work.
 Implement the ADR-0163 runtime, DataStream entry point, Table mapping, operational documentation and production-path local tests together.
 The implementation PR may be reviewed and merged before the service evaluation.
-Release, supported-workload claims and closing #1319 still require production-factory recovery acceptance on both supported Flink lines and the full formal Stage 2 assessment.
+Release and supported-workload claims still require production-factory recovery acceptance on both supported Flink lines and the full formal Stage 2 assessment.
+Closing #1319 requires the recorded correctness acceptance; the Stage 2 verdict is tracked by #1327.
 This accepts the risk that the completed implementation may prove unsuitable for some workloads.
 
 The retained protocol is unchanged: 108 performance cells, three measured repetitions per arm, the preregistered warm-up and observation periods, throughput/p95 thresholds and variability rule, correctness acceptance, hot-row growth and marker storage measurements.
@@ -89,6 +90,28 @@ The release/support conditions, protocol thresholds and aggregate cost authoriza
 Reuse matching sink deployment evidence from [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) with its source, runtime and oracle limitations; GKE is not a prerequisite when the approved local host can establish the required observation.
 [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) covers Change Streams source deployment recovery and does not discharge sink acceptance.
 Historical handovers and measurements retain their original issue references; current acceptance is tracked by #1319.
+
+## Scope split and cost reconciliation (2026-09-14)
+
+The owner reconciled the aggregate authorization and split the remaining acceptance into a correctness part and a performance part on 2026-09-14.
+The protocol, its 108 cells, three repetitions, thresholds and variability rule are unchanged; only the tracking and the execution environment decision change, so this is a refinement rather than a reversal.
+
+The [reconciliation record](evidence/0163-bigtable-production-recovery-service-plan.md#reconciliation-on-2026-09-14) bounds prior usage under this authorization at USD 2.60 from the project's Bigtable admin audit log and current catalog prices; billing export is not configured, and the owner accepted that bound as the billed-plus-unbilled figure.
+No reservation is outstanding.
+The correctness scope reserves USD 2 for the production recovery lease and at most USD 5.20 for the native-transport gated class on both Flink lines, four runs in total, every run counted at two clock node-hours; with the first lease attempt's one node-hour recorded in the plan, USD 10.45 of the USD 20 ceiling is committed.
+
+Under #1319 the correctness scope is the [production recovery lease](evidence/0163-bigtable-production-recovery-service-plan.md) through both API entry points on both Flink lines and the [native-transport acceptance](evidence/0163-bigtable-native-transport-acceptance.md) through the connector's own TLS and application-default-credentials branch.
+Both passed on 2026-09-14 and are recorded in those evidence files: four lease workers with 128 identities, 388 wire attempts, one discarded response and 260 duplicates each, and the gated class with all six invocations on each Flink line.
+That correctness acceptance closes #1319; release and supported-workload claims still wait for the Stage 2 verdict under #1327.
+The native-transport class joins the weekly gated suite; the owner accepted its recurring instance cost on 2026-09-14.
+
+The production-path integration of the timed harness, the unrestricted Stage 2 assessment, the sustained hot-row growth and physical storage measurements and the performance verdict were routed to [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) on 2026-09-14; the next section records the instrument preparation that landed there.
+Two measured facts justify deferring them rather than running them under this authorization.
+The [protocol](evidence/0163-bigtable-staged-performance-protocol.md) needs at least 19.2 hours of warm-up and admission before drain, teardown and setup, about 30 node-hours or USD 20 of node cost alone, in more than 30 one-hour leases on a host that must stay up for days.
+The execution host used so far is in Japan, and the client p95 of a conditional request from it has measured near 180 ms (a 178 ms upper bound at in-flight 4 on the 2026-09-07 lease; 194 to 206 ms at 1,000 in flight on 2026-09-05) against a server-side p95 under 6 ms, a gap no record yet attributes to network distance or to the client; the only completed pair of the [2026-09-07 lease](evidence/0163-bigtable-stage2-experiment-harness.md) measured the staged visibility p95 at 23.3 seconds, 64.1 times bulk, in one repetition that includes checkpoint waiting and an incomplete bulk warm-up.
+That record establishes the measured failure, not its cause; the owner's decision is to run the assessment from compute co-located in `us-central1`, through the Tier-3 rig or a separately approved host, so that network distance is removed as a candidate explanation before the criterion is judged.
+Its cost authorization is separate from this one and is recorded in the next section; a change to the latency criterion would still need its own amending ADR.
+Release and supported-workload claims continue to require that verdict, and user-facing documentation keeps describing the mode as experimental and not yet supported until it is recorded.
 
 ## Stage 2 instrument preparation (2026-09-14)
 
