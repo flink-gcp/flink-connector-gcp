@@ -37,6 +37,7 @@ final class Stage2CampaignJournal {
     final Path directory;
     final Properties inputs;
     final Stage2RunLimits limits;
+    final Stage2AuxiliaryPlan auxiliary;
     private final Properties plan;
     private final Clock clock;
     private final String planSha256;
@@ -72,6 +73,7 @@ final class Stage2CampaignJournal {
                 || !"648".equals(plan.getProperty("runs"))) {
             throw new IOException("Not a retained trial campaign plan");
         }
+        auxiliary = Stage2AuxiliaryPlan.read(this.directory, inputs);
         validateCapacity();
     }
 
@@ -122,6 +124,8 @@ final class Stage2CampaignJournal {
         state.setProperty("deadline", Long.toString(deadline));
         state.setProperty("heartbeat", Long.toString(now));
         state.setProperty("nextRun", "0");
+        state.setProperty("nextAuxiliary", "0");
+        state.setProperty("auxiliarySha256", auxiliary == null ? "" : auxiliary.sha256);
         state.setProperty("cell", "-1");
         state.setProperty("planSha256", planSha256);
         try (FileChannel channel =
@@ -191,6 +195,10 @@ final class Stage2CampaignJournal {
         if (!planSha256.equals(state.getProperty("planSha256"))) {
             throw new IOException("Campaign plan changed after activation");
         }
+        if (!(auxiliary == null ? "" : auxiliary.sha256)
+                .equals(state.getProperty("auxiliarySha256", ""))) {
+            throw new IOException("Auxiliary plan changed after activation");
+        }
         return state;
     }
 
@@ -210,6 +218,7 @@ final class Stage2CampaignJournal {
                 // Atomic initial publication means no worker could claim this campaign yet.
                 state = new Properties();
                 state.setProperty("planSha256", planSha256);
+                state.setProperty("auxiliarySha256", auxiliary == null ? "" : auxiliary.sha256);
                 archiveInterrupted(directory.resolve("state.initial"));
             } else {
                 state = read();
@@ -248,7 +257,7 @@ final class Stage2CampaignJournal {
 
     private void live(Properties state) {
         long now = clock.millis();
-        if (!List.of("READY", "PREPARING", "RUNNING", "RETAINING")
+        if (!List.of("READY", "PREPARING", "RUNNING", "RETAINING", "AUXILIARY_READY")
                         .contains(state.getProperty("phase"))
                 || !sameProcessAlive(
                         number(state, "supervisorPid"), state.getProperty("supervisorStart"))
@@ -270,6 +279,12 @@ final class Stage2CampaignJournal {
                 Stage2CampaignPlan.sha256(
                         Files.readAllBytes(directory.resolve("campaign.properties"))))) {
             throw new IOException("Campaign plan changed after activation");
+        }
+        byte[] auxiliarySnapshot = Stage2AuxiliaryPlan.snapshot(directory);
+        String actualAuxiliary =
+                auxiliarySnapshot == null ? "" : Stage2CampaignPlan.sha256(auxiliarySnapshot);
+        if (!(auxiliary == null ? "" : auxiliary.sha256).equals(actualAuxiliary)) {
+            throw new IOException("Auxiliary plan changed after activation");
         }
         update(
                 state -> {
@@ -338,6 +353,133 @@ final class Stage2CampaignJournal {
                         throw new IllegalStateException("No table creation is pending");
                     }
                     state.setProperty("phase", "RUNNING");
+                });
+    }
+
+    Stage2AuxiliaryPlan.Phase auxiliaryPhase(String name) {
+        if (auxiliary == null) {
+            throw new IllegalStateException("No auxiliary phase reservation is frozen");
+        }
+        return auxiliary.phases.stream()
+                .filter(phase -> phase.name.equals(name))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown auxiliary phase"));
+    }
+
+    void prepareAuxiliary(String name) throws IOException {
+        var phase = auxiliaryPhase(name);
+        update(
+                state -> {
+                    live(state);
+                    requireController(state);
+                    int order = Math.toIntExact(number(state, "nextAuxiliary"));
+                    if (!"AUXILIARY_READY".equals(state.getProperty("phase"))
+                            || number(state, "nextRun") != 648
+                            || number(state, "cell") != 107
+                            || order >= 2
+                            || !auxiliary.phases.get(order).name.equals(name)) {
+                        throw new IllegalStateException(
+                                "Auxiliary phase is repeated or out of order");
+                    }
+                    long end =
+                            Math.addExact(
+                                    clock.millis(), Math.multiplyExact(phase.boundSeconds, 1000));
+                    if (end > number(state, "deadline")) {
+                        throw new IllegalStateException(
+                                "Auxiliary phase does not fit the host reservation");
+                    }
+                    state.setProperty("activeAuxiliary", name);
+                    state.setProperty("cellDeadline", Long.toString(end));
+                    state.setProperty("phase", "PREPARING");
+                });
+    }
+
+    Stage2RunLease claimAuxiliary(String name, long pid, String processStart) throws IOException {
+        var phase = auxiliaryPhase(name);
+        update(
+                state -> {
+                    live(state);
+                    if (!"RUNNING".equals(state.getProperty("phase"))
+                            || !name.equals(state.getProperty("activeAuxiliary"))
+                            || "STARTED".equals(state.getProperty("runStatus"))
+                            || pid <= 0
+                            || pid == number(state, "supervisorPid")
+                            || pid == number(state, "controllerPid")
+                            || processStart.isBlank()
+                            || (state.containsKey("workerPid")
+                                    && sameProcessAlive(
+                                            number(state, "workerPid"),
+                                            state.getProperty("workerStart")))) {
+                        throw new IllegalStateException(
+                                "Auxiliary worker is repeated or has a foreign process identity");
+                    }
+                    long end =
+                            Math.addExact(
+                                    clock.millis(), Math.multiplyExact(phase.runSeconds, 1000));
+                    if (end > number(state, "cellDeadline")) {
+                        throw new IllegalStateException(
+                                "Full auxiliary run does not fit its phase reservation");
+                    }
+                    state.setProperty("runStatus", "STARTED");
+                    state.setProperty("workerPid", Long.toString(pid));
+                    state.setProperty("workerStart", processStart);
+                    state.setProperty("workerDeadline", Long.toString(end));
+                    state.setProperty("workerTable", phase.table());
+                    state.setProperty("remainingAttempts", Long.toString(phase.writeAttempts));
+                    state.setProperty("remainingWriteBytes", Long.toString(phase.writeBytes));
+                    state.setProperty("remainingReadBytes", Long.toString(phase.readBytes));
+                });
+        return worker(phase.table(), pid, processStart, phase.limits);
+    }
+
+    void finishAuxiliary(String name, long pid, String processStart, boolean successful)
+            throws IOException {
+        var phase = auxiliaryPhase(name);
+        update(
+                state -> {
+                    workerLive(state, phase.table(), pid, processStart);
+                    if (!name.equals(state.getProperty("activeAuxiliary"))) {
+                        throw new IllegalStateException("Different auxiliary completion");
+                    }
+                    state.setProperty("runStatus", successful ? "OBSERVED" : "FAILED");
+                    record("auxiliary-" + name + "-run.properties", state);
+                    state.setProperty("phase", successful ? "RETAINING" : "STOPPED");
+                });
+    }
+
+    void auxiliaryCleaned(String name, String evidenceSha256) throws IOException {
+        auxiliaryCleaned(name, evidenceSha256, Stage2Lease::removeWork);
+    }
+
+    void auxiliaryCleaned(String name, String evidenceSha256, WorkCleaner cleaner)
+            throws IOException {
+        var phase = auxiliaryPhase(name);
+        Properties retained = read();
+        requireRetainedCell(retained, evidenceSha256);
+        if (!name.equals(retained.getProperty("activeAuxiliary"))) {
+            throw new IllegalStateException("Different retained auxiliary phase");
+        }
+        // The recorded controller remains responsible for this unlocked deletion too.
+        cleaner.remove(directory.resolve("work").resolve(phase.table()));
+        update(
+                state -> {
+                    requireRetainedCell(state, evidenceSha256);
+                    if (!name.equals(state.getProperty("activeAuxiliary"))) {
+                        throw new IllegalStateException(
+                                "Retained auxiliary phase changed during cleanup");
+                    }
+                    var evidence = new Properties();
+                    evidence.setProperty("evidenceSha256", evidenceSha256);
+                    evidence.setProperty("phaseName", name);
+                    record("auxiliary-" + name + "-evidence.properties", evidence);
+                    state.setProperty(
+                            "nextAuxiliary", Long.toString(number(state, "nextAuxiliary") + 1));
+                    state.remove("activeAuxiliary");
+                    state.setProperty(
+                            "phase",
+                            number(state, "nextAuxiliary") == 2
+                                    ? "CAMPAIGN_COMPLETE"
+                                    : "AUXILIARY_READY");
                 });
     }
 
@@ -410,6 +552,11 @@ final class Stage2CampaignJournal {
     }
 
     private Stage2RunLease worker(String name, long pid, String processStart) {
+        return worker(name, pid, processStart, limits);
+    }
+
+    private Stage2RunLease worker(
+            String name, long pid, String processStart, Stage2RunLimits workerLimits) {
         TableDestination target =
                 TableDestination.of(
                         inputs.getProperty("project"), inputs.getProperty("instance"), name);
@@ -480,7 +627,7 @@ final class Stage2CampaignJournal {
                 long end =
                         Math.addExact(
                                 clock.millis(),
-                                Math.addExact(observationMillis, limits.drainMillis));
+                                Math.addExact(observationMillis, workerLimits.drainMillis));
                 if (end > number(read(), "workerDeadline")) {
                     throw new IOException(
                             "Full observation and drain no longer fit the campaign worker");
@@ -494,6 +641,10 @@ final class Stage2CampaignJournal {
         update(
                 state -> {
                     workerLive(state, table, pid, processStart);
+                    if (state.containsKey("activeAuxiliary")) {
+                        throw new IllegalStateException(
+                                "Auxiliary observation requires its separate outcome");
+                    }
                     long order = number(state, "nextRun");
                     state.setProperty("runStatus", successful ? "OBSERVED" : "FAILED");
                     // Persist outcomes separately so measured liveness checks remain fixed-size.
@@ -522,6 +673,9 @@ final class Stage2CampaignJournal {
     void cellCleaned(String evidenceSha256, WorkCleaner cleaner) throws IOException {
         Properties retained = read();
         requireRetainedCell(retained, evidenceSha256);
+        if (retained.containsKey("activeAuxiliary")) {
+            throw new IllegalStateException("Auxiliary evidence requires its separate completion");
+        }
         long cell = number(retained, "cell");
         int first = Math.toIntExact(cell * 6);
         // Keep checkpoint-tree I/O outside the publication lock so supervision can continue.
@@ -539,7 +693,10 @@ final class Stage2CampaignJournal {
                     evidence.setProperty("cell", Long.toString(cell));
                     record("cell-" + cell + ".properties", evidence);
                     state.setProperty(
-                            "phase", number(state, "nextRun") == 648 ? "MATRIX_COMPLETE" : "READY");
+                            "phase",
+                            number(state, "nextRun") == 648
+                                    ? (auxiliary == null ? "MATRIX_COMPLETE" : "AUXILIARY_READY")
+                                    : "READY");
                 });
     }
 

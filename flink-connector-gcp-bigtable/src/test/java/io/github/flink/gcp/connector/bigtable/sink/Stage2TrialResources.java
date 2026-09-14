@@ -222,6 +222,42 @@ final class Stage2TrialResources implements Stage2CampaignSupervisor.Resources {
         return result;
     }
 
+    void createAuxiliary(String name) throws Exception {
+        var phase = journal.auxiliaryPhase(name);
+        verifyOwned();
+        if (!tables().equals(Set.of("weather-data"))) {
+            throw new IOException("Auxiliary table creation requires only the trial sample table");
+        }
+        journal.prepareAuxiliary(name);
+        var request = mapper.createObjectNode();
+        request.put("tableId", phase.table());
+        var families = request.putObject("table").putObject("columnFamilies");
+        families.putObject("cf");
+        families.putObject(StagedMutationTestSink.MARKER_FAMILY);
+        verifyOwned();
+        api.call("POST", root + "/tables", request);
+        if (!tables().equals(Set.of("weather-data", phase.table()))) {
+            throw new IOException("Auxiliary table inventory differs from its reservation");
+        }
+        journal.tablesReady();
+    }
+
+    void deleteAuxiliary(String name) throws Exception {
+        var phase = journal.auxiliaryPhase(name);
+        verifyOwned();
+        var state = journal.read();
+        if (!"RETAINING".equals(state.getProperty("phase"))
+                || !name.equals(state.getProperty("activeAuxiliary"))
+                || !tables().equals(Set.of("weather-data", phase.table()))) {
+            throw new IOException("Auxiliary observation or exact table inventory is incomplete");
+        }
+        verifyOwned();
+        api.call("DELETE", root + "/tables/" + segment(phase.table()), null);
+        if (!tables().equals(Set.of("weather-data"))) {
+            throw new IOException("Auxiliary table remains after deletion");
+        }
+    }
+
     void createCell(int cell) throws Exception {
         verifyOwned();
         if (!tables().equals(Set.of("weather-data"))) {

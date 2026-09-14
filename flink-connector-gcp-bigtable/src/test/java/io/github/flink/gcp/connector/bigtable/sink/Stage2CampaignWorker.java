@@ -70,6 +70,85 @@ final class Stage2CampaignWorker {
         }
     }
 
+    interface AuxiliaryObservation {
+        boolean run(Stage2RunLease lease, Stage2AuxiliaryPlan.Phase phase) throws Exception;
+    }
+
+    static void executeAuxiliary(Path directory, String name) throws Exception {
+        executeAuxiliary(
+                new Stage2CampaignJournal(directory),
+                name,
+                ProcessHandle.current().pid(),
+                ProcessHandle.current().info().startInstant().orElseThrow().toString(),
+                String.join(" ", ManagementFactory.getRuntimeMXBean().getInputArguments()),
+                (lease, phase) -> observeAuxiliary(lease, phase, lease.workDirectory()));
+    }
+
+    static boolean observeAuxiliary(
+            Stage2RunLease lease, Stage2AuxiliaryPlan.Phase phase, Path work) throws Exception {
+        if (phase.name.equals("sustained")) {
+            return BigtableStage2Probe.sustainedHotRun(
+                    lease,
+                    phase.table(),
+                    work,
+                    1024,
+                    1,
+                    4,
+                    1000,
+                    Stage2AuxiliaryPlan.WARMUP_SECONDS * 1000,
+                    phase.measurementSeconds * 1000,
+                    phase.limits);
+        }
+        return BigtableStage2Probe.timedRun(
+                lease,
+                phase.table(),
+                work,
+                true,
+                false,
+                lease == null ? "127.0.0.1:1" : "",
+                1024,
+                1,
+                1,
+                1000,
+                Stage2AuxiliaryPlan.WARMUP_SECONDS * 1000,
+                phase.measurementSeconds * 1000,
+                phase.limits.inventoryEntries,
+                0,
+                false,
+                phase.limits);
+    }
+
+    static void executeAuxiliary(
+            Stage2CampaignJournal journal,
+            String name,
+            long pid,
+            String started,
+            String jvmFlags,
+            AuxiliaryObservation observation)
+            throws Exception {
+        if (!journal.inputs.getProperty("jvmFlags").equals(jvmFlags)) {
+            throw new IOException("Worker JVM flags differ from the frozen campaign inputs");
+        }
+        var phase = journal.auxiliaryPhase(name);
+        Stage2RunLease lease = journal.claimAuxiliary(name, pid, started);
+        try {
+            boolean observed = observation.run(lease, phase);
+            journal.finishAuxiliary(name, pid, started, observed);
+            if (!observed) {
+                throw new IOException(
+                        "Auxiliary observation was empty or censored; campaign stopped");
+            }
+            System.out.println("STAGE2_AUXILIARY_WORKER " + name + " OBSERVED");
+        } catch (Exception | Error failure) {
+            try {
+                journal.stop();
+            } catch (IOException | RuntimeException stopFailure) {
+                failure.addSuppressed(stopFailure);
+            }
+            throw failure;
+        }
+    }
+
     private static boolean observe(
             Stage2RunLease lease, Stage2AssessmentPlan.Run run, Stage2RunLimits limits)
             throws Exception {
