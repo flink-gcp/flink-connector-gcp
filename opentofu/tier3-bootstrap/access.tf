@@ -48,7 +48,7 @@ locals {
       namespace = "tier3-smoke"
       name      = "tier3-helm-apply"
       principal = "opentofu@flink-gcp.iam.gserviceaccount.com"
-      rules     = concat(local.inventory_rules, local.operator_rules, local.bootstrap_rules, [local.role_writer])
+      rules     = concat(local.inventory_rules, local.operator_rules, local.bootstrap_rules, [local.role_writer], local.lifecycle_installer_smoke)
     }
     "tier3-system-plan" = {
       namespace = "tier3-system"
@@ -67,7 +67,7 @@ locals {
         { api_groups = [""], resources = ["secrets", "configmaps", "serviceaccounts", "resourcequotas"], verbs = local.write_verbs },
         { api_groups = ["apps"], resources = ["deployments"], verbs = local.write_verbs },
         { api_groups = ["coordination.k8s.io"], resources = ["leases"], verbs = local.write_verbs }
-      ])
+      ], local.lifecycle_installer_system)
     }
   }
 }
@@ -82,9 +82,10 @@ resource "kubernetes_role_v1" "installer" {
   dynamic "rule" {
     for_each = each.value.rules
     content {
-      api_groups = rule.value.api_groups
-      resources  = rule.value.resources
-      verbs      = rule.value.verbs
+      api_groups     = rule.value.api_groups
+      resources      = rule.value.resources
+      verbs          = rule.value.verbs
+      resource_names = try(rule.value.resource_names, null)
     }
   }
   depends_on = [kubernetes_resource_quota_v1.idle]
@@ -150,13 +151,18 @@ resource "kubernetes_cluster_role_binding_v1" "reader" {
     name      = kubernetes_cluster_role_v1.reader.metadata[0].name
   }
   dynamic "subject" {
-    for_each = ["opentofu-plan@flink-gcp.iam.gserviceaccount.com", "opentofu@flink-gcp.iam.gserviceaccount.com"]
+    for_each = ["opentofu-plan@flink-gcp.iam.gserviceaccount.com", "opentofu@flink-gcp.iam.gserviceaccount.com", "tier3-runner@flink-gcp.iam.gserviceaccount.com"]
     content {
       api_group = "rbac.authorization.k8s.io"
       kind      = "User"
       name      = subject.value
       namespace = ""
     }
+  }
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account_v1.supervisor.metadata[0].name
+    namespace = kubernetes_service_account_v1.supervisor.metadata[0].namespace
   }
   depends_on = [kubernetes_resource_quota_v1.idle]
 }

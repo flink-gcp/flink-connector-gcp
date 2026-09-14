@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
 NAMESPACES = ("tier3-system", "tier3-smoke")
 MAX_CHART_BYTES = 2 * 1024 * 1024
+OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
 CRDS = tuple(
     name + ".flink.apache.org"
     for name in (
@@ -112,6 +113,11 @@ def operator_documents(source, expected_image):
                 or pod.get("initContainers")
                 or len(containers) != 1
                 or containers[0].get("image") != expected_image
+                or containers[0].get("resources")
+                != {
+                    "requests": OPERATOR_RESOURCES_LIMIT,
+                    "limits": OPERATOR_RESOURCES_LIMIT,
+                }
                 or any(
                     "persistentVolumeClaim" in volume
                     for volume in pod.get("volumes", [])
@@ -599,6 +605,8 @@ class Cluster:
                     container["image"]
                     for container in expected["spec"]["template"]["spec"]["containers"]
                 ]
+                or actual["spec"]["template"]["spec"]["containers"][0].get("resources")
+                != expected["spec"]["template"]["spec"]["containers"][0]["resources"]
             ):
                 raise RuntimeError(
                     "Live Operator Deployment is not idle at the pinned version"

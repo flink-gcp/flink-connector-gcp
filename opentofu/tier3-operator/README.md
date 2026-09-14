@@ -48,6 +48,9 @@ The installer already holds these explicit permissions through bootstrap, withou
 The chart's job ServiceAccount, job Role and job RoleBinding creation are all disabled.
 Bootstrap owns namespaces, CRDs, zero Pod/PVC quotas and the persistent smoke identity/RBAC; the GCP root owns cloud resources and IAM, and CUE owns application deliveries.
 No cert-manager or workload is installed.
+The Operator container explicitly requests and limits 1 CPU, 2 GiB memory and 1 GiB ephemeral storage for later admission.
+The chart and live-Deployment checks enforce these quantities while retaining zero replicas.
+These values prepare the [lifecycle foundation](../tier3-bootstrap/README.md#lifecycle-foundation); they do not allocate a Pod.
 [ADR-0165](../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records these boundaries.
 
 ## Plan and apply

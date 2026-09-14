@@ -29,12 +29,14 @@ This root owns `tier3-system`, `tier3-smoke`, their idle quotas, installer RBAC,
 The Helm release owns its Operator Deployment, configuration, ServiceAccount, Roles/RoleBindings and release Secrets.
 Its chart-managed job identity/RBAC, namespace creation and CRD installation are disabled.
 No resource in this root starts a Pod or allocates a PVC.
+The [lifecycle foundation](#lifecycle-foundation) also owns the dedicated supervisor KSA and scoped runtime Roles/RoleBindings; its one-time installer permission additions precede the foundation apply.
 
 | Identity | Added Kubernetes permissions |
 | --- | --- |
 | `opentofu-plan` | Read both namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
 | `opentofu` | Manage bootstrap and Helm objects in the two namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
 | `tier3-smoke/smoke` | The chart's job permissions for Pods, ConfigMaps and Deployments in `tier3-smoke` |
+| `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads |
 
 The installer holds the explicit chart permission inventory so Kubernetes permits creating and binding its Roles without unrestricted `bind`, `escalate` or `impersonate` grants.
 The existing GCP IAM permissions remain effective: additive Kubernetes RBAC does not narrow them.
@@ -151,3 +153,83 @@ CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the f
 The [image publication path](../../kubernetes/images/README.md) supplies GAR runtime pins.
 Lifecycle tooling and a bounded generic smoke run follow separately.
 Cloud Tasks implementation/benchmarks and BigQuery verification are outside this bootstrap change.
+
+## Lifecycle foundation
+
+This foundation prepares the persistent permissions and storage for [issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
+It keeps both Pod/PVC quotas and the Operator replica count at zero.
+The runner, supervisor, shared lock, admission checks and cleanup automation are the next implementation stage; no workflow in this change can start a run.
+
+### Identities and storage
+
+The GCP root owns the following new resources and grants.
+
+| Resource | Purpose and boundary |
+| --- | --- |
+| `tier3-runner@flink-gcp.iam.gserviceaccount.com` | External lifecycle operations; Cluster Viewer for GKE discovery/DNS access, Reader on the existing Tier-3 GAR repository, and the storage grants below |
+| `tier3-supervisor@flink-gcp.iam.gserviceaccount.com` | Storage access from the dedicated supervisor KSA; no GKE administration or image publication |
+| `gs://flink-gcp-tier3-evidence` | `us-central1`, STANDARD, uniform access, public access prevention, no soft delete or versioning |
+| Evidence `runs/` prefix | Both runtime identities can create and read objects; only the bucket lifecycle removes them, starting at age 30 days |
+| Evidence `_control/` prefix | Both runtime identities can update control records; the plan identity can mutate only `_control/environment.json` |
+| Existing smoke bucket | Both runtime identities can list/read objects and have Object User access under `runs/` for cleanup; no bucket administration |
+
+Object User includes object creation and update as well as deletion.
+The conditional smoke-bucket grant restricts that role to run state; the separate Object Viewer grant supports listing, whose authorization is evaluated at the bucket rather than an individual object.
+IAM does not select the active run within those prefixes: the lifecycle implementation must verify the approved run ID, object generation and resource ownership before changing or deleting anything.
+The runtime identities have no evidence-deletion permission under `runs/`, and cannot change bucket IAM, expiry or retention.
+The existing infrastructure apply identity retains its administrative permissions.
+
+The runner's WIF bindings select this repository's immutable ID and the exact main workflow reference, event and ref.
+They reserve `workflow_dispatch` for `tier3-run.yaml` and `tier3-recover.yaml`, and `workflow_run` for `tier3-recover.yaml`.
+The recovery workflow must separately validate its triggering workflow and the saved run approval; its WIF binding does not authenticate that triggering run.
+The supervisor trust selects only `tier3-system/tier3-supervisor` through Workload Identity Federation for GKE.
+Neither identity reuses the installer, image publisher or smoke application account.
+
+The bootstrap root creates the supervisor KSA in `tier3-system`, annotates it for its GSA and binds both runtime identities to `tier3-lifecycle` Roles in the two namespaces.
+The later supervisor Job and source ConfigMap also belong in `tier3-system`.
+The smoke KSA can create Pods and Deployments only in `tier3-smoke`, so it cannot select the supervisor KSA through a workload it creates.
+In `tier3-smoke`, the lifecycle Roles allow FlinkDeployment admission/finalizer cleanup, workload deletion and bounded observation through Pod logs and the Service proxy.
+In `tier3-system`, writes cover supervisor Jobs/ConfigMaps, deletion of Pods, scale changes on `flink-kubernetes-operator` and updates to `tier3-idle`.
+The runtime must verify ownership before changing or deleting a Job or ConfigMap, including the chart-owned Operator configuration in that namespace.
+Quota writes in `tier3-smoke` also name only `tier3-idle`.
+Dynamic Pod names cannot be constrained to a run using RBAC: the runtime must check UID and ownership before deletion.
+The shared bootstrap reader binding supplies read access to the two namespace identities, the four CRDs and the named bootstrap RBAC objects.
+The lifecycle Roles do not directly grant Secret access, identity/RBAC writes, namespace/CRD writes, or unrestricted bind/escalate/impersonate.
+They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke`, including Secret access and Pod creation.
+Treat the runner and supervisor as trusted Operator administrators; the direct Role inventory is not a boundary on their reachable permissions.
+This trust does not extend to the smoke workload identity, which cannot create workloads in `tier3-system`.
+
+### Initial permission grant
+
+CI's apply identity must hold every permission before it can delegate the new lifecycle Roles.
+Prepare and review an additive administrator patch for the two existing `tier3-helm-apply` Roles before merging the foundation PR.
+The patch adds only the rules in `local.lifecycle_installer_smoke` and `local.lifecycle_installer_system`; preserve every existing rule and object identity.
+
+| Namespace | Additional rule |
+| --- | --- |
+| `tier3-system` | `batch/jobs`: get, list, watch, create, update, patch, delete |
+| `tier3-smoke` | core `pods/log` and `services/proxy`: get |
+| `tier3-system` | core `pods`: delete |
+| `tier3-system` | core `pods/log`: get |
+| `tier3-system` | `apps/deployments/scale`: get, update, patch, only `flink-kubernetes-operator` |
+
+Use the dedicated kubeconfig and explicit `gke_flink-gcp_us-central1_flink-tier3` context to verify the target, idle quotas and zero Pods before the administrator patch.
+First probe the added operations with the apply identity; already effective permissions need no repeated grant.
+Do not grant these rules to the plan identity, and do not disable Kubernetes escalation checks.
+After the one-time grant, CI applies the tracked Roles through the normal reviewed saved-plan path.
+This grant does not authorize quota changes, Operator scale-up or application execution.
+
+### Acceptance and next stage
+
+Review all three root plans before merge.
+The GCP plan adds two service accounts, one bucket and the scoped grants; it updates the existing WIF provider without changing its repository/owner condition.
+The bootstrap plan adds one ServiceAccount, two Roles and two RoleBindings, extends the two installer Roles and adds the runtime subjects to the existing reader binding.
+It must preserve namespaces, quotas, CRDs and existing identities.
+The Operator plan updates its Helm values in place, keeping zero replicas, one container and the same seven chart-owned objects.
+That container now explicitly requests and limits 1 CPU, 2 GiB memory and 1 GiB ephemeral storage; the chart and post-apply checks verify those quantities.
+
+After CI apply, require idle inventory and empty refreshed plans for all three roots before developing the dependent lifecycle implementation.
+Actual WIF, supervisor and deletion behavior remains untested until the later stages; static IAM/RBAC configuration is not execution evidence.
+The next implementation enforces one run, a 45-minute admission/test window, 15 minutes for cleanup, a $1 additional-cost budget, and 100 MiB of durable evidence per run.
+Its supervisor must keep the Operator running until run-object and owned workload deletion completes, then restore the original quotas and zero replicas.
+The separately approved GKE lifecycle/recovery exercise belongs to [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).
