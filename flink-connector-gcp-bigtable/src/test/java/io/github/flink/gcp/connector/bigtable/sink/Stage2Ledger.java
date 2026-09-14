@@ -41,7 +41,7 @@ final class Stage2Ledger implements AutoCloseable {
     private long measuredEnd;
 
     Stage2Ledger(Path path, int capacity, long maxBytes) throws IOException {
-        if (capacity < 1 || capacity > 1_000_000 || (long) capacity * SLOT_BYTES > maxBytes) {
+        if (capacity < 1 || (long) capacity * SLOT_BYTES > maxBytes) {
             throw new IllegalArgumentException("Input inventory exceeds its fixed storage budget");
         }
         Files.createFile(path);

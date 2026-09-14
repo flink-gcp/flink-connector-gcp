@@ -57,6 +57,35 @@ public final class BigtableStage2Probe {
     }
 
     private static void execute(String[] args) throws Exception {
+        if (args.length == 4 && args[0].equals("local-formal")) {
+            Stage2AssessmentPlan.Run run = Stage2AssessmentPlan.run(args[2]);
+            Stage2AssessmentPlan.Cell cell = run.cell;
+            Stage2RunLimits limits = Stage2RunLimits.read(Path.of(args[3]));
+            timed(
+                    null,
+                    run.table(),
+                    Path.of(args[1]),
+                    run.staged,
+                    false,
+                    "127.0.0.1:1",
+                    cell.payloadBytes,
+                    cell.parallelism,
+                    cell.inFlight,
+                    cell.checkpointSeconds * 1000L,
+                    cell.warmupSeconds() * 1000L,
+                    cell.measurementSeconds() * 1000L,
+                    limits.inventoryEntries,
+                    0,
+                    cell.hot,
+                    limits);
+            return;
+        }
+        if (args.length == 2 && args[0].equals("plan-formal")) {
+            Stage2AssessmentPlan.write(Path.of(args[1]));
+            System.out.println(
+                    "STAGE2_FORMAL_PLAN cells=108 runs=648 minimumAdmissionSeconds=69120; not a service authorization");
+            return;
+        }
         if (args.length == 2 && args[0].equals("plan")) {
             Stage2Lease lease = Stage2Lease.plan(Path.of(args[1]));
             System.out.println(
@@ -102,10 +131,12 @@ public final class BigtableStage2Probe {
                         "Experimental workers cannot use a production recovery lease");
             }
             String table = args[2];
-            lease.claim(table);
             if (table.startsWith("recovery-")) {
-                recovery(lease, table);
-            } else if (table.equals("hot")
+                throw new IllegalArgumentException(
+                        "Recovery runs use BigtableProductionRecoveryProbe");
+            }
+            lease.claim(table);
+            if (table.equals("hot")
                     || table.equals("serialized")
                     || table.matches("(bulk|staged)-r[123]")) {
                 boolean staged = !table.startsWith("bulk");
@@ -158,7 +189,8 @@ public final class BigtableStage2Probe {
             return;
         }
         throw new IllegalArgumentException(
-                "Commands: plan|create|cleanup|supervise|preflight manifest; "
+                "Commands: plan-formal output.csv; local-formal directory table limits.properties; "
+                        + "plan|create|cleanup|supervise|preflight manifest; "
                         + "service manifest table; local directory arm bytes parallelism inFlight checkpointMillis "
                         + "warmupMillis measureMillis capacity delayMillis keys");
     }
@@ -180,6 +212,43 @@ public final class BigtableStage2Probe {
             long delayMillis,
             boolean hot)
             throws Exception {
+        timed(
+                lease,
+                table,
+                directory,
+                staged,
+                emulator,
+                endpoint,
+                bytes,
+                parallelism,
+                inFlight,
+                intervalMillis,
+                warmupMillis,
+                measurementMillis,
+                capacity,
+                delayMillis,
+                hot,
+                Stage2RunLimits.historical(capacity));
+    }
+
+    static void timed(
+            Stage2Lease lease,
+            String table,
+            Path directory,
+            boolean staged,
+            boolean emulator,
+            String endpoint,
+            int bytes,
+            int parallelism,
+            int inFlight,
+            long intervalMillis,
+            long warmupMillis,
+            long measurementMillis,
+            int capacity,
+            long delayMillis,
+            boolean hot,
+            Stage2RunLimits limits)
+            throws Exception {
         if ((bytes != 1024 && bytes != 65536)
                 || parallelism < 1
                 || parallelism > 16
@@ -194,7 +263,7 @@ public final class BigtableStage2Probe {
                 || delayMillis < 0
                 || delayMillis > 1000
                 || capacity < 1
-                || capacity > 1_000_000) {
+                || capacity != limits.inventoryEntries) {
             throw new IllegalArgumentException(
                     "Stage 2 local calibration configuration is outside its limits");
         }
@@ -216,7 +285,8 @@ public final class BigtableStage2Probe {
                                 false,
                                 inFlight,
                                 true,
-                                lease);
+                                lease,
+                                limits);
                 LocalStagedJob job =
                         new LocalStagedJob(
                                 run,
@@ -260,7 +330,7 @@ public final class BigtableStage2Probe {
                 throw new IOException("Stage 2 measurement write failed");
             }
             System.out.println(
-                    "STAGE2_CONFIG bytes="
+                    "STAGE2_CONFIG instrument=production-v1 bytes="
                             + bytes
                             + " parallelism="
                             + parallelism
@@ -274,6 +344,8 @@ public final class BigtableStage2Probe {
                             + hot
                             + " delayMillis="
                             + delayMillis
+                            + " "
+                            + limits.describe()
                             + " jvmFlags="
                             + ManagementFactory.getRuntimeMXBean().getInputArguments());
             if (lease != null
@@ -298,7 +370,7 @@ public final class BigtableStage2Probe {
             long deadline =
                     started
                             + TimeUnit.MILLISECONDS.toNanos(
-                                    warmupMillis + measurementMillis + 120_000);
+                                    warmupMillis + measurementMillis + limits.drainMillis);
             long peakHeap = 0;
             long nextSample = started;
             while (!job.result.isDone()) {
@@ -343,7 +415,7 @@ public final class BigtableStage2Probe {
                                     .length;
                     if (sampleBytes > 8L * 1024 * 1024
                             || directorySize(lease == null ? directory : lease.work)
-                                    > 2L * 1024 * 1024 * 1024) {
+                                    > limits.workBytes) {
                         throw new IOException(
                                 "Stage 2 checkpoint/measurement storage cap exhausted");
                     }
@@ -428,6 +500,7 @@ public final class BigtableStage2Probe {
                 String message = cause.getMessage();
                 if (message != null
                         && (message.contains("Staging capacity exceeded")
+                                || message.contains("Bigtable staging capacity exceeded")
                                 || message.contains("budget exhausted")
                                 || message.contains("storage cap exhausted"))) {
                     workloadLimit = true;
@@ -505,11 +578,11 @@ public final class BigtableStage2Probe {
     }
 
     private static void preflight(Stage2Lease lease) throws Exception {
-        Stage2Preflight.read(lease.table("staged-r1"), LocalStagedHarness.PROFILE);
+        Stage2Harness.readMetadata(lease.table("staged-r1"), LocalStagedHarness.PROFILE);
         for (String profile : new String[] {"no-tx", "multi-cluster"}) {
             boolean rejected = false;
             try {
-                Stage2Preflight.read(lease.table("staged-r1"), profile);
+                Stage2Harness.readMetadata(lease.table("staged-r1"), profile);
             } catch (IOException expected) {
                 if (!expected.getMessage().contains("requires single-cluster")) {
                     throw expected;
@@ -525,7 +598,7 @@ public final class BigtableStage2Probe {
         for (String table : new String[] {"marker-missing", "marker-gc", "marker-typed"}) {
             boolean rejected = false;
             try {
-                Stage2Preflight.read(lease.table(table), LocalStagedHarness.PROFILE);
+                Stage2Harness.readMetadata(lease.table(table), LocalStagedHarness.PROFILE);
             } catch (IOException expected) {
                 rejected = true;
                 if (!expected.getMessage().contains("requires an existing raw marker")) {
@@ -537,110 +610,5 @@ public final class BigtableStage2Probe {
                 throw new IOException("Invalid marker family was accepted");
             }
         }
-    }
-
-    private static void recovery(Stage2Lease lease, String table) throws Exception {
-        Path directory = lease.work.resolve(table);
-        Files.createDirectories(directory);
-        try (Stage2Harness run =
-                new Stage2Harness(
-                        lease.table(table),
-                        "127.0.0.1:1",
-                        directory.resolve("inventory.bin"),
-                        1024,
-                        1024,
-                        true,
-                        true,
-                        4,
-                        false,
-                        lease)) {
-            recovery(run, directory, true);
-        }
-    }
-
-    static void recovery(Stage2Harness run, Path directory, boolean service) throws Exception {
-        run.startWindow(System.nanoTime(), 0, TimeUnit.HOURS.toNanos(1));
-        run.loseAnswerAt = 8;
-        String checkpoint;
-        try (LocalStagedJob job =
-                new LocalStagedJob(
-                        run,
-                        directory.resolve("initial"),
-                        true,
-                        service,
-                        2,
-                        128,
-                        60_000,
-                        true,
-                        null,
-                        true)) {
-            await(
-                    "Stage 2 recovery admissions",
-                    Duration.ofSeconds(30),
-                    () -> {
-                        if (job.result.isDone()) {
-                            job.result.join();
-                        }
-                        return run.ledger.admittedCount() == 128;
-                    },
-                    () -> "admitted=" + run.ledger.admittedCount());
-            checkpoint = job.checkpoint();
-            await(
-                    "Stage 2 recovered acknowledgements",
-                    Duration.ofSeconds(90),
-                    () -> {
-                        if (job.result.isDone()) {
-                            job.result.join();
-                        }
-                        return run.ledger.acknowledgedCount() == 128;
-                    },
-                    () -> "ack=" + run.ledger.acknowledgedCount());
-            if (run.deduplicated.get() == 0) {
-                throw new IOException("Response-loss recovery did not replay persisted envelopes");
-            }
-        }
-        if (service) {
-            run.readback(true, false);
-        } else {
-            run.verifyFakeSums();
-        }
-        for (int parallelism : new int[] {1, 3}) {
-            int deduplicatedBefore = run.deduplicated.get();
-            try (LocalStagedJob restored =
-                    new LocalStagedJob(
-                            run,
-                            directory.resolve("restore-" + parallelism),
-                            true,
-                            service,
-                            parallelism,
-                            128,
-                            60_000,
-                            true,
-                            checkpoint,
-                            false)) {
-                await(
-                        "Restored committer closed loop",
-                        Duration.ofSeconds(90),
-                        () -> {
-                            if (restored.result.isDone()) {
-                                restored.result.join();
-                            }
-                            return run.active.get() == 0
-                                    && run.deduplicated.get() >= deduplicatedBefore + 128;
-                        },
-                        () -> "deduplicated=" + run.deduplicated.get());
-                restored.savepoint(directory.resolve("stop-" + parallelism), true);
-            }
-            if (service) {
-                run.readback(true, false);
-            } else {
-                run.verifyFakeSums();
-            }
-        }
-        System.out.println(
-                "STAGE2_SUM_RECOVERY PASS acknowledgements="
-                        + run.acknowledgedCount()
-                        + " deduplicated="
-                        + run.deduplicated.get());
     }
 }

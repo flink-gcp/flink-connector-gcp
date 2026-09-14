@@ -156,7 +156,7 @@ class Stage2JobITCase {
                                         2000,
                                         0,
                                         false))
-                .hasStackTraceContaining("Staging capacity exceeded");
+                .hasStackTraceContaining("Bigtable staging capacity exceeded");
         assertThat(java.nio.file.Files.exists(work)).isFalse();
         Path evidence = directory.resolve("overflow-failed-samples.jsonl");
         assertThat(evidence).isRegularFile();
@@ -222,29 +222,6 @@ class Stage2JobITCase {
     }
 
     @Test
-    void serviceRecoverySequenceReplaysAtBothRescaledParallelismsLocally() throws Exception {
-        try (Stage2Harness run =
-                new Stage2Harness(
-                        TableDestination.of("local-project", "local-instance", "local-table"),
-                        "127.0.0.1:1",
-                        directory.resolve("inventory"),
-                        1024,
-                        1024,
-                        true,
-                        true,
-                        4,
-                        false,
-                        null)) {
-            BigtableStage2Probe.recovery(run, directory.resolve("recovery"), false);
-            assertThat(run.ledger.acknowledgedCount()).isEqualTo(128);
-            assertThat(run.store.applied).isEqualTo(128);
-            assertThat(run.staged.get()).isEqualTo(128);
-            assertThat(run.loseAnswerAt).isEqualTo(-1);
-            assertThat(run.active.get()).isZero();
-        }
-    }
-
-    @Test
     void warmupCapacityExhaustionStillDrainsAndCleans() throws Exception {
         BigtableStage2Probe.timed(
                 null,
@@ -264,6 +241,58 @@ class Stage2JobITCase {
                 false);
         assertThat(directory.resolve("censored")).doesNotExist();
         assertThat(directory.resolve("censored-samples.jsonl")).exists();
+    }
+
+    @Test
+    void restoredProductionCommitRechecksMetadataBeforeAnotherTargetSend() throws Exception {
+        try (Stage2Harness run =
+                new Stage2Harness(
+                        TableDestination.of("local-project", "local-instance", "local-table"),
+                        "127.0.0.1:1",
+                        directory.resolve("metadata-inventory"),
+                        8,
+                        1024,
+                        false,
+                        false,
+                        1,
+                        false,
+                        null)) {
+            var validations = new java.util.concurrent.atomic.AtomicInteger();
+            run.localTableAdmin =
+                    (destination, profile, marker, families) -> {
+                        if (validations.getAndIncrement() > 0) {
+                            throw new java.io.IOException(
+                                    "PERMISSION_DENIED metadata after restore");
+                        }
+                    };
+            run.loseAnswerAt = 0;
+            run.startWindow(System.nanoTime(), 0, TimeUnit.HOURS.toNanos(1));
+            try (LocalStagedJob job =
+                    new LocalStagedJob(
+                            run,
+                            directory.resolve("metadata-job"),
+                            true,
+                            false,
+                            1,
+                            4,
+                            3_600_000,
+                            true,
+                            null,
+                            true)) {
+                await(
+                        "production admissions",
+                        Duration.ofSeconds(20),
+                        () -> run.ledger.admittedCount() == 4);
+                job.checkpoint();
+                org.assertj.core.api.Assertions.assertThatThrownBy(
+                                () -> job.result.get(30, TimeUnit.SECONDS))
+                        .hasStackTraceContaining("PERMISSION_DENIED metadata after restore");
+            }
+            assertThat(validations.get()).isGreaterThan(1);
+            assertThat(run.attemptsCount.get()).isEqualTo(1);
+            assertThat(run.store.applied).isEqualTo(1);
+            assertThat(run.ledger.acknowledgedCount()).isZero();
+        }
     }
 
     @Test

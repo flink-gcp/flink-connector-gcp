@@ -114,7 +114,10 @@ final class LocalStagedJob implements AutoCloseable {
                         productionSink != null
                                 ? productionSink
                                 : staged
-                                        ? new LocalStagedHarness.StagedSink(run, emulator)
+                                        ? run instanceof Stage2Harness
+                                                ? new Stage2ProductionSink(
+                                                        (Stage2Harness) run, emulator)
+                                                : new LocalStagedHarness.StagedSink(run, emulator)
                                         : new LocalStagedHarness.BulkSink(run, emulator))
                 .uid("local-sink");
         var streamGraph = env.getStreamGraph();

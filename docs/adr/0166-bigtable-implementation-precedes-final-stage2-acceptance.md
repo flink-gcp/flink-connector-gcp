@@ -63,7 +63,8 @@ Its existing immutable-identity, partial response-loss, aborted-interval, rescal
 `ProductionRecoveryJobITCase` owns automatic response-loss recovery through both production API factories using the same scenario as the [production service lease](evidence/0163-bigtable-production-recovery-service-plan.md), replacing the earlier production DataStream-only automatic-recovery case.
 The separate failed-stop diagnostic remains because it explains the excluded recovery boundary.
 The standalone state-sizing probe retains its original experimental sink and limits, preserving the meaning of recorded measurements.
-The formal performance harness still needs production-path integration and a reviewed service manifest before final evaluation.
+The formal performance harness now delegates to the production staged sink, including its writer, committer, serializer and topology validation, as recorded in the [production preparation evidence](evidence/0163-bigtable-production-stage2-preparation.md).
+Final evaluation still requires calibration and a reviewed service execution package.
 
 ## Service authorization and completion
 
@@ -88,3 +89,10 @@ The release/support conditions, protocol thresholds and aggregate cost authoriza
 Reuse matching sink deployment evidence from [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) with its source, runtime and oracle limitations; GKE is not a prerequisite when the approved local host can establish the required observation.
 [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) covers Change Streams source deployment recovery and does not discharge sink acceptance.
 Historical handovers and measurements retain their original issue references; current acceptance is tracked by #1319.
+
+## Stage 2 instrument preparation (2026-09-14)
+
+The [production preparation record](evidence/0163-bigtable-production-stage2-preparation.md) belongs to the formal assessment in [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327).
+For that assessment, the owner selected an additional USD 20 ceiling, separate from the existing #1319 allowance, and minimum spending with the original protocol preserved.
+The preferred execution uses one retained Bigtable free trial instance and regular GCE compute in `us-central1`, subject to verified trial eligibility, host calibration and a reviewed lifecycle that owns the retained instance across bounded worker leases.
+The current per-instance lease cannot provide that lifecycle; the preparation records no service measurement or support verdict.

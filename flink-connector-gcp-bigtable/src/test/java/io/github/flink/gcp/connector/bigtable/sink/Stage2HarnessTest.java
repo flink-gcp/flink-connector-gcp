@@ -16,13 +16,10 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import com.google.bigtable.admin.v2.AppProfile;
-import com.google.bigtable.admin.v2.ColumnFamily;
-import com.google.bigtable.admin.v2.GcRule;
-import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -291,119 +288,50 @@ class Stage2HarnessTest {
     }
 
     @Test
-    void metadataRejectsRoutingGcTypedAndMissingMarkerBeforeAnySend() throws Exception {
-        AppProfile valid =
-                AppProfile.newBuilder()
-                        .setSingleClusterRouting(
-                                AppProfile.SingleClusterRouting.newBuilder()
-                                        .setClusterId("c")
-                                        .setAllowTransactionalWrites(true))
-                        .build();
-        Table table =
-                Table.newBuilder()
-                        .putColumnFamilies(
-                                StagedMutationTestSink.MARKER_FAMILY,
-                                ColumnFamily.getDefaultInstance())
-                        .build();
-        Stage2Preflight.validate(valid, table);
-        Stage2Preflight.validate(
-                valid,
-                table.toBuilder()
-                        .putColumnFamilies(
-                                StagedMutationTestSink.MARKER_FAMILY,
-                                ColumnFamily.newBuilder()
-                                        .setGcRule(GcRule.getDefaultInstance())
-                                        .setValueType(
-                                                com.google.bigtable.admin.v2.Type
-                                                        .getDefaultInstance())
-                                        .build())
-                        .build());
-        Table bytesTyped =
-                table.toBuilder()
-                        .putColumnFamilies(
-                                StagedMutationTestSink.MARKER_FAMILY,
-                                ColumnFamily.newBuilder()
-                                        .setValueType(
-                                                com.google.bigtable.admin.v2.Type.newBuilder()
-                                                        .setBytesType(
-                                                                com.google.bigtable.admin.v2.Type
-                                                                        .Bytes
-                                                                        .getDefaultInstance()))
-                                        .build())
-                        .build();
-        assertThatThrownBy(() -> Stage2Preflight.validate(valid, bytesTyped))
-                .hasMessageContaining("raw marker family");
-        assertThatThrownBy(() -> Stage2Preflight.validate(AppProfile.getDefaultInstance(), table))
-                .hasMessageContaining("single-cluster");
-        assertThatThrownBy(
-                        () ->
-                                Stage2Preflight.validate(
-                                        valid.toBuilder()
-                                                .setSingleClusterRouting(
-                                                        valid.getSingleClusterRouting().toBuilder()
-                                                                .setAllowTransactionalWrites(false))
-                                                .build(),
-                                        table))
-                .hasMessageContaining("transactional");
-        assertThatThrownBy(() -> Stage2Preflight.validate(valid, Table.getDefaultInstance()))
-                .hasMessageContaining("raw marker family");
-        Table gc =
-                table.toBuilder()
-                        .putColumnFamilies(
-                                StagedMutationTestSink.MARKER_FAMILY,
-                                ColumnFamily.newBuilder()
-                                        .setGcRule(GcRule.newBuilder().setMaxNumVersions(1))
-                                        .build())
-                        .build();
-        assertThatThrownBy(() -> Stage2Preflight.validate(valid, gc))
-                .hasMessageContaining("GC rule");
-        Table typed =
-                table.toBuilder()
-                        .putColumnFamilies(
-                                StagedMutationTestSink.MARKER_FAMILY,
-                                ColumnFamily.newBuilder()
-                                        .setValueType(
-                                                com.google.bigtable.admin.v2.Type.newBuilder()
-                                                        .setAggregateType(
-                                                                com.google.bigtable.admin.v2.Type
-                                                                        .Aggregate
-                                                                        .getDefaultInstance()))
-                                        .build())
-                        .build();
-        assertThatThrownBy(() -> Stage2Preflight.validate(valid, typed))
-                .hasMessageContaining("raw marker family");
-    }
-
-    @Test
     void restoredEnvelopeValidationRejectsBrokenProtectionBeforeTransport() throws Exception {
         try (Stage2Harness run = local(false)) {
-            run.ledger.window(100, 200);
-            run.ledger.admit(0, 110);
-            StagedMutationTestSink.Writer writer = new StagedMutationTestSink.Writer(10, 100_000);
-            writer.write(run.input(0), null);
-            CheckAndMutateRowRequest wire = writer.prepareCommit().iterator().next();
-            run.prepared(List.of(wire));
-            assertThat(run.serializer().deserialize(1, wire.toByteArray())).isEqualTo(wire);
-            assertThatThrownBy(() -> run.serializer().deserialize(2, wire.toByteArray()))
-                    .hasMessageContaining("Unsupported probe version");
-            assertThatThrownBy(
-                            () ->
-                                    run.serializer()
-                                            .deserialize(
-                                                    1,
-                                                    wire.toBuilder()
-                                                            .clearPredicateFilter()
-                                                            .build()
-                                                            .toByteArray()))
-                    .hasMessageContaining("predicate");
-            assertThatThrownBy(
-                            () ->
-                                    Stage2Preflight.envelope(
-                                            wire.toBuilder()
-                                                    .addTrueMutations(wire.getFalseMutations(0))
-                                                    .build()))
-                    .hasMessageContaining("structure");
-            assertThat(run.attemptsCount.get()).isZero();
+            run.ledger.window(100, Long.MAX_VALUE);
+            var sink = new Stage2ProductionSink(run, false);
+            var context = new io.github.flink.gcp.connector.testutils.StubWriterInitContext(0);
+            try (var writer = sink.createWriter(context)) {
+                writer.write(0L, null);
+                var value = writer.prepareCommit().iterator().next();
+                var wire = value.getRequest();
+                var serializer = sink.getCommittableSerializer();
+                byte[] serialized = serializer.serialize(value);
+                assertThat(serializer.deserialize(serializer.getVersion(), serialized).getRequest())
+                        .isEqualTo(wire);
+                assertThatThrownBy(() -> serializer.deserialize(2, serialized))
+                        .hasMessageContaining("Unsupported Bigtable committable version");
+                assertThatThrownBy(
+                                () ->
+                                        serializer.deserialize(
+                                                1,
+                                                wire.toBuilder()
+                                                        .clearPredicateFilter()
+                                                        .build()
+                                                        .toByteArray()))
+                        .hasMessageContaining("predicate");
+                assertThatThrownBy(
+                                () ->
+                                        new BigtableCommittable(
+                                                wire.toBuilder()
+                                                        .addTrueMutations(wire.getFalseMutations(0))
+                                                        .build()))
+                        .hasMessageContaining("structure");
+                assertThat(run.ledger.entry(0).marker)
+                        .isEqualTo(
+                                wire.getFalseMutations(wire.getFalseMutationsCount() - 1)
+                                        .getSetCell()
+                                        .getColumnQualifier()
+                                        .toStringUtf8());
+                assertThat(context.getSinkWriterMetricGroup().hasMetric("stagedEntries")).isTrue();
+                assertThat(context.getSinkWriterMetricGroup().hasMetric("stagedBytes")).isTrue();
+                assertThat(run.peakWriterEntries.get()).isEqualTo(1);
+                assertThat(run.peakWriterBytes.get()).isEqualTo(value.getStagedBytes());
+                assertThat(run.stagedTotal(0)).isZero();
+                assertThat(run.attemptsCount.get()).isZero();
+            }
         }
     }
 
@@ -585,10 +513,8 @@ class Stage2HarnessTest {
         assertThatThrownBy(lease::requireLive).hasMessageContaining("deadline expired");
     }
 
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
-    void metadataPermissionFailureStopsTheRestoredSendBeforeSdkCreation(boolean bulk)
-            throws Exception {
+    @Test
+    void metadataPermissionFailureStopsBulkClientRecreationBeforeSdkCreation() throws Exception {
         Stage2Lease lease = Stage2Lease.plan(directory.resolve("lease.properties"));
         lease.update(
                 properties -> {
@@ -608,28 +534,12 @@ class Stage2HarnessTest {
                         false,
                         lease)) {
             run.metadataValidator = (destination, profile) -> {};
-            if (bulk) {
-                run.batcherFactory();
-            } else {
-                run.singleRowFactory();
-            }
+            run.batcherFactory();
             run.metadataValidator =
                     (destination, profile) -> {
                         throw new IOException("PERMISSION_DENIED metadata");
                     };
-            run.ledger.window(100, 200);
-            run.ledger.admit(0, 110);
-            StagedMutationTestSink.Writer writer = new StagedMutationTestSink.Writer(1, 10_000);
-            writer.write(run.input(0), null);
-            CheckAndMutateRowRequest wire = writer.prepareCommit().iterator().next();
-            CheckAndMutateRowRequest restored = run.serializer().deserialize(1, wire.toByteArray());
-            if (bulk) {
-                assertThatThrownBy(run::batcherFactory).hasMessageContaining("PERMISSION_DENIED");
-            } else {
-                assertThatThrownBy(run::singleRowFactory).hasMessageContaining("PERMISSION_DENIED");
-            }
-            assertThatThrownBy(() -> run.beforeSend(restored))
-                    .hasMessageContaining("PERMISSION_DENIED");
+            assertThatThrownBy(run::batcherFactory).hasMessageContaining("PERMISSION_DENIED");
             assertThat(run.attemptsCount.get()).isZero();
         }
     }

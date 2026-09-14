@@ -24,31 +24,25 @@ import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.operators.sink.CommitterOperatorFactory;
 
-import com.google.bigtable.v2.CheckAndMutateRowRequest;
-
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
 /** Decorates the real Flink committer without copying its checkpoint or retry implementation. */
-final class Stage2NotificationOperatorFactory
-        extends AbstractStreamOperatorFactory<CommittableMessage<CheckAndMutateRowRequest>>
-        implements OneInputStreamOperatorFactory<
-                CommittableMessage<CheckAndMutateRowRequest>,
-                CommittableMessage<CheckAndMutateRowRequest>> {
+final class Stage2NotificationOperatorFactory<C>
+        extends AbstractStreamOperatorFactory<CommittableMessage<C>>
+        implements OneInputStreamOperatorFactory<CommittableMessage<C>, CommittableMessage<C>> {
     private static final long serialVersionUID = 1L;
-    private final CommitterOperatorFactory<CheckAndMutateRowRequest> delegate;
+    private final CommitterOperatorFactory<C> delegate;
     private final String runId;
 
-    private Stage2NotificationOperatorFactory(
-            CommitterOperatorFactory<CheckAndMutateRowRequest> delegate, String runId) {
+    private Stage2NotificationOperatorFactory(CommitterOperatorFactory<C> delegate, String runId) {
         this.delegate = delegate;
         this.runId = runId;
         setChainingStrategy(delegate.getChainingStrategy());
     }
 
-    @SuppressWarnings("unchecked")
     static void install(StreamGraph graph, String runId) throws ReflectiveOperationException {
         int found = 0;
         // Flink 1.20 has no setter. Replace only the test job's generated committer factory.
@@ -60,10 +54,8 @@ final class Stage2NotificationOperatorFactory
             if (node.getOperatorFactory() instanceof CommitterOperatorFactory) {
                 factoryField.set(
                         node,
-                        new Stage2NotificationOperatorFactory(
-                                (CommitterOperatorFactory<CheckAndMutateRowRequest>)
-                                        node.getOperatorFactory(),
-                                runId));
+                        new Stage2NotificationOperatorFactory<>(
+                                (CommitterOperatorFactory<?>) node.getOperatorFactory(), runId));
                 found++;
             }
         }
@@ -74,10 +66,8 @@ final class Stage2NotificationOperatorFactory
     }
 
     @Override
-    public <T extends StreamOperator<CommittableMessage<CheckAndMutateRowRequest>>>
-            T createStreamOperator(
-                    StreamOperatorParameters<CommittableMessage<CheckAndMutateRowRequest>>
-                            parameters) {
+    public <T extends StreamOperator<CommittableMessage<C>>> T createStreamOperator(
+            StreamOperatorParameters<CommittableMessage<C>> parameters) {
         delegate.setProcessingTimeService(processingTimeService);
         Stage2Harness run = (Stage2Harness) LocalStagedHarness.run(runId);
         @SuppressWarnings("unchecked")

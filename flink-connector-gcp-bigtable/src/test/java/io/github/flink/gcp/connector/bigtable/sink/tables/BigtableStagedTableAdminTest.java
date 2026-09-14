@@ -53,8 +53,32 @@ class BigtableStagedTableAdminTest {
     void checksRawMetadataIncludingAnEmptyButExplicitGcRule() throws Exception {
         BigtableStagedTableAdmin.validateMetadata(
                 DESTINATION, PROFILE, TABLE, "markers", Map.of("data", ColumnFamilyType.RAW));
+        BigtableStagedTableAdmin.validateMetadata(
+                DESTINATION,
+                PROFILE,
+                TABLE.toBuilder()
+                        .putColumnFamilies(
+                                "markers",
+                                ColumnFamily.newBuilder()
+                                        .setGcRule(GcRule.getDefaultInstance())
+                                        .setValueType(Type.getDefaultInstance())
+                                        .build())
+                        .build(),
+                "markers",
+                Map.of());
         for (var marker :
                 List.of(
+                        ColumnFamily.newBuilder()
+                                .setValueType(
+                                        Type.newBuilder()
+                                                .setBytesType(Type.Bytes.getDefaultInstance()))
+                                .build(),
+                        ColumnFamily.newBuilder()
+                                .setValueType(
+                                        Type.newBuilder()
+                                                .setAggregateType(
+                                                        Type.Aggregate.getDefaultInstance()))
+                                .build(),
                         ColumnFamily.newBuilder()
                                 .setGcRule(GcRule.newBuilder().setMaxNumVersions(1))
                                 .build(),
