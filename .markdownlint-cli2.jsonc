@@ -48,8 +48,10 @@
     "flink-*/README.md",
     "opentofu/README.md",
     "opentofu/*/README.md",
+    "tools/README.md",
     "kubernetes/README.md",
     "kubernetes/images/README.md",
+    "kubernetes/lifecycle/README.md",
     "kubernetes/apps/*/README.md"
   ]
 }

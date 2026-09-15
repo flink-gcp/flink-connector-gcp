@@ -18,10 +18,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from flink_tier3.bundle import package_sources
 
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
@@ -41,8 +43,13 @@ def cue(module, *arguments):
     assert CUE, (
         "Run this suite through just tier3-check to select the pinned CUE binary"
     )
+    source = None
+    if any(arg == "./lifecycle" or arg.startswith("./lifecycle/") for arg in arguments):
+        arguments = (*arguments, "json:", "-")
+        source = json.dumps({"packageSources": package_sources()})
     return subprocess.run(
         [CUE, "-C", str(module), *arguments],
+        input=source,
         capture_output=True,
         text=True,
         env=ENV,
@@ -451,7 +458,7 @@ def test_application_defaults_can_change_within_environment_policy(module):
 
 def render_deliveries(module):
     outputs = {}
-    for tree in ("runs",):
+    for tree in ("runs", "lifecycle"):
         for source in sorted((module / tree).rglob("delivery.cue")):
             for ancestor in source.parent.parents:
                 if ancestor == module:
@@ -462,9 +469,28 @@ def render_deliveries(module):
                     "in ancestors and delivery.cue only at delivery leaves"
                 )
             directory = "./" + source.parent.relative_to(module).as_posix()
-            result = cue(module, "cmd", "render", directory)
-            assert result.returncode == 0, f"{directory}: {result.stderr}"
-            outputs[directory] = result.stdout
+            # Lifecycle inputs are dispatch-owned; only this synthetic render
+            # supplies them. Ordinary run deliveries retain their concrete inputs.
+            tags = lifecycle_tags() if tree == "lifecycle" else []
+            if tree == "lifecycle":
+                result = cue(
+                    module,
+                    "export",
+                    directory,
+                    "-e",
+                    "delivery.resources",
+                    "--out",
+                    "json",
+                    *tags,
+                )
+                assert result.returncode == 0, f"{directory}: {result.stderr}"
+                outputs[directory] = yaml.safe_dump_all(
+                    json.loads(result.stdout).values()
+                )
+            else:
+                result = cue(module, "cmd", "render", directory, *tags)
+                assert result.returncode == 0, f"{directory}: {result.stderr}"
+                outputs[directory] = result.stdout
     return outputs
 
 
@@ -633,3 +659,160 @@ def test_ci_rejects_a_delivery_inside_another_delivery(module):
 def test_cue_sources_are_formatted():
     result = cue(KUBERNETES, "fmt", "--check", "./...")
     assert result.returncode == 0, result.stderr
+
+
+def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(module, tmp_path):
+    result = cue(
+        module,
+        "export",
+        "./lifecycle",
+        "-e",
+        "delivery.resources",
+        "--out",
+        "json",
+        "-t",
+        "run_id=lifecycle-probe",
+        "-t",
+        "nonce=" + "a" * 32,
+        "-t",
+        "expires_at=2026-09-20T00:00:00Z",
+        "-t",
+        "active_seconds=3300",
+    )
+    assert result.returncode == 0, result.stderr
+    bundle = json.loads(result.stdout)
+    config, job = bundle["config"], bundle["supervisor"]
+    assert config["immutable"]
+    assert config["data"]["flink_tier3_runtime.py"] == package_sources()["runtime.py"]
+    assert job["metadata"]["namespace"] == "tier3-system"
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["activeDeadlineSeconds"] == 3300
+    pod = job["spec"]["template"]["spec"]
+    mounted = {}
+    for item in pod["volumes"][0]["configMap"]["items"]:
+        path = tmp_path / item["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(config["data"][item["key"]])
+        mounted[item["path"]] = path
+    expected = {"approval.json", "application.json"} | {
+        "flink_tier3/" + name for name in package_sources()
+    }
+    assert mounted.keys() == expected
+    for name, path in mounted.items():
+        if name not in ("approval.json", "application.json"):
+            assert (
+                path.read_text() == package_sources()[name.removeprefix("flink_tier3/")]
+            )
+    # Run only the rendered payload, outside the checkout, with installed SDKs.
+    result = subprocess.run(
+        [sys.executable, "-m", "flink_tier3", "supervisor", "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert pod["serviceAccountName"] == "tier3-supervisor"
+    assert pod["restartPolicy"] == "Never"
+    assert pod["affinity"]["nodeAffinity"][
+        "requiredDuringSchedulingIgnoredDuringExecution"
+    ]["nodeSelectorTerms"] == [
+        {
+            "matchExpressions": [
+                {
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "NotIn",
+                    "values": ["true"],
+                }
+            ]
+        }
+    ]
+    assert pod["containers"][0]["resources"]["requests"] == {
+        "cpu": "250m",
+        "memory": "512Mi",
+        "ephemeral-storage": "128Mi",
+    }
+    app = json.loads(config["data"]["application.json"])
+    assert app["metadata"]["namespace"] == "tier3-smoke"
+    assert (
+        app["spec"]["podTemplate"]["spec"]["nodeSelector"]["cloud.google.com/gke-spot"]
+        == "true"
+    )
+
+
+@pytest.mark.parametrize(
+    "tag", ["active_seconds=3601", "run_id=../bad", "nonce=wrong", "expires_at=wrong"]
+)
+def test_lifecycle_rejects_invalid_dispatch_inputs(module, tag):
+    tags = {
+        "run_id": "probe",
+        "nonce": "a" * 32,
+        "expires_at": "2026-09-20T00:00:00Z",
+        "active_seconds": "3300",
+    }
+    key, value = tag.split("=", 1)
+    tags[key] = value
+    args = ["export", "./lifecycle", "-e", "delivery.resources", "--out", "json"]
+    for key, value in tags.items():
+        args.extend(["-t", key + "=" + value])
+    result = cue(module, *args)
+    assert result.returncode != 0
+
+
+def lifecycle_tags():
+    return [
+        "-t",
+        "run_id=probe",
+        "-t",
+        "nonce=" + "a" * 32,
+        "-t",
+        "expires_at=2026-09-20T00:00:00Z",
+        "-t",
+        "active_seconds=3300",
+    ]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"metadata": {"namespace": "default"}},
+        {"spec": {"image": "flink:latest"}},
+        {"spec": {"job": {"parallelism": 3}}},
+        {"spec": {"job": {"allowNonRestoredState": True}}},
+        {
+            "spec": {
+                "podTemplate": {
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                }
+            }
+        },
+    ],
+)
+def test_lifecycle_application_cannot_relax_shared_run_policy(module, override):
+    # First prove this copied source is valid, then contradict one shared rule.
+    args = [
+        "export",
+        "./lifecycle",
+        "-e",
+        "application",
+        "--out",
+        "json",
+        *lifecycle_tags(),
+    ]
+    valid = cue(module, *args)
+    assert valid.returncode == 0, valid.stderr
+    leaf(module, "lifecycle", {"application": override})
+    invalid = cue(module, *args)
+    assert invalid.returncode != 0
+    assert not invalid.stdout.strip()
+
+
+def test_ci_discovers_and_renders_lifecycle(module):
+    documents = list(yaml.safe_load_all(render_deliveries(module)["./lifecycle"]))
+    assert [item["kind"] for item in documents] == ["ConfigMap", "Job"]
+    app = json.loads(documents[0]["data"]["application.json"])
+    assert app["metadata"]["labels"]["flink-gcp.io/run-id"] == "probe"
+    assert (
+        app["spec"]["podTemplate"]["metadata"]["labels"]["flink-gcp.io/run-id"]
+        == "probe"
+    )

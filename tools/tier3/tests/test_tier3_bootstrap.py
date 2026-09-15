@@ -13,19 +13,12 @@
 # limitations under the License.
 """Test the bootstrap boundary with synthetic resources and command results."""
 
-import importlib.util
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import SCRIPTS
-
-SPEC = importlib.util.spec_from_file_location(
-    "tier3_bootstrap", SCRIPTS / "tier3-bootstrap.py"
-)
-bootstrap = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(bootstrap)
+from flink_tier3 import bootstrap
 
 
 def result(stdout="", returncode=0, stderr=""):

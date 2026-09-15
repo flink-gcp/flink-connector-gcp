@@ -207,6 +207,9 @@ def test_module_readme_is_ignored_before_module_matching(fake_repo, ci_maven_arg
         "kubernetes/common.cue",
         "kubernetes/cue.mod/module.cue",
         "kubernetes/tests/test_manifests.py",
+        "tools/tier3/pyproject.toml",
+        "tools/tier3/src/flink_tier3/cli.py",
+        "tools/tier3/tests/test_package.py",
         "pyproject.toml",
         "uv.lock",
         # The contributor guide: no Maven build reads it, but rat scans it —

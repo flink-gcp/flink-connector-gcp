@@ -18,6 +18,7 @@ on:
       - v1.20
     paths:
       - 'scripts/**'
+      - 'tools/tier3/**'
       # ShellCheck reads the imported skill installation recipe through `just lint`.
       - 'dev-tools.just'
       # Ruff also checks the documentation rendering tests.

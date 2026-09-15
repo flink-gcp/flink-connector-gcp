@@ -1,0 +1,82 @@
+name: Tier-3 recover
+
+# Recovery only stops a completed execution's resources; it never admits work.
+on:
+  workflow_dispatch:
+    inputs:
+      source_id:
+        description: 'Completed GitHub execution that holds the environment lock'
+        required: true
+        type: string
+  workflow_run:
+    workflows: ['Tier-3 run', 'CI']
+    types: [completed]
+
+permissions: {}
+concurrency:
+  group: tier3-recover-${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_id }}
+  cancel-in-progress: false
+
+jobs:
+  lifecycle:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: cue kubectl uv opentofu helm
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: tier3-runner@flink-gcp.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '577.0.0'
+          install_components: gke-gcloud-auth-plugin
+      - name: Recover the completed lock holder
+        id: lifecycle
+        continue-on-error: true
+        env:
+          SOURCE_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_id }}
+        run: >-
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
+          --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig"
+          recover --source-id "$SOURCE_ID"
+      - name: Authenticate for read-only infrastructure verification
+        if: ${{ !cancelled() && steps.lifecycle.outputs.idle == 'true' }}
+        id: plan-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: opentofu-plan@flink-gcp.iam.gserviceaccount.com
+      - name: Prove all three refreshed plans are empty under the retained lock
+        if: ${{ !cancelled() && steps.plan-auth.outcome == 'success' }}
+        id: plans
+        run: >-
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
+          --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" plans
+      - name: Authenticate to write the final evidence receipt
+        if: ${{ !cancelled() && steps.plans.outcome == 'success' }}
+        id: receipt-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: tier3-runner@flink-gcp.iam.gserviceaccount.com
+      - name: Verify idle again, retain result and release the environment lock
+        if: ${{ !cancelled() && steps.receipt-auth.outcome == 'success' }}
+        run: >-
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
+          --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" finish
+      - name: Preserve lifecycle failure
+        if: ${{ !cancelled() && steps.lifecycle.outcome == 'failure' }}
+        run: exit 1

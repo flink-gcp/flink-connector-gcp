@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
+[manifest]
+members = [
+    "flink-connector-gcp",
+    "flink-tier3",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -494,16 +500,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "google-auth" },
-    { name = "google-cloud-storage" },
-    { name = "kubernetes" },
+    { name = "flink-tier3" },
     { name = "pytest" },
-    { name = "pyyaml" },
-]
-tier3-lifecycle = [
-    { name = "google-auth" },
-    { name = "google-cloud-storage" },
-    { name = "kubernetes" },
     { name = "pyyaml" },
 ]
 
@@ -515,17 +513,32 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "google-auth", specifier = "==2.58.0" },
-    { name = "google-cloud-storage", specifier = "==3.14.1" },
-    { name = "kubernetes", specifier = "==36.0.3" },
+    { name = "flink-tier3", editable = "tools/tier3" },
     { name = "pytest", specifier = ">=9" },
     { name = "pyyaml", specifier = "==6.0.3" },
 ]
-tier3-lifecycle = [
+
+[[package]]
+name = "flink-tier3"
+version = "0.1.0"
+source = { editable = "tools/tier3" }
+dependencies = [
+    { name = "google-auth" },
+    { name = "google-cloud-storage" },
+    { name = "kubernetes" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "urllib3" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "google-auth", specifier = "==2.58.0" },
     { name = "google-cloud-storage", specifier = "==3.14.1" },
     { name = "kubernetes", specifier = "==36.0.3" },
     { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "requests", specifier = "==2.34.2" },
+    { name = "urllib3", specifier = "==2.7.0" },
 ]
 
 [[package]]

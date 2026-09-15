@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["pyyaml==6.0.3"]
-# ///
 #
 # Copyright 2026 The flink-gcp authors
 #
@@ -35,7 +31,7 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path.cwd()
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
 NAMESPACES = ("tier3-system", "tier3-smoke")
 MAX_CHART_BYTES = 2 * 1024 * 1024
@@ -70,7 +66,7 @@ def provider_environment(kubeconfig):
         for key, value in os.environ.items()
         if not key.startswith(("KUBE_", "HELM_KUBE")) and key != "KUBECONFIG"
     }
-    environment["KUBE_CONFIG_PATH"] = str(kubeconfig)
+    environment["KUBE_CONFIG_PATH"] = str(Path(kubeconfig).absolute())
     environment["HELM_DRIVER"] = "secret"
     return environment
 
@@ -661,8 +657,8 @@ class Cluster:
         ).returncode
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="flink-tier3 bootstrap", description=__doc__)
     parser.add_argument("--kubeconfig", required=True)
     parser.add_argument(
         "--root", choices=("bootstrap", "operator"), default="bootstrap"
@@ -677,7 +673,7 @@ def main():
     commands.add_parser("verify")
     tofu = commands.add_parser("tofu")
     tofu.add_argument("arguments", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         cluster = Cluster(args.kubeconfig, args.root)
         if args.command == "auth":

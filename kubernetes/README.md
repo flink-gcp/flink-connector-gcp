@@ -62,7 +62,7 @@ ConfigMaps precede Services and workloads.
 ConfigMaps precede FlinkDeployments even when their internal keys sort in the opposite order.
 Equal priorities sort by internal resource key.
 The shared root defines these priorities for all deliveries.
-Ordering the YAML does not wait for workload readiness; that belongs to the later apply/lifecycle implementation.
+Ordering the YAML does not wait for workload readiness; the bounded lifecycle runner performs that check before Flink admission.
 
 ## Standard Flink applications
 
@@ -88,6 +88,7 @@ This example is exercised as a disposable test delivery; its JAR and image are n
 For a real application, put its definitions below `runs/`, name one file `delivery.cue`, and supply its actual JAR and ServiceAccount.
 Define the concrete `run.id`, `run.expiresAt` and `run.image` used by this example in that directory or shared ancestor definitions before committing the delivery.
 No Python test needs to be added for each application: CI discovers delivery directories automatically.
+The lifecycle delivery uses the same run constraints and is rendered with synthetic dispatch inputs during that check.
 
 | Field | Package default |
 | --- | --- |
@@ -116,7 +117,7 @@ They update the same deployment sequentially; the [application runbook](apps/smo
 The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
-A future supervisor Job will have its own non-Spot Pod policy.
+The [lifecycle supervisor Job](lifecycle/README.md) has its own non-Spot Pod policy.
 
 ## Render and validate
 
@@ -143,9 +144,10 @@ Output redirection may create an empty destination file when validation fails; r
 Rendered YAML is build output and must stay outside source control.
 
 `tier3-check` checks CUE formatting and runs the Python validation suite.
-That suite finds every `delivery.cue` under `runs/` and invokes the same `cue cmd render` command separately in each directory.
-CI supplies no tags or placeholder inputs.
-Committed deliveries must define all values needed to render their resources; missing values fail validation just as they do in the CLI.
+That suite finds every `delivery.cue` under `runs/` and `lifecycle/` and renders each directory separately.
+Run deliveries use `cue cmd render`; lifecycle uses `cue export` with installed package-source JSON, followed by YAML serialization.
+Ordinary `runs/` deliveries receive no tags or placeholder inputs and must define all values needed to render their resources.
+The lifecycle delivery instead receives synthetic dispatch inputs to validate its parameterized bundle; missing required values fail validation just as they do in the CLI.
 CI discards the rendered output and never applies it.
 Directories containing only shared definitions have no `delivery.cue` and are not rendered by this check.
 The remaining synthetic cases test our package defaults, policy, inheritance, output ordering and discovery behaviour.
@@ -154,7 +156,7 @@ CUE is pinned to 0.17.1, and native Kubernetes definitions to `cue.dev/x/k8s.io@
 The first load can download that module from the public CUE registry.
 These static checks do not implement Kubernetes admission, all CRD CEL rules or the disabled Operator webhook's semantic checks.
 Server dry-run and a bounded lifecycle smoke test remain necessary before a real workload is accepted.
-An expiry annotation records a deadline; enforcement requires the later supervisor and cleanup implementation.
+An expiry annotation records a deadline; the [bounded lifecycle](lifecycle/README.md) enforces it for its explicitly approved delivery.
 
 The `lint.yaml` Tier-3 job runs these checks and verifies schema regeneration using public downloads only.
 It participates in the required `CI passed` result on every pull request.
@@ -163,8 +165,8 @@ Ordinary `just lint` also checks the Python tests and this README.
 
 ## Refresh upstream schemas
 
-The schema generator declares its own pinned PyYAML dependency in PEP 723 metadata and runs through `uv run --no-project`.
-It can download that Python dependency independently of the root test environment.
+The schema generator belongs to the `flink-tier3` uv workspace member and runs through its installed CLI.
+It shares the root `uv.lock` with the bootstrap helper, lifecycle runtime and tests.
 `upstream.toml` pins the distributed Apache Helm chart and its SHA-512.
 Treat that archive as the CRD source of truth: the source repository's release tag and its distributed chart can differ.
 The 1.15.0 archive's FlinkVersion enum ends at `v2_2`; the planned runtime is Flink 2.2.1 on Java 17.
@@ -181,8 +183,13 @@ It does not modify tracked sources.
 A previously downloaded archive can be checked without downloading it again:
 
 ```sh
-mise x cue uv -- uv run --no-project scripts/tier3-schemas.py check --chart /path/to/chart.tgz
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 schemas check --chart /path/to/chart.tgz
 ```
+
+## Bounded execution
+
+The [lifecycle runbook](lifecycle/README.md) defines the explicit dispatch approval, four-Pod resource budget, shared infrastructure lock, supervisor, cleanup and recovery.
+Its implementation is locally validated; live acceptance remains the separately approved #1311 exercise.
 
 ## Ownership and remaining stages
 

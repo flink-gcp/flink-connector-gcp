@@ -216,17 +216,9 @@ verify-module module:
 ci-maven-args *args:
     scripts/ci-maven-args.py "$@"
 
-# pytest over scripts/ (the CI deriver and the CI gate today), through the
-# root uv project (pyproject.toml): uv is pinned in mise.toml like the
-# linters, pytest and the shared Java parser are pinned in uv.lock, and --locked
-# makes a drifted lockfile fail instead of silently re-resolving.
-# check-skill-frontmatter.py, tier3-schemas.py and tier3-bootstrap.py declare
-# PyYAML in their own PEP 723 metadata and run through `uv run --no-project`.
-# Tests load them by file path, so that import must resolve here too: pyyaml is in the
-# dev group and not in the project's dependencies. Release workflow tests also
-# use PyYAML to parse the workflow program before exercising its shell commands.
-#
-# Run the scripts/tests suite with pytest.
+# Run remaining script tests and workspace package tests through one locked environment.
+# Tier-3 declares its runtime dependencies in tools/tier3/pyproject.toml;
+# the root dev group installs that member alongside pytest and shared Java parsers.
 test-scripts:
     mise x uv -- uv run --locked pytest
 
@@ -433,8 +425,8 @@ lint:
     mise x shellcheck -- shellcheck scripts/*.sh
     just --justfile dev-tools.just --show install-skills | sed -n '/^[[:space:]]*#!/,$p' | sed 's/^    //' | mise x shellcheck -- shellcheck -
     mise x ruff -- ruff --version
-    mise x ruff -- ruff check scripts/ docs/tests/ kubernetes/tests/ opentofu/flink-gcp/appengine-e2e/main.py
-    mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
 
@@ -460,7 +452,7 @@ tier3-smoke-verify:
 # Export image inputs from the same uv lock used by the lifecycle CLI and tests.
 tier3-lifecycle-requirements:
     mkdir -p kubernetes/images/lifecycle/target
-    mise x uv -- uv export --locked --only-group tier3-lifecycle --format requirements.txt --output-file kubernetes/images/lifecycle/target/requirements.txt
+    mise x uv -- uv export --locked --package flink-tier3 --no-dev --no-emit-workspace --format requirements.txt --output-file kubernetes/images/lifecycle/target/requirements.txt
 
 # Static CUE checks and synthetic manifests; no Kubernetes credentials or workload.
 tier3-check:
@@ -475,27 +467,27 @@ tier3-render leaf:
 # Use a dedicated kubeconfig and execution-time ADC/WIF credentials.
 [positional-arguments]
 tier3-auth kubeconfig:
-    PYTHONUNBUFFERED=1 mise x kubectl uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" auth
+    PYTHONUNBUFFERED=1 mise x kubectl uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$1" auth
 
 # Check the actual CI identity and its positive/negative Kubernetes permissions.
 [positional-arguments]
 tier3-access kubeconfig mode:
-    PYTHONUNBUFFERED=1 mise x kubectl uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" access "$2"
+    PYTHONUNBUFFERED=1 mise x kubectl uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$1" access "$2"
 
 # Local troubleshooting equivalent of the CI-managed bootstrap root.
 [positional-arguments]
 tier3-bootstrap kubeconfig *args:
-    PYTHONUNBUFFERED=1 mise x kubectl opentofu uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" tofu "${@:2}"
+    PYTHONUNBUFFERED=1 mise x kubectl opentofu uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$1" tofu "${@:2}"
 
 # Local troubleshooting for the idle Helm release, with the same access preflight.
 [positional-arguments]
 tier3-operator kubeconfig *args:
-    PYTHONUNBUFFERED=1 mise x kubectl helm opentofu uv -- uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$1" --root operator tofu "${@:2}"
+    PYTHONUNBUFFERED=1 mise x kubectl helm opentofu uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$1" --root operator tofu "${@:2}"
 
 # Both modes verify the fixed upstream chart hash. Only refresh changes sources.
 [positional-arguments]
 tier3-schemas mode='check':
-    mise x cue uv -- uv run --no-project scripts/tier3-schemas.py "$1"
+    mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 schemas "$1"
 
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.

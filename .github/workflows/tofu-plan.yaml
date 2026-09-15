@@ -95,6 +95,7 @@ jobs:
       contents: read
       # tfcmt posts the plan as a PR comment and labels the PR.
       pull-requests: write
+      actions: read
       # Mint the GitHub OIDC token that WIF exchanges for GCP credentials.
       id-token: write
     env:
@@ -136,6 +137,19 @@ jobs:
           workload_identity_provider: ${{ steps.setup.outputs.gcp_workload_identity_provider }}
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
+      - name: Install environment-lock tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: uv
+      - name: Acquire the shared Tier-3 environment lock
+        id: environment-lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle lock acquire
+          --file "$RUNNER_TEMP/tier3-environment-lock.json"
+          --kind plan --target "$TFACTION_WORKING_DIR"
+
       - name: Install Kubernetes tools
         if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -156,7 +170,7 @@ jobs:
         if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         run: |
           tier3_root="${TFACTION_WORKING_DIR##*/tier3-}"
-          uv run --no-project scripts/tier3-bootstrap.py --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" ci plan
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" ci plan
 
       - name: tofu init
         uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
@@ -222,6 +236,12 @@ jobs:
         with:
           action: plan
           github_token: ${{ github.token }}
+
+      - name: Release the environment lock owned by this job
+        if: ${{ !cancelled() && steps.environment-lock.outcome == 'success' }}
+        run: >-
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle lock release
+          --file "$RUNNER_TEMP/tier3-environment-lock.json"
 
   # This workflow's own verdict, which is what makes its result trustworthy
   # to ci.yaml's gate: a failed job already fails the workflow, but a plan
