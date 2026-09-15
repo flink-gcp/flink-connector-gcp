@@ -64,8 +64,8 @@ Neither an expiring token nor the plan runner's kubeconfig path is serialized in
 
 Before plan/apply, the helper checks the actual principal, allowed/denied operations, observed zero quotas, idle inventory, four Established CRDs and the smoke identity/RoleBinding.
 It checks that the rendered chart contains precisely the seven owned resources, zero replicas, the pinned image, the expected watched namespace and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
-This is a bounded idle inventory check, not an exhaustive audit of every Kubernetes controller or the later lifecycle supervisor.
-The helper pins its own PyYAML dependency in PEP 723 metadata and runs through `uv run --no-project`.
+This is a bounded idle inventory check, not an exhaustive audit of every Kubernetes controller or the [lifecycle supervisor](../../kubernetes/lifecycle/README.md).
+The helper runs through the `flink-tier3` workspace CLI and shares its SDK/PyYAML dependencies with the lifecycle commands under the root `uv.lock`.
 OpenTofu validation, formatting and TFLint run inside the selected plan job after initialization.
 No OpenTofu checks or cluster access are added to general lint or a separate workflow.
 
@@ -87,7 +87,7 @@ mise x -- just worktree-env
 mise x -- just tier3-auth /tmp/tier3-kubeconfig
 mise x -- just tier3-operator /tmp/tier3-kubeconfig init -input=false
 mise x -- just tier3-operator /tmp/tier3-kubeconfig plan -detailed-exitcode
-mise x kubectl helm uv -- uv run --no-project scripts/tier3-bootstrap.py \
+mise x kubectl helm uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap \
   --kubeconfig /tmp/tier3-kubeconfig --root operator verify
 ```
 
@@ -101,6 +101,6 @@ Then update this root's independent chart/image pins and review the rendered RBA
 Do not automatically advance Helm when the shared CRD/schema pin changes.
 A new ownership or authorization boundary requires an explicit bootstrap change before the Helm change.
 
-Deliberate scale-up, numeric workload limits and lifecycle cleanup remain separate work.
+The [bounded lifecycle](../../kubernetes/lifecycle/README.md) implements temporary scale-up, numeric workload limits and cleanup behind a separate execution approval.
 Both idle quotas continue to forbid Pods and PVCs.
 Scaling down the Operator would not stop an existing Flink job, and an idle installation is not an unconditional zero-cost guarantee.

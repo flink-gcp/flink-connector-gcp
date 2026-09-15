@@ -1,0 +1,62 @@
+#
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Reviewed deployment policy. Changes require the same review as lifecycle code.
+
+[environment]
+project = 'flink-gcp'
+region = 'us-central1'
+context = 'gke_flink-gcp_us-central1_flink-tier3'
+system = 'tier3-system'
+smoke = 'tier3-smoke'
+operator = 'flink-kubernetes-operator'
+evidence = 'flink-gcp-tier3-evidence'
+state = 'flink-gcp-tier3-smoke'
+environment = '_control/environment.json'
+gar = 'us-central1-docker.pkg.dev/flink-gcp/flink-tier3/'
+repository = 'flink-gcp/flink-connector-gcp'
+pricing_reviewed = '2026-09-14T00:00:00Z'
+
+# Conservative normal-capacity rates, including for Spot.
+# Exceed published Iowa Autopilot prices reviewed on 2026-09-14.
+[cost_rates]
+cpu = "0.10"
+memory = "0.02"
+ephemeral-storage = "0.001"
+
+[ceilings]
+seconds = 3600
+cleanup_seconds = 900
+pods = 4
+pvcs = 0
+state_bytes = 1073741824
+state_objects = 10000
+log_bytes = 104857600
+evidence_bytes = 104857600
+additional_cost_usd = "1.00"
+
+[pod_resources.smoke]
+cpu = "1"
+memory = "2Gi"
+ephemeral-storage = "1Gi"
+
+[pod_resources.operator]
+cpu = "1"
+memory = "2Gi"
+ephemeral-storage = "1Gi"
+
+[pod_resources.supervisor]
+cpu = "250m"
+memory = "512Mi"
+ephemeral-storage = "128Mi"

@@ -25,20 +25,20 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | --- | --- | --- |
 | `operator` | [Flink Kubernetes Operator 1.15.0](https://github.com/apache/flink-kubernetes-operator/tree/release-1.15.0), Java and Operator/standalone JARs | Copy the AMD64 digest pinned in the workflow |
 | `flink` | [Flink 2.2.1, Scala 2.12, Java 17](https://github.com/apache/flink-docker/tree/983be3455636eb12cd1d3dee1efc8e32c4b875db/2.2/scala_2.12-java17-ubuntu), including `opt/flink-gs-fs-hadoop-2.2.1.jar` | Copy the AMD64 digest pinned in the workflow |
-| `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), CA certificates, kubectl 1.35.7 and the [locked official Python SDKs](../../pyproject.toml) | Export the lifecycle dependency group, then build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
+| `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), CA certificates, kubectl 1.35.7 and the [locked official Python SDKs](../../tools/tier3/pyproject.toml) | Export the Tier-3 member dependencies, then build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
 | `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
 Digest-addressed content and transfer integrity are handled by the registry tools.
 The lifecycle Dockerfile adds kubectl, google-auth, google-cloud-storage and the Kubernetes Python client, then runs as UID/GID 65532.
-The `tier3-lifecycle` dependency group in [pyproject.toml](../../pyproject.toml) defines the CLI/image dependencies; [uv.lock](../../uv.lock) pins their transitive versions and artifact hashes.
-The test dependency group includes this same group.
-Before the image build, `uv export --locked --only-group tier3-lifecycle` generates `lifecycle/target/requirements.txt`, including hashes and platform markers, without pytest or the project's Java parsers.
+The `flink-tier3` workspace member in [pyproject.toml](../../tools/tier3/pyproject.toml) defines the CLI/image dependencies; [uv.lock](../../uv.lock) pins their transitive versions and artifact hashes.
+The root test dependency group includes this workspace member.
+Before the image build, `uv export --locked --package flink-tier3 --no-dev --no-emit-workspace` generates `lifecycle/target/requirements.txt`, including hashes and platform markers, without pytest or the project's Java parsers.
 This generated file is an ignored build input; it is never edited or locked separately.
 Installation permits only binary distributions and checks dependency consistency and SDK imports during the image build.
 The installed distributions retain their bundled license and notice files, including certifi's MPL-2.0 certificate bundle.
 SDK dependencies are installed before publication, so supervisor startup needs no PyPI access.
-After editing the lifecycle dependency group, update the root lock and regenerate the image input from the repository root:
+After editing the member dependencies, update the root lock and regenerate the image input from the repository root:
 
 ```sh
 mise x uv -- uv lock
@@ -104,7 +104,13 @@ The `flink` field supplies the base runtime for the application-image work in [#
 The `lifecycleTools` field supplies the Python/kubectl runtime for [#1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
 The [first successful smoke publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34768916308) built main commit `053e23835782059830f871ca53f90fba43efa324` on 2026-09-14 JST, after the GCP/bootstrap applies succeeded and their refreshed plans were empty.
 A GAR read of its full-commit tag confirmed `sha256:29cc0533b2e1a984343a51315cdfe4110aa028a6c040d2275a103c3cfa591a3d`, now selected by `images.smoke`.
-This adoption leaves the earlier Operator, Flink and lifecycle-tools pins unchanged.
+That smoke adoption retained the earlier Operator, Flink and lifecycle-tools pins.
+
+The [SDK image publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34844507450) built main commit `abf35f5a16e50be11432788b602bdf8357f9e8ad` on 2026-09-14.
+A GAR read of its full-commit tag confirmed the lifecycle-tools digest now selected in [pins.cue](pins.cue).
+The pulled image started the shared runtime offline as UID 65532, and its requirements export matched the root uv lock export.
+This lifecycle-tools adoption retains the Operator, Flink and smoke pins.
+
 For a shell or Docker build argument, read a pin with:
 
 ```sh

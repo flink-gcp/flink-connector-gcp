@@ -77,6 +77,7 @@ jobs:
   tofu_plan:
     uses: ./.github/workflows/tofu-plan.yaml
     permissions:
+      actions: read
       contents: read
       pull-requests: write
       id-token: write

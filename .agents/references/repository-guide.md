@@ -569,9 +569,11 @@ the CUE hierarchy or the OpenTofu/CUE ownership split. Before changing the smoke
 its image or workload identity, also read `kubernetes/apps/smoke/README.md`. Use
 `just tier3-smoke-verify` for its opt-in Maven build and local recovery tests.
 `just tier3-check` validates the static layer,
-`just tier3-render <leaf>` prints that delivery's resources as a YAML document stream, and
+`just tier3-render <leaf>` prints an ordinary `runs/` delivery as a YAML document stream, and
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
+The parameterized lifecycle delivery uses `flink-tier3 render` to supply package-source JSON;
+see `kubernetes/lifecycle/README.md` for the complete offline command.
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
 dedicated kubeconfig; GKE API discovery verifies that endpoint.
@@ -579,11 +581,11 @@ Read `opentofu/tier3-bootstrap/README.md` before changing bootstrap: an administ
 initial CI permissions, then its tfaction-marked root imports the prerequisites and follows PR
 plan / saved-plan apply after merge. OpenTofu checks run inside the plan job after initialization.
 Only the main-push apply identity receives bootstrap writes; paid lifecycle admission remains separate.
-Keep them outside the offline `just lint` recipe. The generator declares its PyYAML dependency in
-PEP 723 metadata and runs with `uv run --no-project`; the tests use the locked project environment.
+Keep them outside the offline `just lint` recipe. The schema generator and bootstrap helper belong to the `flink-tier3` uv workspace member;
+its dependencies and the root test environment share `uv.lock`.
 The separate `opentofu/tier3-operator` root uses the same authenticated helper with `--root operator`.
-The helper declares its own pinned PyYAML dependency in PEP 723 metadata; run it through
-`uv run --no-project`, while its tests continue using the locked project environment.
+Run it through `uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap`;
+its tests live in `tools/tier3/tests/` and run through `just test-scripts`.
 Read its README before changing the idle Helm release: verify and apply bootstrap CRDs before
 advancing its independent chart pin, retain zero replicas and quotas, and review the rendered
 chart artifact alongside the OpenTofu plan. Its post-apply job verifies the release and an empty

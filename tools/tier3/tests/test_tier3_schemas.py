@@ -15,7 +15,6 @@
 """Synthetic chart tests for the Tier-3 schema generator."""
 
 import hashlib
-import importlib.util
 import io
 import json
 import subprocess
@@ -25,12 +24,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-SPEC = importlib.util.spec_from_file_location(
-    "tier3_schemas", Path(__file__).parents[1] / "tier3-schemas.py"
-)
-SCHEMAS = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(SCHEMAS)
+from flink_tier3 import schemas as SCHEMAS
 
 
 def chart_bytes(

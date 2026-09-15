@@ -23,6 +23,9 @@ limitations under the License.
 - Updated: 2026-09-14 (generic stateful smoke artifact and workload storage identity)
 - Updated: 2026-09-14 (published smoke digest and concrete initial/upgrade deliveries)
 - Updated: 2026-09-14 (idle lifecycle identities, evidence storage and Operator resource limits)
+- Updated: 2026-09-14 (bounded lifecycle, shared environment coordination and recovery)
+- Updated: 2026-09-15 (runner admission, typed lifecycle package, reviewed policy and SDK transport simplification)
+- Updated: 2026-09-15 (uv workspace member, installed CLI and package source delivery)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -81,7 +84,8 @@ Do not use replicas drift suppression or local apply to implement deliberate sca
 
 CUE owns application deliveries: FlinkDeployments and application-specific configuration, Services, Deployments and Jobs.
 Generated application definitions remain in gen/, standard packages in pkg/, and delivery.resources is rendered by cli_tool.cue in Kind/key order.
-CI renders each application delivery separately with real source inputs; ci.cue and CI placeholder values remain absent.
+CI renders each ordinary `runs/` delivery separately with real source inputs and no placeholder values; `ci.cue` remains absent.
+The parameterized lifecycle delivery receives synthetic dispatch inputs in the same discovery check.
 Complete CRD installation YAML moves to the bootstrap root; the same checksum-pinned chart produces both that YAML and CUE validation definitions.
 CRD upgrades precede Helm upgrades and ordinary run cleanup preserves the foundation.
 
@@ -126,8 +130,10 @@ The later lifecycle preflight must check live image existence and sufficient rem
 
 Publication code and IAM land before the first manual publication.
 The successful workflow's job summary supplies digest references for a reviewed Helm/CUE pin change.
-The first publication completed on 2026-09-13; Helm values select its Operator digest and the CUE images package exposes its Flink and lifecycle-tools references.
+The first publication completed on 2026-09-13 and supplied the initial Operator, Flink and lifecycle-tools references.
 The first smoke publication subsequently built main commit `053e23835782059830f871ca53f90fba43efa324` after the workload identity applies and empty refreshed plans; a GAR read confirmed the selected application digest.
+The [SDK publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34844507450) subsequently built main commit `abf35f5a16e50be11432788b602bdf8357f9e8ad` on 2026-09-14.
+A GAR read confirmed its lifecycle-tools digest, now selected by the CUE images package; the Operator, Flink and smoke pins remain unchanged by this adoption.
 The idle Helm release retains zero replicas and quotas while adopting the GAR reference.
 Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
@@ -163,6 +169,61 @@ The Operator container receives explicit requests and limits of 1 CPU, 2 GiB mem
 The [foundation runbook](../../opentofu/tier3-bootstrap/README.md#lifecycle-foundation) records the exact grants and apply boundary.
 This stage does not implement or validate workload admission, supervision, shared locking, teardown or the separately approved [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) execution.
 
+### Bounded lifecycle implementation
+
+The foundation was merged and applied before the dependent runtime implementation, with idle inventory and empty refreshed plans across the three roots.
+The [lifecycle runbook](../../kubernetes/lifecycle/README.md) defines the fixed resource/cost approval, explicit main dispatch, ownership checks and recovery procedure.
+Keep shared approval, records, transport and cleanup in the `flink_tier3` package under `tools/tier3/src/`, with fixed environment/resource/cost values in its reviewed `policy.toml`.
+Read all package modules and policy through Python package resources and pass them to CUE as JSON input.
+Project them through one immutable system-namespace ConfigMap; the Pod runs the package CLI without startup installation.
+This removes CUE's manually maintained source-file inventory and the script loader's file-path/import-order dependency.
+The approval's `runtime_sha256` now hashes the complete bundle's relative paths and file hashes, preserving source/configuration identity after the requested module split.
+Use the official Kubernetes, Cloud Storage and Google Auth Python clients for API transport and authentication, with dependencies installed in the digest-pinned lifecycle image before publication.
+This replaces the initial standard-library-only transport choice at the owner's request; policy-only source changes still do not require rebuilding the image.
+Manage Tier-3 as a buildable uv workspace member with its own runtime dependencies and `flink-tier3` console entry point, sharing the root `uv.lock`.
+Move the bootstrap/schema helpers and their tests into that member and remove their old script entry points.
+Repository checks and release helpers remain in `scripts/` until their planned `tools/checks` and `tools/release` member migrations; shell programs remain there.
+The installed CLI requires an explicit checkout or the repository root as its current directory for CUE/OpenTofu files; the supervisor does not require a checkout.
+Retain explicit UID/generation preconditions and timeouts; disable automatic SDK API retries and optional background bucket-metadata lookups.
+Restart a complete GCS read up to five times when the observed generation disappears or changes between metadata and download; distinguish that concurrency from an initially absent object.
+Use native SDK downloads and pools instead of custom response-size wrappers; generic API bodies no longer have an 8 MiB memory cap, while inventory count limits and Pod log byte limits remain.
+A standard authorized session is still injected into GCS to preserve disabled proxies, redirects and rejected-request refresh retries; public Client options do not expose those settings.
+GCS uploads disable the SDK's checksum-triggered automatic deletion path so every deletion remains an explicit generation-checked lifecycle operation.
+
+The runner owns admission after observing a ready supervisor: it opens quota, scales the Operator to one, waits for readiness, and creates the application.
+The supervisor only observes and writes toward idle, so recovery can use the same UID-checked cleanup concurrently after admission's final write.
+Publish `running` only after the runner finishes admission and records the application UID.
+Before that phase, a supervisor failure requests stop and leaves settlement to the runner or completed-execution recovery; cleaning sooner could stop the Operator ahead of an in-flight application create.
+This uses the existing phase boundary rather than adding another claim or termination-proof protocol.
+Admission retries revalidate phase/stop state, and settlement reconciles actual state even after an earlier `cleaned` record.
+This revises the initial supervisor-only admission decision, which required a Pod claim, persisted container termination proofs and a quarantine delay.
+Those protocols are removed; Job completion is used to retain final logs when possible, not as permission to begin cleanup.
+A failed or unavailable final log remains an evidence failure while shutdown continues.
+A Job deadline requests termination independently of Spot JobManager or TaskManager survival.
+Before foundation writes, read the Kubernetes resource version and then verify the exact lock owner; conflicts re-read both before retrying.
+
+Keep `runtime.py` as the supervisor command implementation and external admission/settlement in `runner.py`, behind the package CLI with separate Google/Kubernetes modules.
+Use composition through `Environment` for `Supervisor`, `Runner` and `Cleanup`, immutable approval/schedule dataclasses, a typed control record, and explicit phase transitions.
+`Schedule` centralizes deadline arithmetic and reserves an 84-minute serial allowance within the workflow's 85-minute timeout; all six OpenTofu commands share a nine-minute deadline rather than separate per-command limits.
+A slow individual refresh can consume more of that shared allowance; exhaustion retains the lock and requires investigation before another attempt.
+CUE composes the lifecycle application through `runs/common.cue`, and delivery discovery renders it with synthetic dispatch inputs in CI.
+
+Use a conditional-generation GCS environment lock across the three CI plan/apply roots and runtime.
+Retain the per-root state locks and the tracked resting state in OpenTofu.
+Do not expire or automatically steal the environment lock.
+Temporary quotas and Operator scale are restored before the run finalizer requires all three empty refreshed plans and releases the lock.
+Completed CI executions automatically trigger recovery of their retained plan lock; unrelated completion events do not replace pending recovery for another source.
+Recovery of an interrupted infrastructure operation permits idle Operator image drift, reports it through refreshed plans and may release its idle infrastructure lock so a follow-up PR can repair it; it does not apply the plan.
+
+Persist transitive workload UID observations before parent deletion; never authorize forced cleanup from labels alone.
+Flink's HA metadata has no ownerReference, so rely on the Operator's normal finalizer for those ConfigMaps and retain a failed run lock if they remain.
+This deliberately leaves uncertain ownership for an administrator's evidence-backed repair instead of widening the lifecycle deletion policy.
+Evidence failure stops admission and marks failure while paid workload shutdown continues wherever namespace/UID identity and API access remain verifiable.
+A cloud outage can prevent verified termination, so resource/time/cost approval is a bounded execution policy rather than a billing cutoff guarantee.
+
+Synthetic tests cover admission refusal, cancellation, lost creation responses, UID replacement, evidence failure, normal/forced and concurrent cleanup, supervisor readiness, lock generations and final receipt requirements.
+The separate #1311 approval and live exercise still owe evidence of actual GKE behavior.
+
 ### Ownership boundaries
 
 There are separate state and application boundaries for GCP infrastructure, Kubernetes bootstrap, Helm and application runs.
@@ -172,15 +233,16 @@ Failed applies use the existing follow-up PR workflow; a local pre-apply or stal
 The earlier manual-bootstrap/CI-Helm draft split was revised because it left routine foundation changes outside PR plan/apply review.
 The two idle quotas forbid Pods and PVCs throughout this foundation stage.
 The bootstrap inventory is a preflight, not an exhaustive controller audit or lifecycle supervisor.
-Image publication and runtime pin selection are established; lifecycle tooling and a bounded generic smoke run still require later work with separate limits, stop conditions and approval.
+Image publication, runtime pin selection and bounded lifecycle tooling are established; a generic smoke execution still requires separate approval and live validation.
 Cloud Tasks implementation/benchmarks and BigQuery-specific verification remain outside this foundation change.
 
 ### Official Python SDK image dependencies
 
 Bundle google-auth, google-cloud-storage and the Kubernetes Python client in the lifecycle tools image for the dependent lifecycle implementation.
-Define the lifecycle dependency group once in the root uv project and resolve it in `uv.lock`.
-Export that group with hashes into an ignored `target/requirements.txt` build input; do not maintain a separate requirements lock.
-The CLI selects the same group, and the test group includes it.
+Define runtime dependencies in the `flink-tier3` workspace member and resolve them in the root `uv.lock`.
+Export the member's third-party dependencies with hashes into an ignored `target/requirements.txt` build input; omit workspace packages and development dependencies.
+The image still installs only SDKs; the wheel is buildable but its source is delivered by ConfigMap, so code changes do not require another image publication.
+The CLI selects that member, and the root test group includes it.
 Install wheels at build time and validate imports before publication.
 The shared runner and supervisor retain lifecycle policy; official SDKs supply authentication and API transport.
 Publish through the existing reviewed-main workflow before adopting its GAR digest in the runtime change.

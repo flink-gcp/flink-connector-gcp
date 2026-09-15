@@ -51,7 +51,7 @@ The GCP root owns that GSA, its bucket-scoped object grant and the impersonation
 
 Both namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclaims: "0"`.
 A quota does not terminate existing Pods, and scaling down the Operator does not stop Flink jobs.
-Paid workload admission needs a separate lifecycle design and approval with concrete limits and stop conditions.
+Paid workload admission uses the [bounded lifecycle](../../kubernetes/lifecycle/README.md) and needs separate execution approval with concrete limits and stop conditions.
 
 ## PR plan and merge apply
 
@@ -151,14 +151,15 @@ After bootstrap is applied and its plan is empty, the [separate Helm root](../ti
 The Operator initially watches `tier3-smoke` only.
 CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the foundation.
 The [image publication path](../../kubernetes/images/README.md) supplies GAR runtime pins.
-Lifecycle tooling and a bounded generic smoke run follow separately.
+The [bounded lifecycle](../../kubernetes/lifecycle/README.md) supplies admission and cleanup; a generic smoke run requires separate execution approval.
 Cloud Tasks implementation/benchmarks and BigQuery verification are outside this bootstrap change.
 
 ## Lifecycle foundation
 
 This foundation prepares the persistent permissions and storage for [issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
 It keeps both Pod/PVC quotas and the Operator replica count at zero.
-The runner, supervisor, shared lock, admission checks and cleanup automation are the next implementation stage; no workflow in this change can start a run.
+The [runtime runbook](../../kubernetes/lifecycle/README.md) describes the implemented runner, supervisor, shared lock, admission checks and cleanup automation.
+The foundation apply keeps workloads stopped; a lifecycle dispatch requires separate execution approval.
 
 ### Identities and storage
 
@@ -186,7 +187,7 @@ The supervisor trust selects only `tier3-system/tier3-supervisor` through Worklo
 Neither identity reuses the installer, image publisher or smoke application account.
 
 The bootstrap root creates the supervisor KSA in `tier3-system`, annotates it for its GSA and binds both runtime identities to `tier3-lifecycle` Roles in the two namespaces.
-The later supervisor Job and source ConfigMap also belong in `tier3-system`.
+The supervisor Job and source ConfigMap also belong in `tier3-system`.
 The smoke KSA can create Pods and Deployments only in `tier3-smoke`, so it cannot select the supervisor KSA through a workload it creates.
 In `tier3-smoke`, the lifecycle Roles allow FlinkDeployment admission/finalizer cleanup, workload deletion and bounded observation through Pod logs and the Service proxy.
 In `tier3-system`, writes cover supervisor Jobs/ConfigMaps, deletion of Pods, scale changes on `flink-kubernetes-operator` and updates to `tier3-idle`.
@@ -230,6 +231,6 @@ That container now explicitly requests and limits 1 CPU, 2 GiB memory and 1 GiB 
 
 After CI apply, require idle inventory and empty refreshed plans for all three roots before developing the dependent lifecycle implementation.
 Actual WIF, supervisor and deletion behavior remains untested until the later stages; static IAM/RBAC configuration is not execution evidence.
-The next implementation enforces one run, a 45-minute admission/test window, 15 minutes for cleanup, a $1 additional-cost budget, and 100 MiB of durable evidence per run.
-Its supervisor must keep the Operator running until run-object and owned workload deletion completes, then restore the original quotas and zero replicas.
+The [lifecycle implementation](../../kubernetes/lifecycle/README.md) enforces one run, up to a 45-minute admission/test window, 15 minutes for cleanup, a $1 additional-cost budget, and 100 MiB of durable evidence per run.
+Its shared cleanup keeps the Operator running until run-object and owned workload deletion completes, then restores the original quotas and zero replicas.
 The separately approved GKE lifecycle/recovery exercise belongs to [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).

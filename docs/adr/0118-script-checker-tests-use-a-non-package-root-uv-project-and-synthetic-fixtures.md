@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0118: Script checker tests use a non-package root uv project and synthetic fixtures
 
 - Status: Accepted
-- Date: 2026-08-02; revised by [#1115] (2026-08-29); revised by [#1185] (2026-09-06)
-- Issues: [#243], [#249], [#1115], [#1185]
+- Date: 2026-08-02; revised by [#1115] (2026-08-29), [#1185] (2026-09-06) and [#1310] (2026-09-15)
+- Issues: [#243], [#249], [#1115], [#1185], [#1310]
 - Modules: scripts, CI
 - Current behavior: [`pyproject.toml`](../../pyproject.toml), [`just test-scripts`](../../justfile),
   [script test sources](../../scripts/tests)
@@ -28,14 +28,17 @@ limitations under the License.
 [PR #247](https://github.com/flink-gcp/flink-connector-gcp/pull/247) introduced Python and shell tests for the CI module selector and aggregate gate.
 Before that change, the Python checkers encoded non-trivial parsing rules but had no harness in which a deliberately malformed source tree could be exercised.
 
-The code under test is a collection of repository executables, not an importable Python package.
+The original code under test was a collection of repository executables loaded by path.
+The Tier-3 migration subsequently added an importable workspace package alongside those remaining scripts.
 The suite still needs a dependency lock, pytest configuration and room for test-only dependencies.
 Putting pytest alone in mise through pipx would pin one executable but supply neither a project configuration home nor a transitive lock for the suite.
 
 ## Decision
 
-The repository root holds the uv project for `scripts/tests`.
-`pyproject.toml` sets `package = false` because the project never installs the scripts as a package, and `testpaths = ["scripts/tests"]` is the one repository-layout override pytest needs.
+The repository root holds a non-packaged uv workspace project.
+`pyproject.toml` retains `package = false` for the remaining scripts and discovers both `scripts/tests` and `tools/tier3/tests`.
+The `flink-tier3` member owns its runtime dependencies, build metadata and CLI; the root dev group includes that member, pytest and a direct PyYAML dependency for the remaining script tests.
+All members share the root lockfile; [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records Tier-3 distribution and execution.
 Scripts may remain directly executable and standard-library-only even when their tests have dependencies.
 
 uv is pinned in `mise.toml`, while test dependency versions are resolved in the committed `uv.lock`.
@@ -77,7 +80,7 @@ The upstream fix is present on the main branch but was not released when the con
 ## Alternatives declined
 
 - **Install pytest through mise/pipx only**: it would pin an executable but provide no dependency lock or configuration home for the growing suite.
-- **Create a packaged Python project under `scripts/`**: the production scripts are executables loaded by path, so package metadata would describe a distribution the repository never builds.
+- **Package all remaining scripts together**: the checker and release scripts retain distinct responsibilities and callers. Tier-3 now builds its own workspace member; further migrations can introduce `tools/checks` and `tools/release` when their code and tests move.
 - **Assert every checker against the live repository**: the lint workflow would need to enumerate every source and documentation input, and a missed path would make the test stale silently.
 - **Treat line coverage as sufficient evidence**: a test can execute a rule while accepting both the original and mutated behavior, as the two surviving controls demonstrated.
 - **Give each Java-aware checker separate PEP 723 metadata**: seven copies would let their compatible ranges and resolved parser versions drift even though they consume one shared parsing module.
@@ -88,9 +91,12 @@ New or changed checker behavior adds synthetic positive and negative fixtures un
 No checker test reaches the network unless the test explicitly owns and controls that boundary.
 
 The root uv project may grow test dependencies as the suite loads more scripts by path and shared runtime dependencies when multiple checker commands use the same library.
-It remains non-packaged, and a dependency used by only one standalone script does not move into the project's runtime set.
+The workspace root remains non-packaged, and a dependency used by only one standalone script does not move into the root project's runtime set.
+Buildable members own their package dependencies independently of that root policy.
 
 [#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
 [#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249
 [#1115]: https://github.com/flink-gcp/flink-connector-gcp/issues/1115
 [#1185]: https://github.com/flink-gcp/flink-connector-gcp/issues/1185
+
+[#1310]: https://github.com/flink-gcp/flink-connector-gcp/issues/1310

@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["pyyaml==6.0.3"]
-# ///
 #
 # Copyright 2026 The flink-gcp authors
 #
@@ -36,7 +32,7 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path.cwd()
 GENERATED = Path("kubernetes/gen/flink")
 CRD_GENERATED = Path("opentofu/tier3-bootstrap/crds")
 CRDS = {
@@ -140,8 +136,8 @@ def generated_files(directory):
     return {p.relative_to(directory): p.read_bytes() for p in directory.rglob("*.cue")}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="flink-tier3 schemas", description=__doc__)
     parser.add_argument("mode", choices=("check", "refresh"))
     parser.add_argument(
         "--chart",
@@ -149,7 +145,7 @@ def main():
         help="Use an already downloaded chart (checksum still checked)",
     )
     parser.add_argument("--cue", default="cue")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     pin = tomllib.loads((ROOT / "kubernetes/upstream.toml").read_text())["operator"]
     if args.chart:
         data = args.chart.read_bytes()

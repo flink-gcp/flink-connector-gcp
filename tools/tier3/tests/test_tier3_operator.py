@@ -16,7 +16,6 @@
 
 import copy
 import hashlib
-import importlib.util
 import io
 import json
 import subprocess
@@ -24,13 +23,7 @@ import tarfile
 
 import pytest
 import yaml
-from conftest import SCRIPTS
-
-SPEC = importlib.util.spec_from_file_location(
-    "tier3_operator", SCRIPTS / "tier3-bootstrap.py"
-)
-operator = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(operator)
+from flink_tier3 import bootstrap as operator
 
 IMAGE_REPOSITORY = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator"
 IMAGE_DIGEST = "sha256:" + "a" * 64

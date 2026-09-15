@@ -57,7 +57,7 @@ Each changed file is classified by the first matching rule:
    only Maven-relevant consumer is the root module's apache-rat execution,
    which scans the whole working tree (`inherited=false`,
    `excludeSubProjects=false`) and is their only pre-merge licence check:
-   `docs/**`, `scripts/**`, `kubernetes/**`, the uv project behind `just test-scripts`
+   `docs/**`, `scripts/**`, `kubernetes/**`, `tools/tier3/**`, the uv project behind `just test-scripts`
    (`pyproject.toml`, `uv.lock` — the lockfile is rat-excluded and rides along
    with its pyproject rather than earning a rule of its own), and
    `CONTRIBUTING.md` (rat scans it: the pom excludes `**/README.md` but not
@@ -191,7 +191,7 @@ GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
 # so they are spine rather than a lane of their own.
 SPINE_SUFFIXES = frozenset({"base", "test-utils"})
 
-ROOT_ONLY_PREFIXES = ("docs/", "scripts/", "kubernetes/")
+ROOT_ONLY_PREFIXES = ("docs/", "scripts/", "kubernetes/", "tools/tier3/")
 ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock", "CONTRIBUTING.md"}
 
 
