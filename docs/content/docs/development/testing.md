@@ -108,6 +108,8 @@ Availability of the billing account's shared free-tier credit is unverified.
 Its [runbook]({{< param BookRepo >}}/tree/main/opentofu#tier-3-kubernetes-environment) records costs, separate resource approval and cleanup.
 `just e2e` and `just sweep-e2e` do not launch or clean up this rig.
 Its Operator installation and CUE-managed workloads follow the cloud foundation; routine suites continue to use MiniCluster.
+The [lifecycle runbook]({{< param BookRepo >}}/tree/main/kubernetes/lifecycle) defines the separately approved `generic-recovery` scenario: one savepoint upgrade and one JobManager failover within the same bounded run.
+It is an on-demand correctness exercise, not a release gate or a performance benchmark.
 
 ## The slow lane
 

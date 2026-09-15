@@ -19,9 +19,10 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 // Each delivery supplies concrete run inputs and a published smoke image digest.
 #Application: {
 	run: {
-		id:    string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
-		image: string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/smoke@sha256:[0-9a-f]{64}$"
-		phase: *"initial" | "upgrade"
+		id:      string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+		image:   string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/smoke@sha256:[0-9a-f]{64}$"
+		phase:   *"initial" | "upgrade"
+		records: *18000 | (int & >=1 & <=18000)
 	}
 	let storage = "gs://flink-gcp-tier3-smoke/runs/\(run.id)"
 	resource: flink.#Application & {
@@ -60,7 +61,7 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 				parallelism: 1
 				upgradeMode: "savepoint"
 				args: ["--run-id", run.id, "--phase", run.phase,
-					"--records", "18000", "--records-per-second", "10",
+					"--records", "\(run.records)", "--records-per-second", "10",
 					"--require-restored", "\(run.phase == "upgrade")"]
 			}
 			podTemplate: spec: containers: [{

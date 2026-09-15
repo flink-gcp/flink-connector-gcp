@@ -27,6 +27,7 @@ nonce:         string & =~"^[0-9a-f]{32}$"                       @tag(nonce)
 expires:       time.Time                                         @tag(expires_at)
 approval:      *"{}" | string                                    @tag(approval)
 activeSeconds: int & >0 & <=3420                                 @tag(active_seconds,type=int)
+scenario:      *"smoke" | "generic-recovery"                     @tag(scenario)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
 packageSources: {
 	"__init__.py"!:              string
@@ -39,10 +40,33 @@ packageSources: {
 // Use the same namespace, image, Spot and schema constraints as ordinary runs.
 application: (runPolicy & {
 	run: {id: runID, expiresAt: expires, image: images.smoke}
-	delivery: resources: app: (smoke.#Application & {run: {id: runID, image: images.smoke}}).resource & {
+	delivery: resources: app: (smoke.#Application & {run: {
+		id: runID, image: images.smoke
+		if scenario == "generic-recovery" {records: 12000}
+	}}).resource & {
 		metadata: annotations: "flink-gcp.io/approval": nonce
+		metadata: annotations: "flink-gcp.io/scenario": scenario
+		if scenario == "generic-recovery" {
+			spec: flinkConfiguration: "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false"
+			spec: flinkConfiguration: "kubernetes.operator.snapshot.resource.enabled":               "false"
+		}
 	}
 }).delivery.resources.app
+
+upgradeApplication: _
+if scenario == "generic-recovery" {
+	upgradeApplication: (runPolicy & {
+		run: {id: runID, expiresAt: expires, image: images.smoke}
+		delivery: resources: app: (smoke.#Application & {
+			run: {id: runID, image: images.smoke, phase: "upgrade", records: 12000}
+		}).resource & {
+			metadata: annotations: "flink-gcp.io/approval":                                          nonce
+			metadata: annotations: "flink-gcp.io/scenario":                                          scenario
+			spec: flinkConfiguration: "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false"
+			spec: flinkConfiguration: "kubernetes.operator.snapshot.resource.enabled":               "false"
+		}
+	}).delivery.resources.app
+}
 
 let sharedMetadata = {
 	namespace: "tier3-system"
@@ -50,6 +74,7 @@ let sharedMetadata = {
 	annotations: {
 		"flink-gcp.io/approval":   nonce
 		"flink-gcp.io/expires-at": expires
+		"flink-gcp.io/scenario":   scenario
 	}
 }
 
@@ -65,6 +90,7 @@ delivery: resources: {
 			}
 			"approval.json":    approval
 			"application.json": json.Marshal(application)
+			if scenario == "generic-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
 		}
 	}
 	supervisor: {
@@ -116,6 +142,7 @@ delivery: resources: {
 						},
 						{key: "approval.json", path: "approval.json"},
 						{key: "application.json", path: "application.json"},
+						if scenario == "generic-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
 					]}}]
 				}
 			}

@@ -27,8 +27,10 @@ from pathlib import Path
 from flink_tier3.bundle import source_digest
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
+from flink_tier3.exercise import validate_manifests
 from flink_tier3.google import Storage
 from flink_tier3.kubernetes import Kubernetes, KubernetesTransport
+from flink_tier3.model import Approval
 from flink_tier3.policy import SYSTEM
 from flink_tier3.supervisor import Supervisor
 
@@ -40,6 +42,13 @@ def supervisor_main(directory):
     application = json.loads((directory / "application.json").read_text())
     if digest(application) != approval["application_sha256"]:
         raise Failure("Supervisor application differs from approval")
+    approved = Approval.from_dict(approval)
+    upgrade = None
+    if approved.scenario == "generic-recovery":
+        upgrade = json.loads((directory / "upgrade-application.json").read_text())
+        if digest(upgrade) != approved.upgrade_application_sha256:
+            raise Failure("Supervisor upgrade differs from approval")
+        validate_manifests(application, upgrade)
     account = Path("/var/run/secrets/kubernetes.io/serviceaccount")
     if (account / "namespace").read_text().strip() != SYSTEM:
         raise Failure("Supervisor must run in tier3-system")
@@ -62,7 +71,7 @@ def supervisor_main(directory):
     ):
         raise Failure("Unexpected supervisor Kubernetes identity")
     env = Environment(kube, Storage(), approval)
-    supervisor = Supervisor(env)
+    supervisor = Supervisor(env, upgrade)
 
     def stop(_number, _frame):
         env.stopping = True

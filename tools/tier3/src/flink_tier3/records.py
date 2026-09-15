@@ -101,6 +101,22 @@ class Records:
     def request_stop(self):
         return self._change(lambda record: setattr(record, "stop_requested", True))
 
+    def recovery_step(self, expected, value):
+        """Persist a single scenario transition before its Kubernetes operation."""
+
+        def edit(record):
+            current = record.recovery.get("stage") if record.recovery else None
+            if (
+                record.phase != Phase.RUNNING
+                or record.stop_requested
+                or record.evidence_failed
+                or current != expected
+            ):
+                raise Failure("Recovery exercise has stopped or already advanced")
+            record.recovery = copy.deepcopy(value)
+
+        return self._change(edit)
+
     def heartbeat(self):
         return self._change(
             lambda record: setattr(record, "heartbeat", utc(self.clock()))

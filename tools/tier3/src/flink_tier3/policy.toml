@@ -60,3 +60,10 @@ ephemeral-storage = "1Gi"
 cpu = "250m"
 memory = "512Mi"
 ephemeral-storage = "128Mi"
+
+[recovery]
+records = 12000
+records_per_second = 10
+repetitions = 1
+startup_seconds = 600
+recovery_seconds = 300
