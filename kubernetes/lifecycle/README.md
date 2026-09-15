@@ -16,7 +16,8 @@ limitations under the License.
 
 # Bounded Tier-3 lifecycle
 
-The `Tier-3 run` workflow admits one fixed generic smoke application and returns the environment to its tracked idle state.
+The `Tier-3 run` workflow admits one generic smoke application and returns the environment to its tracked idle state.
+Its `scenario` input selects ordinary completion (`smoke`, the default) or the fixed `generic-recovery` exercise below.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
 The installed `flink-tier3` CLI is the entry point; [workspace instructions](../../tools/README.md) cover building a wheel and selecting a repository checkout.
@@ -36,6 +37,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
+| `flink_tier3/exercise.py` | One savepoint upgrade, one JM Pod deletion and phase-specific recovery evidence |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The fixed approval phrase and existing ceiling values remain unchanged.
@@ -46,7 +48,7 @@ Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
 
-A maintainer separately approves the current reviewed `main` SHA, a unique run ID, the absolute UTC expiry, and the ceilings below.
+A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, and the ceilings below.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
 The workflow input must contain `APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1` verbatim.
 Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
@@ -61,6 +63,11 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f expires_at=APPROVED_UTC_EXPIRY \
   -f 'approval=APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1'
 ```
+
+For the recovery exercise, also pass `-f scenario=generic-recovery`.
+This authorizes one savepoint upgrade and one deletion of the owned JobManager Pod within that run; another trial requires a new approval and run ID.
+Ordinary smoke approvals retain version 1, while recovery approvals use version 2 and pin the recovery policy and both application manifests.
+Recovery tooling can settle either version; it never resumes the exercise or repeats an injected disruption.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -120,7 +127,8 @@ A lost runner before that handoff requires completed-execution recovery, so admi
 Once `running` is published, admission makes no further Kubernetes writes and the supervisor can clean independently of the runner.
 Each quota/scale admission retry rechecks stop and phase as well as identity and lock ownership.
 
-The supervisor observes the application and writes Kubernetes only toward idle.
+For ordinary smoke, the supervisor observes the application and writes Kubernetes only toward idle.
+The recovery scenario also permits the two recorded operations described below.
 Both supervisor and recovery use `Cleanup`; concurrent cleanup repeats the same UID-checked deletes and original quota/replica values.
 Generation conflicts merge roots and observations without replacing recorded identities, and phase transitions never return from cleanup to admission.
 The supervisor uses the projected Kubernetes service-account token against the in-cluster API and Google metadata credentials for GCS.
@@ -128,10 +136,61 @@ The external runner uses ADC/WIF against the verified DNS endpoint; Kubernetes s
 The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint observations.
 The first log read retains up to 1 MiB of startup history; subsequent reads retain up to 64 KiB since the previous observation.
 Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.
-Success requires the job to finish, smoke progress to establish its lineage, and at least one completed checkpoint to have been observed through the UID-owned REST service.
+Ordinary smoke success requires the job to finish, smoke progress to establish its lineage, and at least one completed checkpoint to have been observed through the UID-owned REST service.
 Progress from another run/phase or a changed lineage fails the run, including an unexpected fresh start following disruption.
 Failure, cancellation, resource/evidence limits or the test deadline enters cleanup.
-A transient checkpoint-proxy error also starts cleanup, including a JobManager restart while its Service has no endpoints.
+In ordinary smoke, a transient checkpoint-proxy error also starts cleanup, including a JobManager restart while its Service has no endpoints.
+
+## Generic recovery exercise
+
+The reviewed policy fixes 12,000 deterministic sequence records at ten records per second, one savepoint upgrade and one JM Pod deletion, with no automatic repetition.
+These inputs require about 20 minutes of uninterrupted processing.
+The resource, storage, telemetry and USD 1 ceilings above are unchanged; this is a correctness exercise, not a performance sample.
+
+| Stage | Required evidence and deadline |
+| --- | --- |
+| Initial execution | Within ten minutes of admission start, observe nonzero initial progress and a completed checkpoint triggered after that progress |
+| Savepoint upgrade | Change only `--phase` and `--require-restored` on the same FlinkDeployment; within five minutes, observe its reconciled generation, a new upgrade savepoint and restoration from that path |
+| JobManager failover | After upgrade recovery and a later completed checkpoint, delete the owned JM Pod with its UID as a precondition; within five minutes, observe a different JM UID restoring the same job from that checkpoint or a newer checkpoint |
+| Completion | After both recoveries, observe all 12,000 records, the final sequence value 11,999 and `FINISHED`, before the cleanup deadline |
+
+Every recovery must retain the initial lineage, emit `restored=true`, advance beyond the pre-disruption processed count and complete a checkpoint triggered after the resumed progress.
+The oracle uses Kubernetes log timestamps, current JM identity, job ID and Flink's restored checkpoint ID, path and timestamp.
+Savepoint upgrades can start a new job ID; JM failover must retain the upgraded job ID.
+Checkpoint counts alone, a snapshot barrier alone, or replaying logs from a previous phase cannot satisfy these predicates.
+The savepoint and checkpoint paths must stay within this run's state prefix.
+
+The recovery manifests keep `upgradeMode=savepoint` and `allowNonRestoredState=false`, and disable last-state fallback.
+They also set `kubernetes.operator.snapshot.resource.enabled=false`: Operator 1.15.0 otherwise creates a separate FlinkStateSnapshot by default.
+This bounded exercise uses that version's supported status-based savepoint reporting and keeps the existing application cleanup graph.
+Both manifests are rendered through CUE, hashed into approval and delivered in the immutable supervisor ConfigMap.
+The runtime validates that their only difference is the two job arguments before accessing the cluster.
+
+The supervisor records each operation's intent and immutable evidence before issuing its API call.
+It rechecks cancellation, evidence status, the shared lock and the phase deadline before the write.
+The upgrade patch carries application UID and resourceVersion tests and cannot recreate a deleted application; JM deletion targets only the observed Pod UID and uses ordinary termination.
+A lost response is accepted only after a read verifies the requested outcome; an uncertain outcome stops the trial without repeating the operation.
+An upgrade precondition rejection also stops the trial without retry; its receipt distinguishes that rejection from an uncertain response.
+Cleanup can race these calls: a deleted or changed application rejects the old patch, and a replacement Pod cannot receive an old UID's delete.
+
+During either five-minute recovery window, checkpoint-proxy transport failures and HTTP 404/502/503/504 are recorded and retried by the observation loop.
+Authentication failures and ownership changes still fail immediately.
+An old Pod disappearing during log collection is recorded; the run must still obtain the required recovery evidence from surviving/replacement Pods.
+During the savepoint upgrade, temporary cancellation/suspension is expected.
+Operator 1.15.0 also reports the old job as `FINISHED` after stopping it with a savepoint; accept that state only for the old job ID while reconciliation remains `UPGRADING`.
+It does not satisfy final completion, and terminal failure or Operator rollback still stops the trial.
+No wait extends the absolute cleanup deadline.
+
+JM/TM Pod placement remains Spot and the supervisor remains on normal capacity.
+The supervisor retains run-owned Kubernetes Events, Pod conditions and scheduling observations.
+Observed eviction/preemption, container restart or replacement outside a planned recovery window makes the trial inconclusive and starts cleanup.
+Exclude already-terminating Pods when recording the stable post-failover Pod set.
+After the complete input has been observed, allow that set to shrink as idle Pods terminate before the Operator reports `FINISHED`; a new Pod UID still counts as an unplanned replacement.
+An interrupted or insufficiently observed trial is never reported as steady-state performance evidence.
+
+Before approving dispatch, verify the three applied infrastructure roots and their empty refreshed plans, the idle Helm release, workload KSA/GSA binding and state-bucket grant, and live image retention through expiry plus 24 hours.
+Do not merge infrastructure changes while the run holds the shared lock.
+This implementation prepares [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311); it supplies no GKE execution result by itself.
 
 ## SDK transport
 
@@ -185,7 +244,8 @@ An automatic completion event for an execution that does not own the lock is a n
 Recovery concurrency is grouped by source execution, so unrelated CI completions cannot replace a pending lock-holder recovery.
 Recovery verifies the repository, original workflow path/event, main SHA, execution attempt and completed status against the GitHub API, then compares the saved lock and approval.
 Recovery requests cooperative stop and waits for Job completion when possible, then reconciles cleanup against actual state even if the record already says `cleaned`.
-It can clean concurrently with a supervisor because both write only toward idle; it no longer needs a Pod claim, container termination proof or quarantine delay.
+It can clean concurrently with a supervisor; the recovery exercise's two additional operations are guarded by the stop state and object UID/version as described above.
+It needs no Pod claim, container termination proof or quarantine delay.
 Before quota or scale writes, cleanup reads the resource version and then rechecks the exact environment-lock owner.
 A concurrent update retries from a fresh identity/version snapshot, so an old actor cannot use a newer run's foundation version under its old lock.
 The runner attempts the final supervisor log after Job completion; a disappeared Pod or missing final log marks evidence incomplete instead of blocking shutdown.
@@ -239,8 +299,12 @@ The wheel test installs the built artifact outside the source tree and checks CL
 
 Evidence is under `gs://flink-gcp-tier3-evidence/runs/RUN_ID/`:
 `approval.json`, `application.json`, `images.json`, per-observation supervisor/runner receipts, and `result.json` after verified idle and empty plans.
+Recovery runs additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events.
+Their final receipt requires both recovery proofs and full input completion as well as successful cleanup.
 Run evidence becomes deletion-eligible after 30 days; mutable `_control/` records have no automatic expiry.
 An unsuccessful run can still have an idle result: check both `success` and `idle`, together with the three plan receipts.
+After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
+Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
 Synthetic validation establishes the control logic; actual WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing remain measurements for the approved #1311 exercise.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
@@ -252,4 +316,5 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 ```
 
 This prints JSON resources for inspection; its synthetic inputs do not authorize admission.
+Add `--scenario generic-recovery` to render the recovery payload and both manifests.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.

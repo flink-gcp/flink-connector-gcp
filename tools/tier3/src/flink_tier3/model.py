@@ -30,6 +30,7 @@ from .policy import (
     GAR,
     POD_RESOURCES,
     PRICING_REVIEWED,
+    RECOVERY,
     RUN_ID,
     SHA,
     SMOKE,
@@ -86,8 +87,21 @@ def validate_approval(approval, now=None):
         raise Failure("Approval and lock identity differ")
     if approval["operator_uid"] not in approval["baseline_uids"]:
         raise Failure("Operator must belong to the observed foundation")
-    if approval.get("version") != 1 or not RUN_ID.fullmatch(approval.get("run_id", "")):
+    scenario = approval.get("scenario", "smoke")
+    if scenario not in ("smoke", "generic-recovery"):
+        raise Failure("Unknown approved scenario")
+    recovery = scenario == "generic-recovery"
+    if approval.get("version") != (2 if recovery else 1) or not RUN_ID.fullmatch(
+        approval.get("run_id", "")
+    ):
         raise Failure("Invalid run approval identity")
+    if recovery:
+        if approval.get("recovery_policy") != RECOVERY or not re.fullmatch(
+            r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
+        ):
+            raise Failure("Recovery approval must pin its policy and upgrade manifest")
+    elif approval.get("recovery_policy") or approval.get("upgrade_application_sha256"):
+        raise Failure("Ordinary smoke approval cannot authorize recovery operations")
     if not SHA.fullmatch(approval.get("sha", "")) or not re.fullmatch(
         r"[0-9a-f]{32}", approval.get("nonce", "")
     ):
@@ -211,6 +225,9 @@ class Approval:
     runtime_sha256: str
     application_sha256: str
     actor: str = ""
+    scenario: str = "smoke"
+    recovery_policy: dict = field(default_factory=dict)
+    upgrade_application_sha256: str = ""
 
     @classmethod
     def from_dict(cls, value, now=None):
@@ -261,6 +278,7 @@ class RunRecord:
     idle: bool = False
     reason: str = ""
     final_log_attempted: bool = False
+    recovery: dict | None = None
 
     @classmethod
     def from_dict(cls, value):

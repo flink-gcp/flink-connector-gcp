@@ -29,12 +29,17 @@ import flink_tier3 as rt
 from . import bootstrap
 from . import runner as runner_api
 from . import workflow as wf
+from .exercise import validate_manifests
+from .policy import RECOVERY
 
 ROOT = Path.cwd()
 APPROVAL = "APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1"
 
 
 def start(args, store):
+    scenario = getattr(args, "scenario", "smoke")
+    if scenario not in ("smoke", "generic-recovery"):
+        raise rt.Failure("Unknown smoke scenario")
     if (
         args.approve != APPROVAL
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
@@ -60,9 +65,17 @@ def start(args, store):
     namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube)
     schedule = rt.Schedule.for_window(now, end)
     active = schedule.active_seconds(time.time())
-    application = wf.render(args.run_id, nonce, args.expires_at, active)
+    render_options = {"scenario": scenario} if scenario != "smoke" else {}
+    application = wf.render(
+        args.run_id, nonce, args.expires_at, active, **render_options
+    )
     bundle = wf.render(
-        args.run_id, nonce, args.expires_at, active, expression="delivery.resources"
+        args.run_id,
+        nonce,
+        args.expires_at,
+        active,
+        expression="delivery.resources",
+        **render_options,
     )
     images = {
         "operator": operator_image,
@@ -92,6 +105,23 @@ def start(args, store):
         "application_sha256": rt.digest(application),
         "actor": os.environ["GITHUB_ACTOR"],
     }
+    upgrade = None
+    if scenario == "generic-recovery":
+        upgrade = wf.render(
+            args.run_id,
+            nonce,
+            args.expires_at,
+            active,
+            expression="upgradeApplication",
+            **render_options,
+        )
+        approval.update(
+            version=2,
+            scenario=scenario,
+            recovery_policy=RECOVERY,
+            upgrade_application_sha256=rt.digest(upgrade),
+        )
+        validate_manifests(application, upgrade)
     rt.validate_approval(approval, time.time())
     wf.save(args.directory / "owner.json", owner)
     rt.EnvironmentLock(store).acquire(owner)
@@ -103,6 +133,8 @@ def start(args, store):
     store.write(f"runs/{args.run_id}/approval.json", approval)
     store.write(f"runs/{args.run_id}/application.json", application)
     store.write(f"runs/{args.run_id}/images.json", receipts)
+    if upgrade is not None:
+        store.write(f"runs/{args.run_id}/upgrade-application.json", upgrade)
     store.write(
         f"_control/runs/{args.run_id}.json",
         {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},
@@ -111,7 +143,13 @@ def start(args, store):
     # Only the Job deadline changes between renders; application bytes do not
     # depend on active_seconds or the approval embedded in the ConfigMap.
     bundle = wf.render(
-        args.run_id, nonce, args.expires_at, active, approval, "delivery.resources"
+        args.run_id,
+        nonce,
+        args.expires_at,
+        active,
+        approval,
+        "delivery.resources",
+        **render_options,
     )
     runner = runner_api.Runner(rt.Environment(kube, store, approval))
 
@@ -297,6 +335,9 @@ def main(argv=None):
     run.add_argument("--sha", required=True)
     run.add_argument("--expires-at", required=True)
     run.add_argument("--approve", required=True)
+    run.add_argument(
+        "--scenario", choices=("smoke", "generic-recovery"), default="smoke"
+    )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)
     sub.add_parser("plans")

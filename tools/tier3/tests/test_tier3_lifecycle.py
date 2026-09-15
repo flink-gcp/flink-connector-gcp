@@ -174,18 +174,19 @@ class Kube:
             self.data[key]["metadata"]["uid"] = "replacement"
             self.replace_before_delete = False
         if key not in self.data:
-            return
+            return False
         if self.data[key]["metadata"]["uid"] != value["metadata"]["uid"]:
             raise rt.ApiError(409, "DELETE", key[-1])
         self.calls.append(("delete", value["kind"], value["metadata"]["uid"]))
         if value["kind"] == "FlinkDeployment" and not self.normal_cleanup:
-            return
+            return True
         owned = rt.ownership(self.inventory(), {value["metadata"]["uid"]})
         self.data = {
             key: item
             for key, item in self.data.items()
             if item["metadata"]["uid"] not in owned
         }
+        return True
 
     def create(self, value, dry_run=False):
         self.calls.append(("create", value["kind"], dry_run))

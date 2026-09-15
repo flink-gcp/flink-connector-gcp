@@ -20,19 +20,25 @@ import re
 import uuid
 
 from .cleanup import Cleanup
-from .common import Failure, utc
+from .common import ApiError, Failure, utc
+from .exercise import RecoveryExercise
 from .model import Phase
 from .policy import CEILINGS, MIB, POLL, SMOKE
 
 
 class Supervisor:
-    """Observe the runner's workload and only write Kubernetes toward idle."""
+    """Observe the workload, run an approved exercise, and return it to idle."""
 
-    def __init__(self, env):
+    def __init__(self, env, upgrade=None):
         self.env = env
         self.cleanup = Cleanup(env)
         self.log_bytes = 0
         self.log_since = {}
+        self.exercise = (
+            RecoveryExercise(env, upgrade)
+            if env.approval.scenario == "generic-recovery"
+            else None
+        )
 
     def telemetry(self, items, pods):
         observation = [
@@ -46,6 +52,20 @@ class Supervisor:
             }
             for obj in items
         ]
+        if self.exercise:
+            for saved, obj in zip(observation, items, strict=True):
+                if obj["kind"] == "Pod":
+                    spec = obj.get("spec", {})
+                    saved["scheduling"] = {
+                        "node": spec.get("nodeName"),
+                        "selector": spec.get("nodeSelector", {}),
+                        "created_at": obj["metadata"].get("creationTimestamp"),
+                        "deleting_at": obj["metadata"].get("deletionTimestamp"),
+                        "containers": [
+                            {k: c.get(k) for k in ("name", "image", "resources")}
+                            for c in spec.get("containers", [])
+                        ],
+                    }
         self.env.emit("inventory", observation)
         for pod in pods:
             if pod.get("status", {}).get("phase") not in (
@@ -57,7 +77,26 @@ class Supervisor:
             uid = pod["metadata"]["uid"]
             before = utc(self.env.clock())
             since = self.log_since.get(uid)
-            data = self.env.kube.logs(pod, since)
+            try:
+                data = self.env.kube.logs(pod, since)
+            except ApiError as error:
+                if (
+                    not self.exercise
+                    or not self.exercise.recovering
+                    or error.status != 404
+                ):
+                    raise
+                current = self.env.kube.get(
+                    "Pod", pod["metadata"]["namespace"], pod["metadata"]["name"]
+                )
+                if (
+                    current
+                    and current["metadata"]["uid"] == uid
+                    and not current["metadata"].get("deletionTimestamp")
+                ):
+                    raise
+                self.env.emit("retired-pod-log-unavailable", {"uid": uid})
+                continue
             self.log_bytes += len(data)
             if (
                 len(data) >= (65536 if since else MIB)
@@ -70,6 +109,8 @@ class Supervisor:
             self.env.emit("pod-log", {"uid": uid, "text": decoded})
             if pod["metadata"]["namespace"] == SMOKE:
                 self.inspect_progress(decoded)
+                if self.exercise:
+                    self.exercise.progress(pod, decoded)
             self.log_since[uid] = before
         if self.env.evidence_failed:
             raise Failure("Durable evidence export failed")
@@ -83,7 +124,9 @@ class Supervisor:
         previous = self.env.refresh().lineage
         for match in re.finditer(pattern, text):
             run_id, phase, lineage, _restored, _processed, _sequence = match.groups()
-            if run_id != self.env.approval.run_id or phase != "initial":
+            if run_id != self.env.approval.run_id or phase not in (
+                ("initial", "upgrade") if self.exercise else ("initial",)
+            ):
                 raise Failure("Smoke progress belongs to another run or phase")
             try:
                 valid = str(uuid.UUID(lineage)) == lineage
@@ -123,41 +166,70 @@ class Supervisor:
                     control.roots.get("application")
                 )
 
-            self.env.wait(admitted, self.env.schedule.cleanup_at)
+            self.env.wait(
+                admitted,
+                self.exercise.deadline
+                if self.exercise
+                else self.env.schedule.cleanup_at,
+            )
             while self.env.clock() < self.env.schedule.cleanup_at:
                 control = self.env.refresh()
                 if self.env.stopping or control.stop_requested:
                     raise Failure("Cancellation or recovery requested")
                 self.env.records.heartbeat()
                 items, pods = self.cleanup.audit()
+                if self.exercise:
+                    self.exercise.check_open()
+                    self.exercise.scheduling(pods)
                 self.telemetry(items, pods)
                 app = self.env.root("application")
                 if not app:
                     raise Failure("Application disappeared before completion")
                 status = app.get("status", {}).get("jobStatus", {}).get("state", "")
                 job_id = app.get("status", {}).get("jobStatus", {}).get("jobId", "")
+                rest = {}
                 if status in ("RUNNING", "FINISHED") and re.fullmatch(
                     r"[0-9a-f]{32}", job_id
                 ):
                     service = self.env.kube.get(
                         "Service", SMOKE, self.env.approval.run_id + "-rest"
                     )
-                    if not service or service["metadata"][
+                    if not service and self.exercise and self.exercise.recovering:
+                        service = None
+                    elif not service or service["metadata"][
                         "uid"
                     ] not in self.cleanup.owned(items, ["application"]):
                         raise Failure("REST service has no verified workload owner")
-                    rest = self.env.kube.request(
-                        "GET",
-                        self.env.kube.path(
-                            "Service", SMOKE, service["metadata"]["name"] + ":8081"
+                    try:
+                        if not service:
+                            raise ApiError(404, "GET", "REST Service")
+                        rest = self.env.kube.request(
+                            "GET",
+                            self.env.kube.path(
+                                "Service", SMOKE, service["metadata"]["name"] + ":8081"
+                            )
+                            + "/proxy/jobs/"
+                            + job_id
+                            + "/checkpoints",
                         )
-                        + "/proxy/jobs/"
-                        + job_id
-                        + "/checkpoints",
+                    except Failure as error:
+                        if not self.exercise or not self.exercise.tolerate_rest(error):
+                            raise
+                        self.env.emit(
+                            "recovery-rest-unavailable", {"cause": str(error)}
+                        )
+                    self.env.emit(
+                        "checkpoints",
+                        {"job_id": job_id, **rest} if self.exercise else rest,
                     )
-                    self.env.emit("checkpoints", rest)
                     if rest.get("counts", {}).get("completed", 0) > 0:
                         self.env.records.checkpoint()
+                if self.exercise:
+                    if self.exercise.observe(app, rest, pods):
+                        success, reason = True, "recovery exercise finished"
+                        break
+                    self.env.sleep(POLL)
+                    continue
                 if status == "FINISHED":
                     if not self.env.refresh().checkpoint_observed:
                         raise Failure(

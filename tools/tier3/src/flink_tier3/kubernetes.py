@@ -23,7 +23,7 @@ import urllib3
 
 from kubernetes import client as kubernetes_client
 
-from .common import ApiError, Failure, encoded
+from .common import ApiError, Failure, TransportError, encoded
 from .policy import HTTP_TIMEOUT, MIB, SMOKE, SYSTEM
 
 COLLECTIONS = {
@@ -32,6 +32,7 @@ COLLECTIONS = {
     "ConfigMap": ("/api/v1", "configmaps"),
     "PersistentVolumeClaim": ("/api/v1", "persistentvolumeclaims"),
     "ResourceQuota": ("/api/v1", "resourcequotas"),
+    "Event": ("/api/v1", "events"),
     "Deployment": ("/apis/apps/v1", "deployments"),
     "ReplicaSet": ("/apis/apps/v1", "replicasets"),
     "StatefulSet": ("/apis/apps/v1", "statefulsets"),
@@ -47,7 +48,7 @@ COLLECTIONS = {
 }
 
 
-INVENTORY = tuple(k for k in COLLECTIONS if k != "ResourceQuota")
+INVENTORY = tuple(k for k in COLLECTIONS if k not in ("ResourceQuota", "Event"))
 
 
 class KubernetesTransport:
@@ -89,7 +90,7 @@ class KubernetesTransport:
         except kubernetes_client.exceptions.ApiException as error:
             raise ApiError(error.status, method, parts.path) from error
         except urllib3.exceptions.HTTPError as error:
-            raise Failure(
+            raise TransportError(
                 f"{method} Kubernetes request failed: {type(error).__name__}"
             ) from error
 
@@ -193,6 +194,8 @@ class Kubernetes:
         except ApiError as error:
             if error.status != 404:
                 raise
+            return False
+        return True
 
     def logs(self, pod, since=None):
         limit = 65536 if since else MIB

@@ -35,6 +35,10 @@ class IdlePending(Failure):
     """A controller has not yet observed the restored idle specification."""
 
 
+class TransportError(Failure):
+    """A Kubernetes transport failure, distinct from an invariant violation."""
+
+
 class ApiError(Failure):
     def __init__(self, status, method, path):
         self.status = status

@@ -5,6 +5,14 @@ name: Tier-3 run
 on:
   workflow_dispatch:
     inputs:
+      scenario:
+        description: 'Normal completion, or one savepoint upgrade and one JM Pod deletion'
+        required: true
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - generic-recovery
       run_id:
         description: 'Unique lowercase run ID (at most 40 characters)'
         required: true
@@ -61,10 +69,11 @@ jobs:
           REVIEWED_SHA: ${{ inputs.reviewed_sha }}
           EXPIRES_AT: ${{ inputs.expires_at }}
           APPROVAL: ${{ inputs.approval }}
+          SCENARIO: ${{ inputs.scenario }}
         run: >-
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
           --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig"
-          start --run-id "$RUN_ID" --sha "$REVIEWED_SHA" --expires-at "$EXPIRES_AT" --approve "$APPROVAL"
+          start --run-id "$RUN_ID" --sha "$REVIEWED_SHA" --expires-at "$EXPIRES_AT" --approve "$APPROVAL" --scenario "$SCENARIO"
       - name: Authenticate for read-only infrastructure verification
         if: ${{ !cancelled() && steps.lifecycle.outputs.idle == 'true' }}
         id: plan-auth
