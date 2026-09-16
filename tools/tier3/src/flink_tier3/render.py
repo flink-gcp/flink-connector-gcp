@@ -26,6 +26,9 @@ def main(argv=None):
     parser.add_argument("--nonce", required=True)
     parser.add_argument("--expires-at", required=True)
     parser.add_argument("--active-seconds", type=int, required=True)
+    parser.add_argument(
+        "--scenario", choices=("smoke", "generic-recovery"), default="smoke"
+    )
     args = parser.parse_args(argv)
     print(
         json.dumps(
@@ -35,6 +38,7 @@ def main(argv=None):
                 args.expires_at,
                 args.active_seconds,
                 expression="delivery.resources",
+                scenario=args.scenario,
             ),
             indent=2,
         )

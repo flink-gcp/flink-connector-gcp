@@ -661,7 +661,10 @@ def test_cue_sources_are_formatted():
     assert result.returncode == 0, result.stderr
 
 
-def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(module, tmp_path):
+@pytest.mark.parametrize("scenario", ["smoke", "generic-recovery"])
+def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
+    module, tmp_path, scenario
+):
     result = cue(
         module,
         "export",
@@ -678,6 +681,8 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(module, tmp_path
         "expires_at=2026-09-20T00:00:00Z",
         "-t",
         "active_seconds=3300",
+        "-t",
+        "scenario=" + scenario,
     )
     assert result.returncode == 0, result.stderr
     bundle = json.loads(result.stdout)
@@ -697,9 +702,15 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(module, tmp_path
     expected = {"approval.json", "application.json"} | {
         "flink_tier3/" + name for name in package_sources()
     }
+    if scenario == "generic-recovery":
+        expected.add("upgrade-application.json")
     assert mounted.keys() == expected
     for name, path in mounted.items():
-        if name not in ("approval.json", "application.json"):
+        if name not in (
+            "approval.json",
+            "application.json",
+            "upgrade-application.json",
+        ):
             assert (
                 path.read_text() == package_sources()[name.removeprefix("flink_tier3/")]
             )
@@ -733,6 +744,12 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(module, tmp_path
         "ephemeral-storage": "128Mi",
     }
     app = json.loads(config["data"]["application.json"])
+    if scenario == "generic-recovery":
+        from flink_tier3.exercise import validate_manifests
+        from flink_tier3.policy import RECOVERY
+
+        validate_manifests(app, json.loads(config["data"]["upgrade-application.json"]))
+        assert app["spec"]["job"]["args"][5] == str(RECOVERY["records"])
     assert app["metadata"]["namespace"] == "tier3-smoke"
     assert (
         app["spec"]["podTemplate"]["spec"]["nodeSelector"]["cloud.google.com/gke-spot"]
@@ -741,7 +758,14 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(module, tmp_path
 
 
 @pytest.mark.parametrize(
-    "tag", ["active_seconds=3601", "run_id=../bad", "nonce=wrong", "expires_at=wrong"]
+    "tag",
+    [
+        "active_seconds=3601",
+        "run_id=../bad",
+        "nonce=wrong",
+        "expires_at=wrong",
+        "scenario=unknown",
+    ],
 )
 def test_lifecycle_rejects_invalid_dispatch_inputs(module, tag):
     tags = {

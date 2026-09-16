@@ -100,7 +100,13 @@ def external(kubeconfig, idle=False):
 
 
 def render(
-    run_id, nonce, expiry, active_seconds, approval=None, expression="application"
+    run_id,
+    nonce,
+    expiry,
+    active_seconds,
+    approval=None,
+    expression="application",
+    scenario="smoke",
 ):
     args = [
         "cue",
@@ -123,6 +129,8 @@ def render(
     ]
     if approval:
         args.extend(["-t", "approval=" + rt.json_bytes(approval).decode()])
+    if scenario != "smoke":
+        args.extend(["-t", "scenario=" + scenario])
     result = subprocess.run(
         args,
         cwd=ROOT / "kubernetes",

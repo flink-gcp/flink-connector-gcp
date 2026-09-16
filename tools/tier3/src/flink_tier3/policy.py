@@ -37,6 +37,7 @@ PRICING_REVIEWED = _policy["environment"]["pricing_reviewed"]
 COST_RATES = {key: Decimal(value) for key, value in _policy["cost_rates"].items()}
 CEILINGS = _policy["ceilings"]
 POD_RESOURCES = _policy["pod_resources"]
+RECOVERY = _policy["recovery"]
 
 RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\Z")
 

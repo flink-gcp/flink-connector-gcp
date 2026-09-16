@@ -15,6 +15,8 @@
 
 import flink_tier3 as rt
 
+from .policy import RECOVERY
+
 
 class Runner:
     def __init__(self, env):
@@ -24,6 +26,12 @@ class Runner:
 
     def admission_open(self):
         self.env.admission_open()
+        if (
+            self.env.approval.scenario == "generic-recovery"
+            and self.env.clock()
+            >= self.env.schedule.started + RECOVERY["startup_seconds"]
+        ):
+            raise rt.Failure("Recovery scenario startup deadline expired")
 
     def create_application(self, application):
         if rt.digest(application) != self.env.approval.application_sha256:
@@ -177,7 +185,8 @@ class Runner:
             )
 
         # Waiting preserves the Job's final log when possible. It is not a
-        # prerequisite for cleanup: every supervisor write also moves to idle.
+        # prerequisite for cleanup. Exercise writes target existing UIDs; the
+        # application patch also tests its version and cannot recreate a root.
         try:
             self.env.wait(
                 completed,
@@ -297,8 +306,16 @@ class Runner:
                 control.success
                 and not control.evidence_failed
                 and not self.env.evidence_failed
+                and (
+                    self.env.approval.scenario == "smoke"
+                    or (control.recovery or {}).get("stage") == "complete"
+                )
             ),
         }
+        if self.env.approval.scenario == "generic-recovery":
+            result.update(
+                scenario=self.env.approval.scenario, recovery=control.recovery
+            )
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)
         if previous is None:

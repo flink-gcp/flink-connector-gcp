@@ -26,6 +26,7 @@ limitations under the License.
 - Updated: 2026-09-14 (bounded lifecycle, shared environment coordination and recovery)
 - Updated: 2026-09-15 (runner admission, typed lifecycle package, reviewed policy and SDK transport simplification)
 - Updated: 2026-09-15 (uv workspace member, installed CLI and package source delivery)
+- Updated: 2026-09-16 (one bounded generic recovery exercise and phase-specific oracles)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -191,7 +192,8 @@ A standard authorized session is still injected into GCS to preserve disabled pr
 GCS uploads disable the SDK's checksum-triggered automatic deletion path so every deletion remains an explicit generation-checked lifecycle operation.
 
 The runner owns admission after observing a ready supervisor: it opens quota, scales the Operator to one, waits for readiness, and creates the application.
-The supervisor only observes and writes toward idle, so recovery can use the same UID-checked cleanup concurrently after admission's final write.
+The ordinary smoke supervisor only observes and writes toward idle, so recovery can use the same UID-checked cleanup concurrently after admission's final write.
+The separately selected generic recovery exercise permits the two additional, object-conditional operations described below.
 Publish `running` only after the runner finishes admission and records the application UID.
 Before that phase, a supervisor failure requests stop and leaves settlement to the runner or completed-execution recovery; cleaning sooner could stop the Operator ahead of an in-flight application create.
 This uses the existing phase boundary rather than adding another claim or termination-proof protocol.
@@ -223,6 +225,35 @@ A cloud outage can prevent verified termination, so resource/time/cost approval 
 
 Synthetic tests cover admission refusal, cancellation, lost creation responses, UID replacement, evidence failure, normal/forced and concurrent cleanup, supervisor readiness, lock generations and final receipt requirements.
 The separate #1311 approval and live exercise still owe evidence of actual GKE behavior.
+
+### Generic recovery exercise
+
+Extend the existing workflow with an explicit `generic-recovery` scenario for [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).
+Use one integrated trial with 12,000 records at ten per second, one savepoint upgrade and one JM Pod deletion; preserve the existing four-Pod, one-hour and USD 1 bounds.
+The initial checkpoint must be observed within ten minutes of admission start, each recovery within five minutes of its operation, and full completion before the final fifteen-minute cleanup reserve.
+Stop an unsuccessful trial without automatically scheduling another one.
+
+Keep the runner's admission handoff and the existing cleanup implementation.
+The supervisor becomes the sole exercise writer after that handoff, recording operation intents before an approved application-argument patch and an owned JM Pod delete.
+These operations cannot create a new root resource: the patch tests UID/resourceVersion, and deletion tests the old Pod UID.
+Stop/expiry/lock checks prevent further operations, while object preconditions protect concurrent cleanup from delayed API calls.
+Lost responses require verification of the requested outcome; completed-execution recovery only cleans and does not resume the exercise.
+This refines the previous supervisor-only-writes-toward-idle premise without introducing another active writer or a new workload-admission path.
+
+Recovery approvals use version 2 and pin the scenario policy and both CUE-rendered manifests; existing version-1 approvals remain valid for ordinary completion and cleanup.
+The manifests differ only in the phase and required-restoration arguments.
+Disable last-state fallback to make the savepoint trial unambiguous.
+Operator 1.15.0 defaults to creating FlinkStateSnapshot resources; disable that option for this exercise and use its supported status-based savepoint reporting to retain the existing cleanup graph.
+An Operator version change must revisit this choice against its upstream behavior.
+
+Correlate restored state identity and timestamps with fresh progress, a different JM UID and a later completed checkpoint for each disruption separately.
+A savepoint upgrade may change the Flink job ID; a JM failover must restore the upgraded job ID and a checkpoint at least as recent as the observed nonzero-progress checkpoint.
+Operator 1.15.0 reports the old job as `FINISHED` after stop-with-savepoint; tolerate it only during that job's `UPGRADING` reconciliation, without treating it as final input completion.
+After both recoveries and observed complete input, normal idle-Pod removal may precede the final job status; permit only a shrinking stable Pod set, excluding Pods already terminating when that set was recorded.
+No earlier phase's success flag or completed-checkpoint counter substitutes for this evidence.
+Limit REST unavailability tolerance to the two recovery windows, retain scheduling/interruption observations, and classify observed unplanned interruption as inconclusive.
+Keep resource/evidence ceilings, identity checks and final empty-plan verification active throughout the exercise.
+Synthetic tests and rendered manifests establish these control paths; they do not establish live GKE recovery or service permissions.
 
 ### Ownership boundaries
 
