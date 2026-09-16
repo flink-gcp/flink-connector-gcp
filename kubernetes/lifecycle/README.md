@@ -133,6 +133,8 @@ Both supervisor and recovery use `Cleanup`; concurrent cleanup repeats the same 
 Generation conflicts merge roots and observations without replacing recorded identities, and phase transitions never return from cleanup to admission.
 The supervisor uses the projected Kubernetes service-account token against the in-cluster API and Google metadata credentials for GCS.
 The external runner uses ADC/WIF against the verified DNS endpoint; Kubernetes service-account tokens are not sent to that endpoint.
+The Google SDK requests both `cloud-platform` and `userinfo.email` OAuth scopes, matching the [GKE authentication plugin](https://github.com/kubernetes/cloud-provider-gcp/blob/master/cmd/gke-gcloud-auth-plugin/default_credentials_token_provider.go).
+The email scope lets GKE identify the impersonated service account by the email bound in Kubernetes RBAC; without it, the numeric account ID can produce a `403` even when kubectl preflight succeeds.
 The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint observations.
 The first log read retains up to 1 MiB of startup history; subsequent reads retain up to 64 KiB since the previous observation.
 Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.

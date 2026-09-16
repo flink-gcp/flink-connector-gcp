@@ -42,7 +42,11 @@ class GoogleToken:
         self.credentials = (
             credentials
             or google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                scopes=[
+                    "https://www.googleapis.com/auth/cloud-platform",
+                    # GKE RBAC binds service-account emails, not numeric IDs.
+                    "https://www.googleapis.com/auth/userinfo.email",
+                ],
                 request=self.request,
             )[0]
         )

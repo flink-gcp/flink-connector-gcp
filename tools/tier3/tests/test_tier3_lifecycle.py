@@ -1501,6 +1501,56 @@ def test_kubernetes_sdk_refreshes_token_and_disables_proxy_retries(monkeypatch):
     assert config.retries.total == 0 and config.retries.redirect == 0
 
 
+def test_google_token_wif_requests_email_identity_for_kubernetes(monkeypatch, tmp_path):
+    subject = tmp_path / "subject-token"
+    subject.write_text("fixture-subject-token")
+    impersonation_url = (
+        "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
+        "runner@fixture-project.iam.gserviceaccount.com:generateAccessToken"
+    )
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text(
+        json.dumps(
+            {
+                "type": "external_account",
+                "audience": (
+                    "//iam.googleapis.com/projects/123/locations/global/"
+                    "workloadIdentityPools/fixture/providers/fixture"
+                ),
+                "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+                "token_url": "https://sts.googleapis.com/v1/token",
+                "credential_source": {"file": str(subject)},
+                "service_account_impersonation_url": impersonation_url,
+            }
+        )
+    )
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credentials))
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "fixture-project")
+    token = rt.GoogleToken()
+    adapter = SdkAdapter(
+        [
+            (200, {"access_token": "federated-token", "expires_in": 3600}),
+            (
+                200,
+                {"accessToken": "runner-token", "expireTime": "2099-01-01T00:00:00Z"},
+            ),
+        ]
+    )
+    token.request.func.session.mount("https://", adapter)
+    kube, pool = sdk_kube([(200, {"spec": {"hard": {"pods": "0"}}})], token)
+    assert kube.get("ResourceQuota", rt.SMOKE, "tier3-idle")["spec"]["hard"] == {
+        "pods": "0"
+    }
+    assert len(adapter.calls) == 2
+    impersonation = adapter.calls[1][0]
+    assert impersonation.url == impersonation_url
+    assert set(json.loads(impersonation.body)["scope"]) == {
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/userinfo.email",
+    }
+    assert pool.calls[0][1]["headers"]["authorization"] == "Bearer runner-token"
+
+
 def test_google_token_delegates_expired_credential_refresh_to_sdk():
     from google.auth.credentials import Credentials
 
