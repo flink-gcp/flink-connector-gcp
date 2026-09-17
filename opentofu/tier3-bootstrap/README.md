@@ -25,7 +25,7 @@ The existing GCP root retains GKE, GAR, GSA and IAM ownership; the separate [Ope
 
 ## Resources and identities
 
-This root owns `tier3-system`, `tier3-smoke`, their idle quotas, installer RBAC, the four Flink CRDs and the persistent `tier3-smoke/smoke` ServiceAccount and job RBAC.
+This root owns `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, their idle quotas, installer RBAC, the four Flink CRDs and the persistent smoke and Cloud Tasks job identities.
 The Helm release owns its Operator Deployment, configuration, ServiceAccount, Roles/RoleBindings and release Secrets.
 Its chart-managed job identity/RBAC, namespace creation and CRD installation are disabled.
 No resource in this root starts a Pod or allocates a PVC.
@@ -33,14 +33,14 @@ The [lifecycle foundation](#lifecycle-foundation) also owns the dedicated superv
 
 | Identity | Added Kubernetes permissions |
 | --- | --- |
-| `opentofu-plan` | Read both namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
-| `opentofu` | Manage bootstrap and Helm objects in the two namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
+| `opentofu-plan` | Read all three namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
+| `opentofu` | Manage bootstrap and Helm objects in the three namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
 | `tier3-smoke/smoke` | The chart's job permissions for Pods, ConfigMaps and Deployments in `tier3-smoke` |
 | `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads |
 
 The installer holds the explicit chart permission inventory so Kubernetes permits creating and binding its Roles without unrestricted `bind`, `escalate` or `impersonate` grants.
 The existing GCP IAM permissions remain effective: additive Kubernetes RBAC does not narrow them.
-The apply identity can manage quotas in the two namespaces and the declared cluster-scoped foundation.
+The apply identity can manage quotas in the three namespaces and the declared cluster-scoped foundation.
 Kubernetes RBAC cannot restrict `create` by resource name: create grants cover those four resource kinds, while get/update/patch grants on existing cluster-scoped objects name the owned resources.
 No cluster-scoped delete, unrestricted bind/escalate or workload permissions in other namespaces are added.
 Expanding the owned namespace/CRD authorization boundary may require an administrator to grant the new permissions first; ordinary changes within it run entirely through CI.
@@ -49,9 +49,50 @@ Plan/apply identities are the existing GitHub WIF service accounts, not applicat
 The smoke KSA is annotated for `tier3-smoke@flink-gcp.iam.gserviceaccount.com`.
 The GCP root owns that GSA, its bucket-scoped object grant and the impersonation trust for this KSA; the [application runbook](../../kubernetes/apps/smoke/README.md) describes the storage and runtime boundary.
 
-Both namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclaims: "0"`.
+All three namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclaims: "0"`.
 A quota does not terminate existing Pods, and scaling down the Operator does not stop Flink jobs.
 Paid workload admission uses the [bounded lifecycle](../../kubernetes/lifecycle/README.md) and needs separate execution approval with concrete limits and stop conditions.
+
+## Cloud Tasks benchmark foundation
+
+[Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) uses the existing cluster with the dedicated `tier3-cloudtasks` namespace.
+Its `cloudtasks-benchmark` KSA selects the existing `cloudtasks-benchmark@flink-gcp.iam.gserviceaccount.com` GSA.
+The [GCP root](../flink-gcp/cloudtasks-benchmark.tf) already owns that GSA, its Cloud Tasks editor grant, the isolated checkpoint/artifact bucket and this exact KSA's impersonation trust.
+The job Role permits native Flink Pod, ConfigMap and Deployment management within this namespace.
+It does not grant the job access to the supervisor namespace.
+The runner and supervisor receive the same application lifecycle Role used for smoke, now also in `tier3-cloudtasks`.
+These are trusted Operator administrators, as described in [ADR-0165](../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md).
+
+The new namespace retains zero Pod/PVC quotas.
+The common bootstrap helper retains its existing two-namespace inspection until this foundation has been applied successfully.
+The administrator and post-apply acceptance separately verify the new namespace's observed zero quota and empty workload inventory.
+Extending the common helper's namespace inventory and the Helm watch set follows successful bootstrap apply and an empty refreshed plan.
+The existing Helm release still watches only `tier3-smoke`.
+The smoke runner still admits only its existing smoke scenarios.
+Application publication, Cloud Tasks admission, queue creation and performance measurements follow separately reviewed changes and numeric execution approval.
+
+### Administrator prerequisites for the namespace extension
+
+CI cannot create or delegate permissions its apply identity does not hold.
+Before the first PR plan, an administrator establishes the following reviewed prerequisites while the environment is idle:
+
+1. Create `tier3-cloudtasks` with the labels in `namespaces.tf`, plus its `tier3-idle` ResourceQuota with both `pods` and `persistentvolumeclaims` set to `"0"`.
+2. Create `tier3-helm-plan` and `tier3-helm-apply` Roles and their User RoleBindings in that namespace, using the exact `tier3-cloudtasks-plan` and `tier3-cloudtasks-apply` entries in `access.tf`.
+3. Set the namespace `resourceNames` in the existing `tier3-bootstrap-reader` and `tier3-bootstrap-writer` ClusterRoles to `["tier3-cloudtasks", "tier3-smoke", "tier3-system"]`, matching `sort(tolist(local.namespaces))` and preserving every other rule and binding.
+4. Verify the observed zero quotas, empty namespace, allowed and denied plan/apply operations, and the existing namespace/ClusterRole identities.
+
+Prepare and review the concrete manifest against those sources and the current live objects before applying it.
+Do not pre-apply the OpenTofu root or create job/lifecycle identities in this administrator step.
+The existing import loops adopt the six new prerequisites; CI then creates the KSA/job Role/job RoleBinding and lifecycle Role/RoleBinding through its saved plan.
+The reviewed plan must contain those six imports and five additions without replacing existing resources.
+After merge, collect successful apply and an empty refreshed plan; separately verify `tier3-cloudtasks` has observed zero Pod/PVC quotas and no workload objects.
+Also verify the runner can read its quota and workload inventory through the applied lifecycle RoleBinding before extending the common helper, changing Helm or admitting work.
+An administrator grant is an authorization prerequisite, not evidence that WIF authentication or the later workload succeeds.
+
+Do not extend the common helper's namespace list in this foundation change.
+A cancelled apply can leave the environment lock held before the runner's new lifecycle RoleBinding exists.
+Recovery uses that helper as the runner; requiring reads in the new namespace at that point would prevent recovery from releasing the lock.
+Keep the existing recovery inspection until the new runner permissions have been applied and verified.
 
 ## PR plan and merge apply
 
@@ -186,15 +227,15 @@ The recovery workflow must separately validate its triggering workflow and the s
 The supervisor trust selects only `tier3-system/tier3-supervisor` through Workload Identity Federation for GKE.
 Neither identity reuses the installer, image publisher or smoke application account.
 
-The bootstrap root creates the supervisor KSA in `tier3-system`, annotates it for its GSA and binds both runtime identities to `tier3-lifecycle` Roles in the two namespaces.
+The bootstrap root creates the supervisor KSA in `tier3-system`, annotates it for its GSA and binds both runtime identities to `tier3-lifecycle` Roles in all three namespaces.
 The supervisor Job and source ConfigMap also belong in `tier3-system`.
 The smoke KSA can create Pods and Deployments only in `tier3-smoke`, so it cannot select the supervisor KSA through a workload it creates.
 In `tier3-smoke`, the lifecycle Roles allow FlinkDeployment admission/finalizer cleanup, workload deletion and bounded observation through Pod logs and the Service proxy.
 In `tier3-system`, writes cover supervisor Jobs/ConfigMaps, deletion of Pods, scale changes on `flink-kubernetes-operator` and updates to `tier3-idle`.
 The runtime must verify ownership before changing or deleting a Job or ConfigMap, including the chart-owned Operator configuration in that namespace.
-Quota writes in `tier3-smoke` also name only `tier3-idle`.
+Quota writes in both application namespaces also name only `tier3-idle`.
 Dynamic Pod names cannot be constrained to a run using RBAC: the runtime must check UID and ownership before deletion.
-The shared bootstrap reader binding supplies read access to the two namespace identities, the four CRDs and the named bootstrap RBAC objects.
+The shared bootstrap reader binding supplies read access to the three namespace identities, the four CRDs and the named bootstrap RBAC objects.
 The lifecycle Roles do not directly grant Secret access, identity/RBAC writes, namespace/CRD writes, or unrestricted bind/escalate/impersonate.
 They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke`, including Secret access and Pod creation.
 Treat the runner and supervisor as trusted Operator administrators; the direct Role inventory is not a boundary on their reachable permissions.
@@ -204,7 +245,7 @@ This trust does not extend to the smoke workload identity, which cannot create w
 
 CI's apply identity must hold every permission before it can delegate the new lifecycle Roles.
 Prepare and review an additive administrator patch for the two existing `tier3-helm-apply` Roles before merging the foundation PR.
-The patch adds only the rules in `local.lifecycle_installer_smoke` and `local.lifecycle_installer_system`; preserve every existing rule and object identity.
+The patch adds only the rules in `local.lifecycle_installer_application` and `local.lifecycle_installer_system`; preserve every existing rule and object identity.
 
 | Namespace | Additional rule |
 | --- | --- |

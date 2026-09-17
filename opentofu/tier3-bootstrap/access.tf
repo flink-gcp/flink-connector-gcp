@@ -48,7 +48,19 @@ locals {
       namespace = "tier3-smoke"
       name      = "tier3-helm-apply"
       principal = "opentofu@flink-gcp.iam.gserviceaccount.com"
-      rules     = concat(local.inventory_rules, local.operator_rules, local.bootstrap_rules, [local.role_writer], local.lifecycle_installer_smoke)
+      rules     = concat(local.inventory_rules, local.operator_rules, local.bootstrap_rules, [local.role_writer], local.lifecycle_installer_application)
+    }
+    "tier3-cloudtasks-plan" = {
+      namespace = "tier3-cloudtasks"
+      name      = "tier3-helm-plan"
+      principal = "opentofu-plan@flink-gcp.iam.gserviceaccount.com"
+      rules     = local.inventory_rules
+    }
+    "tier3-cloudtasks-apply" = {
+      namespace = "tier3-cloudtasks"
+      name      = "tier3-helm-apply"
+      principal = "opentofu@flink-gcp.iam.gserviceaccount.com"
+      rules     = concat(local.inventory_rules, local.operator_rules, local.bootstrap_rules, [local.role_writer], local.lifecycle_installer_application)
     }
     "tier3-system-plan" = {
       namespace = "tier3-system"
