@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Adopt the 16 prerequisites created during the initial administrator bootstrap.
+# Adopt administrator-provisioned namespaces, idle quotas and installer access.
+# Adding a namespace requires its six prerequisites before CI plans this root.
 import {
   for_each = local.namespaces
   to       = kubernetes_namespace_v1.tier3[each.key]

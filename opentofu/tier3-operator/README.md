@@ -62,7 +62,8 @@ The provider contains only the fixed context and Secret storage driver.
 Its wrapper clears inherited Kubernetes overrides and supplies that runner's verified kubeconfig, preserving ADC/WIF environment settings.
 Neither an expiring token nor the plan runner's kubeconfig path is serialized into the provider configuration.
 
-Before plan/apply, the helper checks the actual principal, allowed/denied operations, observed zero quotas, idle inventory, four Established CRDs and the smoke identity/RoleBinding.
+Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and the smoke identity/RoleBinding.
+It checks observed zero quotas and idle workload inventory in `tier3-system` and `tier3-smoke`.
 It checks that the rendered chart contains precisely the seven owned resources, zero replicas, the pinned image, the expected watched namespace and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
 This is a bounded idle inventory check, not an exhaustive audit of every Kubernetes controller or the [lifecycle supervisor](../../kubernetes/lifecycle/README.md).
 The helper runs through the `flink-tier3` workspace CLI and shares its SDK/PyYAML dependencies with the lifecycle commands under the root `uv.lock`.
@@ -73,7 +74,9 @@ Review the PR's OpenTofu plan together with the `tier3-operator-manifest` artifa
 The initial installation plan contained one Helm release addition.
 A digest update must contain only an in-place release update, with zero replicas and the same seven owned resources.
 After merge, CI applies that saved plan using a freshly verified copy of the pinned chart.
-It reads the release status and versions through `helm get metadata`, then verifies live configuration/RBAC, zero Deployment replicas, zero Pods/PVCs in both owned namespaces and unchanged idle quotas.
+It reads the release status and versions through `helm get metadata`, then verifies live configuration/RBAC and zero Deployment replicas.
+It verifies zero Pods/PVCs and unchanged idle quotas in `tier3-system` and `tier3-smoke`.
+The separate `tier3-cloudtasks` acceptance checks remain in the [bootstrap runbook](../tier3-bootstrap/README.md#administrator-prerequisites-for-the-namespace-extension).
 Post-apply verification rechecks the runner-local archive's checksum and renders it again, without depending on another download.
 A refreshed plan with `-detailed-exitcode` must exit zero.
 The installation is complete only after those post-apply checks succeed.
@@ -102,5 +105,5 @@ Do not automatically advance Helm when the shared CRD/schema pin changes.
 A new ownership or authorization boundary requires an explicit bootstrap change before the Helm change.
 
 The [bounded lifecycle](../../kubernetes/lifecycle/README.md) implements temporary scale-up, numeric workload limits and cleanup behind a separate execution approval.
-Both idle quotas continue to forbid Pods and PVCs.
+All three bootstrap-owned idle quotas continue to forbid Pods and PVCs.
 Scaling down the Operator would not stop an existing Flink job, and an idle installation is not an unconditional zero-cost guarantee.

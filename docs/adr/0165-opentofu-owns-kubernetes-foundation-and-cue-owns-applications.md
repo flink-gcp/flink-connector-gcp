@@ -27,6 +27,7 @@ limitations under the License.
 - Updated: 2026-09-15 (runner admission, typed lifecycle package, reviewed policy and SDK transport simplification)
 - Updated: 2026-09-15 (uv workspace member, installed CLI and package source delivery)
 - Updated: 2026-09-16 (one bounded generic recovery exercise and phase-specific oracles)
+- Updated: 2026-09-17 (idle Cloud Tasks namespace and workload identity)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -255,6 +256,24 @@ Limit REST unavailability tolerance to the two recovery windows, retain scheduli
 Keep resource/evidence ceilings, identity checks and final empty-plan verification active throughout the exercise.
 Synthetic tests and rendered manifests establish these control paths; they do not establish live GKE recovery or service permissions.
 
+### Cloud Tasks namespace foundation
+
+For [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), extend bootstrap ownership to `tier3-cloudtasks` with zero Pod/PVC quotas, installer access and the `cloudtasks-benchmark` KSA/job Role/RoleBinding.
+The GCP root already owns the matching GSA, Cloud Tasks permissions, isolated storage and KSA impersonation trust.
+Reuse the application lifecycle Role for the runner and supervisor in the new namespace.
+The Cloud Tasks job Role grants no permissions in `tier3-system`.
+The common bootstrap/Operator preflight keeps its existing namespace list until this foundation has been applied and the runner's new read permissions verified.
+A cancelled apply can leave the shared environment lock held before the new lifecycle RoleBinding exists; extending preflight earlier would deny the runner the reads needed for recovery.
+Acceptance checks the new namespace's observed zero quotas and empty inventory separately during this transition.
+The Helm watch set remains smoke-only until that acceptance completes.
+
+The new namespace extends the installer's authorization boundary.
+An administrator first establishes its six importable prerequisites and extends the named namespace rules in the existing bootstrap reader/writer ClusterRoles, preserving their identities.
+The [bootstrap runbook](../../opentofu/tier3-bootstrap/README.md#administrator-prerequisites-for-the-namespace-extension) specifies the source inventory and ordering.
+CI adopts those objects and creates the workload/lifecycle identities through the ordinary PR plan and post-merge apply.
+This change starts no workload and establishes no Cloud Tasks performance result.
+Operator watch configuration, application publication, bounded admission and numeric resource/cost approval remain subsequent steps in #1246.
+
 ### Ownership boundaries
 
 There are separate state and application boundaries for GCP infrastructure, Kubernetes bootstrap, Helm and application runs.
@@ -262,7 +281,7 @@ A bootstrap-only or Operator-only PR receives OpenTofu checks and a visible tfac
 After merge, CI applies the reviewed artifact and verifies an empty refreshed plan.
 Failed applies use the existing follow-up PR workflow; a local pre-apply or stale-artifact retry is not the recovery path.
 The earlier manual-bootstrap/CI-Helm draft split was revised because it left routine foundation changes outside PR plan/apply review.
-The two idle quotas forbid Pods and PVCs throughout this foundation stage.
+The three idle quotas forbid Pods and PVCs throughout the foundation stage.
 The bootstrap inventory is a preflight, not an exhaustive controller audit or lifecycle supervisor.
 Image publication, runtime pin selection and bounded lifecycle tooling are established; a generic smoke execution still requires separate approval and live validation.
 Cloud Tasks implementation/benchmarks and BigQuery-specific verification remain outside this foundation change.
