@@ -33,7 +33,8 @@ import yaml
 
 ROOT = Path.cwd()
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
-NAMESPACES = ("tier3-system", "tier3-smoke")
+NAMESPACES = ("tier3-system", "tier3-smoke", "tier3-cloudtasks")
+OPERATOR_WATCH_NAMESPACES = {"tier3-smoke", "tier3-cloudtasks"}
 MAX_CHART_BYTES = 2 * 1024 * 1024
 OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
 CRDS = tuple(
@@ -55,8 +56,10 @@ OPERATOR_RESOURCES = {
     ("Deployment", "tier3-system", "flink-kubernetes-operator"),
     ("Role", "tier3-system", "flink-operator"),
     ("Role", "tier3-smoke", "flink-operator"),
+    ("Role", "tier3-cloudtasks", "flink-operator"),
     ("RoleBinding", "tier3-system", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-smoke", "flink-operator-role-binding"),
+    ("RoleBinding", "tier3-cloudtasks", "flink-operator-role-binding"),
 }
 
 
@@ -83,7 +86,7 @@ def operator_documents(source, expected_image):
         or set(identities) != OPERATOR_RESOURCES
     ):
         raise ValueError(
-            "Operator chart must render exactly the seven owned idle resources"
+            "Operator chart must render exactly the nine owned idle resources"
         )
     for item in documents:
         expected_api = {
@@ -129,10 +132,17 @@ def operator_documents(source, expected_image):
                 if name in ("config.yaml", "flink-conf.yaml")
             ]
             if not configurations or any(
-                config.get("kubernetes.operator.watched.namespaces") != "tier3-smoke"
+                not isinstance(config, dict)
+                or not isinstance(
+                    config.get("kubernetes.operator.watched.namespaces"), str
+                )
+                or sorted(config["kubernetes.operator.watched.namespaces"].split(","))
+                != sorted(OPERATOR_WATCH_NAMESPACES)
                 for config in configurations
             ):
-                raise ValueError("Operator configuration must watch only tier3-smoke")
+                raise ValueError(
+                    "Operator configuration must watch only tier3-smoke and tier3-cloudtasks"
+                )
         if item["kind"] == "RoleBinding" and (
             item["roleRef"]
             != {
@@ -209,7 +219,7 @@ def prepare_operator_chart(root, *, download=True):
     ).stdout
     documents = operator_documents(rendered, repository + "@" + image["digest"])
     (cache / "operator-rendered.yaml").write_text(rendered)
-    print("Verified Operator chart " + pin["version"] + " and seven idle resources")
+    print("Verified Operator chart " + pin["version"] + " and nine idle resources")
     return pin, documents
 
 
@@ -506,38 +516,46 @@ class Cluster:
                 raise RuntimeError(
                     "Operator requires Established bootstrap CRDs: " + name
                 )
-        for kind, name in (
-            ("serviceaccount", "smoke"),
-            ("role", "tier3-smoke-job"),
-            ("rolebinding", "tier3-smoke-job"),
+        for namespace, account, role in (
+            ("tier3-smoke", "smoke", "tier3-smoke-job"),
+            ("tier3-cloudtasks", "cloudtasks-benchmark", "tier3-cloudtasks-job"),
         ):
-            item = json.loads(
-                self.kubectl(
-                    "get", kind, name, "--namespace", "tier3-smoke", "-o", "json"
-                ).stdout
-            )
-            if item["metadata"].get("deletionTimestamp"):
-                raise RuntimeError("Operator requires the persistent smoke identity")
-            if kind == "rolebinding" and (
-                item["roleRef"]
-                != {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "Role",
-                    "name": "tier3-smoke-job",
-                }
-                or item["subjects"]
-                != [
-                    {
-                        "kind": "ServiceAccount",
-                        "name": "smoke",
-                        "namespace": "tier3-smoke",
-                    }
-                ]
+            for kind, name in (
+                ("serviceaccount", account),
+                ("role", role),
+                ("rolebinding", role),
             ):
-                raise RuntimeError(
-                    "The smoke RoleBinding does not bind the bootstrap identity"
+                item = json.loads(
+                    self.kubectl(
+                        "get", kind, name, "--namespace", namespace, "-o", "json"
+                    ).stdout
                 )
-        print("Verified four Established CRDs and the persistent smoke identity")
+                if item["metadata"].get("deletionTimestamp"):
+                    raise RuntimeError(
+                        "Operator requires persistent application identities"
+                    )
+                if kind == "rolebinding" and (
+                    item["roleRef"]
+                    != {
+                        "apiGroup": "rbac.authorization.k8s.io",
+                        "kind": "Role",
+                        "name": role,
+                    }
+                    or item["subjects"]
+                    != [
+                        {
+                            "kind": "ServiceAccount",
+                            "name": account,
+                            "namespace": namespace,
+                        }
+                    ]
+                ):
+                    raise RuntimeError(
+                        "Application RoleBinding does not bind its bootstrap identity"
+                    )
+        print(
+            "Verified four Established CRDs and both persistent application identities"
+        )
 
     def verify_operator(self):
         self.preflight()
@@ -608,7 +626,7 @@ class Cluster:
                     "Live Operator Deployment is not idle at the pinned version"
                 )
         print(
-            "Verified deployed Operator release, seven owned resources, zero Pods/PVCs and zero replicas"
+            "Verified deployed Operator release, nine owned resources, zero Pods/PVCs and zero replicas"
         )
 
     def ci(self, mode):

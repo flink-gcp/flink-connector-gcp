@@ -39,14 +39,14 @@ The idle values select the Operator 1.15.0 GAR digest from the [successful publi
 The image verifier requires the Tier-3 GAR Operator repository and a SHA-256 digest, compares chart output with that reference, and compares the live Deployment with the rendered expectation.
 The [seven-day cleanup policy](../../kubernetes/images/README.md#retention-and-acceptance) still requires a fresh image-availability check before Pod admission.
 
-Helm owns seven rendered resources: a Deployment, ConfigMap and Operator ServiceAccount in `tier3-system`, and an Operator Role and RoleBinding in each of `tier3-system` and `tier3-smoke`.
+Helm owns nine rendered resources: a Deployment, ConfigMap and Operator ServiceAccount in `tier3-system`, and an Operator Role and RoleBinding in each of `tier3-system`, `tier3-smoke` and `tier3-cloudtasks`.
 The release also stores its metadata in Secrets in `tier3-system`, retaining up to five revisions.
-The configuration watches only `tier3-smoke`; the Role in the release namespace supports leases and FlinkStateSnapshot discovery.
+The configuration watches only `tier3-smoke` and `tier3-cloudtasks`; the Role in the release namespace supports leases and FlinkStateSnapshot discovery.
 The installer already holds these explicit permissions through bootstrap, without unrestricted bind or escalate grants.
 
 `replicas: 0`, `webhook.create: false`, `skip_crds = true` and `create_namespace = false` preserve the idle boundary.
 The chart's job ServiceAccount, job Role and job RoleBinding creation are all disabled.
-Bootstrap owns namespaces, CRDs, zero Pod/PVC quotas and the persistent smoke identity/RBAC; the GCP root owns cloud resources and IAM, and CUE owns application deliveries.
+Bootstrap owns namespaces, CRDs, zero Pod/PVC quotas and the persistent application identities/RBAC; the GCP root owns cloud resources and IAM, and CUE owns application deliveries.
 No cert-manager or workload is installed.
 The Operator container explicitly requests and limits 1 CPU, 2 GiB memory and 1 GiB ephemeral storage for later admission.
 The chart and live-Deployment checks enforce these quantities while retaining zero replicas.
@@ -62,9 +62,9 @@ The provider contains only the fixed context and Secret storage driver.
 Its wrapper clears inherited Kubernetes overrides and supplies that runner's verified kubeconfig, preserving ADC/WIF environment settings.
 Neither an expiring token nor the plan runner's kubeconfig path is serialized into the provider configuration.
 
-Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and the smoke identity/RoleBinding.
-It checks observed zero quotas and idle workload inventory in `tier3-system` and `tier3-smoke`.
-It checks that the rendered chart contains precisely the seven owned resources, zero replicas, the pinned image, the expected watched namespace and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
+Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and both application identities/RoleBindings.
+It checks observed zero quotas and idle workload inventory in `tier3-system`, `tier3-smoke` and `tier3-cloudtasks`.
+It checks that the rendered chart contains precisely the nine owned resources, zero replicas, the pinned image, the two expected watched namespaces and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
 This is a bounded idle inventory check, not an exhaustive audit of every Kubernetes controller or the [lifecycle supervisor](../../kubernetes/lifecycle/README.md).
 The helper runs through the `flink-tier3` workspace CLI and shares its SDK/PyYAML dependencies with the lifecycle commands under the root `uv.lock`.
 OpenTofu validation, formatting and TFLint run inside the selected plan job after initialization.
@@ -72,11 +72,12 @@ No OpenTofu checks or cluster access are added to general lint or a separate wor
 
 Review the PR's OpenTofu plan together with the `tier3-operator-manifest` artifact from the same CI run.
 The initial installation plan contained one Helm release addition.
-A digest update must contain only an in-place release update, with zero replicas and the same seven owned resources.
+A digest update must contain only an in-place release update, with zero replicas and the same nine owned resources.
 After merge, CI applies that saved plan using a freshly verified copy of the pinned chart.
 It reads the release status and versions through `helm get metadata`, then verifies live configuration/RBAC and zero Deployment replicas.
-It verifies zero Pods/PVCs and unchanged idle quotas in `tier3-system` and `tier3-smoke`.
-The separate `tier3-cloudtasks` acceptance checks remain in the [bootstrap runbook](../tier3-bootstrap/README.md#administrator-prerequisites-for-the-namespace-extension).
+It verifies zero Pods/PVCs and unchanged idle quotas in `tier3-system`, `tier3-smoke` and `tier3-cloudtasks`.
+The [Cloud Tasks bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35234958991) completed the namespace prerequisites before this watch-set extension.
+This extension adds only its Operator Role/RoleBinding to the original seven chart objects; inspect both rendered RBAC objects against the existing installer grants.
 Post-apply verification rechecks the runner-local archive's checksum and renders it again, without depending on another download.
 A refreshed plan with `-detailed-exitcode` must exit zero.
 The installation is complete only after those post-apply checks succeed.

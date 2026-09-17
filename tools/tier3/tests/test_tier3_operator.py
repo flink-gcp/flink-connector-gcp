@@ -36,7 +36,7 @@ def result(value):
 
 def documents():
     objects = []
-    for namespace in ("tier3-system", "tier3-smoke"):
+    for namespace in ("tier3-system", "tier3-smoke", "tier3-cloudtasks"):
         objects.extend(
             [
                 {
@@ -84,7 +84,7 @@ def documents():
                     "namespace": "tier3-system",
                 },
                 "data": {
-                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke\n"
+                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks\n"
                 },
             },
             {
@@ -326,6 +326,9 @@ def test_bad_chart_never_reaches_helm(monkeypatch, tmp_path, case):
         "pvc",
         "watch-all",
         "watch-extra",
+        "watch-missing-cloudtasks",
+        "watch-duplicate",
+        "config-scalar",
         "binding-subject",
         "binding-role",
         "missing-resources",
@@ -367,10 +370,17 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
             {"name": "data", "persistentVolumeClaim": {"claimName": "data"}}
         ]
     elif case.startswith("watch-"):
-        watched = "" if case == "watch-all" else "tier3-smoke,default"
+        watched = {
+            "watch-all": "",
+            "watch-extra": "tier3-smoke,tier3-cloudtasks,default",
+            "watch-missing-cloudtasks": "tier3-smoke",
+            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-cloudtasks",
+        }[case]
         objects[-2]["data"]["flink-conf.yaml"] = (
             "kubernetes.operator.watched.namespaces: " + watched
         )
+    elif case == "config-scalar":
+        objects[-2]["data"]["flink-conf.yaml"] = "unexpected-scalar"
     elif case == "binding-subject":
         objects[1]["subjects"][0]["namespace"] = "default"
     elif case == "missing-resources":
@@ -388,7 +398,16 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
 
 
 @pytest.mark.parametrize(
-    "case", ["established", "pending", "deleting", "missing", "wrong-binding"]
+    "case",
+    [
+        "established",
+        "pending",
+        "deleting",
+        "missing",
+        "wrong-binding",
+        "cloudtasks-missing",
+        "cloudtasks-wrong-binding",
+    ],
 )
 def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
     cluster = operator.Cluster(tmp_path / "config", "operator")
@@ -398,6 +417,14 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
         calls.append(arguments)
         kind, name = arguments[1:3]
         item = {"metadata": {"name": name}}
+        namespace = arguments[4] if kind != "crd" else ""
+        account = "cloudtasks-benchmark" if namespace == "tier3-cloudtasks" else "smoke"
+        if (
+            case == "cloudtasks-missing"
+            and namespace == "tier3-cloudtasks"
+            and kind == "serviceaccount"
+        ):
+            raise RuntimeError("Cloud Tasks ServiceAccount not found")
         if case == "missing" and kind == "serviceaccount":
             raise RuntimeError("ServiceAccount not found")
         if kind == "crd":
@@ -415,13 +442,19 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             item["roleRef"] = {
                 "apiGroup": "rbac.authorization.k8s.io",
                 "kind": "Role",
-                "name": "tier3-smoke-job",
+                "name": name,
             }
             item["subjects"] = [
                 {
                     "kind": "ServiceAccount",
-                    "name": "wrong" if case == "wrong-binding" else "smoke",
-                    "namespace": "tier3-smoke",
+                    "name": "wrong"
+                    if case == "wrong-binding"
+                    or (
+                        case == "cloudtasks-wrong-binding"
+                        and namespace == "tier3-cloudtasks"
+                    )
+                    else account,
+                    "namespace": namespace,
                 }
             ]
         return result(item)
@@ -429,8 +462,63 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
     monkeypatch.setattr(cluster, "kubectl", kubectl)
     if case == "established":
         cluster.operator_prerequisites()
-        assert len(calls) == 7
         assert {args[2] for args in calls[:4]} == set(operator.CRDS)
+        assert calls[4:] == [
+            (
+                "get",
+                "serviceaccount",
+                "smoke",
+                "--namespace",
+                "tier3-smoke",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "role",
+                "tier3-smoke-job",
+                "--namespace",
+                "tier3-smoke",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "rolebinding",
+                "tier3-smoke-job",
+                "--namespace",
+                "tier3-smoke",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "serviceaccount",
+                "cloudtasks-benchmark",
+                "--namespace",
+                "tier3-cloudtasks",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "role",
+                "tier3-cloudtasks-job",
+                "--namespace",
+                "tier3-cloudtasks",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "rolebinding",
+                "tier3-cloudtasks-job",
+                "--namespace",
+                "tier3-cloudtasks",
+                "-o",
+                "json",
+            ),
+        ]
     else:
         with pytest.raises(RuntimeError):
             cluster.operator_prerequisites()
@@ -553,7 +641,7 @@ def test_post_apply_verification_reads_release_and_live_resources(
     monkeypatch.setattr(cluster, "kubectl", kubectl)
     if case == "idle":
         cluster.verify_operator()
-        assert len(calls) == 9
+        assert len(calls) == 11
     else:
         with pytest.raises(RuntimeError):
             cluster.verify_operator()

@@ -51,6 +51,8 @@ resource "google_project_iam_member" "opentofu" {
     # Tier-3 cluster and private network.
     "roles/compute.networkAdmin",
     "roles/container.clusterAdmin",
+    # Manage the lifecycle custom roles; this grant covers all project roles.
+    "roles/iam.roleAdmin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.workloadIdentityPoolAdmin",
     "roles/resourcemanager.projectIamAdmin",
