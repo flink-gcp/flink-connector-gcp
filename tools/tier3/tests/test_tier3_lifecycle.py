@@ -206,10 +206,35 @@ class Kube:
     def request(self, method, path, body=None, **_kwargs):
         assert path.endswith("/scale")
         current = self.get("Deployment", rt.SYSTEM, rt.OPERATOR)
+        spec = (
+            {"replicas": current["spec"]["replicas"]}
+            if current["spec"]["replicas"]
+            else {}
+        )
         if method == "GET":
-            return current
+            return {
+                "apiVersion": "autoscaling/v1",
+                "kind": "Scale",
+                "metadata": current["metadata"],
+                "spec": spec,
+            }
         assert method == "PATCH"
-        assert body[0]["value"] == current["metadata"]["uid"]
+        assert body[:2] == [
+            {
+                "op": "test",
+                "path": "/metadata/uid",
+                "value": current["metadata"]["uid"],
+            },
+            {
+                "op": "test",
+                "path": "/metadata/resourceVersion",
+                "value": current["metadata"]["resourceVersion"],
+            },
+        ]
+        assert body[-1]["path"] == "/spec/replicas"
+        assert body[-1]["op"] in ("add", "replace")
+        if body[-1]["op"] == "replace" and "replicas" not in spec:
+            raise rt.ApiError(422, method, path)
         replicas = body[-1]["value"]
         self.calls.append(("scale", replicas))
         current["spec"]["replicas"] = replicas
@@ -413,6 +438,21 @@ def test_cleanup_deletes_application_before_operator_and_restores_quotas(
     assert runner.env.refresh().to_dict()["success"] is not evidence_failure
     rt.verify_idle(rt.Environment(*env[:3]))
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
+
+
+def test_operator_scale_handles_omitted_zero_and_preserves_conditional_writes(env):
+    kube = env[0]
+    runner = lifecycle(env, cli.runner_api.Runner)
+    scale_path = kube.path("Deployment", rt.SYSTEM, rt.OPERATOR) + "/scale"
+    assert kube.request("GET", scale_path)["spec"] == {}
+    runner.cleanup.scale_operator(0)
+    assert kube.calls == []
+    runner.cleanup.scale_operator(1)
+    assert kube.get("Deployment", rt.SYSTEM, rt.OPERATOR)["spec"]["replicas"] == 1
+    runner.cleanup.scale_operator(0)
+    assert kube.get("Deployment", rt.SYSTEM, rt.OPERATOR)["spec"]["replicas"] == 0
+    runner.cleanup.scale_operator(0)
+    assert kube.calls == [("scale", 1), ("scale", 0)]
 
 
 def test_forced_cleanup_only_deletes_uid_descendants_after_normal_window(env):
