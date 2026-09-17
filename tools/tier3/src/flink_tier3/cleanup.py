@@ -96,7 +96,8 @@ class Cleanup:
             self.env.admission_open()
         else:
             self.env.assert_owner()
-        if scale["spec"]["replicas"] != replicas:
+        # ScaleSpec omits zero replicas from its JSON representation.
+        if scale["spec"].get("replicas", 0) != replicas:
             patch = [
                 {
                     "op": "test",
@@ -108,7 +109,7 @@ class Cleanup:
                     "path": "/metadata/resourceVersion",
                     "value": scale["metadata"]["resourceVersion"],
                 },
-                {"op": "replace", "path": "/spec/replicas", "value": replicas},
+                {"op": "add", "path": "/spec/replicas", "value": replicas},
             ]
             self.env.kube.request(
                 "PATCH",

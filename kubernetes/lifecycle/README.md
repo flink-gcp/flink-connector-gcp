@@ -126,6 +126,8 @@ If supervision fails in that phase, it requests stop and exits; the runner settl
 A lost runner before that handoff requires completed-execution recovery, so admission-stage shutdown depends on that recovery path.
 Once `running` is published, admission makes no further Kubernetes writes and the supervisor can clean independently of the runner.
 Each quota/scale admission retry rechecks stop and phase as well as identity and lock ownership.
+The Operator's Scale API can omit `spec.replicas` when it is zero; lifecycle reads that absence as zero and uses JSON Patch `add` to set either an absent or existing replica count.
+The scale patch retains UID and resource-version conditions, and cleanup skips the write when the Operator is already at zero.
 
 For ordinary smoke, the supervisor observes the application and writes Kubernetes only toward idle.
 The recovery scenario also permits the two recorded operations described below.
