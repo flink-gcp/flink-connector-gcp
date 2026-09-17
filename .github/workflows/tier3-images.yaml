@@ -66,6 +66,9 @@ jobs:
       - name: Verify the smoke application payload
         run: just tier3-smoke-verify
 
+      - name: Verify the Cloud Tasks measurement payload
+        run: just tier3-cloudtasks-verify
+
       - name: Export the locked lifecycle dependencies
         run: just tier3-lifecycle-requirements
 
@@ -126,14 +129,34 @@ jobs:
           tags: ${{ steps.smoke_meta.outputs.tags }}
           labels: ${{ steps.smoke_meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: cloudtasks_meta
+        with:
+          images: ${{ env.GAR }}/cloudtasks-measurement
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        id: cloudtasks_build
+        with:
+          context: kubernetes/apps/cloudtasks
+          platforms: linux/amd64
+          build-args: FLINK_IMAGE=${{ steps.smoke_base.outputs.image }}
+          push: true
+          tags: ${{ steps.cloudtasks_meta.outputs.tags }}
+          labels: ${{ steps.cloudtasks_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
           SMOKE_DIGEST: ${{ steps.smoke_build.outputs.digest }}
+          CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
             printf '%s@%s\n\n' "${image%:*}" "$digest" >> "$GITHUB_STEP_SUMMARY"
           done
-          printf '%s/lifecycle-tools@%s\n' "$GAR" "$LIFECYCLE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
-          printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '%s/lifecycle-tools@%s\n' "$GAR" "$LIFECYCLE_DIGEST"
+            printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST"
+            printf '%s/cloudtasks-measurement@%s\n' "$GAR" "$CLOUDTASKS_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"

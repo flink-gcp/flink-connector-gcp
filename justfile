@@ -449,6 +449,10 @@ check-skill-frontmatter:
 tier3-smoke-verify:
     just verify -P tier3-smoke -pl kubernetes/apps/smoke -am clean
 
+# Build the measurement application and test its observed RPC paths without GCP.
+tier3-cloudtasks-verify:
+    just verify -P tier3-cloudtasks -pl kubernetes/apps/cloudtasks -am clean
+
 # Export image inputs from the same uv lock used by the lifecycle CLI and tests.
 tier3-lifecycle-requirements:
     mkdir -p kubernetes/images/lifecycle/target

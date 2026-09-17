@@ -35,8 +35,9 @@ The mapping is derived, never configured, in the e2e-gated-its.sh tradition
 * Because everything is derived, a new module is covered from the moment the
   root pom names it; there is no filter file to forget to update.
 
-The opt-in Tier-3 application is outside these connector lanes. Its own build
-is selected by requires_tier3_smoke(), including shared build inputs.
+The opt-in Tier-3 applications are outside these connector lanes. Their builds
+are selected by requires_tier3_application(), including shared build inputs
+and the Cloud Tasks application's connector dependencies.
 
 Each changed file is classified by the first matching rule:
 
@@ -113,6 +114,7 @@ Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
 
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
+  run_tier3_cloudtasks=true|false selects the opt-in Cloud Tasks measurement application.
   run_tier3_smoke=true|false   selects the opt-in smoke application for its own
                           inputs and shared build inputs; --full selects it too.
   lanes=<json array>      the build matrix: one object per lane, each with a
@@ -195,8 +197,8 @@ ROOT_ONLY_PREFIXES = ("docs/", "scripts/", "kubernetes/", "tools/tier3/")
 ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock", "CONTRIBUTING.md"}
 
 
-def requires_tier3_smoke(files: list[str]) -> bool:
-    """Select the opt-in application without adding it to connector release lanes."""
+def requires_tier3_application(files: list[str], application: str) -> bool:
+    """Select an opt-in application without adding it to connector release lanes."""
     inputs = {
         "pom.xml",
         "mise.toml",
@@ -209,8 +211,22 @@ def requires_tier3_smoke(files: list[str]) -> bool:
         ".github/workflows/tier3-images.yaml",
         "kubernetes/images/pins.cue",
     }
-    prefixes = ("kubernetes/apps/smoke/", ".mvn/", "tools/maven/")
+    prefixes = (f"kubernetes/apps/{application}/", ".mvn/", "tools/maven/")
+    if application == "cloudtasks":
+        prefixes += (
+            "flink-connector-gcp-cloudtasks/",
+            "flink-connector-gcp-base/",
+            "flink-connector-gcp-test-utils/",
+        )
     return any(path in inputs or path.startswith(prefixes) for path in files)
+
+
+def requires_tier3_smoke(files: list[str]) -> bool:
+    return requires_tier3_application(files, "smoke")
+
+
+def requires_tier3_cloudtasks(files: list[str]) -> bool:
+    return requires_tier3_application(files, "cloudtasks")
 
 
 # ...except the inputs of the one checker whose CI step the deriver can switch
@@ -451,6 +467,7 @@ def main() -> None:
 
     if args.full:
         print("run_tier3_smoke=true")
+        print("run_tier3_cloudtasks=true")
         emit(
             run_build=True,
             built=modules,
@@ -461,6 +478,9 @@ def main() -> None:
 
     files = changed_files(args)
     print(f"run_tier3_smoke={'true' if requires_tier3_smoke(files) else 'false'}")
+    print(
+        f"run_tier3_cloudtasks={'true' if requires_tier3_cloudtasks(files) else 'false'}"
+    )
     fetch = any(moves_a_licence_source(f.strip().lstrip("/")) for f in files)
     ignored, selected, root_only, everything = classify(files, modules)
     print(

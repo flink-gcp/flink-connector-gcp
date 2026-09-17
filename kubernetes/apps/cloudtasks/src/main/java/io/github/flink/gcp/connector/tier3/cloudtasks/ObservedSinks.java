@@ -1,0 +1,92 @@
+/*
+ * Copyright 2026 The flink-gcp authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.tier3.cloudtasks;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.connector.sink2.Sink;
+
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
+import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
+
+import java.io.IOException;
+
+/** Uses existing runtime injection seams without replacing the writer or committer. */
+@Internal
+final class ObservedSinks {
+    private ObservedSinks() {}
+
+    @SuppressWarnings("unchecked")
+    static Sink<Long> observe(Sink<Long> sink, MeasurementOptions options) {
+        if (sink instanceof CloudTasksStagedCreateTaskSink) {
+            return new Staged((CloudTasksStagedCreateTaskSink<Long>) sink, options);
+        }
+        return new Eager((CloudTasksCreateTaskSink<Long>) sink, options);
+    }
+
+    private static TaskCreator observe(TaskCreator creator, MeasurementOptions options) {
+        TaskCreator observed =
+                new ObservedTaskCreator(
+                        creator,
+                        new ObservationLog(options),
+                        System::nanoTime,
+                        options.attemptLimit);
+        return options.arm == MeasurementOptions.Arm.NAMED_RANDOM_CONTROL
+                ? new RandomNameControl(observed)
+                : observed;
+    }
+
+    private static final class Eager extends CloudTasksCreateTaskSink<Long> {
+        private static final long serialVersionUID = 1L;
+        private final MeasurementOptions options;
+
+        private Eager(CloudTasksCreateTaskSink<Long> sink, MeasurementOptions options) {
+            super(sink.getConfig());
+            this.options = options;
+        }
+
+        @Override
+        public DefaultTaskCreatorFactory taskCreatorFactory() {
+            return new DefaultTaskCreatorFactory(
+                    getConfig().getServiceAccountKeyFile(),
+                    getConfig().getEmulatorEndpoint(),
+                    getConfig().getWriterOptions().getChannelPoolSize()) {
+                @Override
+                public TaskCreator create() throws IOException {
+                    return observe(super.create(), options);
+                }
+            };
+        }
+    }
+
+    private static final class Staged extends CloudTasksStagedCreateTaskSink<Long> {
+        private static final long serialVersionUID = 1L;
+        private final MeasurementOptions options;
+
+        private Staged(CloudTasksStagedCreateTaskSink<Long> sink, MeasurementOptions options) {
+            super(sink.getConfig(), sink.getStagedOptions(), null);
+            this.options = options;
+        }
+
+        @Override
+        protected TaskCreator createTaskCreator(DefaultTaskCreatorFactory factory)
+                throws IOException {
+            return observe(super.createTaskCreator(factory), options);
+        }
+    }
+}
