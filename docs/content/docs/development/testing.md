@@ -85,6 +85,10 @@ observations — sit behind gates of their own, outside `just e2e`.
 These suites create and delete billed resources; each run costs real money, which is why CI
 runs them on a weekly schedule (plus manual dispatch) rather than per pull request.
 
+The Pub/Sub hard-buffer-limit probe waits up to 120 seconds for the two callbacks needed to cross its one-message capacity, then gives the limit event and subscriber stop a separate 15-second deadline.
+A timeout reports which phase failed, the SDK state and the observed callback and buffer counts.
+The probe still requires the original ordered sequence to be redelivered and the dead-letter observer to remain empty.
+
 The Google Cloud project behind them is provisioned in two layers. The persistent
 layer — service accounts, Workload Identity Federation, buckets, the dataset and the Tier-3 cluster —
 is OpenTofu under

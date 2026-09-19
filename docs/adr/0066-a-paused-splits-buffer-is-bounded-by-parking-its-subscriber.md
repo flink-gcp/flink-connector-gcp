@@ -261,6 +261,14 @@ Verified 2026-08-29 for [#1138] by `SubscriberBufferBudgetTest`,
   ordering key intact, and the dead-letter observer remained empty for the 20-second observation
   window.
 
+The scheduled [E2E run 35425056265] observed no callbacks during the real-service probe's original 15-second window.
+Issue [#1345] separates callback readiness (120 seconds for the two callbacks needed to cross the one-message capacity) from the hard-limit response deadline (15 seconds after that second callback is observed).
+An integrated run of the first repair received one message but no second callback within 15 seconds; the response clock had started before an overflow attempt existed.
+The first callback therefore stays within the readiness phase, and a fake-clock regression holds it there past the response budget before supplying the second callback.
+The probe waits for both the limit event and a stopping or terminated SDK client, and reports the observation phase, client state, failure cause, callback count and sampled buffer on failure.
+A fake-clock regression checks delayed and absent delivery, missing limit/stop observations, failures, cancellation and the deadline boundaries.
+This fixes the conflated test deadlines; the original log does not establish why that run received no messages.
+
 ## Alternatives declined
 
 - **Fail an alignment-paused reader at a threshold.** Smallest original change, keeps ADR-0012's
@@ -334,3 +342,5 @@ Verified 2026-08-29 for [#1138] by `SubscriberBufferBudgetTest`,
 [#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440
 [#1138]: https://github.com/flink-gcp/flink-connector-gcp/issues/1138
 [Weekly run 33336508126]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/33336508126
+[E2E run 35425056265]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35425056265
+[#1345]: https://github.com/flink-gcp/flink-connector-gcp/issues/1345
