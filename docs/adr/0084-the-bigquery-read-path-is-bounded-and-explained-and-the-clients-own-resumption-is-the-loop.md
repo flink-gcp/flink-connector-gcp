@@ -161,6 +161,14 @@ table is not ours to hold still, so the read and the row count it is checked aga
 one instant with `snapshotTime` and `FOR SYSTEM_TIME AS OF`. Reading every column is load-bearing:
 the projection measurement above shows a single-column read collapses the fixture to one stream.
 
+The post-merge [E2E run 35446400662](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35446400662) on 2026-09-19 read the fixture without ever injecting its deliberate failure.
+The injection depended on another row arriving after a non-empty checkpoint completed; a fast bounded read could finish first.
+While the checkpoint gate is closed, the probe pauses a production reader after its first consumed row, using its availability future so the task thread can still process checkpoint barriers and completion notifications.
+The row counter belongs to the reader attempt, so a restart before the gate opens can read again rather than inheriting the previous attempt's pause.
+Only completion of a checkpoint whose own barrier saw records releases the readers and arms the one deliberate failure.
+Reader state, assignment, source events and shutdown still delegate to the production reader, and the public-table snapshot, multiple-reader and exact-count assertions remain.
+An unpaced two-stream regression requires a non-zero reopened offset with unread rows; a separate regression prevents an earlier empty checkpoint from borrowing the row count of a later barrier.
+
 ## Consequences
 
 - The job that used to hang for a day now fails in minutes, and Flink's restart strategy is the

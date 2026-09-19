@@ -19,10 +19,16 @@ package io.github.flink.gcp.connector.bigquery.source;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.state.CheckpointListener;
+import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SourceEvent;
+import org.apache.flink.api.connector.source.SourceReader;
+import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
+import org.apache.flink.core.io.InputStatus;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
@@ -31,7 +37,9 @@ import org.apache.flink.util.CloseableIterator;
 
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -44,7 +52,12 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -112,18 +125,16 @@ class BigQueryMultiStreamRealGcpITCase {
             "{\"type\":\"record\",\"name\":\"Row\",\"fields\":[]}";
 
     /** Static because the map function is shipped into a job running in this same JVM. */
-    private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
+    static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
 
-    private static final AtomicBoolean CHECKPOINTED_AFTER_RECORDS = new AtomicBoolean();
-    private static final Set<Integer> SUBTASKS_THAT_READ = ConcurrentHashMap.newKeySet();
+    static CompletableFuture<Void> checkpointGate = new CompletableFuture<>();
+    static final Set<Integer> SUBTASKS_THAT_READ = ConcurrentHashMap.newKeySet();
 
     @TempDir Path checkpointDirectory;
 
     @Test
     void readsEveryRowExactlyOnceAcrossAFailureOverSeveralStreams() throws Exception {
-        FAILED_ONCE.set(false);
-        CHECKPOINTED_AFTER_RECORDS.set(false);
-        SUBTASKS_THAT_READ.clear();
+        resetProbe();
 
         // A minute back keeps the snapshot inside the time-travel window and safely behind writes
         // in flight against the public table. BigQuery's timestamp string conversion accepts at
@@ -149,7 +160,10 @@ class BigQueryMultiStreamRealGcpITCase {
 
         AtomicLong read = new AtomicLong();
         try (CloseableIterator<Byte> records =
-                env.fromSource(source(snapshot), WatermarkStrategy.noWatermarks(), "bigquery")
+                env.fromSource(
+                                new CheckpointGatedSource(source(snapshot)),
+                                WatermarkStrategy.noWatermarks(),
+                                "bigquery")
                         .map(new FailAfterACheckpoint())
                         .executeAndCollect()) {
             // Counted rather than collected: two million trip ids would be held in this JVM for no
@@ -167,6 +181,104 @@ class BigQueryMultiStreamRealGcpITCase {
                                 + " this class would be testing nothing the others do not")
                 .hasSizeGreaterThan(1);
         assertThat(read).hasValue(expected);
+    }
+
+    static void resetProbe() {
+        FAILED_ONCE.set(false);
+        checkpointGate = new CompletableFuture<>();
+        SUBTASKS_THAT_READ.clear();
+    }
+
+    /** Keeps the production reader's task thread available for a non-empty checkpoint. */
+    static final class CheckpointGatedSource extends BigQueryStorageReadSource<GenericRecord> {
+        private static final long serialVersionUID = 1L;
+
+        CheckpointGatedSource(
+                Source<GenericRecord, ReadStreamSplit, BigQueryReadEnumeratorState> source) {
+            super(((BigQueryStorageReadSource<GenericRecord>) source).getConfig());
+        }
+
+        @Override
+        public SourceReader<GenericRecord, ReadStreamSplit> createReader(
+                SourceReaderContext context) throws Exception {
+            return new CheckpointGatedReader(
+                    super.createReader(context),
+                    context.metricGroup().getIOMetricGroup().getNumRecordsInCounter());
+        }
+    }
+
+    /** Pauses only polling; checkpointing, assignment and shutdown still reach the real reader. */
+    static final class CheckpointGatedReader
+            implements SourceReader<GenericRecord, ReadStreamSplit> {
+        private final SourceReader<GenericRecord, ReadStreamSplit> delegate;
+        private final Counter consumed;
+
+        CheckpointGatedReader(
+                SourceReader<GenericRecord, ReadStreamSplit> delegate, Counter consumed) {
+            this.delegate = delegate;
+            this.consumed = consumed;
+        }
+
+        private boolean paused() {
+            // SourceReaderBase counts consumed rows per reader attempt, before deserialization.
+            // Aggregate subtask participation survives restart and cannot govern this gate.
+            return !checkpointGate.isDone() && consumed.getCount() > 0;
+        }
+
+        @Override
+        public InputStatus pollNext(ReaderOutput<GenericRecord> output) throws Exception {
+            return paused() ? InputStatus.NOTHING_AVAILABLE : delegate.pollNext(output);
+        }
+
+        @Override
+        public CompletableFuture<Void> isAvailable() {
+            return paused() ? checkpointGate : delegate.isAvailable();
+        }
+
+        @Override
+        public void start() {
+            delegate.start();
+        }
+
+        @Override
+        public List<ReadStreamSplit> snapshotState(long checkpointId) {
+            return delegate.snapshotState(checkpointId);
+        }
+
+        @Override
+        public void addSplits(List<ReadStreamSplit> splits) {
+            delegate.addSplits(splits);
+        }
+
+        @Override
+        public void notifyNoMoreSplits() {
+            delegate.notifyNoMoreSplits();
+        }
+
+        @Override
+        public void handleSourceEvents(SourceEvent event) {
+            delegate.handleSourceEvents(event);
+        }
+
+        @Override
+        public void notifyCheckpointComplete(long checkpointId) throws Exception {
+            delegate.notifyCheckpointComplete(checkpointId);
+        }
+
+        @Override
+        public void notifyCheckpointAborted(long checkpointId) throws Exception {
+            delegate.notifyCheckpointAborted(checkpointId);
+        }
+
+        @Override
+        public void pauseOrResumeSplits(Collection<String> pause, Collection<String> resume) {
+            delegate.pauseOrResumeSplits(pause, resume);
+        }
+
+        @Override
+        public void close() throws Exception {
+            delegate.close();
+        }
     }
 
     /**
@@ -190,7 +302,8 @@ class BigQueryMultiStreamRealGcpITCase {
                 .get(0);
     }
 
-    private static Source<GenericRecord, ?, ?> source(Instant snapshot) {
+    private static Source<GenericRecord, ReadStreamSplit, BigQueryReadEnumeratorState> source(
+            Instant snapshot) {
         return BigQuerySource.<GenericRecord>builder()
                 .table(TABLE)
                 // The public dataset cannot be billed for its own reads, so the session belongs to
@@ -208,21 +321,22 @@ class BigQueryMultiStreamRealGcpITCase {
      * checkpoint that merely completes says nothing, since its barrier may have crossed the source
      * before a row was emitted, and restoring to that one starts every stream over. Only a
      * checkpoint that had already seen rows arms the failure, so the recovery this measures is a
-     * resume.
+     * resume. The reader pauses after its first emitted row until that checkpoint completes, so a
+     * fast read cannot finish before failure injection is armed.
      */
-    private static final class FailAfterACheckpoint extends RichMapFunction<GenericRecord, Byte>
+    static final class FailAfterACheckpoint extends RichMapFunction<GenericRecord, Byte>
             implements CheckpointedFunction, CheckpointListener {
 
         private static final long serialVersionUID = 1L;
 
         private long seen;
-        private long seenAtLastBarrier;
+        private final Map<Long, Long> seenAtBarrier = new HashMap<>();
 
         @Override
         public Byte map(GenericRecord record) {
             seen++;
             SUBTASKS_THAT_READ.add(getRuntimeContext().getTaskInfo().getIndexOfThisSubtask());
-            if (CHECKPOINTED_AFTER_RECORDS.get() && FAILED_ONCE.compareAndSet(false, true)) {
+            if (checkpointGate.isDone() && FAILED_ONCE.compareAndSet(false, true)) {
                 throw new IllegalStateException("Failing the job once, on purpose.");
             }
             return (byte) 0;
@@ -230,7 +344,7 @@ class BigQueryMultiStreamRealGcpITCase {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) {
-            seenAtLastBarrier = seen;
+            seenAtBarrier.put(context.getCheckpointId(), seen);
         }
 
         @Override
@@ -238,9 +352,10 @@ class BigQueryMultiStreamRealGcpITCase {
 
         @Override
         public void notifyCheckpointComplete(long checkpointId) {
-            if (seenAtLastBarrier > 0) {
-                CHECKPOINTED_AFTER_RECORDS.set(true);
+            if (seenAtBarrier.getOrDefault(checkpointId, 0L) > 0) {
+                checkpointGate.complete(null);
             }
+            seenAtBarrier.keySet().removeIf(id -> id <= checkpointId);
         }
     }
 }
