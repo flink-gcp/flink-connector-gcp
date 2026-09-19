@@ -96,6 +96,7 @@ Update it from the `docs/` directory with
 `hugo mod get github.com/flink-gcp/flink-gcp-dev-tools/hugo@<full commit SHA>` and review both files.
 Keep `markup.highlight.noClasses = false` in this site's configuration.
 Palette and theme-control changes belong in dev-tools, including its `just docs-chroma` recipe.
+The shared repository also maintains the search readiness guard and its regression test; typed input is searched once the index finishes loading.
 This repository owns its content, source-snippet mounts and shortcodes, Javadoc, version assembly and Pages workflow.
 Validate a module update with `just docs` and compare the affected pages in both color schemes.
 Local assets or partials override module files, so avoid reintroducing copies of the shared theme files.
