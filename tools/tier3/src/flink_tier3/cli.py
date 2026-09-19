@@ -28,13 +28,22 @@ def main(argv=None):
         help="Repository root containing kubernetes/ and opentofu/ (default: cwd)",
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("lifecycle", "bootstrap", "schemas", "supervisor", "render"):
+    for command in (
+        "lifecycle",
+        "bootstrap",
+        "schemas",
+        "supervisor",
+        "render",
+        "analyze",
+    ):
         commands.add_parser(command, add_help=False)
     args, remaining = parser.parse_known_args(argv)
     module = import_module(
         "." + {"supervisor": "runtime"}.get(args.command, args.command), __package__
     )
-    if args.command != "supervisor":
+    # The supervisor runs in-cluster and analyze reads a downloaded mirror;
+    # neither needs the checkout.
+    if args.command not in ("supervisor", "analyze"):
         from . import bootstrap, lifecycle, schemas, workflow
 
         root = args.repository.resolve()

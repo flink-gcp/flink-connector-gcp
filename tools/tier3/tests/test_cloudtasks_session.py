@@ -967,9 +967,31 @@ def test_session_runs_cells_one_at_a_time_and_reaches_a_verified_idle(env, monke
     runner.settle()
     assert runner.env.refresh().idle
     plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+    # The collector records each verified export on the control record, which
+    # finalize deletes; the final receipt is what outlives it.
+    runner.env.records.record_export(
+        CELL_A["id"],
+        {
+            "outcome": "completed",
+            "objects": 3,
+            "evidence_bytes": 4096,
+            "reconciliation": {"status": "complete", "reasons": []},
+            "manifest_sha256": "a" * 64,
+        },
+    )
     assert runner.finalize(plans) is True
     result = env[1].read("runs/test-1310/result.json")[0]
-    assert result["success"] and result["exported"] is False
+    assert result["success"]
+    assert result["exported"] == {
+        CELL_A["id"]: {
+            "outcome": "completed",
+            "objects": 3,
+            "evidence_bytes": 4096,
+            "reconciliation": "complete",
+            "manifest_sha256": "a" * 64,
+        }
+    }
+    assert result["evidence_bytes"] == 4096
     assert result["scenario"] == "cloudtasks" and result["campaign"] == "example"
     assert set(result["benchmark_evidence_retained"]) == {CELL_A["id"], CELL_B["id"]}
     assert result["queue"]["admitted"]["state"] == "PAUSED"
@@ -1783,3 +1805,55 @@ def test_session_cost_gate_refuses_a_session_under_the_creation_ceiling(env):
     assert rt.estimated_session_cost(window, cells) > Decimal("10.00")
     with pytest.raises(rt.Failure, match="session cost exceeds"):
         rt.validate_approval(env[2], env[3]())
+
+
+def test_a_failed_export_leaves_the_cell_claimable_in_the_campaign(env, monkeypatch):
+    manifests = session_approval(env)
+    CellWorld(env, manifests, monkeypatch)
+    supervisor, pod, _runner = admitted_session(env, manifests)
+
+    class FailingExport(rt.SessionHooks):
+        def after_cell(self, session, cell, outcome):
+            raise rt.Failure("Exported object differs from its source")
+
+    supervisor.session.hooks = FailingExport()
+    supervisor.supervise(pod["metadata"]["uid"])
+    control = supervisor.env.refresh()
+    assert not control.success and "differs from its source" in control.reason
+    # The ledger never settled the cell, so cleanup marks it interrupted and a
+    # later reviewed session may claim it again.
+    ledger = supervisor.env.ledger.read()[0]["cells"]
+    assert ledger[CELL_A["id"]]["status"] == "interrupted"
+    assert CELL_A["id"] not in control.cells
+    supervisor.env.ledger.claim(
+        CELL_A["id"], "later-run", "f" * 32, supervisor.env.clock()
+    )
+    assert supervisor.env.ledger.read()[0]["cells"][CELL_A["id"]]["attempts"] == 2
+
+
+def test_a_queue_deviation_stops_a_poll_before_it_observes_anything(env, monkeypatch):
+    manifests = session_approval(env)
+    CellWorld(env, manifests, monkeypatch, polls_to_finish=9)
+    supervisor, pod, _runner = admitted_session(env, manifests)
+    queues = supervisor.env.queues
+    get, reads, seen = queues.get, [0], []
+
+    def deviating_get(read_mask=ct.QUEUE_READ_MASK):
+        readback = get(read_mask)
+        reads[0] += 1
+        if reads[0] >= 3 and readback is not None:
+            readback["state"] = "RUNNING"  # the queue resumed between polls
+        return readback
+
+    class Recording(rt.SessionHooks):
+        def poll(self, session, cell, app, pods):
+            seen.append(reads[0])
+
+    monkeypatch.setattr(queues, "get", deviating_get)
+    supervisor.session.hooks = Recording()
+    supervisor.supervise(pod["metadata"]["uid"])
+    control = supervisor.env.refresh()
+    assert not control.success and "deviated" in control.reason
+    # The deviating readback is taken before that poll's observers run, so no
+    # observation is recorded for a queue that had already resumed.
+    assert seen == [2]

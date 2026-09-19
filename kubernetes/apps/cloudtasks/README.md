@@ -79,7 +79,7 @@ The measured sizes are HTTP body sizes; task names, target configuration and pro
 Named hash paths derive their task identity from run ID, cell ID and sequence.
 The manifest must assign a fresh run/cell pair to every execution across arms, configurations and repetitions sharing a queue.
 Reusing that pair is reserved for deliberate replay, since `NAMED_HASH` and `STAGED_HASH` otherwise address the same names.
-The analyzer must reconcile `ALREADY_EXISTS` by task name and sequence with earlier attempts and recovery evidence from the same cell.
+The lifecycle collector reconciles `ALREADY_EXISTS` by task name and sequence with earlier attempts and recovery evidence from the same cell.
 A prior attempt can create a task before its response is lost; a later retry can therefore deduplicate within a fresh cell.
 Unexplained duplicates invalidate a fresh-creation cell, and deliberate replay remains a separate workload.
 
@@ -119,7 +119,7 @@ It excludes upstream source/partition waiting and time before the serializer is 
 A response is an acknowledgement upper bound on service visibility; the app does not infer subsecond visibility from Cloud Tasks' second-truncated `create_time`.
 
 A restored envelope may cross JVM incarnations.
-Its serializer-to-completion value is `-1` when the process UUID changes; an analyzer must not treat that sentinel as a valid latency or compare monotonic clocks across JVMs.
+Its serializer-to-completion value is `-1` when the process UUID changes; the offline analyzer excludes and counts that sentinel rather than treating it as a latency, and compares no monotonic clock across JVMs.
 The wall-clock origin is retained for separately bounded recovery observations.
 Per-attempt rows include retries and are not themselves unique-record throughput; the analyzer must reconcile sequence/name outcomes and successful job completion.
 
@@ -141,7 +141,7 @@ The counts-only control validates returned names and dispatch counts but skips C
 Its terminal observation count is the number of successful observer callbacks, not a count of written CSV rows.
 Compare it with an otherwise identical CSV-enabled run to assess output overhead using independent throughput/resource observations.
 A counts-only run cannot supply a per-record p95 or complete CSV evidence.
-Every receipt identifies both controls; the later main-measurement admission and analyzer must require `control_delay_millis=0` and `csv_enabled=true`.
+Every receipt identifies both controls; the collector refuses a main cell whose receipts do not carry `control_delay_millis=0` and `csv_enabled=true`.
 Controls and receipt export still need execution-host validation; the local checks do not establish acceptable instrument overhead.
 
 ## Independent receipt files
@@ -162,7 +162,7 @@ The counts-only control writes no rows, so its snapshot does not require that eq
 Close with an outstanding callback produces an incomplete snapshot; a later callback never upgrades that persisted snapshot.
 An abrupt process loss can leave a registration without a terminal receipt.
 
-The collector must discover registrations independently of the logs, require matching terminal receipts for a steady-state result, and compare the rows decoded from the parts with `rows_exported` and the terminal counts.
+The lifecycle collector (`flink_tier3/evidence.py`, described in the [lifecycle runbook](../../lifecycle/README.md#cloud-tasks-session)) discovers registrations from the receipts rather than the logs, requires matching terminal receipts for a steady-state result, and compares the rows decoded from the parts with `rows_exported` and the terminal counts.
 Thus losing the final CSV row or all rows from one registered creator cannot be concealed by counting the remaining CSV itself.
 A complete receipt certifies local accounting and that every part closed without a reported error; it does not certify successful service creation, a read-back of the parts, job success or a performance pass.
 Read back the receipts and reconcile record/task outcomes and job status before accepting a cell.
@@ -171,8 +171,8 @@ Recovery evidence must explicitly account for incomplete prior incarnations inst
 Receipts carry schema version 1, run/cell/arm identity, role, incarnation, process UUID and wall/monotonic clock samples.
 They contain no task body, target URL or exception text.
 Wall/monotonic samples do not prove synchronized clocks across hosts.
-The analyzer must establish the observation window and clock bounds independently, preserving the cross-JVM latency exclusion above.
-The worker writes receipts to temporary benchmark storage; the lifecycle collector must export them to retained evidence before deleting the run prefix.
+The offline analyzer establishes the observation window from the checkpoints the supervisor observed and the source receipts, and records which clock each instant belongs to, preserving the cross-JVM latency exclusion above.
+The worker writes receipts to temporary benchmark storage; the lifecycle collector exports them to retained evidence, verified by hash, before the run prefix is released.
 Receipt writes and their failure/overhead behavior still require execution-host calibration.
 
 ## Resource boundary and remaining acceptance

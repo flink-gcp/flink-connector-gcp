@@ -40,6 +40,25 @@ class SessionHooks:
         """Collect whatever the per-cell pass left behind."""
 
 
+class HookChain(SessionHooks):
+    """Run several session hooks in order; a hook's failure stops the chain."""
+
+    def __init__(self, *hooks):
+        self.hooks = hooks
+
+    def poll(self, session, cell, app, pods):
+        for hook in self.hooks:
+            hook.poll(session, cell, app, pods)
+
+    def after_cell(self, session, cell, outcome):
+        for hook in self.hooks:
+            hook.after_cell(session, cell, outcome)
+
+    def at_session_end(self, session, outcomes):
+        for hook in self.hooks:
+            hook.at_session_end(session, outcomes)
+
+
 class Supervisor:
     """Observe the workload, run an approved exercise, and return it to idle."""
 
@@ -316,6 +335,11 @@ class CellSession:
         self.current = None
         self.job_id = None
         self.queue_read_failures = 0
+        # Observed by the poll hook: the last successful queue readback and the
+        # inventory and Service of the current poll.
+        self.last_queue = None
+        self.last_items = None
+        self.last_service = None
 
     def check_open(self):
         self.env.require_running("Session has been stopped")
@@ -378,6 +402,10 @@ class CellSession:
         deadline = self.env.schedule.cell_deadline(self.env.clock(), cell)
         outcome, reason = self.observe(cell, key, deadline)
         self.teardown(cell, key)
+        # Collect the cell's evidence before the ledger settles it: a failed
+        # export leaves the entry running, so cleanup marks it interrupted and
+        # a later reviewed session may claim the cell again.
+        self.hooks.after_cell(self, cell, outcome)
         self.env.ledger.settle(
             cell["id"],
             self.approval.run_id,
@@ -387,7 +415,6 @@ class CellSession:
             self.env.clock(),
         )
         self.env.records.cell_done(cell["id"], outcome, reason, self.meter.snapshot())
-        self.hooks.after_cell(self, cell, outcome)
         self.outcomes[cell["id"]] = outcome
         self.current, self.job_id = None, None
         self.env.emit(
@@ -431,14 +458,16 @@ class CellSession:
     def recheck_queue(self):
         """Re-read the queue; a few transient read failures are recorded, not fatal."""
         try:
-            verify_queue(self.env)
+            readback = verify_queue(self.env)
         except Failure as error:
+            self.last_queue = None
             if not transient(error) or self.queue_read_failures >= 2:
                 raise
             self.queue_read_failures += 1
             self.env.emit("queue-read-unavailable", {"cause": str(error)})
             return
         self.queue_read_failures = 0
+        self.last_queue = readback
 
     def observe(self, cell, key, deadline):
         own_deadline = deadline >= self.env.schedule.cleanup_at
@@ -453,7 +482,7 @@ class CellSession:
                 raise Failure("Cell application disappeared before completion")
             job = app.get("status", {}).get("jobStatus", {})
             status, job_id = job.get("state", ""), job.get("jobId", "")
-            checkpoints = {}
+            checkpoints, service = {}, None
             if status in ("RUNNING", "FINISHED") and re.fullmatch(
                 r"[0-9a-f]{32}", job_id
             ):
@@ -475,6 +504,7 @@ class CellSession:
                     "latest": checkpoints.get("latest", {}),
                 },
             )
+            self.last_items, self.last_service = items, service
             self.hooks.poll(self, cell, app, pods)
             if status == "FINISHED":
                 return "completed", "finished"
