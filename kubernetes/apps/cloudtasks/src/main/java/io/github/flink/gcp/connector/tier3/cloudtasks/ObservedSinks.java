@@ -19,12 +19,15 @@ package io.github.flink.gcp.connector.tier3.cloudtasks;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
 
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
 
 import java.io.IOException;
+import java.util.UUID;
+import java.util.function.Consumer;
 
 /** Uses existing runtime injection seams without replacing the writer or committer. */
 @Internal
@@ -39,13 +42,31 @@ final class ObservedSinks {
         return new Eager((CloudTasksCreateTaskSink<Long>) sink, options);
     }
 
-    private static TaskCreator observe(TaskCreator creator, MeasurementOptions options) {
+    private static TaskCreator observe(TaskCreator creator, MeasurementOptions options)
+            throws IOException {
+        return observe(creator, options, MeasurementReceipts.storage(options));
+    }
+
+    static TaskCreator observe(
+            TaskCreator creator, MeasurementOptions options, MeasurementReceipts.Output output)
+            throws IOException {
+        UUID incarnation = UUID.randomUUID();
+        Consumer<ObservedTaskCreator.Terminal> terminal = ignored -> {};
+        try {
+            if (options.windowed()) {
+                terminal = MeasurementReceipts.creator(options, incarnation, output);
+            }
+        } catch (Throwable failure) {
+            Closers.closeAllSuppressing(failure, creator);
+            throw failure;
+        }
         TaskCreator observed =
                 new ObservedTaskCreator(
                         creator,
-                        new ObservationLog(options),
+                        new ObservationLog(options, incarnation),
                         System::nanoTime,
-                        options.attemptLimit);
+                        options.attemptLimit,
+                        terminal);
         return options.arm == MeasurementOptions.Arm.NAMED_RANDOM_CONTROL
                 ? new RandomNameControl(observed)
                 : observed;

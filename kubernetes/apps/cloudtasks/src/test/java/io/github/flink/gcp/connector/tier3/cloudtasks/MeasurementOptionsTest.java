@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.tier3.cloudtasks;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.runtime.operators.sink.CommitterOperatorFactory;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -71,6 +72,76 @@ class MeasurementOptionsTest {
         return args.toArray(String[]::new);
     }
 
+    static String[] windowArguments(String... changes) {
+        List<String> args = new ArrayList<>(List.of(arguments(changes)));
+        for (String name : List.of("--records", "--warmup-records")) {
+            int position = args.indexOf(name);
+            args.remove(position + 1);
+            args.remove(position);
+        }
+        for (String[] entry :
+                List.of(
+                        new String[] {"--warmup-seconds", "60"},
+                        new String[] {"--observation-seconds", "180"},
+                        new String[] {"--record-limit", "10000000"},
+                        new String[] {"--attempt-limit", "60000"})) {
+            if (!args.contains(entry[0])) {
+                args.addAll(List.of(entry));
+            }
+        }
+        return args.toArray(String[]::new);
+    }
+
+    @Test
+    void budgetsTheWholeWindowAndTwoPeriodicCheckpointsBeforeEndOfInput() {
+        var options =
+                MeasurementOptions.parse(
+                        windowArguments(
+                                "--offered-rate",
+                                "1000",
+                                "--checkpoint-seconds",
+                                "60",
+                                "--warmup-seconds",
+                                "120",
+                                "--observation-seconds",
+                                "360"));
+        assertThat(options.records).isEqualTo(601000);
+        assertThat(options.warmup).isZero();
+        assertThat(options.attemptLimit).isEqualTo(60000);
+        assertThat(options.receiptPrefix())
+                .isEqualTo(
+                        "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/receipts/");
+        assertThatThrownBy(
+                        () ->
+                                MeasurementOptions.parse(
+                                        windowArguments(
+                                                "--offered-rate",
+                                                "1000",
+                                                "--record-limit",
+                                                "100000")))
+                .hasMessageContaining("record-limit");
+    }
+
+    @Test
+    void rejectsAmbiguousWindowInputsAndUnapprovedLimits() {
+        for (String[] change :
+                List.of(
+                        new String[] {"--warmup-seconds", "0"},
+                        new String[] {"--observation-seconds", "601"},
+                        new String[] {"--record-limit", "10000001"},
+                        new String[] {"--record-limit", "0"},
+                        new String[] {"--attempt-limit", "0"},
+                        new String[] {"--attempt-limit", "100000000"})) {
+            assertThatThrownBy(() -> MeasurementOptions.parse(windowArguments(change)))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThatThrownBy(
+                        () -> MeasurementOptions.parse(arguments("--observation-seconds", "180")))
+                .hasMessageContaining("record-count mode");
+        assertThatThrownBy(() -> MeasurementOptions.parse(arguments("--record-limit", "100")))
+                .hasMessageContaining("require observation-seconds");
+    }
+
     @Test
     void buildsEveryExistingProductionArmWithoutAccessingCredentials() {
         for (var arm : MeasurementOptions.Arm.values()) {
@@ -93,6 +164,42 @@ class MeasurementOptionsTest {
                     .isEqualTo(staged ? 1L : 0L);
             assertThat(environment.getCheckpointConfig().getCheckpointInterval()).isEqualTo(1000);
         }
+    }
+
+    @Test
+    void confinesCalibrationControlsToExplicitWindowInputs() {
+        var delay =
+                MeasurementOptions.parse(
+                        windowArguments(
+                                "--arm",
+                                "UNNAMED",
+                                "--parallelism",
+                                "1",
+                                "--concurrency",
+                                "1",
+                                "--control-delay-millis",
+                                "100"));
+        assertThat(delay.controlDelayMillis).isEqualTo(100);
+        assertThat(delay.emitAttempts).isTrue();
+        assertThat(
+                        MeasurementOptions.parse(windowArguments("--emit-attempts", "false"))
+                                .emitAttempts)
+                .isFalse();
+        assertThatThrownBy(() -> MeasurementOptions.parse(arguments("--emit-attempts", "false")))
+                .hasMessageContaining("require window mode");
+        assertThatThrownBy(
+                        () ->
+                                MeasurementOptions.parse(
+                                        windowArguments("--control-delay-millis", "100")))
+                .hasMessageContaining("Delay control requires");
+        assertThatThrownBy(
+                        () ->
+                                MeasurementOptions.parse(
+                                        windowArguments("--control-delay-millis", "50")))
+                .hasMessageContaining("Unsupported");
+        assertThatThrownBy(
+                        () -> MeasurementOptions.parse(windowArguments("--emit-attempts", "TRUE")))
+                .hasMessageContaining("true or false");
     }
 
     @Test
@@ -145,6 +252,49 @@ class MeasurementOptionsTest {
             assertThatThrownBy(() -> MeasurementOptions.parse(arguments(change)))
                     .as(Arrays.toString(change))
                     .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
+    @Tag("slow")
+    void knownDelayIsIncludedInTheMeasuredSerializationOrigin() {
+        var options =
+                MeasurementOptions.parse(
+                        windowArguments(
+                                "--arm",
+                                "UNNAMED",
+                                "--parallelism",
+                                "1",
+                                "--concurrency",
+                                "1",
+                                "--control-delay-millis",
+                                "100"));
+        var task = CloudTasksMeasurementJob.serialize(options, 0);
+        var origin = MeasurementPayload.read(task.getHttpRequest().getBody());
+        assertThat(origin.elapsedNanos(MeasurementPayload.process(), System.nanoTime()))
+                .isGreaterThanOrEqualTo(100000000L);
+    }
+
+    @Test
+    void interruptedControlCannotEmitATaskAndPreservesInterruption() {
+        var options =
+                MeasurementOptions.parse(
+                        windowArguments(
+                                "--arm",
+                                "UNNAMED",
+                                "--parallelism",
+                                "1",
+                                "--concurrency",
+                                "1",
+                                "--control-delay-millis",
+                                "100"));
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> CloudTasksMeasurementJob.serialize(options, 0))
+                    .hasCauseInstanceOf(InterruptedException.class);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
         }
     }
 }

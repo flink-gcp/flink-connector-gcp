@@ -168,6 +168,101 @@ class ObservedTaskCreatorTest {
         assertThat(events.get(0).failure()).isSameAs(delegate.synchronousFailure);
     }
 
+    @Test
+    void terminalCountsAreIndependentOfTheExportedRows() throws Exception {
+        FakeCreator delegate = new FakeCreator();
+        List<ObservedTaskCreator.Terminal> receipts = new ArrayList<>();
+        List<ObservedTaskCreator.Observation> exported = new ArrayList<>();
+        var creator = new ObservedTaskCreator(delegate, exported::add, () -> 1, 2, receipts::add);
+        creator.createTask(request());
+        delegate.future.set(Task.getDefaultInstance());
+        creator.close();
+        exported.clear(); // Simulate losing the final CSV row after successful local output.
+        assertThat(receipts).hasSize(1);
+        assertThat(receipts.get(0).attempts()).isEqualTo(1);
+        assertThat(receipts.get(0).observations()).isEqualTo(1);
+        assertThat(receipts.get(0).complete()).isTrue();
+        assertThat(exported.size()).isNotEqualTo(receipts.get(0).observations());
+        assertThatThrownBy(() -> creator.createTask(request())).hasMessageContaining("closed");
+        creator.close();
+        assertThat(receipts).hasSize(1);
+    }
+
+    @Test
+    void closeBeforeCallbackNeverCertifiesCompleteEvidence() throws Exception {
+        FakeCreator delegate = new FakeCreator();
+        List<ObservedTaskCreator.Terminal> receipts = new ArrayList<>();
+        var creator = new ObservedTaskCreator(delegate, event -> {}, () -> 1, 1, receipts::add);
+        creator.createTask(request());
+        creator.close();
+        assertThat(receipts.get(0).attempts()).isEqualTo(1);
+        assertThat(receipts.get(0).completed()).isZero();
+        assertThat(receipts.get(0).complete()).isFalse();
+        delegate.future.set(Task.getDefaultInstance());
+        assertThat(receipts.get(0).complete()).isFalse();
+    }
+
+    @Test
+    void outputFailureAndAttemptExhaustionInvalidateTheReceipt() throws Exception {
+        FakeCreator delegate = new FakeCreator();
+        List<ObservedTaskCreator.Terminal> receipts = new ArrayList<>();
+        var creator =
+                new ObservedTaskCreator(
+                        delegate,
+                        event -> {
+                            throw new IllegalStateException("output lost");
+                        },
+                        () -> 1,
+                        1,
+                        receipts::add);
+        var result = creator.createTask(request());
+        delegate.future.set(Task.getDefaultInstance());
+        assertThatThrownBy(result::get).hasRootCauseMessage("output lost");
+        assertThatThrownBy(() -> creator.createTask(request())).hasMessageContaining("ceiling");
+        creator.close();
+        assertThat(receipts.get(0).attempts()).isEqualTo(1);
+        assertThat(receipts.get(0).completed()).isEqualTo(1);
+        assertThat(receipts.get(0).observations()).isZero();
+        assertThat(receipts.get(0).evidenceFailed()).isTrue();
+        assertThat(receipts.get(0).limitReached()).isTrue();
+        assertThat(receipts.get(0).complete()).isFalse();
+        assertThat(delegate.calls).isEqualTo(1);
+    }
+
+    @Test
+    void attemptExhaustionInvalidatesOtherwiseCompleteEvidence() throws Exception {
+        FakeCreator delegate = new FakeCreator();
+        List<ObservedTaskCreator.Terminal> receipts = new ArrayList<>();
+        var creator = new ObservedTaskCreator(delegate, event -> {}, () -> 1, 1, receipts::add);
+        creator.createTask(request());
+        delegate.future.set(Task.getDefaultInstance());
+        assertThatThrownBy(() -> creator.createTask(request())).hasMessageContaining("ceiling");
+        creator.close();
+        var receipt = receipts.get(0);
+        assertThat(receipt.attempts()).isEqualTo(1);
+        assertThat(receipt.completed()).isEqualTo(1);
+        assertThat(receipt.observations()).isEqualTo(1);
+        assertThat(receipt.evidenceFailed()).isFalse();
+        assertThat(receipt.limitReached()).isTrue();
+        assertThat(receipt.complete()).isFalse();
+    }
+
+    @Test
+    void terminalExportFailureStillClosesTheRpcClient() {
+        FakeCreator delegate = new FakeCreator();
+        var creator =
+                new ObservedTaskCreator(
+                        delegate,
+                        event -> {},
+                        () -> 1,
+                        1,
+                        receipt -> {
+                            throw new IllegalStateException("receipt lost");
+                        });
+        assertThatThrownBy(creator::close).hasMessage("receipt lost");
+        assertThat(delegate.closed).isTrue();
+    }
+
     private static final class FakeCreator implements TaskCreator {
         final SettableApiFuture<Task> future = SettableApiFuture.create();
         CreateTaskRequest request;

@@ -71,18 +71,7 @@ public final class CloudTasksMeasurementJob {
         var builder =
                 CloudTasksSink.<Long>builder()
                         .queue(QueueDestination.of(path[1], path[3], path[5]))
-                        .serializer(
-                                sequence -> {
-                                    var body =
-                                            MeasurementPayload.create(options.bodyBytes, sequence);
-                                    return Task.newBuilder()
-                                            .setHttpRequest(
-                                                    HttpRequest.newBuilder()
-                                                            .setHttpMethod(HttpMethod.POST)
-                                                            .setUrl(options.target)
-                                                            .setBody(body))
-                                            .build();
-                                })
+                        .serializer(sequence -> serialize(options, sequence))
                         .writerOptions(writerOptions.build());
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
@@ -105,7 +94,7 @@ public final class CloudTasksMeasurementJob {
         }
         var source =
                 new DataGeneratorSource<Long>(
-                        index -> index,
+                        new MeasurementInput(options),
                         options.records,
                         RateLimiterStrategy.perSecond(options.offeredRate),
                         Types.LONG);
@@ -120,5 +109,24 @@ public final class CloudTasksMeasurementJob {
                 .uid("ct1246-sink-v1")
                 .setParallelism(options.parallelism)
                 .setMaxParallelism(128);
+    }
+
+    static Task serialize(MeasurementOptions options, long sequence) {
+        var body = MeasurementPayload.create(options.bodyBytes, sequence);
+        if (options.controlDelayMillis != 0) {
+            try {
+                Thread.sleep(options.controlDelayMillis);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Calibration delay interrupted", interrupted);
+            }
+        }
+        return Task.newBuilder()
+                .setHttpRequest(
+                        HttpRequest.newBuilder()
+                                .setHttpMethod(HttpMethod.POST)
+                                .setUrl(options.target)
+                                .setBody(body))
+                .build();
     }
 }

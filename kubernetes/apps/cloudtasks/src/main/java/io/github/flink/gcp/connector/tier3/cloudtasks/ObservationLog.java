@@ -29,10 +29,15 @@ import java.util.function.Consumer;
 @Internal
 final class ObservationLog implements Consumer<ObservedTaskCreator.Observation> {
     private final MeasurementOptions options;
-    private final UUID incarnation = UUID.randomUUID();
+    private final UUID incarnation;
 
     ObservationLog(MeasurementOptions options) {
+        this(options, UUID.randomUUID());
+    }
+
+    ObservationLog(MeasurementOptions options, UUID incarnation) {
         this.options = options;
+        this.incarnation = incarnation;
     }
 
     @Override
@@ -59,6 +64,9 @@ final class ObservationLog implements Consumer<ObservedTaskCreator.Observation> 
         // All free text is fixed vocabulary, a validated label, a UUID or a service task path.
         // Task bodies, target URLs and exception messages never enter evidence logs.
         String name = event.result() == null ? event.requestedName() : event.result().getName();
+        if (!options.emitAttempts) {
+            return; // Counts-only calibration still validates service names and dispatch state.
+        }
         System.out.println(
                 "CT1246,"
                         + options.runId

@@ -119,4 +119,46 @@ class ObservationLogTest {
                     .isInstanceOf(IllegalStateException.class);
         }
     }
+
+    @Test
+    void countsOnlyControlStillRejectsDispatchButProducesNoCsv() {
+        var options =
+                MeasurementOptions.parse(
+                        MeasurementOptionsTest.windowArguments("--emit-attempts", "false"));
+        String name = options.queue + "/tasks/" + "a".repeat(64);
+        var origin = new MeasurementPayload.Origin(1, MeasurementPayload.process(), 10, 20);
+        var log = new ObservationLog(options);
+        var output = new ByteArrayOutputStream();
+        PrintStream previous = System.out;
+        try {
+            System.setOut(new PrintStream(output, true, StandardCharsets.UTF_8));
+            log.accept(
+                    new ObservedTaskCreator.Observation(
+                            origin,
+                            1,
+                            30,
+                            40,
+                            name,
+                            Task.newBuilder().setName(name).build(),
+                            null));
+            assertThatThrownBy(
+                            () ->
+                                    log.accept(
+                                            new ObservedTaskCreator.Observation(
+                                                    origin,
+                                                    2,
+                                                    30,
+                                                    40,
+                                                    name,
+                                                    Task.newBuilder()
+                                                            .setName(name)
+                                                            .setDispatchCount(1)
+                                                            .build(),
+                                                    null)))
+                    .hasMessageContaining("has dispatched");
+        } finally {
+            System.setOut(previous);
+        }
+        assertThat(output.size()).isZero();
+    }
 }

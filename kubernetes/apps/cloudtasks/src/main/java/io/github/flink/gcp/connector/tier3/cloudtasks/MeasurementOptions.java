@@ -52,6 +52,10 @@ final class MeasurementOptions implements Serializable {
     final boolean skew;
     final double offeredRate;
     final long attemptLimit;
+    final int warmupSeconds;
+    final int observationSeconds;
+    final int controlDelayMillis;
+    final boolean emitAttempts;
 
     private MeasurementOptions(Map<String, String> args) {
         Set<String> accepted =
@@ -69,7 +73,13 @@ final class MeasurementOptions implements Serializable {
                         "records",
                         "warmup-records",
                         "distribution",
-                        "offered-rate");
+                        "offered-rate",
+                        "warmup-seconds",
+                        "observation-seconds",
+                        "record-limit",
+                        "attempt-limit",
+                        "control-delay-millis",
+                        "emit-attempts");
         for (String key : args.keySet()) {
             if (!accepted.contains(key)) {
                 throw new IllegalArgumentException("Unknown argument: --" + key);
@@ -114,11 +124,6 @@ final class MeasurementOptions implements Serializable {
                         1,
                         4,
                         8);
-        records = Long.parseLong(required(args, "records"));
-        warmup = Long.parseLong(required(args, "warmup-records"));
-        if (warmup < 1 || records <= warmup || records > 100000) {
-            throw new IllegalArgumentException("Require 1 <= warmup-records < records <= 100000");
-        }
         String distribution = required(args, "distribution");
         if (!distribution.equals("even") && !distribution.equals("skew")) {
             throw new IllegalArgumentException("--distribution must be even or skew");
@@ -129,9 +134,90 @@ final class MeasurementOptions implements Serializable {
             throw new IllegalArgumentException(
                     "--offered-rate must be finite, positive and at most 10000");
         }
-        // Per creator incarnation, including every retry. External admission must multiply by
-        // parallelism and the explicitly allowed number of process incarnations for its budget.
-        attemptLimit = 3 * records;
+        if (args.containsKey("observation-seconds")) {
+            if (args.containsKey("records") || args.containsKey("warmup-records")) {
+                throw new IllegalArgumentException(
+                        "Window inputs cannot include record-count mode");
+            }
+            warmupSeconds = Integer.parseInt(required(args, "warmup-seconds"));
+            observationSeconds = Integer.parseInt(required(args, "observation-seconds"));
+            if (warmupSeconds < 1
+                    || warmupSeconds > 120
+                    || observationSeconds < 1
+                    || observationSeconds > 600) {
+                throw new IllegalArgumentException(
+                        "Require warmup-seconds 1..120 and observation-seconds 1..600");
+            }
+            // Two more nominal checkpoint intervals keep end-of-input flushing outside the
+            // intended window. The external observer must still verify actual source/CP timing.
+            records =
+                    (long)
+                            Math.ceil(
+                                    offeredRate
+                                            * (warmupSeconds
+                                                    + observationSeconds
+                                                    + 2L * checkpointSeconds
+                                                    + 1));
+            long limit = Long.parseLong(required(args, "record-limit"));
+            if (limit < 1 || limit > 10000000 || records > limit) {
+                throw new IllegalArgumentException(
+                        "Window requires more than the approved record-limit (maximum 10000000)");
+            }
+            warmup = 0;
+            attemptLimit = Long.parseLong(required(args, "attempt-limit"));
+            if (attemptLimit < 1 || attemptLimit > 3 * records) {
+                throw new IllegalArgumentException(
+                        "Require 1 <= attempt-limit <= 3 * generated records");
+            }
+        } else {
+            if (args.containsKey("warmup-seconds")
+                    || args.containsKey("record-limit")
+                    || args.containsKey("attempt-limit")) {
+                throw new IllegalArgumentException("Window limits require observation-seconds");
+            }
+            warmupSeconds = 0;
+            observationSeconds = 0;
+            records = Long.parseLong(required(args, "records"));
+            warmup = Long.parseLong(required(args, "warmup-records"));
+            if (warmup < 1 || records <= warmup || records > 100000) {
+                throw new IllegalArgumentException(
+                        "Require 1 <= warmup-records < records <= 100000");
+            }
+            attemptLimit = 3 * records;
+        }
+        // The limit remains per creator incarnation. Admission must account for all subtasks
+        // and authorized incarnations, including recovery; this is not a global RPC counter.
+        controlDelayMillis =
+                member(
+                        Integer.parseInt(args.getOrDefault("control-delay-millis", "0")),
+                        "control-delay-millis",
+                        0,
+                        100);
+        String emit = args.getOrDefault("emit-attempts", "true");
+        if (!emit.equals("true") && !emit.equals("false")) {
+            throw new IllegalArgumentException("--emit-attempts must be true or false");
+        }
+        emitAttempts = emit.equals("true");
+        if ((controlDelayMillis != 0 || !emitAttempts) && !windowed()) {
+            throw new IllegalArgumentException("Calibration controls require window mode");
+        }
+        if (controlDelayMillis != 0
+                && (arm != Arm.UNNAMED || parallelism != 1 || concurrency != 1 || !emitAttempts)) {
+            throw new IllegalArgumentException(
+                    "Delay control requires UNNAMED, parallelism/concurrency 1 and CSV output");
+        }
+    }
+
+    boolean windowed() {
+        return observationSeconds > 0;
+    }
+
+    String receiptPrefix() {
+        return "gs://flink-gcp-cloudtasks-benchmark/runs/"
+                + runId
+                + "/cells/"
+                + cellId
+                + "/receipts/";
     }
 
     static MeasurementOptions parse(String... args) {
