@@ -13,13 +13,16 @@
 # limitations under the License.
 """Fault injection for lifecycle admission, settlement, ownership and release."""
 
+import base64
 import copy
+import hashlib
 import io
 import json
 import subprocess
 from decimal import Decimal
 from pathlib import Path
 
+import google_crc32c
 import pytest
 import requests
 import urllib3
@@ -46,14 +49,40 @@ class Clock:
 
 
 class Store:
+    """In-memory storage: JSON documents in ``data``, raw bytes in ``blobs``.
+
+    Both tables share one generation counter and one namespace per bucket, as
+    the service does; ``blobs`` carries the gzip parts and receipts the
+    measurement application writes, ``data`` the lifecycle's JSON records.
+    """
+
     def __init__(self):
         self.data = {}
+        self.blobs = {}
         self.serial = 0
         self.fail_evidence = False
         self.before_write = None
         self.conflicts = 0
+        self.created = "2026-09-15T00:00:00Z"
+
+    def _generation(self, name, bucket):
+        if (bucket, name) in self.data:
+            return self.data[bucket, name][1]
+        if (bucket, name) in self.blobs:
+            return self.blobs[bucket, name][1]
+        return "0"
+
+    def _bytes(self, name, bucket):
+        if (bucket, name) in self.blobs:
+            return self.blobs[bucket, name][0]
+        if (bucket, name) in self.data:
+            return rt.json_bytes(self.data[bucket, name][0])
+        return None
 
     def read(self, name, bucket=rt.EVIDENCE):
+        if (bucket, name) in self.blobs:
+            data, generation = self.blobs[bucket, name]
+            return json.loads(data), generation
         return copy.deepcopy(self.data.get((bucket, name), (None, "0")))
 
     def write(self, name, data, generation="0", bucket=rt.EVIDENCE):
@@ -62,19 +91,27 @@ class Store:
             callback()
         if self.fail_evidence and name.startswith("runs/"):
             raise rt.Failure("Evidence unavailable")
-        _, actual = self.read(name, bucket)
-        if str(generation) != actual:
+        if str(generation) != self._generation(name, bucket):
             self.conflicts += 1
             raise rt.ApiError(412, "POST", name)
         self.serial += 1
+        self.blobs.pop((bucket, name), None)
         self.data[bucket, name] = copy.deepcopy(data), str(self.serial)
         return str(self.serial)
 
+    def write_bytes(self, name, data, bucket=rt.EVIDENCE, generation="0"):
+        if str(generation) != self._generation(name, bucket):
+            raise rt.ApiError(412, "POST", name)
+        self.serial += 1
+        self.data.pop((bucket, name), None)
+        self.blobs[bucket, name] = bytes(data), str(self.serial)
+        return str(self.serial)
+
     def delete(self, name, generation, bucket=rt.EVIDENCE):
-        _, actual = self.read(name, bucket)
-        if str(generation) != actual:
+        if str(generation) != self._generation(name, bucket):
             raise rt.ApiError(412, "DELETE", name)
         self.data.pop((bucket, name), None)
+        self.blobs.pop((bucket, name), None)
 
     def objects(self, prefix, bucket=rt.EVIDENCE, maximum=20000):
         result = [
@@ -82,13 +119,74 @@ class Store:
                 "name": name,
                 "generation": generation,
                 "size": str(len(rt.json_bytes(data))),
+                "created": self.created,
             }
             for (b, name), (data, generation) in self.data.items()
+            if b == bucket and name.startswith(prefix)
+        ] + [
+            {
+                "name": name,
+                "generation": generation,
+                "size": str(len(data)),
+                "created": self.created,
+            }
+            for (b, name), (data, generation) in self.blobs.items()
             if b == bucket and name.startswith(prefix)
         ]
         if len(result) > maximum:
             raise rt.Failure("Object inventory exceeds ceiling")
         return result
+
+    def prefixes(self, prefix, bucket=rt.EVIDENCE, maximum=20000):
+        names = [b_name for b, b_name in self.data if b == bucket] + [
+            b_name for b, b_name in self.blobs if b == bucket
+        ]
+        result = set()
+        for name in names:
+            if name.startswith(prefix) and "/" in name[len(prefix) :]:
+                result.add(prefix + name[len(prefix) :].split("/", 1)[0] + "/")
+        if len(result) > maximum:
+            raise rt.Failure("Prefix inventory exceeds ceiling")
+        return result
+
+    def metadata(self, name, bucket=rt.EVIDENCE):
+        data = self._bytes(name, bucket)
+        if data is None:
+            return None
+        return {
+            "size": str(len(data)),
+            "crc32c": base64.b64encode(
+                google_crc32c.value(data).to_bytes(4, "big")
+            ).decode(),
+            "md5": base64.b64encode(hashlib.md5(data).digest()).decode(),
+            "generation": self._generation(name, bucket),
+            "created": self.created,
+        }
+
+    def open(self, name, generation, bucket=rt.EVIDENCE, chunk_size=None):
+        data = self._bytes(name, bucket)
+        if data is None:
+            raise rt.ApiError(404, "GET", name)
+        if str(generation) != self._generation(name, bucket):
+            raise rt.ApiError(412, "GET", name)
+        return io.BytesIO(data)
+
+    def rewrite(
+        self,
+        source_bucket,
+        source_name,
+        source_generation,
+        destination_name,
+        destination_bucket=rt.EVIDENCE,
+    ):
+        data = self._bytes(source_name, source_bucket)
+        if data is None:
+            raise rt.ApiError(404, "POST", destination_name)
+        if str(source_generation) != self._generation(source_name, source_bucket):
+            raise rt.ApiError(412, "POST", destination_name)
+        if self._generation(destination_name, destination_bucket) != "0":
+            return self.metadata(destination_name, destination_bucket)
+        return self.write_bytes(destination_name, data, destination_bucket)
 
 
 def obj(kind, name, namespace=rt.SMOKE, owner=None):

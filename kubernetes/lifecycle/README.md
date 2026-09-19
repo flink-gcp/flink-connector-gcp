@@ -39,6 +39,10 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
 | `flink_tier3/exercise.py` | One savepoint upgrade, one JM Pod deletion and phase-specific recovery evidence |
 | `flink_tier3/cloudtasks.py` | Cloud Tasks queue ownership, campaign ledger, session files and cell manifest checks |
+| `flink_tier3/protocol.py`, `protocol_1246.toml` | The pinned #1246 measurement protocol and the quantities sessions derive from it |
+| `flink_tier3/observe.py` | Per-poll Flink REST, TaskManager, queue and Pod observations of a running cell, and the interrupt control |
+| `flink_tier3/evidence.py` | Row and receipt reconciliation, verified export to durable evidence and benchmark prefix release |
+| `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The fixed approval phrase and existing ceiling values remain unchanged.
@@ -225,7 +229,7 @@ Merging this implementation authorizes no dispatch, and no application image has
 | Pods | Four total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system` |
 | Task creations | Planning bound over the session: each cell's per-creator attempt limit times its subtasks times the four incarnations one JobMaster's fixed-delay strategy allows, at most 12,000,000; the expected count is the cells' record totals, and an attempt limit must at least cover the busiest creator's records (all of them at parallelism 1, nine tenths under skew, an even share otherwise) |
 | Queue administration | At most six queue writes per actor (create, pause and delete are the only ones issued, none retried); zero dispatches, checked on every poll |
-| Reads | At most 60,000 metered Cloud Tasks and Flink REST reads per actor; storage listings stay bounded by their per-call maxima and the evidence budgets |
+| Reads | At most 60,000 metered Cloud Tasks, Flink REST and evidence-storage reads per actor; a poll costs about ten reads, a session about 12,000 |
 | State | Stop on observed checkpoint state above 1 GiB or 20,000 objects under the current cell |
 | Logs | Stop collecting at 100 MiB; a truncated read is recorded, not fatal, because evidence rows travel through storage |
 | Durable evidence | 4 GiB per session for the later export; supervisor receipts 256 MiB, runner receipts 32 MiB |
@@ -261,9 +265,18 @@ A cell cut short by the session's cleanup deadline rather than its own is record
 A queue read that fails transiently is recorded as `queue-read-unavailable`; the third consecutive failure stops the session, and any readback that shows a resumed or dispatching queue stops it at once.
 Mutable control records are outside automatic expiry; the ledger is the durable record that a cell already ran.
 
-Evidence under `runs/RUN_ID/` additionally holds `session.json`, `application.json` as the array of cell manifests, `queue-admitted`, `queue-deviation`, `queue-deleted`, `cell-start`, `cell-status`, `cell-finished` and `cell-skipped` receipts, and a final receipt with the campaign, queue readback, per-cell outcomes, each actor's operation counters and `exported: false`.
-The measurement application writes its rows and receipts under the same benchmark run prefix as the checkpoint state; cleanup deletes only `state/` and records what remains as `benchmark-evidence-retained`.
-That bucket expires objects after one day, so the evidence collector must run inside the same workflow execution before the prefix is released; until it exists, a session's rows are preserved only for that day and the final receipt says so.
+Evidence under `runs/RUN_ID/` additionally holds `session.json`, `application.json` as the array of cell manifests, `queue-admitted`, `queue-deviation`, `queue-deleted`, `cell-start`, `cell-status`, `cell-finished` and `cell-skipped` receipts, one `observation` receipt per poll, and a final receipt with the campaign, queue readback, per-cell outcomes, each actor's operation counters, the exported cells and their evidence bytes.
+
+While a cell runs, the supervisor records one `observation` per poll: the job state and timestamps with the JobManager clock offset, checkpoint counts and the latest completed and restored checkpoints with at most two new checkpoint details per poll, the sink and source vertex metrics (including the connector's staged-task, staged-byte and replay-budget gauges when the arm registers them), each TaskManager's heap and garbage-collection figures, the last queue readback, and the Pods' phases, restarts and effective resources.
+Metric identifiers are discovered on the first poll and recorded; a staged arm whose gauges are missing is marked `metrics-unavailable`.
+Wall and monotonic clocks of the JobManager, TaskManagers, storage and supervisor are only ever compared through recorded offsets.
+A cell whose ID ends in `-k11` is the interrupt control: 60 seconds after its warm-up the supervisor persists an `interrupt-intent` receipt and deletes the TaskManager Pod without a grace period, once, to produce an incarnation without a terminal receipt.
+
+After each cell, the collector reconciles the cell's rows and receipts in the benchmark bucket before anything is copied: every creator registration needs a terminal receipt, part indices are contiguous per incarnation, rows decode and belong to the cell, sequences lie within the source's mapped range, duplicate `(sequence, attempt)` rows within an incarnation and unexplained `ALREADY_EXISTS` outcomes invalidate the cell, and row counts must equal the terminal counts.
+The verdict is `complete`, `incomplete`, `restarted` or `invalid` with its reasons; every verdict is exported.
+Objects are copied with server-side rewrites into `runs/RUN_ID/cells/CELL_ID/` under the evidence bucket, each verified by size and checksum against the bytes streamed during reconciliation, within the session evidence ceiling checked before the first copy; then `exported.json` records the verdict, the object hashes and a manifest hash in both buckets, and the run record gains the export.
+Only after that marker exists is the cell's benchmark prefix (state, rows, receipts and finally the marker) released; a cell whose export failed keeps its objects for the bucket's one-day expiry and is listed in `benchmark-evidence-retained`.
+An export failure stops the session, and an exported cell whose prefix still holds objects blocks the idle receipt.
 
 ## SDK transport
 
@@ -378,6 +391,8 @@ Run evidence becomes deletion-eligible after 30 days; mutable `_control/` record
 An unsuccessful run can still have an idle result: check both `success` and `idle`, together with the three plan receipts.
 After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
 Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
+A Cloud Tasks session's download also holds `cells/CELL_ID/{rows,receipts,exported.json}`; `just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` verifies every exported object against its recorded hash, re-runs the reconciliation, selects each cell's observation window, computes unique-record throughput and per-repetition p95, applies the preregistered verdict rules and writes `report.json` and `report.md` without contacting any service.
+The analyzer's rules are part of the supervisor source bundle, so the approval's `runtime_sha256` covers the protocol pin and the analysis code that will judge the run.
 Synthetic validation establishes the control logic; actual WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing remain measurements for the approved #1311 exercise.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
