@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0071: A lost table-creation race is retried by a wrapped `TableAdmin`
 
 - Status: Accepted
-- Date: 2026-08-08 (measured)
-- Issues: [#383]
+- Date: 2026-08-08 (measured); revised by [#1344] (2026-09-20)
+- Issues: [#383], [#1344]
 - Modules: bigquery (`sink.tables`, `sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Table auto-creation
 
@@ -136,6 +136,32 @@ Three things not to re-derive:
   recovery budget for the creation plus one for the enclosing loop, about two minutes at the
   defaults, not the product of the two attempt counts.
 
+## Real-GCP fixture deletion
+
+The post-merge [E2E run
+35450714197](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35450714197) completed
+all 162 test methods successfully, but the CDC auto-creation class failed during table cleanup.
+Its `tables.delete` request returned HTTP 403 with reason `rateLimitExceeded`, naming the per-table
+update limit.
+The pinned google-cloud-bigquery 2.70.0 still does not mark this response retryable, so the shared
+test helper cannot rely on the SDK to repeat it.
+Google's [quota troubleshooting
+guidance](https://docs.cloud.google.com/bigquery/docs/troubleshoot-quotas) distinguishes this
+short-term reason from `quotaExceeded` and recommends exponential backoff.
+
+`RealBigQuery.deleteTables` therefore retries only the observed 403/`rateLimitExceeded` pair, at
+most six deletion calls per table with waits of 1, 2, 4, 8 and 16 seconds.
+These are bounds on outer attempts and backoff, not on the duration of the SDK calls.
+Other errors retain their existing SDK handling and propagate without an additional helper retry
+loop; the helper neither matches message text nor hides permission failures or longer-term quotas.
+Exhaustion still reports the service exception and attempts the remaining tables, preserving
+additional failures as suppressed exceptions.
+Interruption stops further retries and table deletions, restores the interrupt flag and preserves
+the triggering service error and any earlier cleanup failure.
+Synthetic tests exercise final-attempt recovery, exhaustion, error classification and interruption
+without sleeping.
+This is a test-fixture policy; production `TableAdmin` behavior is unchanged.
+
 ## Consequences
 
 - A job at high sink parallelism whose destination table does not exist starts without the restart
@@ -190,3 +216,5 @@ Three things not to re-derive:
 
 [#383]: https://github.com/flink-gcp/flink-connector-gcp/issues/383
 [#65]: https://github.com/flink-gcp/flink-connector-gcp/issues/65
+
+[#1344]: https://github.com/flink-gcp/flink-connector-gcp/issues/1344
