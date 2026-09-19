@@ -29,7 +29,6 @@ import io.grpc.Deadline;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
@@ -40,13 +39,28 @@ final class ObservedTaskCreator implements TaskCreator {
     private final Consumer<Observation> observer;
     private final LongSupplier clock;
     private final long attemptLimit;
-    private final AtomicLong attempts = new AtomicLong();
+    private final Consumer<Terminal> terminal;
+    private long attempts;
+    private long completed;
+    private long observations;
+    private boolean evidenceFailed;
+    private boolean limitReached;
+    private boolean closing;
 
     ObservedTaskCreator(
             TaskCreator delegate,
             Consumer<Observation> observer,
             LongSupplier clock,
             long attemptLimit) {
+        this(delegate, observer, clock, attemptLimit, ignored -> {});
+    }
+
+    ObservedTaskCreator(
+            TaskCreator delegate,
+            Consumer<Observation> observer,
+            LongSupplier clock,
+            long attemptLimit,
+            Consumer<Terminal> terminal) {
         if (attemptLimit < 1) {
             throw new IllegalArgumentException("Attempt limit must be positive");
         }
@@ -54,6 +68,7 @@ final class ObservedTaskCreator implements TaskCreator {
         this.observer = observer;
         this.clock = clock;
         this.attemptLimit = attemptLimit;
+        this.terminal = terminal;
     }
 
     @Override
@@ -70,12 +85,9 @@ final class ObservedTaskCreator implements TaskCreator {
     }
 
     private ApiFuture<Task> send(CreateTaskRequest request, Deadline deadline) {
-        long ordinal = attempts.incrementAndGet();
-        if (ordinal > attemptLimit) {
-            throw new IllegalStateException("Measurement RPC attempt ceiling reached");
-        }
         MeasurementPayload.Origin origin =
                 MeasurementPayload.read(request.getTask().getHttpRequest().getBody());
+        long ordinal = reserve();
         long started = clock.getAsLong();
         ApiFuture<Task> call;
         try {
@@ -134,6 +146,17 @@ final class ObservedTaskCreator implements TaskCreator {
         return new ResultFuture(call, observed);
     }
 
+    private synchronized long reserve() {
+        if (closing) {
+            throw new IllegalStateException("Measurement creator is closed");
+        }
+        if (attempts >= attemptLimit) {
+            limitReached = true;
+            throw new IllegalStateException("Measurement RPC attempt ceiling reached");
+        }
+        return ++attempts;
+    }
+
     private void observe(
             String requestedName,
             MeasurementPayload.Origin origin,
@@ -141,20 +164,77 @@ final class ObservedTaskCreator implements TaskCreator {
             long started,
             Task result,
             Throwable failure) {
-        observer.accept(
-                new Observation(
-                        origin,
-                        ordinal,
-                        started,
-                        clock.getAsLong(),
-                        requestedName,
-                        result,
-                        failure));
+        long completion = clock.getAsLong();
+        synchronized (this) {
+            completed++;
+        }
+        try {
+            observer.accept(
+                    new Observation(
+                            origin, ordinal, started, completion, requestedName, result, failure));
+            synchronized (this) {
+                observations++;
+            }
+        } catch (RuntimeException error) {
+            synchronized (this) {
+                evidenceFailed = true;
+            }
+            throw error;
+        }
     }
 
     @Override
     public void close() throws Exception {
-        delegate.close();
+        synchronized (this) {
+            if (closing) {
+                return;
+            }
+            closing = true;
+        }
+        Exception closeFailure = null;
+        try {
+            delegate.close();
+        } catch (Exception failure) {
+            closeFailure = failure;
+        }
+        Terminal snapshot;
+        synchronized (this) {
+            snapshot =
+                    new Terminal(
+                            attempts,
+                            completed,
+                            observations,
+                            evidenceFailed,
+                            limitReached,
+                            closeFailure != null);
+        }
+        try {
+            terminal.accept(snapshot);
+        } catch (RuntimeException receiptFailure) {
+            if (closeFailure != null) {
+                receiptFailure.addSuppressed(closeFailure);
+            }
+            throw receiptFailure;
+        }
+        if (closeFailure != null) {
+            throw closeFailure;
+        }
+    }
+
+    record Terminal(
+            long attempts,
+            long completed,
+            long observations,
+            boolean evidenceFailed,
+            boolean limitReached,
+            boolean clientCloseFailed) {
+        boolean complete() {
+            return attempts == completed
+                    && completed == observations
+                    && !evidenceFailed
+                    && !limitReached
+                    && !clientCloseFailed;
+        }
     }
 
     record Observation(

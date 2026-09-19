@@ -8,7 +8,9 @@ It is built only by the `tier3-cloudtasks` Maven profile and is never deployed t
 
 Run `mise x -- just tier3-cloudtasks-verify` from the repository root.
 The build creates `target/cloudtasks-measurement.jar` and retains the unmodified runtime dependency JARs in `target/image-lib/`.
-The [publication workflow](../../../.github/workflows/tier3-images.yaml) builds the payload and supplies the reviewed Flink 2.2.1 base digest to the Dockerfile.
+The [publication workflow](../../../.github/workflows/tier3-images.yaml) selects Flink 2.2.1 or 1.20.4, verifies that reactor version and supplies its reviewed AMD64 base digest to the Dockerfile.
+The two payloads use separate GAR packages: `cloudtasks-measurement` and `cloudtasks-measurement-flink120`.
+The image build checks that the matching bundled GCS plugin exists before enabling it.
 Its digest must be published and independently verified before a later delivery selects it.
 This change does not publish an image, admit a Kubernetes workload or create a queue.
 
@@ -49,10 +51,23 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 | `--concurrency` | 1, 4 or 16 in-flight tasks per sink subtask |
 | `--checkpoint-seconds` | 1, 10 or 60 |
 | `--channel-pool-size` | 1, 4 or 8 per sink client; defaults to 1 |
-| `--records` | Total source records, including warm-up; at most 100000 |
-| `--warmup-records` | At least 1 and strictly less than the total; the manifest/analyzer excludes these sequence numbers |
+| `--records` | Record-count mode: total source records, including warm-up; at most 100000 |
+| `--warmup-records` | Record-count mode: at least 1 and strictly less than the total; the analyzer excludes these sequence numbers |
 | `--distribution` | `even` or `skew`; skew assigns 90% to subtask zero and distributes the rest over other subtasks |
 | `--offered-rate` | Finite positive source ceiling, at most 10000 records/s |
+| `--warmup-seconds` | Window mode: 1–120 seconds |
+| `--observation-seconds` | Window mode: 1–600 seconds |
+| `--record-limit` | Window mode: explicitly approved source ceiling, at most 10000000 |
+| `--attempt-limit` | Window mode: explicitly approved per-creator ceiling, from 1 through three times the generated record count |
+| `--control-delay-millis` | Window calibration only: 0 (default) or 100; a nonzero value requires `UNNAMED`, parallelism/concurrency 1 and CSV output |
+| `--emit-attempts` | `true` (default), or `false` for a window calibration that measures accounting without CSV formatting/output |
+
+Record-count mode remains available for finite wiring checks.
+Window mode requires all four window arguments and rejects `--records` and `--warmup-records`.
+It generates `ceil(offeredRate * (warmupSeconds + observationSeconds + 2 * checkpointSeconds + 1))` records and rejects a configuration that exceeds `--record-limit` before building the job.
+The extra two nominal checkpoint intervals and one second separate the intended observation window from end-of-input flushing.
+This is a finite input budget, not a guarantee of elapsed time: source pacing, backpressure, checkpoint delays and startup still need external timing evidence.
+Window mode has no warm-up sequence prefix; its analyzer must select the actual time window and reconcile its tail.
 
 The source has one subtask and uses Flink Datagen pacing.
 A capped observation answers an offered-load question, not an uncapped capacity question.
@@ -106,10 +121,53 @@ Caller cancellation is forwarded to the underlying RPC and can complete the obse
 Logging remains part of the workload's CPU and backpressure cost, even though its formatting is outside the recorded completion timestamp.
 Per-record output requires an evidence-loss check and a measured overhead control before service results can support a verdict.
 
+## Calibration controls
+
+The delay control sleeps for 100 milliseconds inside serialization after the payload origin timestamp is captured.
+It adds a known latency cost and, with one serializer subtask, limits input processing to at most roughly ten records per second before other costs.
+It does not simulate a Cloud Tasks regression or alter the production RPC deadline/retry implementation.
+The host calibration must demonstrate that its throughput/latency observations detect this injected regression at an offered rate above the control's ceiling.
+An interrupted delay fails serialization and preserves the thread's interrupted flag.
+
+The counts-only control validates returned names and dispatch counts but skips CSV formatting/output.
+Its terminal observation count is the number of successful observer callbacks, not a count of written CSV rows.
+Compare it with an otherwise identical CSV-enabled run to assess output overhead using independent throughput/resource observations.
+A counts-only run cannot supply a per-record p95 or complete CSV evidence.
+Every receipt identifies both controls; the later main-measurement admission and analyzer must require `control_delay_millis=0` and `csv_enabled=true`.
+Controls and receipt export still need execution-host validation; the local checks do not establish acceptable instrument overhead.
+
+## Independent receipt files
+
+Window mode writes small JSON receipts through the installed Flink GCS filesystem plugin under `gs://flink-gcp-cloudtasks-benchmark/runs/<run>/cells/<cell>/receipts/`.
+Record-count mode performs no receipt-storage access.
+The input generator registers a fresh source incarnation before its first mapped sequence and records the final mapping separately.
+A restored source can start above sequence zero; these receipts report mapping boundaries, not downstream delivery, checkpoint completion or task creation.
+
+Each RPC client registers a creator incarnation before its first attempt; that UUID also identifies its CSV rows.
+Registration failure closes the client and prevents admitting it to the sink.
+At close, a separate terminal receipt records reserved attempts, completed calls, successful observer callbacks, output failure, attempt-limit exhaustion and client-close failure.
+The attempt count comes from RPC admission, independently of the CSV exporter.
+The terminal snapshot is complete only when all three counts agree and none of those failures occurred.
+Close with an outstanding callback produces an incomplete snapshot; a later callback never upgrades that persisted snapshot.
+An abrupt process loss can leave a registration without a terminal receipt.
+
+The collector must discover registrations independently of the logs, require matching terminal receipts for a steady-state result, and compare exported rows with the terminal counts.
+Thus losing the final CSV row or all rows from one registered creator cannot be concealed by counting the remaining CSV itself.
+A complete receipt certifies local accounting, not successful service creation, durable CSV export, job success or a performance pass.
+Read back the receipts and reconcile record/task outcomes and job status before accepting a cell.
+Recovery evidence must explicitly account for incomplete prior incarnations instead of inventing their missing observations.
+
+Receipts carry schema version 1, run/cell/arm identity, role, incarnation, process UUID and wall/monotonic clock samples.
+They contain no task body, target URL or exception text.
+Wall/monotonic samples do not prove synchronized clocks across hosts.
+The analyzer must establish the observation window and clock bounds independently, preserving the cross-JVM latency exclusion above.
+The worker writes receipts to temporary benchmark storage; the lifecycle collector must export them to retained evidence before deleting the run prefix.
+Receipt writes and their failure/overhead behavior still require execution-host calibration.
+
 ## Resource boundary and remaining acceptance
 
 The source count and per-client-incarnation RPC ceiling are finite.
-Each client refuses sends after three times `--records` attempts, including retries.
+Each client refuses sends after three times `--records` attempts in record-count mode, or the explicit `--attempt-limit` in window mode, including retries.
 This is not a global run ceiling: external admission must account for parallelism, restarts, replay, all cells, observation reads and administrative operations.
 The application does not terminate Pods, delete queues or override the lifecycle supervisor.
 
