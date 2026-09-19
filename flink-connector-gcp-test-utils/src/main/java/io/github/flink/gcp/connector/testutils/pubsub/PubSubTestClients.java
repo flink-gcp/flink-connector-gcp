@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.testutils.pubsub;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.NoCredentialsProvider;
@@ -48,6 +49,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * The Pub/Sub admin, publish and pull machinery every integration-test harness needs, parameterised
@@ -121,10 +123,18 @@ public final class PubSubTestClients implements AutoCloseable {
         } catch (IOException | RuntimeException e) {
             // A half-built instance is never returned, so close what exists here: the caller's
             // teardown only ever sees a fully-constructed one.
-            if (topicAdmin != null) {
-                topicAdmin.close();
+            TopicAdminClient opened = topicAdmin;
+            try {
+                closeAll(
+                        () -> {
+                            if (opened != null) {
+                                opened.close();
+                            }
+                        },
+                        channel::shutdownNow);
+            } catch (Throwable cleanup) {
+                e.addSuppressed(cleanup);
             }
-            channel.shutdownNow();
             throw e;
         }
     }
@@ -143,7 +153,11 @@ public final class PubSubTestClients implements AutoCloseable {
                     null,
                     Duration.ofMillis(200));
         } catch (IOException | RuntimeException e) {
-            topicAdmin.close();
+            try {
+                topicAdmin.close();
+            } catch (Throwable cleanup) {
+                e.addSuppressed(cleanup);
+            }
             throw e;
         }
     }
@@ -206,14 +220,24 @@ public final class PubSubTestClients implements AutoCloseable {
      * passes, returning what did arrive.
      *
      * <p>A single pull is not guaranteed to return everything outstanding even when more is
-     * available, so an exact-count assertion on one pull would be flaky.
+     * available, so an exact-count assertion on one pull would be flaky. Each pending pull has a
+     * 30-second RPC bound; a pull started before the observation deadline may finish after it. A
+     * nonresponsive pull fails rather than establishing that a subscription is empty.
      */
     public Set<String> pullAndAckUntil(String subscriptionPath, int expected, Duration timeout)
             throws InterruptedException {
         Set<String> payloads = new LinkedHashSet<>();
         long deadline = System.nanoTime() + timeout.toNanos();
         while (payloads.size() < expected && System.nanoTime() < deadline) {
-            List<PubsubMessage> pulled = pullMessagesAndAck(subscriptionPath, expected);
+            List<PubsubMessage> pulled =
+                    messagesAndAck(
+                            subscriptionPath,
+                            awaitPull(
+                                    subscriptionAdmin
+                                            .getStub()
+                                            .pullCallable()
+                                            .futureCall(pullRequest(subscriptionPath, expected)),
+                                    TimeUnit.SECONDS.toNanos(30)));
             if (pulled.isEmpty()) {
                 Thread.sleep(pollInterval.toMillis());
             }
@@ -232,14 +256,23 @@ public final class PubSubTestClients implements AutoCloseable {
      * <p>Distinct by message id, for the same reason {@link #pullAndAckUntil} collects into a set:
      * an acknowledgement is not necessarily applied before the next pull is served, and the sinks
      * are at-least-once, so the same message can come back. Counting redeliveries would make every
-     * exact-count assertion a coin flip.
+     * exact-count assertion a coin flip. Each pending pull has the same 30-second RPC bound as
+     * {@link #pullAndAckUntil}; the observation deadline is checked between completed pulls.
      */
     public List<PubsubMessage> pullMessagesUntil(
             String subscriptionPath, int expected, Duration timeout) throws InterruptedException {
         Map<String, PubsubMessage> messages = new LinkedHashMap<>();
         long deadline = System.nanoTime() + timeout.toNanos();
         while (messages.size() < expected && System.nanoTime() < deadline) {
-            List<PubsubMessage> pulled = pullMessagesAndAck(subscriptionPath, expected);
+            List<PubsubMessage> pulled =
+                    messagesAndAck(
+                            subscriptionPath,
+                            awaitPull(
+                                    subscriptionAdmin
+                                            .getStub()
+                                            .pullCallable()
+                                            .futureCall(pullRequest(subscriptionPath, expected)),
+                                    TimeUnit.SECONDS.toNanos(30)));
             if (pulled.isEmpty()) {
                 Thread.sleep(pollInterval.toMillis());
             }
@@ -255,7 +288,10 @@ public final class PubSubTestClients implements AutoCloseable {
      * — use {@link #pullMessagesUntil} to assert on a known count.
      */
     public List<PubsubMessage> pullMessagesAndAck(String subscriptionPath, int maxMessages) {
-        PullResponse response = pull(subscriptionPath, maxMessages);
+        return messagesAndAck(subscriptionPath, pull(subscriptionPath, maxMessages));
+    }
+
+    private List<PubsubMessage> messagesAndAck(String subscriptionPath, PullResponse response) {
         List<PubsubMessage> messages = new ArrayList<>(response.getReceivedMessagesCount());
         List<String> ackIds = new ArrayList<>(response.getReceivedMessagesCount());
         for (ReceivedMessage received : response.getReceivedMessagesList()) {
@@ -287,19 +323,55 @@ public final class PubSubTestClients implements AutoCloseable {
         return subscriptionAdmin
                 .getStub()
                 .pullCallable()
-                .call(
-                        PullRequest.newBuilder()
-                                .setSubscription(subscriptionPath)
-                                .setMaxMessages(maxMessages)
-                                .build());
+                .call(pullRequest(subscriptionPath, maxMessages));
+    }
+
+    private static PullRequest pullRequest(String subscriptionPath, int maxMessages) {
+        return PullRequest.newBuilder()
+                .setSubscription(subscriptionPath)
+                .setMaxMessages(maxMessages)
+                .build();
+    }
+
+    static PullResponse awaitPull(ApiFuture<PullResponse> pending, long pullTimeoutNanos)
+            throws InterruptedException {
+        try {
+            return pending.get(pullTimeoutNanos, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException timeout) {
+            pending.cancel(true);
+            throw new IllegalStateException(
+                    "Pub/Sub test pull timed out without a service response", timeout);
+        } catch (InterruptedException interrupted) {
+            pending.cancel(true);
+            throw interrupted;
+        } catch (ExecutionException failure) {
+            throw new IllegalStateException("Pub/Sub test pull failed", failure.getCause());
+        }
     }
 
     @Override
     public void close() {
-        subscriptionAdmin.close();
-        topicAdmin.close();
-        if (ownedChannel != null) {
-            ownedChannel.shutdownNow();
+        closeAll(
+                subscriptionAdmin::close,
+                topicAdmin::close,
+                () -> {
+                    if (ownedChannel != null) {
+                        ownedChannel.shutdownNow();
+                    }
+                });
+    }
+
+    static void closeAll(Runnable... releases) {
+        Throwable failure = null;
+        for (Runnable release : releases) {
+            try {
+                release.run();
+            } catch (Throwable error) {
+                failure = ExceptionUtils.firstOrSuppressed(error, failure);
+            }
+        }
+        if (failure != null) {
+            ExceptionUtils.rethrow(failure);
         }
     }
 }

@@ -16,11 +16,13 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
+import com.google.api.gax.rpc.NotFoundException;
 import com.google.pubsub.v1.PubsubMessage;
 import com.google.pubsub.v1.PushConfig;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
@@ -28,11 +30,10 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.Timeout.ThreadMode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -76,8 +77,6 @@ import java.util.function.UnaryOperator;
 @Timeout(value = 300, threadMode = ThreadMode.SEPARATE_THREAD)
 public abstract class AbstractPubSubRealGcpITCase {
 
-    private static final Logger LOG = LoggerFactory.getLogger(AbstractPubSubRealGcpITCase.class);
-
     /** The project the suite runs against; null when the gate is off (the tests then skip). */
     protected static final String PROJECT = System.getenv("PUBSUB_IT_PROJECT");
 
@@ -103,26 +102,35 @@ public abstract class AbstractPubSubRealGcpITCase {
     }
 
     @AfterAll
-    protected static void deleteCreatedResourcesAndCloseClients() {
-        // Subscriptions before topics: a subscription without its topic lingers detached.
+    protected static void deleteCreatedResourcesAndCloseClients() throws Exception {
+        List<AutoCloseable> cleanup = new ArrayList<>();
+        // Subscriptions precede topics; every deletion and client close is attempted.
         for (SubscriptionName subscription : createdSubscriptions) {
-            try {
-                clients.subscriptionAdmin().deleteSubscription(subscription);
-            } catch (RuntimeException e) {
-                LOG.warn("Failed to delete subscription {}", subscription, e);
-            }
+            cleanup.add(
+                    () ->
+                            deleteIfPresent(
+                                    () ->
+                                            clients.subscriptionAdmin()
+                                                    .deleteSubscription(subscription)));
         }
         for (TopicName topic : createdTopics) {
-            try {
-                clients.topicAdmin().deleteTopic(topic);
-            } catch (RuntimeException e) {
-                LOG.warn("Failed to delete topic {}", topic, e);
-            }
+            cleanup.add(() -> deleteIfPresent(() -> clients.topicAdmin().deleteTopic(topic)));
         }
-        createdSubscriptions.clear();
-        createdTopics.clear();
-        if (clients != null) {
-            clients.close();
+        cleanup.add(clients);
+        try {
+            Closers.closeAll(cleanup);
+        } finally {
+            createdSubscriptions.clear();
+            createdTopics.clear();
+            clients = null;
+        }
+    }
+
+    private static void deleteIfPresent(Runnable delete) {
+        try {
+            delete.run();
+        } catch (NotFoundException absent) {
+            // Creation may have failed before the service accepted the registered name.
         }
     }
 
@@ -134,8 +142,8 @@ public abstract class AbstractPubSubRealGcpITCase {
     /** Creates a topic under a unique name and registers it for deletion. */
     protected static TopicDestination createTopic(String prefix) {
         TopicName topic = TopicName.of(PROJECT, uniqueName(prefix));
-        clients.topicAdmin().createTopic(topic);
         createdTopics.add(topic);
+        clients.topicAdmin().createTopic(topic);
         return TopicDestination.of(PROJECT, topic.getTopic());
     }
 
@@ -157,8 +165,9 @@ public abstract class AbstractPubSubRealGcpITCase {
                         .setName(name.toString())
                         .setTopic(topic.toTopicPath())
                         .setPushConfig(PushConfig.getDefaultInstance());
-        clients.subscriptionAdmin().createSubscription(customize.apply(builder).build());
+        Subscription request = customize.apply(builder).build();
         createdSubscriptions.add(name);
+        clients.subscriptionAdmin().createSubscription(request);
         return SubscriptionDestination.of(PROJECT, name.getSubscription());
     }
 

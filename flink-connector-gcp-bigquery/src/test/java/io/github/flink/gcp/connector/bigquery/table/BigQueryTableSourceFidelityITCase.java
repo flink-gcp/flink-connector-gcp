@@ -46,6 +46,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.math.BigDecimal;
@@ -65,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryTableSourceFidelityITCase {
 
     private static final String TABLE = "table_source_fidelity_" + TestNames.runId();

@@ -46,6 +46,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -134,7 +135,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_SCHEMA_EVOLUTION", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(10_800)
+@Timeout(value = 10_800, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryDefaultStreamSchemaEvolutionITCase {
 
     private static final Logger LOG =
@@ -154,6 +155,10 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
      */
     private static final java.util.logging.Logger SDK_JUL_LOGGER =
             java.util.logging.Logger.getLogger("com.google.cloud.bigquery.storage.v1");
+
+    private static Level previousSdkLogLevel;
+    private static boolean previousParentHandlers;
+    private static ConsoleHandler sdkLogHandler;
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
@@ -175,7 +180,10 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
 
     @BeforeAll
     static void captureSdkLogs() {
+        previousSdkLogLevel = SDK_JUL_LOGGER.getLevel();
+        previousParentHandlers = SDK_JUL_LOGGER.getUseParentHandlers();
         ConsoleHandler handler = new ConsoleHandler();
+        sdkLogHandler = handler;
         handler.setLevel(Level.FINE);
         handler.setFormatter(
                 new Formatter() {
@@ -199,7 +207,17 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
 
     @AfterAll
     static void dropTable() {
-        RealBigQuery.deleteTables(TABLE);
+        try {
+            RealBigQuery.deleteTables(TABLE);
+        } finally {
+            if (sdkLogHandler != null) {
+                SDK_JUL_LOGGER.removeHandler(sdkLogHandler);
+                sdkLogHandler.close();
+                sdkLogHandler = null;
+                SDK_JUL_LOGGER.setLevel(previousSdkLogLevel);
+                SDK_JUL_LOGGER.setUseParentHandlers(previousParentHandlers);
+            }
+        }
     }
 
     @Test
@@ -214,7 +232,6 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
         RealBigQuery.createTable(TABLE, V1);
         TableDestination destination = RealBigQuery.destination(TABLE);
         SchemaViewPoller poller = new SchemaViewPoller(destination);
-        poller.start();
         EvolvingSerializer serializer = new EvolvingSerializer(V1);
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
@@ -225,29 +242,28 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
                                 .schemaUpdateOptions(
                                         SchemaUpdateOptions.builder().allowNewFields().build())
                                 .build();
-        SinkWriter<String> writer =
+        try (SinkWriter<String> writer =
                 sink.createWriter(
                         new StreamWriterRowAppenderFactory(sink.getOptions()),
                         new BigQueryTableAdmin(),
-                        TestSinkWriterMetricGroup.create());
-        NonPooledCanary canary = new NonPooledCanary(destination);
-        try {
-            LOG.info("PROBE steady-state append starting");
-            writer.write("alice", CONTEXT);
-            writer.flush(false);
-            LOG.info("PROBE steady-state append done");
+                        TestSinkWriterMetricGroup.create())) {
+            NonPooledCanary canary = new NonPooledCanary(destination);
+            try (AutoCloseable stopPoller = poller::stopAndJoin;
+                    AutoCloseable stopCanary = canary::stopAndJoin) {
+                poller.start();
+                LOG.info("PROBE steady-state append starting");
+                writer.write("alice", CONTEXT);
+                writer.flush(false);
+                LOG.info("PROBE steady-state append done");
 
-            serializer.evolveTo(V2);
-            canary.start();
+                serializer.evolveTo(V2);
+                canary.start();
 
-            LOG.info("PROBE evolved append starting (this is the measured window)");
-            writer.write("bob:hello", CONTEXT);
-            writer.flush(false);
-            LOG.info("PROBE evolved append accepted by the pooled production writer");
-        } finally {
-            canary.stopAndJoin();
-            poller.stopAndJoin();
-            writer.close();
+                LOG.info("PROBE evolved append starting (this is the measured window)");
+                writer.write("bob:hello", CONTEXT);
+                writer.flush(false);
+                LOG.info("PROBE evolved append accepted by the pooled production writer");
+            }
         }
 
         // The sink widened the table itself, and the evolved column's value is queryable — the
@@ -371,6 +387,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
             stopped = true;
             interrupt();
             join(TimeUnit.SECONDS.toMillis(30));
+            assertThat(isAlive()).as("probe thread stopped: %s", getName()).isFalse();
         }
     }
 
@@ -476,7 +493,9 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
         void stopAndJoin() throws InterruptedException {
             stopped = true;
             interrupt();
-            join(TimeUnit.SECONDS.toMillis(30));
+            // One pending append can take a minute and SDK writer close up to three minutes.
+            join(TimeUnit.MINUTES.toMillis(4));
+            assertThat(isAlive()).as("probe thread stopped: %s", getName()).isFalse();
         }
     }
 }

@@ -32,6 +32,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_BUFFERED_SCHEMA_EVOLUTION", matches = ".+")
-@Timeout(10800)
+@Timeout(value = 10800, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryBufferedStreamSchemaPropagationITCase {
 
     private static final Logger LOG =
@@ -96,43 +97,42 @@ class BigQueryBufferedStreamSchemaPropagationITCase {
         WriteClientBufferedStreamServiceFactory serviceFactory =
                 new WriteClientBufferedStreamServiceFactory();
         TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
-        BigQueryBufferedStreamWriter<String> writer =
-                new BigQueryBufferedStreamWriter<>(
-                        config,
-                        options,
-                        serviceFactory,
-                        new BigQueryTableAdmin(),
-                        metrics,
-                        0,
-                        List.of());
-        BufferedStreamCommitter committer =
-                new BufferedStreamCommitter(
-                        serviceFactory, null, options, CreateDisposition.CREATE_NEVER);
-        Instant started = Instant.now();
-        try {
-            writer.write("alice", TestContexts.NO_OP);
-            writer.flush(false);
-            var beforeCommit = writer.prepareCommit();
-            assertThat(beforeCommit).hasSize(1);
-            BufferedStreamWriterState before = writer.snapshotState(1).get(0);
-            BufferedStreamCommitTestUtils.commit(committer, beforeCommit);
+        try (BigQueryBufferedStreamWriter<String> writer =
+                        new BigQueryBufferedStreamWriter<>(
+                                config,
+                                options,
+                                serviceFactory,
+                                new BigQueryTableAdmin(),
+                                metrics,
+                                0,
+                                List.of());
+                BufferedStreamCommitter committer =
+                        new BufferedStreamCommitter(
+                                serviceFactory, null, options, CreateDisposition.CREATE_NEVER)) {
+            Instant started = Instant.now();
+            try {
+                writer.write("alice", TestContexts.NO_OP);
+                writer.flush(false);
+                var beforeCommit = writer.prepareCommit();
+                assertThat(beforeCommit).hasSize(1);
+                BufferedStreamWriterState before = writer.snapshotState(1).get(0);
+                BufferedStreamCommitTestUtils.commit(committer, beforeCommit);
 
-            serializer.evolveTo(BigQueryBufferedStreamSchemaEvolutionITCase.V2);
-            writer.write("bob:hello", TestContexts.NO_OP);
-            writer.flush(false);
-            var afterCommit = writer.prepareCommit();
-            assertThat(afterCommit).hasSize(1);
-            BufferedStreamWriterState after = writer.snapshotState(2).get(0);
-            BufferedStreamCommitTestUtils.commit(committer, afterCommit);
+                serializer.evolveTo(BigQueryBufferedStreamSchemaEvolutionITCase.V2);
+                writer.write("bob:hello", TestContexts.NO_OP);
+                writer.flush(false);
+                var afterCommit = writer.prepareCommit();
+                assertThat(afterCommit).hasSize(1);
+                BufferedStreamWriterState after = writer.snapshotState(2).get(0);
+                BufferedStreamCommitTestUtils.commit(committer, afterCommit);
 
-            assertThat(after.getStreamName()).isEqualTo(before.getStreamName());
-            assertThat(metrics.counterValue("schemaReconciliations")).isEqualTo(1);
-        } finally {
-            LOG.info(
-                    "Buffered schema propagation probe ran for {}",
-                    Duration.between(started, Instant.now()));
-            writer.close();
-            committer.close();
+                assertThat(after.getStreamName()).isEqualTo(before.getStreamName());
+                assertThat(metrics.counterValue("schemaReconciliations")).isEqualTo(1);
+            } finally {
+                LOG.info(
+                        "Buffered schema propagation probe ran for {}",
+                        Duration.between(started, Instant.now()));
+            }
         }
 
         assertThat(RealBigQuery.tableFields(TABLE).get("note")).isNotNull();

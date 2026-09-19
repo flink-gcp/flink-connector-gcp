@@ -52,6 +52,7 @@ class PubSubSubscriptionAdminRealGcpITCase extends AbstractPubSubRealGcpITCase {
         SubscriptionDestination subscription =
                 SubscriptionDestination.of(PROJECT, uniqueName("admin-settings"));
 
+        trackSubscription(subscription);
         try (SubscriptionAdmin admin = new PubSubSubscriptionAdmin()) {
             admin.create(
                     subscription,
@@ -64,7 +65,6 @@ class PubSubSubscriptionAdminRealGcpITCase extends AbstractPubSubRealGcpITCase {
                             .filter("attributes.route = \"it\"")
                             .build());
         }
-        trackSubscription(subscription);
 
         Subscription created = describeSubscription(subscription);
         assertThat(created.getAckDeadlineSeconds()).isEqualTo(30);
@@ -87,12 +87,12 @@ class PubSubSubscriptionAdminRealGcpITCase extends AbstractPubSubRealGcpITCase {
         SubscriptionDestination subscription =
                 SubscriptionDestination.of(PROJECT, uniqueName("admin-never-expire"));
 
+        trackSubscription(subscription);
         try (SubscriptionAdmin admin = new PubSubSubscriptionAdmin()) {
             admin.create(
                     subscription,
                     SubscriptionCreateOptions.builder().topic(topic).neverExpire().build());
         }
-        trackSubscription(subscription);
 
         Subscription created = describeSubscription(subscription);
         assertThat(created.hasExpirationPolicy()).isTrue();

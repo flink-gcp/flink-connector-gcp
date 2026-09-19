@@ -37,6 +37,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.List;
@@ -47,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(180)
+@Timeout(value = 180, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryBufferedStreamSchemaEvolutionITCase {
 
     private static final String TABLE = "buffered_schema_evolution_it_" + TestNames.runId();
@@ -70,19 +71,18 @@ class BigQueryBufferedStreamSchemaEvolutionITCase {
                 config(destination, serializer, options, SchemaUpdateOptions.defaults());
         WriteClientBufferedStreamServiceFactory serviceFactory =
                 new WriteClientBufferedStreamServiceFactory();
-        BigQueryBufferedStreamWriter<String> writer =
-                new BigQueryBufferedStreamWriter<>(
-                        config,
-                        options,
-                        serviceFactory,
-                        new BigQueryTableAdmin(),
-                        TestSinkWriterMetricGroup.create(),
-                        0,
-                        List.of());
-        BufferedStreamCommitter committer =
-                new BufferedStreamCommitter(
-                        serviceFactory, null, options, CreateDisposition.CREATE_NEVER);
-        try {
+        try (BigQueryBufferedStreamWriter<String> writer =
+                        new BigQueryBufferedStreamWriter<>(
+                                config,
+                                options,
+                                serviceFactory,
+                                new BigQueryTableAdmin(),
+                                TestSinkWriterMetricGroup.create(),
+                                0,
+                                List.of());
+                BufferedStreamCommitter committer =
+                        new BufferedStreamCommitter(
+                                serviceFactory, null, options, CreateDisposition.CREATE_NEVER)) {
             writer.write("alice", TestContexts.NO_OP);
             writer.flush(false);
             var beforeCommit = writer.prepareCommit();
@@ -101,9 +101,6 @@ class BigQueryBufferedStreamSchemaEvolutionITCase {
             assertThat(after.getStreamName()).isEqualTo(before.getStreamName());
             assertThat(before.getNextOffset()).isEqualTo(1);
             assertThat(after.getNextOffset()).isEqualTo(2);
-        } finally {
-            writer.close();
-            committer.close();
         }
 
         List<FieldValueList> rows =

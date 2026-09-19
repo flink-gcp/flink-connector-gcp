@@ -25,6 +25,7 @@ import io.grpc.Status;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
@@ -40,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("gated")
 @Tag("slow")
 @EnabledIfEnvironmentVariable(named = "CLOUDTASKS_RECOVERY_ACCEPTANCE", matches = "approved")
-@Timeout(value = 3, unit = TimeUnit.HOURS)
+@Timeout(value = 3, unit = TimeUnit.HOURS, threadMode = ThreadMode.SEPARATE_THREAD)
 class CloudTasksTombstoneRealGcpITCase {
     @Test
     void observeBothTargetsAcrossRemovalAndActualTombstoneExpiry() throws Exception {

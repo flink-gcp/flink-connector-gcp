@@ -83,9 +83,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
@@ -174,135 +176,150 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     }
 
     @Test
-    void measuresHowManyPartitionsTheServicePlans() {
+    void measuresHowManyPartitionsTheServicePlans() throws Exception {
         Statement query = Statement.of("SELECT id FROM singers");
-        BatchReadOnlyTransaction txn = transaction();
+        try (BatchReadOnlyTransaction txn = transaction();
+                AutoCloseable cleanup = txn::cleanup) {
 
-        int byDefault = txn.partitionQuery(PartitionOptions.getDefaultInstance(), query).size();
-        int withMaxPartitions =
-                txn.partitionQuery(
-                                PartitionOptions.newBuilder().setMaxPartitions(16).build(), query)
-                        .size();
-        int withPartitionSize =
-                txn.partitionQuery(
-                                PartitionOptions.newBuilder().setPartitionSizeBytes(1024).build(),
-                                query)
-                        .size();
-        int byRead =
-                txn.partitionRead(
-                                PartitionOptions.getDefaultInstance(),
-                                "singers",
-                                KeySet.all(),
-                                Collections.singletonList("id"),
-                                Options.dataBoostEnabled(false))
-                        .size();
+            int byDefault = txn.partitionQuery(PartitionOptions.getDefaultInstance(), query).size();
+            int withMaxPartitions =
+                    txn.partitionQuery(
+                                    PartitionOptions.newBuilder().setMaxPartitions(16).build(),
+                                    query)
+                            .size();
+            int withPartitionSize =
+                    txn.partitionQuery(
+                                    PartitionOptions.newBuilder()
+                                            .setPartitionSizeBytes(1024)
+                                            .build(),
+                                    query)
+                            .size();
+            int byRead =
+                    txn.partitionRead(
+                                    PartitionOptions.getDefaultInstance(),
+                                    "singers",
+                                    KeySet.all(),
+                                    Collections.singletonList("id"),
+                                    Options.dataBoostEnabled(false))
+                            .size();
 
-        LOG.info(
-                "Cloud Spanner partition planning over {} rows:"
-                        + "\n  partitionQuery, default hints      : {}"
-                        + "\n  partitionQuery, maxPartitions=16   : {}"
-                        + "\n  partitionQuery, sizeBytes=1024     : {}"
-                        + "\n  partitionRead,  default hints      : {}",
-                ROWS,
-                byDefault,
-                withMaxPartitions,
-                withPartitionSize,
-                byRead);
+            LOG.info(
+                    "Cloud Spanner partition planning over {} rows:"
+                            + "\n  partitionQuery, default hints      : {}"
+                            + "\n  partitionQuery, maxPartitions=16   : {}"
+                            + "\n  partitionQuery, sizeBytes=1024     : {}"
+                            + "\n  partitionRead,  default hints      : {}",
+                    ROWS,
+                    byDefault,
+                    withMaxPartitions,
+                    withPartitionSize,
+                    byRead);
 
-        // The service always plans at least one partition for a partitionable read; a count of
-        // zero would mean the enumerator has nothing to assign and the job silently reads nothing.
-        assertThat(byDefault).isPositive();
-        assertThat(byRead).isPositive();
+            // The service always plans at least one partition for a partitionable read; a count of
+            // zero would mean the enumerator has nothing to assign and the job silently reads
+            // nothing.
+            assertThat(byDefault).isPositive();
+            assertThat(byRead).isPositive();
+        }
     }
 
     @Test
-    void everyRowAppearsInExactlyOnePartition() {
-        BatchReadOnlyTransaction txn = transaction();
-        List<Partition> partitions =
-                txn.partitionQuery(
-                        PartitionOptions.getDefaultInstance(),
-                        Statement.of("SELECT id FROM singers"));
+    void everyRowAppearsInExactlyOnePartition() throws Exception {
+        try (BatchReadOnlyTransaction txn = transaction();
+                AutoCloseable cleanup = txn::cleanup) {
+            List<Partition> partitions =
+                    txn.partitionQuery(
+                            PartitionOptions.getDefaultInstance(),
+                            Statement.of("SELECT id FROM singers"));
 
-        Set<Long> seen = new HashSet<>();
-        int total = 0;
-        for (Partition partition : partitions) {
-            for (long id : idsIn(txn, partition)) {
-                seen.add(id);
-                total++;
+            Set<Long> seen = new HashSet<>();
+            int total = 0;
+            for (Partition partition : partitions) {
+                for (long id : idsIn(txn, partition)) {
+                    seen.add(id);
+                    total++;
+                }
+            }
+
+            // Complete and disjoint, which is what makes one partition per split a correct plan and
+            // what an at-least-once bounded read is otherwise free to violate unnoticed.
+            assertThat(total).isEqualTo(ROWS);
+            assertThat(seen).hasSize(ROWS);
+        }
+    }
+
+    @Test
+    void measuresWhichQueryShapesTheServiceWillPlan() throws Exception {
+        try (BatchReadOnlyTransaction txn = transaction();
+                AutoCloseable cleanup = txn::cleanup) {
+            Map<String, String> verdicts = new LinkedHashMap<>();
+            for (String sql :
+                    new String[] {
+                        "SELECT id FROM singers",
+                        "SELECT id FROM singers WHERE id > 10",
+                        "SELECT COUNT(*) AS c FROM singers",
+                        "SELECT id FROM singers ORDER BY id",
+                        "SELECT id FROM singers LIMIT 10"
+                    }) {
+                verdicts.put(sql, plan(txn, sql));
+            }
+
+            LOG.info(
+                    "Cloud Spanner root-partitionability, one shape per line:\n  {}",
+                    verdicts.entrySet().stream()
+                            .map(entry -> entry.getKey() + "\n    -> " + entry.getValue())
+                            .collect(Collectors.joining("\n  ")));
+
+            // The controls: a plain scan and a predicate are root-partitionable, so a refusal
+            // anywhere above is about the shape, not the table, transaction or account.
+            assertThat(verdicts.get("SELECT id FROM singers")).startsWith("planned");
+            assertThat(verdicts.get("SELECT id FROM singers WHERE id > 10")).startsWith("planned");
+
+            // Measured 2026-08-10: the service refuses the same three shapes the emulator does, so
+            // the emulator's conservatism — real in principle, since its check is its own — did not
+            // manifest on any shape tried here. What differs is the message, and that difference is
+            // the whole reason the connector surfaces it unwrapped: Spanner names the condition and
+            // links the documentation for it, where the emulator says only that it could not tell.
+            // Asserted rather than merely logged so that a reworded refusal makes someone revisit
+            // the docs sentence that quotes this.
+            for (String sql :
+                    new String[] {
+                        "SELECT COUNT(*) AS c FROM singers",
+                        "SELECT id FROM singers ORDER BY id",
+                        "SELECT id FROM singers LIMIT 10"
+                    }) {
+                assertThat(verdicts.get(sql))
+                        .startsWith("refused, INVALID_ARGUMENT")
+                        .contains("root partitionable");
             }
         }
-
-        // Complete and disjoint, which is what makes one partition per split a correct plan and
-        // what an at-least-once bounded read is otherwise free to violate unnoticed.
-        assertThat(total).isEqualTo(ROWS);
-        assertThat(seen).hasSize(ROWS);
     }
 
     @Test
-    void measuresWhichQueryShapesTheServiceWillPlan() {
-        BatchReadOnlyTransaction txn = transaction();
-        Map<String, String> verdicts = new LinkedHashMap<>();
-        for (String sql :
-                new String[] {
-                    "SELECT id FROM singers",
-                    "SELECT id FROM singers WHERE id > 10",
-                    "SELECT COUNT(*) AS c FROM singers",
-                    "SELECT id FROM singers ORDER BY id",
-                    "SELECT id FROM singers LIMIT 10"
-                }) {
-            verdicts.put(sql, plan(txn, sql));
+    void dataBoostServesAPartitionedRead() throws Exception {
+        try (BatchReadOnlyTransaction txn = transaction();
+                AutoCloseable cleanup = txn::cleanup) {
+            List<Partition> partitions =
+                    txn.partitionQuery(
+                            PartitionOptions.getDefaultInstance(),
+                            Statement.of("SELECT id FROM singers"),
+                            Options.dataBoostEnabled(true));
+
+            int total = 0;
+            for (Partition partition : partitions) {
+                total += idsIn(txn, partition).size();
+            }
+
+            LOG.info(
+                    "Data Boost planned {} partitions and returned {} rows",
+                    partitions.size(),
+                    total);
+            // The first evidence anywhere in this repository that the flag does something rather
+            // than being accepted and ignored: the emulator takes it and changes nothing.
+            // A boosted read returning the whole table is the measurement. It also exercises the
+            // spanner.databases.useDataBoost permission, which a reader role does not carry.
+            assertThat(total).isEqualTo(ROWS);
         }
-
-        LOG.info(
-                "Cloud Spanner root-partitionability, one shape per line:\n  {}",
-                verdicts.entrySet().stream()
-                        .map(entry -> entry.getKey() + "\n    -> " + entry.getValue())
-                        .collect(Collectors.joining("\n  ")));
-
-        // The controls: a plain scan and a predicate are root-partitionable, so a refusal anywhere
-        // above is about the shape rather than about the table, the transaction or the account.
-        assertThat(verdicts.get("SELECT id FROM singers")).startsWith("planned");
-        assertThat(verdicts.get("SELECT id FROM singers WHERE id > 10")).startsWith("planned");
-
-        // Measured 2026-08-10: the service refuses the same three shapes the emulator does, so
-        // the emulator's conservatism — real in principle, since its check is its own — did not
-        // manifest on any shape tried here. What differs is the message, and that difference is
-        // the whole reason the connector surfaces it unwrapped: Spanner names the condition and
-        // links the documentation for it, where the emulator says only that it could not tell.
-        // Asserted rather than merely logged so that a reworded refusal makes someone revisit the
-        // docs sentence that quotes this.
-        for (String sql :
-                new String[] {
-                    "SELECT COUNT(*) AS c FROM singers",
-                    "SELECT id FROM singers ORDER BY id",
-                    "SELECT id FROM singers LIMIT 10"
-                }) {
-            assertThat(verdicts.get(sql))
-                    .startsWith("refused, INVALID_ARGUMENT")
-                    .contains("root partitionable");
-        }
-    }
-
-    @Test
-    void dataBoostServesAPartitionedRead() {
-        BatchReadOnlyTransaction txn = transaction();
-        List<Partition> partitions =
-                txn.partitionQuery(
-                        PartitionOptions.getDefaultInstance(),
-                        Statement.of("SELECT id FROM singers"),
-                        Options.dataBoostEnabled(true));
-
-        int total = 0;
-        for (Partition partition : partitions) {
-            total += idsIn(txn, partition).size();
-        }
-
-        LOG.info("Data Boost planned {} partitions and returned {} rows", partitions.size(), total);
-        // The first evidence anywhere in this repository that the flag does something rather than
-        // being accepted and ignored: the emulator takes it and changes nothing, so a boosted read
-        // returning the whole table is the measurement. It also exercises the
-        // spanner.databases.useDataBoost permission, which a reader role does not carry.
-        assertThat(total).isEqualTo(ROWS);
     }
 
     @Test
@@ -464,8 +481,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         runId,
                         null,
                         true);
-        boolean stopped = false;
-        try {
+        try (AutoCloseable cancel = cancelOnClose(first)) {
             awaitChangeStream(
                     "the initial Spanner query to start",
                     first,
@@ -539,7 +555,6 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                                     savepointDirectory.toUri().toString(),
                                     SavepointFormatType.CANONICAL)
                             .get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
-            stopped = true;
 
             long stoppedGap = CHANGE_STREAM_ROWS;
             long afterRestore = CHANGE_STREAM_ROWS + 1L;
@@ -550,7 +565,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                             runId,
                             savepoint,
                             false);
-            try {
+            try (AutoCloseable cancelRestored = cancelOnClose(restored)) {
                 writeChangeRows(changeStreamDatabase, afterRestore, afterRestore + 1);
                 awaitChangeStream(
                         "the mutation written while stopped and the mutation after restore",
@@ -561,12 +576,6 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         },
                         runId);
                 assertThat(SpannerChangeStreamRealGcpObservers.timestampMismatches(runId)).isZero();
-            } finally {
-                cancelQuietly(restored);
-            }
-        } finally {
-            if (!stopped) {
-                cancelQuietly(first);
             }
         }
     }
@@ -609,8 +618,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         null,
                         false);
         String staleSavepoint;
-        boolean stopped = false;
-        try {
+        try (AutoCloseable cancel = cancelOnClose(scripted)) {
             awaitChangeStream(
                     "the scripted stale partitions",
                     scripted,
@@ -622,11 +630,6 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                                     savepointDirectory.toUri().toString(),
                                     SavepointFormatType.CANONICAL)
                             .get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
-            stopped = true;
-        } finally {
-            if (!stopped) {
-                cancelQuietly(scripted);
-            }
         }
 
         String failedRun = "expired-default-" + dialect + "-" + UUID.randomUUID();
@@ -657,7 +660,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         fallbackRun,
                         staleSavepoint,
                         false);
-        try {
+        try (AutoCloseable cancel = cancelOnClose(fallbackRestore)) {
             awaitChangeStream(
                     "the fallback query",
                     fallbackRestore,
@@ -675,8 +678,6 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                     fallbackRun);
             assertThat(SpannerChangeStreamRealGcpObservers.allRecords(fallbackRun))
                     .isEqualTo(SpannerChangeStreamRealGcpObservers.realRecordCount(fallbackRun));
-        } finally {
-            cancelQuietly(fallbackRestore);
         }
     }
 
@@ -943,13 +944,15 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         }
     }
 
-    private static Throwable executionFailure(JobClient job) throws Exception {
-        try {
-            job.getJobExecutionResult().get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
-        } catch (ExecutionException e) {
-            return e.getCause();
+    static Throwable executionFailure(JobClient job) throws Exception {
+        try (AutoCloseable cancel = cancelOnClose(job)) {
+            try {
+                job.getJobExecutionResult().get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
+            } catch (ExecutionException e) {
+                return e.getCause();
+            }
+            throw new AssertionError("Expected the Change Streams job to fail.");
         }
-        throw new AssertionError("Expected the Change Streams job to fail.");
     }
 
     private static String failureMessages(Throwable failure) {
@@ -968,14 +971,36 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         return causes;
     }
 
-    private static void cancelQuietly(JobClient job) {
-        try {
-            job.cancel().get(30, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            LOG.warn("Failed to cancel gated Change Streams job", e);
-        }
+    private static AutoCloseable cancelOnClose(JobClient job) {
+        return cancelOnClose(job, TimeUnit.SECONDS.toMillis(30));
+    }
+
+    static AutoCloseable cancelOnClose(JobClient job, long timeoutMillis) {
+        return () -> {
+            // Local execution shuts its MiniCluster down when this result completes, including
+            // failed jobs. A completed result needs no further cancellation RPC.
+            CompletableFuture<Void> terminated =
+                    job.getJobExecutionResult().handle((result, failure) -> null);
+            if (!terminated.isDone()) {
+                try {
+                    job.cancel().get(timeoutMillis, TimeUnit.MILLISECONDS);
+                } catch (ExecutionException | TimeoutException | RuntimeException cancellation) {
+                    // Completion can race the RPC and close the cluster first. Accept that race
+                    // only after observing termination; preserve the cancellation failure
+                    // otherwise.
+                    try {
+                        terminated.get(timeoutMillis, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException interrupted) {
+                        interrupted.addSuppressed(cancellation);
+                        throw interrupted;
+                    } catch (ExecutionException | TimeoutException termination) {
+                        cancellation.addSuppressed(termination);
+                        throw cancellation;
+                    }
+                }
+            }
+            terminated.get(timeoutMillis, TimeUnit.MILLISECONDS);
+        };
     }
 
     private static String namedSchemaTableDdl(

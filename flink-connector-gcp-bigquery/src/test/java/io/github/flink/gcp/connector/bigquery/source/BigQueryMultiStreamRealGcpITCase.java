@@ -36,6 +36,7 @@ import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -86,7 +87,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryMultiStreamRealGcpITCase {
 
     private static final TableDestination TABLE =

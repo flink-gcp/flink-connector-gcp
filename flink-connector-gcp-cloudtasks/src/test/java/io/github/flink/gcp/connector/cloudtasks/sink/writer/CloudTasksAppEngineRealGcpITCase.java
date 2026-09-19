@@ -44,6 +44,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.io.IOException;
@@ -68,7 +69,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "CLOUDTASKS_IT_PROJECT", matches = ".+")
-@Timeout(value = 10, unit = TimeUnit.MINUTES)
+@Timeout(value = 10, unit = TimeUnit.MINUTES, threadMode = ThreadMode.SEPARATE_THREAD)
 class CloudTasksAppEngineRealGcpITCase {
 
     private static final String LOCATION = "us-central1";

@@ -416,6 +416,7 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 access.batchWrite(
                         List.of(MutationGroup.of(mutation)),
                         (groupIndex, status) -> {
+                            assertThat(groupIndex).isZero();
                             refusal.perGroup = true;
                             refusal.code =
                                     SpannerErrorClassifier.fromCanonicalCode(status.getCode());
@@ -423,8 +424,12 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
             } catch (RuntimeException e) {
                 refusal.perGroup = false;
                 refusal.code = SpannerErrorClassifier.statusCode(e);
+                assertThat(refusal.code).as("recognized RPC refusal: %s", e).isNotNull();
             }
         }
+        assertThat(refusal.perGroup || refusal.code != null)
+                .as("the service must report the submitted mutation group or an RPC refusal")
+                .isTrue();
         return refusal;
     }
 
@@ -487,15 +492,19 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
         // database access directly, which sends exactly the groups it is given.
         try (SpannerDatabaseAccess access = access(blobsDatabase)) {
             List<StatusCode.Code> refusals = new ArrayList<>();
+            java.util.Set<Integer> reported = new java.util.HashSet<>();
             access.batchWrite(
                     groups,
                     (groupIndex, status) -> {
+                        assertThat(groupIndex).isBetween(0, groups.size() - 1);
+                        reported.add(groupIndex);
                         StatusCode.Code code =
                                 SpannerErrorClassifier.fromCanonicalCode(status.getCode());
                         if (code != null) {
                             refusals.add(code);
                         }
                     });
+            assertThat(reported).as("every submitted group has an outcome").hasSize(groups.size());
             return refusals.isEmpty()
                     ? Outcome.ok()
                     : Outcome.refused("per-group " + refusals.get(0));

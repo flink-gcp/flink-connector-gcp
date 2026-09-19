@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
@@ -73,8 +75,16 @@ public final class RealGcs {
 
     /** Deletes everything under {@code prefix}; a successful load leaves nothing behind. */
     public static void deletePrefix(String prefix) {
+        Throwable failure = null;
         for (Blob blob : list(prefix)) {
-            blob.delete();
+            try {
+                blob.delete();
+            } catch (RuntimeException e) {
+                failure = ExceptionUtils.firstOrSuppressed(e, failure);
+            }
+        }
+        if (failure != null) {
+            ExceptionUtils.rethrow(failure);
         }
     }
 }
