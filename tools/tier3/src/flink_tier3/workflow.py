@@ -107,6 +107,7 @@ def render(
     approval=None,
     expression="application",
     scenario="smoke",
+    **tags,
 ):
     args = [
         "cue",
@@ -131,6 +132,8 @@ def render(
         args.extend(["-t", "approval=" + rt.json_bytes(approval).decode()])
     if scenario != "smoke":
         args.extend(["-t", "scenario=" + scenario])
+    for key, value in sorted(tags.items()):
+        args.extend(["-t", f"{key}={value}"])
     result = subprocess.run(
         args,
         cwd=ROOT / "kubernetes",
@@ -176,9 +179,9 @@ def image_receipts(http, images, expiry):
     return receipts
 
 
-def snapshot(kube):
+def snapshot(kube, application=rt.SMOKE):
     namespaces = {}
-    for ns in (rt.SMOKE, rt.SYSTEM):
+    for ns in (application, rt.SYSTEM):
         quota = kube.get("ResourceQuota", ns, "tier3-idle")
         namespaces[ns] = {
             "uid": kube.namespace(ns)["metadata"]["uid"],

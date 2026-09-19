@@ -108,20 +108,34 @@ def reference(obj):
     }
 
 
-def ha_metadata(obj, run_id):
-    # Flink 2.2.1 HA ConfigMaps deliberately have no ownerReference. These are
+def ha_metadata(obj, names, namespace=SMOKE):
+    # Flink HA ConfigMaps deliberately have no ownerReference. These are
     # observations only: never adopt them into the UID deletion graph. The
     # Operator's normal finalizer must remove them; leftovers block release.
     meta = obj["metadata"]
+    names = [names] if isinstance(names, str) else list(names)
     return (
         obj["kind"] == "ConfigMap"
-        and meta["namespace"] == SMOKE
-        and re.fullmatch(
-            re.escape(run_id) + r"-(?:cluster|[0-9a-f]{32})-config-map", meta["name"]
+        and meta["namespace"] == namespace
+        and any(
+            re.fullmatch(
+                re.escape(name) + r"-(?:cluster|[0-9a-f]{32})-config-map", meta["name"]
+            )
+            and meta.get("labels", {}).get("app") == name
+            for name in names
         )
-        and meta.get("labels", {}).get("app") == run_id
         and meta.get("labels", {}).get("type") == "flink-native-kubernetes"
     )
+
+
+def canonical_quantity(value, kind):
+    """Render a Decimal in the form the API server stores for a quota."""
+    if kind == "cpu":
+        return str(int(value)) if value == int(value) else f"{int(value * 1000)}m"
+    for suffix, factor in (("Gi", 1024 * MIB), ("Mi", MIB), ("Ki", 1024)):
+        if value % factor == 0:
+            return f"{int(value // factor)}{suffix}"
+    return str(int(value))
 
 
 def ownership(items, roots):
@@ -141,7 +155,7 @@ def ownership(items, roots):
         owned = expanded
 
 
-def verify_pod(pod, role, image):
+def verify_pod(pod, role, image, expected=None):
     spec = pod["spec"]
     if (
         spec.get("initContainers")
@@ -152,14 +166,14 @@ def verify_pod(pod, role, image):
     container = spec["containers"][0]
     if container["image"] != image:
         raise Failure("Pod image differs from approval")
-    expected = POD_RESOURCES[role]
+    expected = expected or POD_RESOURCES[role]
     for category in ("requests", "limits"):
         actual = container.get("resources", {}).get(category, {})
         if set(actual) != set(expected) or any(
             quantity(actual[k]) != quantity(v) for k, v in expected.items()
         ):
             raise Failure("Effective Pod resources exceed or differ from approval")
-    if role == "smoke":
+    if role in ("smoke", "application"):
         if spec.get("nodeSelector", {}).get("cloud.google.com/gke-spot") != "true":
             raise Failure("Flink Pods must select Spot nodes")
     else:

@@ -27,6 +27,8 @@ environment = '_control/environment.json'
 gar = 'us-central1-docker.pkg.dev/flink-gcp/flink-tier3/'
 repository = 'flink-gcp/flink-connector-gcp'
 pricing_reviewed = '2026-09-14T00:00:00Z'
+cloudtasks = 'tier3-cloudtasks'
+benchmark = 'flink-gcp-cloudtasks-benchmark'
 
 # Conservative normal-capacity rates, including for Spot.
 # Exceed published Iowa Autopilot prices reviewed on 2026-09-14.
@@ -67,3 +69,62 @@ records_per_second = 10
 repetitions = 1
 startup_seconds = 600
 recovery_seconds = 300
+
+# Cloud Tasks measurement sessions (#1246). One session executes an ordered
+# list of measurement cells under one environment lock. The queue name is
+# derived from the run ID; project IAM does not enforce the prefix, so the
+# runtime checks the exact approved name before every queue operation.
+[cloudtasks]
+queue_prefix = 'ct1246-'
+# RFC 6761 reserves .invalid; the paused queue never dispatches a task.
+target = 'https://ct1246.invalid/task'
+cell_startup_seconds = 600
+cell_teardown_seconds = 180
+# Flink restarts a failed cell job this many times before it fails; each
+# restart gives every subtask a fresh per-creator attempt allowance.
+restart_attempts = 3
+# Cloud Tasks bills API operations after a monthly free allowance. Planning
+# figure from the published price list; confirm it at execution approval.
+task_operation_usd_per_million = "0.40"
+
+# Session ceilings. The approval embeds these values byte for byte; a cell
+# list whose derived expectations exceed them is refused before admission.
+[cloudtasks_ceilings]
+session_seconds = 18000
+cleanup_seconds = 900
+pods = 4
+pvcs = 0
+cells = 20
+task_creations = 12000000
+admin_write_ops = 6
+read_ops = 60000
+dispatches = 0
+state_bytes = 1073741824
+state_objects = 20000
+log_bytes = 104857600
+evidence_bytes = 4294967296
+receipt_bytes_supervisor = 268435456
+receipt_bytes_runner = 33554432
+additional_cost_usd = "10.00"
+
+# One JobManager and one TaskManager per cell; the TaskManager holds every
+# slot of the cell's parallelism class.
+[cloudtasks_pod_resources.jobmanager]
+cpu = "1"
+memory = "2Gi"
+ephemeral-storage = "1Gi"
+
+[cloudtasks_pod_resources.taskmanager.p1]
+cpu = "1"
+memory = "4Gi"
+ephemeral-storage = "1Gi"
+
+[cloudtasks_pod_resources.taskmanager.p4]
+cpu = "2"
+memory = "8Gi"
+ephemeral-storage = "2Gi"
+
+[cloudtasks_pod_resources.taskmanager.p16]
+cpu = "4"
+memory = "16Gi"
+ephemeral-storage = "4Gi"

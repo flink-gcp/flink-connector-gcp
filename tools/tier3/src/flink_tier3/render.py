@@ -16,7 +16,10 @@
 
 import argparse
 import json
+from pathlib import Path
 
+from .cloudtasks import load_session
+from .policy import CLOUDTASKS_POLICY, FLINK_LINES
 from .workflow import render
 
 
@@ -27,9 +30,32 @@ def main(argv=None):
     parser.add_argument("--expires-at", required=True)
     parser.add_argument("--active-seconds", type=int, required=True)
     parser.add_argument(
-        "--scenario", choices=("smoke", "generic-recovery"), default="smoke"
+        "--scenario",
+        choices=("smoke", "generic-recovery", "cloudtasks"),
+        default="smoke",
     )
+    parser.add_argument("--cells-file", type=Path, help="cloudtasks session TOML")
+    parser.add_argument("--flink-version", choices=tuple(FLINK_LINES), default="2.2.1")
+    parser.add_argument(
+        "--application-image",
+        help="cloudtasks application digest reference; a local render may be synthetic",
+    )
+    parser.add_argument("--target", default=CLOUDTASKS_POLICY["target"])
+    parser.add_argument("--expression", default="delivery.resources")
     args = parser.parse_args(argv)
+    tags = {}
+    if args.scenario == "cloudtasks":
+        if not args.cells_file or not args.application_image:
+            parser.error("cloudtasks requires --cells-file and --application-image")
+        session = load_session(args.cells_file)
+        tags = {
+            "cells": json.dumps(session["cells"], separators=(",", ":")),
+            "flink_version": args.flink_version,
+            "application_image": args.application_image,
+            "target": args.target,
+        }
+    elif args.cells_file or args.application_image:
+        parser.error("session inputs apply only to the cloudtasks scenario")
     print(
         json.dumps(
             render(
@@ -37,8 +63,9 @@ def main(argv=None):
                 args.nonce,
                 args.expires_at,
                 args.active_seconds,
-                expression="delivery.resources",
+                expression=args.expression,
                 scenario=args.scenario,
+                **tags,
             ),
             indent=2,
         )

@@ -21,23 +21,42 @@ import org.apache.flink.annotation.Internal;
 import com.google.api.gax.rpc.ApiException;
 import io.grpc.Status;
 
+import java.io.IOException;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
-import java.util.function.Consumer;
 
 /** Raw per-attempt evidence for external sequence, task-name and attempt reconciliation. */
 @Internal
-final class ObservationLog implements Consumer<ObservedTaskCreator.Observation> {
-    private final MeasurementOptions options;
-    private final UUID incarnation;
+final class ObservationLog implements ObservedTaskCreator.Observer {
+    /** Destination of formatted evidence rows; the log serializes every call on its own lock. */
+    interface Output extends AutoCloseable {
+        /** Writes one complete row without its line terminator. */
+        void row(String line) throws IOException;
 
-    ObservationLog(MeasurementOptions options) {
-        this(options, UUID.randomUUID());
+        /** Rows this output has made durable; an open storage part is not yet counted. */
+        long rowsExported();
+
+        /** Storage parts closed so far; a stream output reports zero. */
+        long partsClosed();
+
+        /** Flushes and closes any open part, making its rows durable and counted. */
+        @Override
+        void close() throws IOException;
+
+        /** Prints every row to standard output and fails on the stream's sticky error flag. */
+        static Output stdout() {
+            return new Stdout();
+        }
     }
 
-    ObservationLog(MeasurementOptions options, UUID incarnation) {
+    private final MeasurementOptions options;
+    private final UUID incarnation;
+    private final Output output;
+
+    ObservationLog(MeasurementOptions options, UUID incarnation, Output output) {
         this.options = options;
         this.incarnation = incarnation;
+        this.output = output;
     }
 
     @Override
@@ -67,7 +86,7 @@ final class ObservationLog implements Consumer<ObservedTaskCreator.Observation> 
         if (!options.emitAttempts) {
             return; // Counts-only calibration still validates service names and dispatch state.
         }
-        System.out.println(
+        String line =
                 "CT1246,"
                         + options.runId
                         + ","
@@ -97,9 +116,57 @@ final class ObservationLog implements Consumer<ObservedTaskCreator.Observation> 
                         + ","
                         + status
                         + ","
-                        + name);
-        if (System.out.checkError()) {
-            throw new IllegalStateException("Measurement evidence output failed");
+                        + name;
+        try {
+            output.row(line);
+        } catch (IOException failure) {
+            throw new IllegalStateException("Measurement evidence output failed", failure);
         }
+    }
+
+    @Override
+    public boolean exportsRows() {
+        return options.emitAttempts;
+    }
+
+    @Override
+    public synchronized long rowsExported() {
+        return output.rowsExported();
+    }
+
+    @Override
+    public synchronized long partsClosed() {
+        return output.partsClosed();
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
+        output.close();
+    }
+
+    private static final class Stdout implements Output {
+        private long rows;
+
+        @Override
+        public void row(String line) throws IOException {
+            System.out.println(line);
+            if (System.out.checkError()) {
+                throw new IOException("Measurement evidence output failed");
+            }
+            rows++;
+        }
+
+        @Override
+        public long rowsExported() {
+            return rows;
+        }
+
+        @Override
+        public long partsClosed() {
+            return 0;
+        }
+
+        @Override
+        public void close() {}
     }
 }

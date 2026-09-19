@@ -37,8 +37,12 @@ class Environment:
         clock=time.time,
         sleep=time.sleep,
         actor="supervisor",
+        queues=None,
+        ledger=None,
     ):
         self.kube, self.store = kube, store
+        # Cloud Tasks session collaborators; None for the smoke scenarios.
+        self.queues, self.ledger = queues, ledger
         self.approval = (
             approval if isinstance(approval, Approval) else Approval.from_dict(approval)
         )
@@ -83,6 +87,21 @@ class Environment:
         ):
             raise Failure("Run admission has been stopped")
         self.assert_owner()
+
+    def require_running(self, message):
+        """Refuse a mutation unless this run is still admitted and owned."""
+        self.namespaces()
+        control = self.refresh()
+        if (
+            self.stopping
+            or self.evidence_failed
+            or control.evidence_failed
+            or control.stop_requested
+            or control.phase != Phase.RUNNING
+        ):
+            raise Failure(message)
+        self.assert_owner()
+        return control
 
     def emit(self, event, payload):
         try:

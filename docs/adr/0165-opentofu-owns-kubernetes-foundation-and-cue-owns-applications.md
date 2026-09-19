@@ -29,7 +29,8 @@ limitations under the License.
 - Updated: 2026-09-16 (one bounded generic recovery exercise and phase-specific oracles)
 - Updated: 2026-09-17 (idle Cloud Tasks namespace and workload identity)
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
+- Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -296,6 +297,25 @@ The worker's existing editor role is unchanged.
 The expected GCP change is nine additions, separate from the in-place idle Helm release update.
 Review those counts against CI plans before merge, then collect successful apply, idle inventory and empty refreshed plans.
 These persistent grants prepare a separately reviewed runtime; they start no queue or workload and authorize no paid measurement.
+
+### Cloud Tasks session admission
+
+The third lifecycle scenario admits one Cloud Tasks measurement session: an ordered cell list from a reviewed session file, executed as one FlinkDeployment at a time in `tier3-cloudtasks` under one environment lock of at most five hours.
+One approval per cell would have needed several hundred dispatches for the preregistered 420-cell assessment, so the session is the approval unit and a campaign ledger in `_control/campaigns/` records every cell's outcome across sessions and refuses to run a completed or running cell again.
+The session ceilings, JobManager/TaskManager shapes per parallelism class, queue prefix and synthetic target live in `policy.toml` beside the smoke values and are embedded byte for byte in a version 3 approval; the smoke tables and cost constant are untouched because their tests pin them.
+The published application digest is a dispatch input verified live against Artifact Registry, not a pin in `images/pins.cue`: no measurement image has been published yet, and a stand-in digest must not look like a runnable delivery.
+
+The runner owns queue admission because only it holds `cloudtasks.queues.create`: it proves the run's queue absent, creates it in one request with a paused-queue configuration modelled on the accepted #1245 harness (one-hour tombstone, one dispatch per second, a single attempt), pauses it and reads back the paused state and zero dispatch counts.
+The supervisor re-reads the queue on every poll and treats any deviation as a stop; cleanup deletes the queue and a remaining queue blocks the idle receipt.
+Every Cloud Tasks and Flink REST read is metered per actor against the session read ceiling, administrative queue writes against a ceiling of six, and storage listings remain bounded by their per-call maxima and the evidence budgets.
+The task-creation ceiling and cost use a planning bound rather than the expected count: the application caps attempts per creator incarnation, so a cell may create its attempt limit times its subtasks times the four incarnations one JobMaster's restart strategy allows, and the manifest check pins that strategy; a JobManager failover resets the budget, so the cell deadline and the paused queue remain the real caps.
+Cleanup deletes the queue only after the run persisted its intent to create it, and it adopts a cell whose create landed after the stop, because the runner's settlement can otherwise race the supervisor's last create; both decisions read the cached control record so a storage failure cannot stop cleanup.
+
+The measurement application no longer prints its per-attempt rows to stdout: the supervisor's bounded log reads cannot capture hundreds of rows per second, so rows are written as gzip parts through the Flink filesystem next to the receipts, and Pod logs carry only Flink logs.
+A truncated Pod log is therefore recorded rather than fatal for this scenario, while the smoke scenarios keep failing on truncation.
+Cleanup deletes only the cells' checkpoint state under the one-day benchmark bucket and records the retained rows and receipts; exporting them to durable evidence and reconciling them against the receipts is the next change, which must run inside the same workflow execution.
+
+Declined: extending the 60-minute smoke window to sessions (the workflow timeout rises to six hours only for this scenario, and the session's serial budget is proven to fit inside it); pinning a placeholder application digest; letting the connector or the supervisor create queues (only the runner may, and only the approved name).
 
 ### Ownership boundaries
 

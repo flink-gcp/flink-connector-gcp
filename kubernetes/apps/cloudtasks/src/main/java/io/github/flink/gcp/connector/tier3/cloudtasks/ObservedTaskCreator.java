@@ -27,6 +27,7 @@ import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
 import io.grpc.Deadline;
 
+import java.io.IOException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -35,8 +36,24 @@ import java.util.function.LongSupplier;
 /** Observes production RPC results without replacing retries or extending their deadlines. */
 @Internal
 final class ObservedTaskCreator implements TaskCreator {
+    /** Receives every observation and is closed before the terminal snapshot is taken. */
+    interface Observer extends Consumer<Observation>, AutoCloseable {
+        /** Whether a complete snapshot requires the exported rows to equal the observations. */
+        boolean exportsRows();
+
+        /** Rows made durable so far; rows in an open storage part are not counted. */
+        long rowsExported();
+
+        /** Storage parts closed so far. */
+        long partsClosed();
+
+        /** Makes the open rows durable; a failure here marks the terminal snapshot. */
+        @Override
+        void close() throws IOException;
+    }
+
     private final TaskCreator delegate;
-    private final Consumer<Observation> observer;
+    private final Observer observer;
     private final LongSupplier clock;
     private final long attemptLimit;
     private final Consumer<Terminal> terminal;
@@ -48,16 +65,13 @@ final class ObservedTaskCreator implements TaskCreator {
     private boolean closing;
 
     ObservedTaskCreator(
-            TaskCreator delegate,
-            Consumer<Observation> observer,
-            LongSupplier clock,
-            long attemptLimit) {
+            TaskCreator delegate, Observer observer, LongSupplier clock, long attemptLimit) {
         this(delegate, observer, clock, attemptLimit, ignored -> {});
     }
 
     ObservedTaskCreator(
             TaskCreator delegate,
-            Consumer<Observation> observer,
+            Observer observer,
             LongSupplier clock,
             long attemptLimit,
             Consumer<Terminal> terminal) {
@@ -197,6 +211,18 @@ final class ObservedTaskCreator implements TaskCreator {
         } catch (Exception failure) {
             closeFailure = failure;
         }
+        // The client is closed first, as before; closing the observer then makes the open part
+        // durable before its counts enter the snapshot. A callback that still arrives afterwards
+        // fails against the closed output and cannot upgrade the persisted snapshot.
+        Exception rowsFailure = null;
+        try {
+            observer.close();
+        } catch (Exception failure) {
+            rowsFailure = failure;
+        }
+        long rowsExported = observer.rowsExported();
+        long partsClosed = observer.partsClosed();
+        boolean csvEnabled = observer.exportsRows();
         Terminal snapshot;
         synchronized (this) {
             snapshot =
@@ -206,34 +232,57 @@ final class ObservedTaskCreator implements TaskCreator {
                             observations,
                             evidenceFailed,
                             limitReached,
-                            closeFailure != null);
+                            closeFailure != null,
+                            rowsExported,
+                            partsClosed,
+                            rowsFailure != null,
+                            csvEnabled);
         }
         try {
             terminal.accept(snapshot);
         } catch (RuntimeException receiptFailure) {
+            if (rowsFailure != null) {
+                receiptFailure.addSuppressed(rowsFailure);
+            }
             if (closeFailure != null) {
                 receiptFailure.addSuppressed(closeFailure);
             }
             throw receiptFailure;
+        }
+        if (rowsFailure != null) {
+            if (closeFailure != null) {
+                rowsFailure.addSuppressed(closeFailure);
+            }
+            throw rowsFailure;
         }
         if (closeFailure != null) {
             throw closeFailure;
         }
     }
 
+    /**
+     * Local accounting at close. {@code csvEnabled} is the observer's own export mode; the receipt
+     * writes it from the options, and the two agree because the log reads the same field.
+     */
     record Terminal(
             long attempts,
             long completed,
             long observations,
             boolean evidenceFailed,
             boolean limitReached,
-            boolean clientCloseFailed) {
+            boolean clientCloseFailed,
+            long rowsExported,
+            long partsClosed,
+            boolean rowsFlushFailed,
+            boolean csvEnabled) {
         boolean complete() {
             return attempts == completed
                     && completed == observations
                     && !evidenceFailed
                     && !limitReached
-                    && !clientCloseFailed;
+                    && !clientCloseFailed
+                    && !rowsFlushFailed
+                    && (!csvEnabled || rowsExported == observations);
         }
     }
 

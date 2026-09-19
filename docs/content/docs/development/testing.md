@@ -122,6 +122,7 @@ Its [runbook]({{< param BookRepo >}}/tree/main/opentofu#tier-3-kubernetes-enviro
 Its Operator installation and CUE-managed workloads follow the cloud foundation; routine suites continue to use MiniCluster.
 The [lifecycle runbook]({{< param BookRepo >}}/tree/main/kubernetes/lifecycle) defines the separately approved `generic-recovery` scenario: one savepoint upgrade and one JobManager failover within the same bounded run.
 It is an on-demand correctness exercise, not a release gate or a performance benchmark.
+The same runbook defines the `cloudtasks` session scenario, the measurement instrument for [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246); merging it authorizes no dispatch, and its results are performance evidence only once a separately approved session has run and its evidence has been reconciled.
 
 ## The slow lane
 
