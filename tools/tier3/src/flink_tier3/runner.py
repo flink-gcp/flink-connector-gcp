@@ -361,7 +361,23 @@ class Runner:
                 cells=cells,
                 operations=control.operations,
                 benchmark_evidence_retained=self.cleanup.retained_evidence(),
-                exported=False,
+                # The session-level export summary, which the control record
+                # carries and this receipt outlives: the control record is
+                # deleted a few lines below.
+                exported={
+                    cell_id: {
+                        key: summary.get(key)
+                        for key in ("outcome", "objects", "evidence_bytes")
+                    }
+                    | {
+                        "reconciliation": (summary.get("reconciliation") or {}).get(
+                            "status"
+                        ),
+                        "manifest_sha256": summary.get("manifest_sha256"),
+                    }
+                    for cell_id, summary in sorted(control.exports.items())
+                },
+                evidence_bytes=control.evidence_bytes,
             )
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)

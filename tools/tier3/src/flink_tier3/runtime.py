@@ -28,12 +28,14 @@ from flink_tier3.bundle import source_digest
 from flink_tier3.cloudtasks import Ledger, Queues, load_cells
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
+from flink_tier3.evidence import Collector
 from flink_tier3.exercise import validate_manifests
 from flink_tier3.google import GoogleToken, Storage, authorized_session
 from flink_tier3.kubernetes import Kubernetes, KubernetesTransport
 from flink_tier3.model import Approval
+from flink_tier3.observe import CellObserver
 from flink_tier3.policy import SYSTEM
-from flink_tier3.supervisor import Supervisor
+from flink_tier3.supervisor import HookChain, Supervisor
 
 
 def supervisor_main(directory):
@@ -79,7 +81,11 @@ def supervisor_main(directory):
         queues = Queues(authorized_session(GoogleToken()), approved.queue)
         ledger = Ledger(store, approved.campaign)
     env = Environment(kube, store, approval, queues=queues, ledger=ledger)
-    supervisor = Supervisor(env, upgrade, cells)
+    hooks = None
+    if cells is not None:
+        # Observe every poll, then collect and export each cell's evidence.
+        hooks = HookChain(CellObserver(), Collector(env, store))
+    supervisor = Supervisor(env, upgrade, cells, hooks)
 
     def stop(_number, _frame):
         env.stopping = True

@@ -72,6 +72,7 @@ def test_wheel_installs_cli_policy_and_complete_source_bundle(tmp_path):
         ["schemas"],
         ["supervisor"],
         ["render"],
+        ["analyze"],
     ):
         result = run(str(command), *arguments, "--help", cwd=tmp_path, env=environment)
         assert (

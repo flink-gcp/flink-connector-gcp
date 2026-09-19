@@ -581,7 +581,8 @@ renders one FlinkDeployment per cell of a reviewed session file under
 `kubernetes/lifecycle/sessions/`; before changing the cell vocabulary, the queue lifecycle or the
 session ceilings, read that runbook's session section, `kubernetes/apps/cloudtasks/README.md` and
 ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks.py` and
-`policy.toml` in agreement.
+`policy.toml` in agreement. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
+offline; it never contacts a cluster or a bucket.
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
 dedicated kubeconfig; GKE API discovery verifies that endpoint.

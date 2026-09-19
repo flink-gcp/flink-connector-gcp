@@ -1,0 +1,195 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Calibration session for issue #1246 on Flink 2.2.1, preregistered in
+# docs/adr/evidence/0162-cloudtasks-assessment-1246.md. Reviewing this file
+# authorizes nothing: a dispatch still needs the session approval phrase, a
+# published application digest and the owner's numeric approval.
+# k01-k06 measure source pacing at rising offered rates; k03 injects the
+# 100 ms serialization delay the analysis must detect; k07 pairs k04 without
+# CSV output; k09 and k10 exercise the staged gauges and the random-name
+# control; interrupt-control-k11 loses its TaskManager after warm-up to
+# prove the incomplete-evidence path.
+
+campaign = "calibration-1246"
+
+[[cells]]
+id = "k01-pace-10"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 10
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 2430
+attempt_limit = 3645
+
+[[cells]]
+id = "k02-pace-25"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 25
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 6075
+attempt_limit = 9113
+
+[[cells]]
+id = "k03-delay-control"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 20
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 100
+emit_attempts = true
+record_limit = 4860
+attempt_limit = 7290
+
+[[cells]]
+id = "k04-pace-100"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 100
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 26100
+attempt_limit = 9788
+
+[[cells]]
+id = "k05-pace-1000"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 1000
+warmup_seconds = 120
+observation_seconds = 360
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 601000
+attempt_limit = 56345
+
+[[cells]]
+id = "k06-pace-2000"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 2000
+warmup_seconds = 120
+observation_seconds = 360
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 1202000
+attempt_limit = 112688
+
+[[cells]]
+id = "k07-counts-only"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 100
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = false
+record_limit = 26100
+attempt_limit = 9788
+
+[[cells]]
+id = "k09-staged-gauges"
+arm = "STAGED_HASH"
+body_bytes = 1024
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 100
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 26100
+attempt_limit = 9788
+
+[[cells]]
+id = "k10-random-control"
+arm = "NAMED_RANDOM_CONTROL"
+body_bytes = 1024
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 100
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 26100
+attempt_limit = 9788
+
+[[cells]]
+id = "interrupt-control-k11"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 10
+warmup_seconds = 60
+observation_seconds = 180
+control_delay_millis = 0
+emit_attempts = true
+record_limit = 2430
+attempt_limit = 3645

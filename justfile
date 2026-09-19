@@ -489,6 +489,11 @@ tier3-operator kubeconfig *args:
 tier3-schemas mode='check':
     mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 schemas "$1"
 
+# Offline analysis of a downloaded evidence directory; never contacts a cluster.
+[positional-arguments]
+tier3-analyze directory:
+    mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 analyze --evidence "$1"
+
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.
 # Reusable as-is by every flink-sql-connector-gcp-* module; both take the module
