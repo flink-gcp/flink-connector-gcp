@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.util.function.ThrowingRunnable;
+
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
@@ -53,20 +55,70 @@ final class Stage2CampaignWorker {
             throw new IOException("Worker JVM flags differ from the frozen campaign inputs");
         }
         Stage2RunLease lease = journal.claim(table, pid, started);
+        boolean observed;
         try {
-            boolean observed = observation.run(lease, run, journal.limits);
-            journal.finish(table, pid, started, observed);
-            if (!observed) {
-                throw new IOException("Formal observation was empty or censored; campaign stopped");
-            }
-            System.out.println("STAGE2_CAMPAIGN_WORKER " + table + " OBSERVED");
+            observed = observation.run(lease, run, journal.limits);
+        } catch (InterruptedException interruption) {
+            stopOnInterruption(journal, interruption);
+            throw interruption;
         } catch (Exception | Error failure) {
+            boolean recorded =
+                    recordOrStop(
+                            journal, () -> journal.finish(table, pid, started, false), failure);
+            System.out.println(
+                    "STAGE2_CAMPAIGN_WORKER " + table + (recorded ? " FAILED" : " UNRECORDED"));
+            throw failure;
+        }
+        recordOrStop(journal, () -> journal.finish(table, pid, started, observed), null);
+        if (!observed) {
+            System.out.println("STAGE2_CAMPAIGN_WORKER " + table + " FAILED");
+            throw new IOException(
+                    "Formal observation was empty or censored; recorded as FAILED for " + table);
+        }
+        System.out.println("STAGE2_CAMPAIGN_WORKER " + table + " OBSERVED");
+    }
+
+    /**
+     * An interrupted observation is not a measured failure of the workload: the protocol stops the
+     * campaign on an interruption rather than recording the run and moving on.
+     */
+    private static void stopOnInterruption(
+            Stage2CampaignJournal journal, InterruptedException interruption) {
+        // Publish the stop before restoring the interrupt flag: the journal's file channels are
+        // interruptible and would refuse the publication on an already interrupted thread.
+        try {
+            journal.stop();
+        } catch (IOException | RuntimeException stopFailure) {
+            interruption.addSuppressed(stopFailure);
+        }
+        Thread.currentThread().interrupt();
+    }
+
+    /**
+     * Records the run's outcome and returns whether it was recorded. A recorded failure lets the
+     * campaign proceed; a failure to record the outcome stops the campaign, because an unrecorded
+     * run cannot be told apart from a lost one. With a {@code failure} the recording error is
+     * attached to it as suppressed; without one the recording error is thrown after the stop.
+     */
+    private static boolean recordOrStop(
+            Stage2CampaignJournal journal,
+            ThrowingRunnable<IOException> recording,
+            Throwable failure)
+            throws IOException {
+        try {
+            recording.run();
+            return true;
+        } catch (IOException | RuntimeException | Error recordingFailure) {
             try {
                 journal.stop();
             } catch (IOException | RuntimeException stopFailure) {
-                failure.addSuppressed(stopFailure);
+                recordingFailure.addSuppressed(stopFailure);
             }
-            throw failure;
+            if (failure == null) {
+                throw recordingFailure;
+            }
+            failure.addSuppressed(recordingFailure);
+            return false;
         }
     }
 
@@ -131,22 +183,29 @@ final class Stage2CampaignWorker {
         }
         var phase = journal.auxiliaryPhase(name);
         Stage2RunLease lease = journal.claimAuxiliary(name, pid, started);
+        boolean observed;
         try {
-            boolean observed = observation.run(lease, phase);
-            journal.finishAuxiliary(name, pid, started, observed);
-            if (!observed) {
-                throw new IOException(
-                        "Auxiliary observation was empty or censored; campaign stopped");
-            }
-            System.out.println("STAGE2_AUXILIARY_WORKER " + name + " OBSERVED");
+            observed = observation.run(lease, phase);
+        } catch (InterruptedException interruption) {
+            stopOnInterruption(journal, interruption);
+            throw interruption;
         } catch (Exception | Error failure) {
-            try {
-                journal.stop();
-            } catch (IOException | RuntimeException stopFailure) {
-                failure.addSuppressed(stopFailure);
-            }
+            boolean recorded =
+                    recordOrStop(
+                            journal,
+                            () -> journal.finishAuxiliary(name, pid, started, false),
+                            failure);
+            System.out.println(
+                    "STAGE2_AUXILIARY_WORKER " + name + (recorded ? " FAILED" : " UNRECORDED"));
             throw failure;
         }
+        recordOrStop(journal, () -> journal.finishAuxiliary(name, pid, started, observed), null);
+        if (!observed) {
+            System.out.println("STAGE2_AUXILIARY_WORKER " + name + " FAILED");
+            throw new IOException(
+                    "Auxiliary observation was empty or censored; recorded as FAILED for " + name);
+        }
+        System.out.println("STAGE2_AUXILIARY_WORKER " + name + " OBSERVED");
     }
 
     private static boolean observe(

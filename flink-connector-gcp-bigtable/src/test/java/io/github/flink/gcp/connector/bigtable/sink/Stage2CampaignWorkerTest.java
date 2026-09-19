@@ -76,13 +76,15 @@ class Stage2CampaignWorkerTest {
                                             "-Xmx2g",
                                             observation))
                     .hasMessageContaining("empty or censored");
-            assertThat(journal.read().getProperty("nextRun")).isEqualTo("0");
-            assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
+            assertThat(journal.read().getProperty("nextRun")).isEqualTo("1");
+            assertThat(journal.read().getProperty("runStatus")).isEqualTo("FAILED");
+            assertThat(journal.read().getProperty("phase")).isEqualTo("RUNNING");
+            assertThat(journal.directory.resolve("run-0.properties")).exists();
         }
     }
 
     @Test
-    void flagsMismatchCannotClaimAndObservationFailureStopsWithoutAdvancing() throws Exception {
+    void flagsMismatchCannotClaimAndObservationFailureIsRecordedAndAdvances() throws Exception {
         Stage2CampaignJournal journal = active();
         String table = Stage2AssessmentPlan.runs().get(0).table();
         Stage2CampaignWorker.Observation failure =
@@ -100,8 +102,85 @@ class Stage2CampaignWorkerTest {
                                 Stage2CampaignWorker.execute(
                                         journal, table, 999_999_999L, "worker", "-Xmx2g", failure))
                 .hasMessageContaining("Measurement failed");
-        assertThat(journal.read().getProperty("nextRun")).isEqualTo("0");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("1");
+        assertThat(journal.read().getProperty("runStatus")).isEqualTo("FAILED");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("RUNNING");
+        // The failed run is never repeated; the next preregistered run is the only admission.
+        assertThatThrownBy(() -> journal.claim(table, 999_999_998L, "worker-2"))
+                .hasMessageContaining("out of order");
+        journal.claim(Stage2AssessmentPlan.runs().get(1).table(), 999_999_998L, "worker-2");
+    }
+
+    @Test
+    void interruptedObservationStopsTheCampaignWithoutRecordingARun() throws Exception {
+        Stage2CampaignJournal journal = active();
+        String table = Stage2AssessmentPlan.runs().get(0).table();
+        Stage2CampaignWorker.Observation interrupted =
+                (lease, run, limits) -> {
+                    throw new InterruptedException("worker interrupted");
+                };
+        try {
+            assertThatThrownBy(
+                            () ->
+                                    Stage2CampaignWorker.execute(
+                                            journal,
+                                            table,
+                                            999_999_999L,
+                                            "worker",
+                                            "-Xmx2g",
+                                            interrupted))
+                    .isInstanceOf(InterruptedException.class);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            assertThat(Thread.interrupted()).isTrue();
+        }
         assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("0");
+        assertThat(journal.directory.resolve("run-0.properties")).doesNotExist();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void unrecordableOutcomeStopsTheCampaign(boolean throwsFailure) throws Exception {
+        Stage2CampaignJournal journal = active();
+        String table = Stage2AssessmentPlan.runs().get(0).table();
+        // An existing outcome file makes the journal's CREATE_NEW record fail.
+        Files.writeString(journal.directory.resolve("run-0.properties"), "stale");
+        Stage2CampaignWorker.Observation observation =
+                (lease, run, limits) -> {
+                    if (throwsFailure) {
+                        throw new IOException("Measurement failed");
+                    }
+                    return false;
+                };
+        var thrown =
+                assertThatThrownBy(
+                        () ->
+                                Stage2CampaignWorker.execute(
+                                        journal,
+                                        table,
+                                        999_999_999L,
+                                        "worker",
+                                        "-Xmx2g",
+                                        observation));
+        if (throwsFailure) {
+            thrown.hasMessageContaining("Measurement failed")
+                    .satisfies(
+                            failure ->
+                                    assertThat(failure.getSuppressed())
+                                            .anySatisfy(
+                                                    suppressed ->
+                                                            assertThat(suppressed)
+                                                                    .isInstanceOf(
+                                                                            java.nio.file
+                                                                                    .FileAlreadyExistsException
+                                                                                    .class)));
+        } else {
+            thrown.isInstanceOf(java.nio.file.FileAlreadyExistsException.class);
+        }
+        assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("0");
+        assertThat(journal.read().getProperty("runStatus")).isEqualTo("STARTED");
     }
 
     private Stage2CampaignJournal active() throws Exception {

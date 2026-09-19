@@ -133,7 +133,7 @@ class Stage2CampaignJournalTest {
     }
 
     @Test
-    void onlyTheActiveWorkerCanFinishOnceAndFailureNeverAdvances() throws Exception {
+    void onlyTheActiveWorkerCanFinishOnceAndFailureIsRecordedWithoutRepetition() throws Exception {
         Stage2CampaignJournal journal = active();
         Stage2RunLease worker = journal.claim(table(0), 999_999_991L, "worker-0");
         assertThatThrownBy(() -> journal.finish(table(1), 999_999_991L, "worker-0", true))
@@ -145,9 +145,82 @@ class Stage2CampaignJournalTest {
         assertThat(journal.read().getProperty("nextRun")).isEqualTo("1");
         journal.claim(table(1), 999_999_992L, "worker-1");
         journal.finish(table(1), 999_999_992L, "worker-1", false);
-        assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
-        assertThat(journal.read().getProperty("nextRun")).isEqualTo("1");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("RUNNING");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("2");
         assertThat(journal.read().getProperty("runStatus")).isEqualTo("FAILED");
+        java.util.Properties failed = new java.util.Properties();
+        try (var input = Files.newInputStream(journal.directory.resolve("run-1.properties"))) {
+            failed.load(input);
+        }
+        assertThat(failed.getProperty("runStatus")).isEqualTo("FAILED");
+        assertThat(failed.getProperty("workerTable")).isEqualTo(table(1));
+        assertThatThrownBy(() -> journal.claim(table(1), 999_999_993L, "worker-1b"))
+                .hasMessageContaining("out of order");
+        assertThat(journal.read().getProperty("failedRuns")).isEqualTo("1");
+    }
+
+    @Test
+    void failedSixthRunRetainsTheCellAndAdmitsTheNextCell() throws Exception {
+        Stage2CampaignJournal journal = active();
+        for (int index = 0; index < 5; index++) {
+            journal.claim(table(index), 999_999_990L + index, "worker-" + index);
+            journal.finish(table(index), 999_999_990L + index, "worker-" + index, true);
+        }
+        journal.claim(table(5), 999_999_995L, "worker-5");
+        journal.finish(table(5), 999_999_995L, "worker-5", false);
+        assertThat(journal.read().getProperty("phase")).isEqualTo("RETAINING");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("6");
+        assertThat(journal.read().getProperty("failedRuns")).isEqualTo("1");
+        journal.cellCleaned("f".repeat(64));
+        assertThat(journal.read().getProperty("phase")).isEqualTo("READY");
+        assertThat(journal.directory.resolve("cell-0.properties")).exists();
+        journal.prepareCell(1);
+        assertThat(journal.read().getProperty("phase")).isEqualTo("PREPARING");
+        assertThat(journal.read().getProperty("failedRuns")).isEqualTo("1");
+    }
+
+    @Test
+    void failureIsRecordableAfterTheWorkerDeadlineButSuccessIsNot() throws Exception {
+        Stage2CampaignJournal journal = active();
+        // A live worker identity: heartbeats refuse a started worker whose process is gone.
+        Process live = new ProcessBuilder("sleep", "300").start();
+        long pid = live.pid();
+        String started = live.info().startInstant().orElseThrow().toString();
+        journal.claim(table(0), pid, started);
+        long deadline = Long.parseLong(journal.read().getProperty("workerDeadline"));
+        // Supervision keeps the heartbeat fresh while the worker runs out its reservation.
+        while (clock.millis() + 19_000 < deadline) {
+            clock.advance(19_000);
+            journal.heartbeat(supervisor, supervisorStart);
+        }
+        clock.advance(deadline - clock.millis());
+        assertThatThrownBy(() -> journal.finish(table(0), pid, started, true))
+                .hasMessageContaining("deadline expired");
+        // The bound on late recording: a heartbeat that observes the expired, still-started worker
+        // refuses, so the failure must be recorded before supervision next looks.
+        assertThatThrownBy(() -> journal.heartbeat(supervisor, supervisorStart))
+                .hasMessageContaining("disappeared or expired");
+        assertThatThrownBy(() -> journal.finish(table(1), pid, started, false))
+                .hasMessageContaining("cannot be recorded");
+        assertThatThrownBy(() -> journal.finish(table(0), 999_999_992L, started, false))
+                .hasMessageContaining("cannot be recorded");
+        journal.finish(table(0), pid, started, false);
+        assertThat(journal.read().getProperty("runStatus")).isEqualTo("FAILED");
+        assertThat(journal.read().getProperty("nextRun")).isEqualTo("1");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("RUNNING");
+        // Once recorded, supervision proceeds, and the next preregistered run is admitted once
+        // the previous worker process has exited.
+        journal.heartbeat(supervisor, supervisorStart);
+        live.destroy();
+        live.waitFor();
+        journal.claim(table(1), 999_999_992L, "worker-1");
+        assertThat(journal.read().getProperty("runStatus")).isEqualTo("STARTED");
+        assertThatThrownBy(() -> journal.finish(table(0), pid, started, false))
+                .hasMessageContaining("cannot be recorded");
+        journal.stop();
+        assertThatThrownBy(() -> journal.finish(table(0), pid, started, false))
+                .hasMessageContaining("cannot be recorded");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
     }
 
     @Test

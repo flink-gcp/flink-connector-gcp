@@ -155,7 +155,7 @@ Its host-time accounting requires the future supervisor to enforce the emitted b
 
 The proposed table lifecycle keeps six new measurement tables for one cell until readback and physical-storage evidence are retained, then deletes and verifies all six before admitting the next cell.
 Together with the trial's sample table this requires at most seven tables, conditional on a preflight rejecting any other table inventory.
-The trial instance survives matrix-lease cleanup and is deleted only when the entire campaign completes, fails or is abandoned.
+The trial instance survives matrix-lease cleanup and is deleted only when the entire campaign completes, or when the owner decides so after a stop; the tracked `Stage2CampaignSupervisor.cleanup` path still deletes it on any stop and is not used by the lean controller recorded in [ADR-0166](../0166-bigtable-implementation-precedes-final-stage2-acceptance.md#lean-execution-and-recorded-failures-2026-09-19).
 These are the lifecycle requirements recorded by the plan; resource ownership checks, durable admission and outcome journaling, worker dispatch, supervision and cleanup adapters are still required before service execution.
 
 ## Remaining service admission conditions
@@ -163,7 +163,7 @@ These are the lifecycle requirements recorded by the plan; resource ownership ch
 The production instrument must be reviewed and merged before final measurement; the #1319 service work and its resource cleanup finished on 2026-09-14, before this campaign starts.
 Freeze source SHA, Linux runtime classpath or image digest, resource identities, exact commands, table/family names, worker leases, operations/storage limits and the cost reservation together.
 Prepare independent supervision and loss-of-resource handling, and validate the retained-instance lifecycle before using the one-time trial.
-A failure, empty or censored row, interruption or exhausted reservation stops execution without automatic retries, recreation, extension or capacity increases.
+A failed, empty or censored row is recorded and the next preregistered run proceeds; an interruption, lost supervision, ownership loss or an outcome that cannot be recorded stops execution. Nothing is retried, recreated, extended or given more capacity.
 
 The retained result must include the full matrix and sustained hot-row phase, physical Bigtable storage after metrics settle, checkpoint storage, heap/GC, serialization/restore allocation, service metrics and complete notification occupancy.
 Logical marker bytes do not establish physical storage or billing.
@@ -202,7 +202,8 @@ These controller callbacks are trusted orchestration boundaries: the journal doe
 It requires an already activated and supervised journal; an offline plan alone cannot invoke service clients.
 The retained-campaign guard and a legacy-lease adapter share the existing measurement path without changing the legacy instance lifecycle.
 The worker publishes an observation only after drain, readback and sample preservation succeed and the observation is nonempty and uncensored.
-A failed or censored worker stops the campaign, and an observation remains a measurement rather than a throughput/latency acceptance verdict.
+A failed, empty or censored worker is recorded as `FAILED` in its `run-N.properties` and the campaign proceeds to the next preregistered run; the failed run is never repeated, and only an interruption or a failure to record the outcome stops the campaign; a late failure is recordable after the worker deadline until the next heartbeat observes the expired worker, so `runOverheadSeconds` must cover the failure path ([owner decision of 2026-09-19](../0166-bigtable-implementation-precedes-final-stage2-acceptance.md#lean-execution-and-recorded-failures-2026-09-19)).
+An observation remains a measurement rather than a throughput/latency acceptance verdict, and a cell with a failed repetition cannot pass.
 
 `Stage2TrialResources` provides the control-plane adapter, with a bounded response body and HTTP request completion deadline.
 Credential acquisition and refresh occur outside that HTTP timeout; the execution package must also bound the control-plane process through independent supervision.
@@ -266,7 +267,7 @@ This upper bound is a capability, not the selected service duration or a complet
 `service-auxiliary campaign-directory serialized|sustained` claims one fresh, separately budgeted worker with the exact frozen JVM flags.
 The controller and supervisor cannot claim that worker identity.
 The existing supervisor sees its PID/start instant and deadline in the same active state, so terminal cleanup retains controller-before-worker termination and ownership-checked instance deletion.
-A failed, empty or censored auxiliary observation stops the whole campaign and cannot be retried or substituted by a matrix outcome.
+A failed, empty or censored auxiliary observation is recorded as `FAILED`, retained and cleaned up like a successful one so the next phase remains admissible; it cannot be retried or substituted by a matrix outcome.
 
 Each phase uses one fresh table (`stage2-serialized` or `stage2-sustained`) plus `weather-data`.
 The resource adapter verifies exact inventory before creation and deletion and uses the same data and raw marker families as the matrix.

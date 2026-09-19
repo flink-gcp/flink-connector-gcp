@@ -160,8 +160,8 @@ class Stage2AuxiliaryJournalTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void failedOrCensoredAuxiliaryWorkerStopsTheWholeCampaign(boolean throwsFailure)
-            throws Exception {
+    void failedOrCensoredAuxiliaryWorkerIsRecordedAndTheNextPhaseRemainsAdmissible(
+            boolean throwsFailure) throws Exception {
         var journal = Stage2AuxiliaryTestPlan.active(directory);
         journal.prepareAuxiliary("serialized");
         journal.tablesReady();
@@ -180,12 +180,27 @@ class Stage2AuxiliaryJournalTest {
                                             }
                                             return false;
                                         }))
-                .isInstanceOf(java.io.IOException.class);
-        assertThat(journal.read().getProperty("phase")).isEqualTo("STOPPED");
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining(throwsFailure ? "observation failed" : "empty or censored");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("RETAINING");
+        assertThat(journal.read().getProperty("runStatus")).isEqualTo("FAILED");
+        assertThat(journal.read().getProperty("failedRuns")).isEqualTo("1");
         assertThat(journal.read().getProperty("nextRun")).isEqualTo("648");
+        assertThat(
+                        java.nio.file.Files.readString(
+                                journal.directory.resolve("auxiliary-serialized-run.properties")))
+                .contains("runStatus=FAILED")
+                .contains("workerTable=stage2-serialized");
         assertThat(journal.directory.resolve("auxiliary-serialized-evidence.properties"))
                 .doesNotExist();
-        assertThatThrownBy(() -> journal.prepareCell(0)).hasMessageContaining("stopped");
+        // The failed phase is retained like a successful one; the next phase stays admissible
+        // and the failed one is never repeated.
+        journal.auxiliaryCleaned("serialized", "a".repeat(64));
+        assertThat(journal.read().getProperty("phase")).isEqualTo("AUXILIARY_READY");
+        assertThatThrownBy(() -> journal.prepareAuxiliary("serialized"))
+                .hasMessageContaining("repeated or out of order");
+        journal.prepareAuxiliary("sustained");
+        assertThat(journal.read().getProperty("phase")).isEqualTo("PREPARING");
     }
 
     @Test

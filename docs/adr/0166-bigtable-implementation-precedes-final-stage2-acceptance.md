@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0166: Bigtable implementation precedes final Stage 2 acceptance
 
 - Status: Accepted
-- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14)
+- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19
 - Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319), [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327)
 - Supersedes: only the implementation-start ordering in ADR-0104 and ADR-0163 for Bigtable staged writes
 - Modules: bigtable
@@ -74,6 +74,7 @@ An earlier estimate below USD 2 is not confirmed billing or a new allowance.
 Before any service creation, reconcile billed usage, a conservative allowance for unbilled usage and outstanding reservations using current prices, and prove room for the proposed reservation.
 Freeze reviewed source, classpath, resource identities, exact commands and targets before executing an approved service plan on the local host with a fresh lease and independent supervision.
 Stop on disappeared resources, failed, censored or empty observations, or exhausted limits; delete only exactly owned resources and verify their absence.
+For the retained-trial Stage 2 campaign, the [2026-09-19 refinement](#lean-execution-and-recorded-failures-2026-09-19) records a failed, censored or empty observation and proceeds to the next preregistered run instead of stopping.
 Missing financial evidence blocks charging, not local implementation.
 
 The next completion evidence must come from the implemented mode and both API entry points.
@@ -119,3 +120,15 @@ The [production preparation record](evidence/0163-bigtable-production-stage2-pre
 For that assessment, the owner selected an additional USD 20 ceiling, separate from the existing #1319 allowance, and minimum spending with the original protocol preserved.
 The preferred execution uses one retained Bigtable free trial instance and regular GCE compute in `us-central1`, subject to verified trial eligibility, host calibration and a reviewed lifecycle that owns the retained instance across bounded worker leases.
 The current per-instance lease cannot provide that lifecycle; the preparation records no service measurement or support verdict.
+
+## Lean execution and recorded failures (2026-09-19)
+
+The owner decided on 2026-09-19 to run the assessment without the external execution package prepared between 2026-09-14 and 2026-09-19, which had grown an independent owner host, SSH control channel, prepaid transfer ledgers, kernel wire quotas and a per-cell calibration matrix without ever creating a resource.
+The protocol, its 108 cells, three repetitions, periods, thresholds and variability rule are unchanged; only execution rules change, so this is a refinement.
+
+- One regular `e2-standard-4` host in `us-central1-b` runs the campaign, with a Compute Engine maximum run duration and `DELETE` termination action as the host deadline; there is no second host.
+- The controller is temporary automation kept outside tracked source; it only sequences the merged journal, trial adapter, workers and Monitoring capture, and its source is attached to the assessment record.
+- Calibration is the protocol's minimum: one no-service observation per arm against a 100 ms slower control, plus one largest-cell observation to freeze heap and capacity inputs.
+- A failed, empty or censored run is recorded as `FAILED` and the campaign proceeds to the next preregistered run without repeating it; the earlier stop-on-first-failure rule would have left most cells unmeasured after a checkpoint-timeout failure. A failure may be recorded after the worker's deadline, because a late checkpoint timeout is the expected failure, but only until the next supervisor heartbeat observes the expired worker; the run reservation (`runOverheadSeconds`) must therefore cover the whole failure path of checkpoint timeout, drain limit and JVM teardown, and the lean campaign reserves 300 seconds per run. The journal counts recorded failures in `failedRuns`, so a completed campaign whose runs all failed is visibly not a measured one. Ownership loss, expired supervision, an interrupted observation or an outcome that cannot be recorded still stops the campaign.
+- On a stop, the lean controller's supervisor preserves the free trial instance for the owner's decision instead of deleting it, because the trial cannot be recreated; a completed campaign still deletes it and verifies absence. The tracked `Stage2CampaignSupervisor.cleanup` path, which deletes the instance on every stop, is unchanged and is not used by that controller.
+- The owner also decided to judge the result under the unchanged latency criterion and to record the resulting verdict, expected to be a decline for most cells because staged visibility includes checkpoint waiting; a criterion change remains a separate decision with its own amending ADR.
