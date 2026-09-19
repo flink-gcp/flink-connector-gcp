@@ -80,6 +80,12 @@ final class MeasurementReceipts {
                                 + terminal.limitReached()
                                 + ",\"client_close_failed\":"
                                 + terminal.clientCloseFailed()
+                                + ",\"rows_exported\":"
+                                + terminal.rowsExported()
+                                + ",\"parts_closed\":"
+                                + terminal.partsClosed()
+                                + ",\"rows_flush_failed\":"
+                                + terminal.rowsFlushFailed()
                                 + ",\"complete\":"
                                 + terminal.complete()
                                 + ",\"wall_millis\":"

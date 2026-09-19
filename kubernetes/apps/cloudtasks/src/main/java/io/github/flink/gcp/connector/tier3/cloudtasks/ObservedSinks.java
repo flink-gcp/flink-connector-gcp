@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
 import java.io.IOException;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** Uses existing runtime injection seams without replacing the writer or committer. */
 @Internal
@@ -48,25 +49,39 @@ final class ObservedSinks {
     }
 
     static TaskCreator observe(
-            TaskCreator creator, MeasurementOptions options, MeasurementReceipts.Output output)
+            TaskCreator creator, MeasurementOptions options, MeasurementReceipts.Output receipts)
+            throws IOException {
+        return observe(creator, options, receipts, incarnation -> rows(options, incarnation));
+    }
+
+    /** Window mode exports rows to storage beside the receipts; record-count mode prints them. */
+    static ObservationLog.Output rows(MeasurementOptions options, UUID incarnation) {
+        return options.windowed()
+                ? RowsOutput.storage(options.rowsPrefix(), incarnation, System::nanoTime)
+                : ObservationLog.Output.stdout();
+    }
+
+    static TaskCreator observe(
+            TaskCreator creator,
+            MeasurementOptions options,
+            MeasurementReceipts.Output receipts,
+            Function<UUID, ObservationLog.Output> rows)
             throws IOException {
         UUID incarnation = UUID.randomUUID();
         Consumer<ObservedTaskCreator.Terminal> terminal = ignored -> {};
+        ObservationLog log;
         try {
             if (options.windowed()) {
-                terminal = MeasurementReceipts.creator(options, incarnation, output);
+                terminal = MeasurementReceipts.creator(options, incarnation, receipts);
             }
+            log = new ObservationLog(options, incarnation, rows.apply(incarnation));
         } catch (Throwable failure) {
             Closers.closeAllSuppressing(failure, creator);
             throw failure;
         }
         TaskCreator observed =
                 new ObservedTaskCreator(
-                        creator,
-                        new ObservationLog(options, incarnation),
-                        System::nanoTime,
-                        options.attemptLimit,
-                        terminal);
+                        creator, log, System::nanoTime, options.attemptLimit, terminal);
         return options.arm == MeasurementOptions.Arm.NAMED_RANDOM_CONTROL
                 ? new RandomNameControl(observed)
                 : observed;

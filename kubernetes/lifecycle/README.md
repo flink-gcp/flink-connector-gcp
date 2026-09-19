@@ -38,6 +38,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
 | `flink_tier3/exercise.py` | One savepoint upgrade, one JM Pod deletion and phase-specific recovery evidence |
+| `flink_tier3/cloudtasks.py` | Cloud Tasks queue ownership, campaign ledger, session files and cell manifest checks |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The fixed approval phrase and existing ceiling values remain unchanged.
@@ -68,6 +69,8 @@ For the recovery exercise, also pass `-f scenario=generic-recovery`.
 This authorizes one savepoint upgrade and one deletion of the owned JobManager Pod within that run; another trial requires a new approval and run ID.
 Ordinary smoke approvals retain version 1, while recovery approvals use version 2 and pin the recovery policy and both application manifests.
 Recovery tooling can settle either version; it never resumes the exercise or repeats an injected disruption.
+
+A Cloud Tasks measurement session is the third scenario; its dispatch, ceilings and queue lifecycle are in [Cloud Tasks session](#cloud-tasks-session) below.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -196,6 +199,72 @@ Before approving dispatch, verify the three applied infrastructure roots and the
 Do not merge infrastructure changes while the run holds the shared lock.
 This implementation prepares [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311); it supplies no GKE execution result by itself.
 
+## Cloud Tasks session
+
+A `cloudtasks` dispatch admits one measurement session for [issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246): an ordered list of cells from a reviewed session file, executed one FlinkDeployment at a time in `tier3-cloudtasks`.
+The workflow input must contain `APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES` verbatim, and the dispatch names `session` (a file under [sessions/](sessions/) without its `.toml` suffix), `flink_version` (`2.2.1` or `1.20.4`) and `application_digest` (the published `sha256:` digest of that line's measurement application package).
+Expiry must cover the session plan plus 15 minutes of cleanup and lie within ten minutes of that sum, at most 300 minutes ahead; the plan is the sum over cells of ten minutes of startup, the nominal input window and three minutes of teardown.
+After obtaining that separate execution approval and a published digest, dispatch with the approved values:
+
+```sh
+gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
+  -f scenario=cloudtasks -f session=APPROVED_SESSION_NAME \
+  -f flink_version=2.2.1 -f application_digest=sha256:PUBLISHED_DIGEST \
+  -f run_id=APPROVED_RUN_ID -f reviewed_sha=APPROVED_MAIN_SHA \
+  -f expires_at=APPROVED_UTC_EXPIRY \
+  -f 'approval=APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
+```
+
+The application digest is verified live against Artifact Registry with the same 24-hour retention margin as the other images; it is never pinned in `images/pins.cue`, and a digest for the wrong line's package is refused.
+Merging this implementation authorizes no dispatch, and no application image has been published for it yet.
+
+| Budget | Ceiling or stop condition |
+| --- | --- |
+| Duration | Absolute expiry within 300 minutes; begin cleanup 15 minutes before it |
+| Cells | At most 20 per session, each with a unique ID that is not `running` or `completed` in the campaign ledger |
+| Pods | Four total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system` |
+| Task creations | Planning bound over the session: each cell's per-creator attempt limit times its subtasks times the four incarnations one JobMaster's fixed-delay strategy allows, at most 12,000,000; the expected count is the cells' record totals, and an attempt limit must at least cover the busiest creator's records (all of them at parallelism 1, nine tenths under skew, an even share otherwise) |
+| Queue administration | At most six queue writes per actor (create, pause and delete are the only ones issued, none retried); zero dispatches, checked on every poll |
+| Reads | At most 60,000 metered Cloud Tasks and Flink REST reads per actor; storage listings stay bounded by their per-call maxima and the evidence budgets |
+| State | Stop on observed checkpoint state above 1 GiB or 20,000 objects under the current cell |
+| Logs | Stop collecting at 100 MiB; a truncated read is recorded, not fatal, because evidence rows travel through storage |
+| Durable evidence | 4 GiB per session for the later export; supervisor receipts 256 MiB, runner receipts 32 MiB |
+| Incremental cost approval | USD 10 per session, covering compute at the policy rates, the task-creation planning bound at USD 0.40 per million and a USD 0.25 reserve |
+
+The TaskManager shape follows the cell's parallelism class: 1 CPU/4 GiB for parallelism 1, 2 CPU/8 GiB for 4 and 4 CPU/16 GiB for 16, each with one slot per parallel subtask; the JobManager is 1 CPU/2 GiB.
+Flink Pods select Spot; the session quota admits two Pods sized for the largest approved class.
+The approval embeds the session ceilings and shapes byte for byte from `policy.toml`, the queue name, the target URL, the Flink line and every cell with the SHA-256 of its rendered manifest.
+
+The runner creates `projects/flink-gcp/locations/us-central1/queues/ct1246-RUN_ID` only after a read proves it absent, with its rate limits, retry configuration and one-hour tombstone in the create request, then pauses it and reads back `PAUSED`, the submitted configuration and zero dispatch statistics.
+Project IAM does not restrict the queue prefix, so the client is bound to that exact name and refuses any other.
+A name the service still tombstones fails either the create or the readback that follows, and with it the run; the name is never changed or retried, and unique run IDs keep the runtime from tombstoning its own names.
+The supervisor re-reads the queue on every poll and stops the session on any state change or nonzero dispatch count.
+Cleanup pauses and deletes the queue and proves it absent; a remaining queue blocks the idle receipt and retains the environment lock.
+Cleanup touches the name only after this run persisted its intent to create it; a run refused because the name already existed leaves that queue alone and records `queue-retained-unowned` when one is present.
+A JobManager failover resets the restart budget the creation bound assumes, so the bound is a planning figure: the cell deadline and the paused queue, not the bound, cap what a misbehaving cell can spend.
+
+Each cell is a rendered FlinkDeployment named after the cell, with the approval nonce, scenario and cell annotations, the measurement application's arguments in a fixed order and checkpoint state under `gs://flink-gcp-cloudtasks-benchmark/runs/RUN_ID/cells/CELL_ID/state/`.
+The CLI validates the session file's cell vocabulary before rendering, and the CUE delivery refuses duplicate IDs and unknown keys on its output path because the pinned CUE evaluator does not report closedness errors away from that path.
+The supervisor verifies every delivered manifest against the approval before touching the cluster, then for each cell in order: rechecks the queue, claims the cell in the campaign ledger, persists the creation intent, creates the deployment, observes it through its owner-verified REST Service until `FINISHED`, a terminal state or the cell deadline, deletes it, waits for its Pods and HA metadata to disappear, and deletes the cell's checkpoint state.
+The cell deadline allows ten minutes of startup, four nominal input windows and three minutes of teardown, so an arm that sustains a quarter of the offered rate still finishes its finite input.
+A cell whose job fails or exceeds its deadline is recorded as `failed` and the session continues; a cell whose budget no longer fits before cleanup is recorded as `skipped` and never started.
+A queue deviation, evidence failure, stop request or lost workload ends the session immediately, and cleanup marks the running cell `interrupted`.
+Cleanup checks the persisted cell intent against the inventory on every pass and adopts a deployment that landed after the stop when its nonce and approved manifest match, so a create in flight at the moment of the stop is still removed; the runner's cleanup also waits for such an intent while the supervisor Job is still active, up to the force window.
+When the approved manifest cannot be read, the object is neither adopted nor deleted; it is reported as `cell-adoption-refused` and the idle check then retains the lock for an operator.
+The first cell is credited with the time since the approval's start, up to its startup allowance, so a session approved with the minimum window still runs it.
+The session succeeds only when every approved cell completed.
+
+The campaign ledger `_control/campaigns/CAMPAIGN.json` records each cell's status, run, nonce, attempt count and reason across sessions.
+`completed` records that the cell's job finished and its workload was removed; whether its rows and receipts are complete is the evidence collector's later verdict, which never reopens the ledger entry.
+Admission refuses a session whose cells are already `completed` or `running`; a `failed` or `interrupted` cell can be claimed again by a later reviewed session, and the attempt count records that repetition.
+A cell cut short by the session's cleanup deadline rather than its own is recorded as `failed` with the reason `session window`.
+A queue read that fails transiently is recorded as `queue-read-unavailable`; the third consecutive failure stops the session, and any readback that shows a resumed or dispatching queue stops it at once.
+Mutable control records are outside automatic expiry; the ledger is the durable record that a cell already ran.
+
+Evidence under `runs/RUN_ID/` additionally holds `session.json`, `application.json` as the array of cell manifests, `queue-admitted`, `queue-deviation`, `queue-deleted`, `cell-start`, `cell-status`, `cell-finished` and `cell-skipped` receipts, and a final receipt with the campaign, queue readback, per-cell outcomes, each actor's operation counters and `exported: false`.
+The measurement application writes its rows and receipts under the same benchmark run prefix as the checkpoint state; cleanup deletes only `state/` and records what remains as `benchmark-evidence-retained`.
+That bucket expires objects after one day, so the evidence collector must run inside the same workflow execution before the prefix is released; until it exists, a session's rows are preserved only for that day and the final receipt says so.
+
 ## SDK transport
 
 The shared Python runtime uses the official Kubernetes client, google-cloud-storage and google-auth.
@@ -321,4 +390,6 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 
 This prints JSON resources for inspection; its synthetic inputs do not authorize admission.
 Add `--scenario generic-recovery` to render the recovery payload and both manifests.
+For a Cloud Tasks session, add `--scenario cloudtasks --cells-file kubernetes/lifecycle/sessions/example-wiring.toml --application-image IMAGE` with a digest-form image reference; `--expression cellManifests` prints the per-cell manifests instead of the supervisor bundle.
+A synthetic digest renders locally but never passes the live registry check that admission performs.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.

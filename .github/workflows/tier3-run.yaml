@@ -6,13 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Normal completion, or one savepoint upgrade and one JM Pod deletion'
+        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, or one Cloud Tasks measurement session'
         required: true
         type: choice
         default: smoke
         options:
           - smoke
           - generic-recovery
+          - cloudtasks
       run_id:
         description: 'Unique lowercase run ID (at most 40 characters)'
         required: true
@@ -22,13 +23,31 @@ on:
         required: true
         type: string
       expires_at:
-        description: 'UTC expiry ending in Z, 55 to 60 minutes ahead'
+        description: 'UTC expiry ending in Z: 55 to 60 minutes ahead for smoke/generic-recovery; session plan plus 15 minutes, at most 300 minutes, for cloudtasks'
         required: true
         type: string
       approval:
-        description: 'Type APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1'
+        description: 'Type APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1, or APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
         required: true
         type: string
+      session:
+        description: 'Cloud Tasks only: session file name under kubernetes/lifecycle/sessions, without .toml'
+        required: false
+        type: string
+        default: ''
+      flink_version:
+        description: 'Cloud Tasks only: runtime line; selects the published application package'
+        required: false
+        type: choice
+        default: '2.2.1'
+        options:
+          - '2.2.1'
+          - '1.20.4'
+      application_digest:
+        description: 'Cloud Tasks only: published sha256:... digest of the selected application package; verified live, never pinned'
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 concurrency:
@@ -39,7 +58,7 @@ jobs:
   lifecycle:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 85
+    timeout-minutes: ${{ inputs.scenario == 'cloudtasks' && 360 || 85 }}
     permissions:
       contents: read
       actions: read
@@ -70,10 +89,16 @@ jobs:
           EXPIRES_AT: ${{ inputs.expires_at }}
           APPROVAL: ${{ inputs.approval }}
           SCENARIO: ${{ inputs.scenario }}
-        run: >-
-          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
-          --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig"
-          start --run-id "$RUN_ID" --sha "$REVIEWED_SHA" --expires-at "$EXPIRES_AT" --approve "$APPROVAL" --scenario "$SCENARIO"
+          SESSION: ${{ inputs.session }}
+          FLINK_VERSION: ${{ inputs.flink_version }}
+          APPLICATION_DIGEST: ${{ inputs.application_digest }}
+        run: |
+          start=(start --run-id "$RUN_ID" --sha "$REVIEWED_SHA" --expires-at "$EXPIRES_AT" --approve "$APPROVAL" --scenario "$SCENARIO")
+          if [ "$SCENARIO" = cloudtasks ]; then
+            start+=(--session "$SESSION" --flink-version "$FLINK_VERSION" --application-digest "$APPLICATION_DIGEST")
+          fi
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle \
+            --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" "${start[@]}"
       - name: Authenticate for read-only infrastructure verification
         if: ${{ !cancelled() && steps.lifecycle.outputs.idle == 'true' }}
         id: plan-auth

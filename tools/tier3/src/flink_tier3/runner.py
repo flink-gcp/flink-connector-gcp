@@ -15,7 +15,8 @@
 
 import flink_tier3 as rt
 
-from .policy import RECOVERY
+from .cloudtasks import admit_queue
+from .policy import CLOUDTASKS_POLICY, RECOVERY
 
 
 class Runner:
@@ -23,6 +24,14 @@ class Runner:
         self.env = env
         self.env.actor = "runner"
         self.cleanup = rt.Cleanup(env)
+
+    @property
+    def cloudtasks(self):
+        return self.env.approval.scenario == "cloudtasks"
+
+    @property
+    def namespace(self):
+        return self.env.approval.application_namespace
 
     def admission_open(self):
         self.env.admission_open()
@@ -32,6 +41,14 @@ class Runner:
             >= self.env.schedule.started + RECOVERY["startup_seconds"]
         ):
             raise rt.Failure("Recovery scenario startup deadline expired")
+        # Admission may spend at most one cell's startup allowance, so the
+        # first cell keeps the budget the session plan reserved for it.
+        if (
+            self.cloudtasks
+            and self.env.clock()
+            >= self.env.schedule.started + CLOUDTASKS_POLICY["cell_startup_seconds"]
+        ):
+            raise rt.Failure("Session admission deadline expired")
 
     def create_application(self, application):
         if rt.digest(application) != self.env.approval.application_sha256:
@@ -151,8 +168,15 @@ class Runner:
             operator_ready, self.env.schedule.readiness_until(self.env.clock())
         )
         self.admission_open()
-        self.cleanup.quota(rt.SMOKE, "run")
-        self.create_application(application)
+        if self.cloudtasks:
+            self.cleanup.quota(self.namespace, "session")
+            self.admission_open()
+            self.env.ledger.admit(self.env.approval.cell_ids)
+            admit_queue(self.env)
+            self.env.records.operations("runner", self.env.queues.meter.snapshot())
+        else:
+            self.cleanup.quota(rt.SMOKE, "run")
+            self.create_application(application)
         self.admission_open()
         self.env.records.set_phase(rt.Phase.RUNNING)
 
@@ -202,6 +226,10 @@ class Runner:
             if not application:
                 raise rt.Failure("Missing immutable application intent")
             self.adopt_application(application)
+        if control.cell_intent and "cell:" + control.cell_intent["cell"] not in (
+            self.env.roots
+        ):
+            self.cleanup.adopt_intended_cell(self.cleanup.inventory())
         # Reconcile actual state even after an earlier actor recorded cleanup.
         # A cleaned record alone is not a current idle observation.
         self.cleanup.run("external settlement", control.success)
@@ -275,9 +303,11 @@ class Runner:
         self.env.wait(
             idle_observed, self.env.clock() + self.env.schedule.post_cleanup_grace
         )
-        if self.env.store.objects(f"runs/{self.env.approval.run_id}/", rt.STATE):
+        if self.cleanup.remaining_state():
             raise rt.Failure("Run state remains after cleanup")
         self.env.emit("idle", snapshot)
+        if self.cloudtasks:
+            self.env.records.operations("runner", self.env.queues.meter.snapshot())
         self.env.records.settled(self.env.evidence_failed)
 
     def temporary_gone(self):
@@ -295,8 +325,9 @@ class Runner:
         ):
             raise rt.Failure("All three refreshed empty plans are required")
         rt.verify_idle(self.env)
-        if self.env.store.objects(f"runs/{self.env.approval.run_id}/", rt.STATE):
+        if self.cleanup.remaining_state():
             raise rt.Failure("Run state reappeared")
+        cells = control.cells
         result = {
             "nonce": self.env.approval.nonce,
             "sha": self.env.approval.sha,
@@ -308,6 +339,11 @@ class Runner:
                 and not self.env.evidence_failed
                 and (
                     self.env.approval.scenario == "smoke"
+                    or (
+                        self.cloudtasks
+                        and set(cells) == set(self.env.approval.cell_ids)
+                        and all(c.get("status") == "completed" for c in cells.values())
+                    )
                     or (control.recovery or {}).get("stage") == "complete"
                 )
             ),
@@ -315,6 +351,17 @@ class Runner:
         if self.env.approval.scenario == "generic-recovery":
             result.update(
                 scenario=self.env.approval.scenario, recovery=control.recovery
+            )
+        if self.cloudtasks:
+            result.update(
+                scenario=self.env.approval.scenario,
+                campaign=self.env.approval.campaign,
+                flink_version=self.env.approval.flink_version,
+                queue={"name": self.env.approval.queue, "admitted": control.queue},
+                cells=cells,
+                operations=control.operations,
+                benchmark_evidence_retained=self.cleanup.retained_evidence(),
+                exported=False,
             )
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)

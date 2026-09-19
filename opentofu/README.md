@@ -156,7 +156,7 @@ Adding a different identity to the shared lifecycle registry does not extend the
 Both receive custom roles with `cloudtasks.queues.get/pause/delete` and `cloudtasks.tasks.get/list`; only the runner also receives `cloudtasks.queues.create`.
 These roles omit queue resume/update/purge/IAM changes and task creation/deletion/run/fullView.
 The bindings are project-wide: IAM does not restrict them to the `ct1246-` prefix or an active run.
-The runtime must enforce exact queue names and run ownership, configure a queue at creation, then pause it and verify that state before admitting task creation.
+The [lifecycle runtime](../kubernetes/lifecycle/README.md#cloud-tasks-session) therefore binds its client to the one queue named after the approved run, creates it with its full configuration only after a read proves it absent, pauses it, reads back the paused state and zero dispatch counts before admitting a cell, re-reads it on every poll, and deletes it during cleanup.
 
 Each identity also receives Object Viewer on `flink-gcp-cloudtasks-benchmark` and Object User conditional on object names under `runs/`.
 Listing and reads cover the whole bucket; writes and deletes cover every run prefix, not just the current run.
@@ -167,8 +167,8 @@ This permits administration of project custom roles beyond these two names; it d
 The GCP plan should add nine resources: two custom roles, two project bindings, four bucket bindings and the apply identity's Role Admin binding.
 The Operator plan should update the idle Helm release in place, adding a Role/RoleBinding in `tier3-cloudtasks` while preserving zero replicas and all idle quotas.
 Review the actual CI plans and rendered chart before merge.
-After merge, require successful apply, idle verification and empty refreshed plans before implementing the dependent admission path.
-No queue, workload or paid measurement is admitted by these grants; execution still requires separate numeric resource and cost approval.
+The dependent admission path was implemented after that apply, idle verification and empty refreshed plans.
+No queue, workload or paid measurement is admitted by these grants; execution still requires the session approval phrase, a published application digest and the separately approved cell list.
 
 ### Operator installation follows the cluster
 

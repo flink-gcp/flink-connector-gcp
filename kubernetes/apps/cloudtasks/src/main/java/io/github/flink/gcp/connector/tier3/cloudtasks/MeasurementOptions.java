@@ -220,6 +220,10 @@ final class MeasurementOptions implements Serializable {
                 + "/receipts/";
     }
 
+    String rowsPrefix() {
+        return "gs://flink-gcp-cloudtasks-benchmark/runs/" + runId + "/cells/" + cellId + "/rows/";
+    }
+
     static MeasurementOptions parse(String... args) {
         if (args.length % 2 != 0) {
             throw new IllegalArgumentException("Expected --name value pairs");

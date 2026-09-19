@@ -22,7 +22,21 @@ import uuid
 
 from .common import ApiError, Failure, json_bytes, utc
 from .model import Phase, RunRecord
-from .policy import ENVIRONMENT, MIB
+from .policy import CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
+
+
+def conditional_update(store, path, read, edit, serialize=lambda value: value):
+    """Read, edit and write back one object, retrying a lost generation race."""
+    for _ in range(5):
+        value, generation = read()
+        edit(value)
+        try:
+            store.write(path, serialize(value), generation)
+            return value
+        except ApiError as error:
+            if error.status not in (409, 412):
+                raise
+    raise Failure("Concurrent control updates did not settle")
 
 
 class Records:
@@ -39,17 +53,11 @@ class Records:
         return self.cache, generation
 
     def _change(self, edit):
-        for _ in range(5):
-            record, generation = self.read()
-            edit(record)
-            try:
-                self.store.write(self.path, record.to_dict(), generation)
-                self.cache = record
-                return record
-            except ApiError as error:
-                if error.status not in (409, 412):
-                    raise
-        raise Failure("Concurrent run control updates did not settle")
+        record = conditional_update(
+            self.store, self.path, self.read, edit, lambda record: record.to_dict()
+        )
+        self.cache = record
+        return record
 
     @staticmethod
     def _remember(current, additions):
@@ -117,16 +125,43 @@ class Records:
 
         return self._change(edit)
 
-    def heartbeat(self):
+    def heartbeat(self, operations=None):
+        def edit(record):
+            record.heartbeat = utc(self.clock())
+            if operations is not None:
+                record.operations["supervisor"] = dict(operations)
+
+        return self._change(edit)
+
+    def operations(self, actor, snapshot):
         return self._change(
-            lambda record: setattr(record, "heartbeat", utc(self.clock()))
+            lambda record: record.operations.__setitem__(actor, dict(snapshot))
         )
+
+    def set_queue(self, readback):
+        def edit(record):
+            if record.queue is not None:
+                raise Failure("Queue admission was already recorded")
+            record.queue = copy.deepcopy(readback)
+
+        return self._change(edit)
+
+    def cell_done(self, cell_id, status, reason, operations=None):
+        def edit(record):
+            record.cells[cell_id] = {"status": status, "reason": reason}
+            record.cell_intent = None
+            if operations is not None:
+                record.operations["supervisor"] = dict(operations)
+
+        return self._change(edit)
 
     def intend(self, key, manifest=True):
         fields = {
             "application": "application_intent",
             "config": "config_intent",
             "supervisor": "supervisor_intent",
+            "cell": "cell_intent",
+            "queue": "queue_intent",
         }
 
         def edit(record):
@@ -134,6 +169,7 @@ class Records:
                 record.evidence_failed
                 or record.stop_requested
                 or record.phase in (Phase.CLEANING, Phase.CLEANED)
+                or (key == "cell" and record.phase != Phase.RUNNING)
             ):
                 raise Failure("Run admission has been stopped")
             setattr(record, fields[key], copy.deepcopy(manifest))
@@ -170,7 +206,10 @@ class Records:
 
     def evidence(self, event, payload, actor="supervisor"):
         prefix = f"runs/{self.approval.run_id}/{actor}/"
-        budget = (88 if actor == "supervisor" else 10) * MIB
+        if self.approval.scenario == "cloudtasks":
+            budget = CLOUDTASKS_CEILINGS["receipt_bytes_" + actor]
+        else:
+            budget = (88 if actor == "supervisor" else 10) * MIB
         objects = self.store.objects(prefix)
         data = {"event": event, "at": utc(self.clock()), "payload": payload}
         if sum(int(obj["size"]) for obj in objects) + len(json_bytes(data)) > budget:
