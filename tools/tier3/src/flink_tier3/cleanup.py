@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import copy
 
+from .cloudtasks import QUEUE_POLL_MASK, release_queue, transient
 from .common import (
     ApiError,
     Failure,
     IdlePending,
+    canonical_quantity,
+    contains,
+    digest,
     ha_metadata,
     ownership,
     quantity,
@@ -29,8 +33,31 @@ from .common import (
     verify_pod,
 )
 from .environment import retry_conflicts
-from .model import Phase
-from .policy import CEILINGS, OPERATOR, POD_RESOURCES, POLL, SMOKE, STATE, SYSTEM
+from .model import Phase, session_shapes, taskmanager_class
+from .policy import (
+    BENCHMARK,
+    CEILINGS,
+    CLOUDTASKS_CEILINGS,
+    NONCE,
+    OPERATOR,
+    POD_RESOURCES,
+    POLL,
+    STATE,
+    SYSTEM,
+)
+
+
+def session_resources(approval):
+    """Quota for one JobManager plus the largest approved TaskManager class."""
+    jobmanager, taskmanager = session_shapes(
+        approval.cells, approval.cloudtasks_pod_resources
+    )
+    return {
+        key: canonical_quantity(
+            quantity(jobmanager[key]) + quantity(taskmanager[key]), key
+        )
+        for key in ("cpu", "memory", "ephemeral-storage")
+    }
 
 
 class Cleanup:
@@ -39,6 +66,38 @@ class Cleanup:
     def __init__(self, env):
         self.env = env
         self.last_inventory = []
+        self.current_cell = None
+
+    @property
+    def cloudtasks(self):
+        return self.env.approval.scenario == "cloudtasks"
+
+    @property
+    def ceilings(self):
+        return CLOUDTASKS_CEILINGS if self.cloudtasks else CEILINGS
+
+    def application_keys(self):
+        return ["application"] + sorted(
+            key for key in self.env.roots if key.startswith("cell:")
+        )
+
+    def state_prefixes(self, cell_ids=None):
+        run_id = self.env.approval.run_id
+        if not self.cloudtasks:
+            return [(f"runs/{run_id}/", STATE)]
+        if cell_ids is None:
+            cell_ids = self.env.approval.cell_ids
+        return [
+            (f"runs/{run_id}/cells/{cell_id}/state/", BENCHMARK) for cell_id in cell_ids
+        ]
+
+    def remaining_state(self, cell_ids=None, maximum=None):
+        maximum = self.ceilings["state_objects"] if maximum is None else maximum
+        return [
+            (obj, bucket)
+            for prefix, bucket in self.state_prefixes(cell_ids)
+            for obj in self.env.store.objects(prefix, bucket, maximum)
+        ]
 
     @retry_conflicts
     def quota(self, namespace, admission):
@@ -50,15 +109,16 @@ class Cleanup:
         hard = copy.deepcopy(saved["hard"])
         if admission:
             pods = 1 if admission == "supervisor" else 2
-            resources = (
-                POD_RESOURCES["supervisor"]
-                if admission == "supervisor"
-                else {
+            if admission == "supervisor":
+                resources = POD_RESOURCES["supervisor"]
+            elif admission == "session":
+                resources = session_resources(self.env.approval)
+            else:
+                resources = {
                     "cpu": "1250m" if namespace == SYSTEM else "2",
                     "memory": "2560Mi" if namespace == SYSTEM else "4Gi",
                     "ephemeral-storage": "1152Mi" if namespace == SYSTEM else "2Gi",
                 }
-            )
             hard.update(
                 {
                     "pods": str(pods),
@@ -144,27 +204,48 @@ class Cleanup:
             items, {self.env.roots[key]["uid"] for key in keys if key in self.env.roots}
         )
 
+    def cell_shape(self, pod):
+        """Approved JobManager or TaskManager shape for a cell's Flink Pod."""
+        labels = pod["metadata"].get("labels", {})
+        cell = self.env.approval.cell(labels.get("app", ""))
+        shapes = self.env.approval.cloudtasks_pod_resources
+        component = labels.get("component")
+        if component == "jobmanager":
+            return shapes["jobmanager"]
+        if component == "taskmanager":
+            return shapes["taskmanager"][taskmanager_class(cell["parallelism"])]
+        raise Failure("Flink Pod lacks a recognised component label")
+
     def audit(self):
         items = self.inventory()
+        approval = self.env.approval
         groups = {
             "supervisor": self.owned(items, ["supervisor"]),
-            "smoke": self.owned(items, ["application"]),
-            "operator": ownership(items, {self.env.approval.operator_uid}),
+            "application": self.owned(items, self.application_keys()),
+            "operator": ownership(items, {approval.operator_uid}),
         }
+        images = {
+            "supervisor": approval.images["supervisor"],
+            "operator": approval.images["operator"],
+            "application": approval.images[
+                "application" if self.cloudtasks else "smoke"
+            ],
+        }
+        names = approval.cell_ids if self.cloudtasks else approval.run_id
         known = (
-            set(self.env.approval.baseline_uids)
+            set(approval.baseline_uids)
             | set().union(*groups.values())
             | {r["uid"] for r in self.env.roots.values()}
         )
         for obj in items:
             if obj["metadata"]["uid"] not in known and not ha_metadata(
-                obj, self.env.approval.run_id
+                obj, names, approval.application_namespace
             ):
                 raise Failure(
                     "Unexpected object outside the baseline and run ownership graph"
                 )
         pods = [obj for obj in items if obj["kind"] == "Pod"]
-        if len(pods) > CEILINGS["pods"] or any(
+        if len(pods) > self.ceilings["pods"] or any(
             obj["kind"] == "PersistentVolumeClaim" for obj in items
         ):
             raise Failure("Pod/PVC count ceiling exceeded")
@@ -175,24 +256,134 @@ class Cleanup:
             )
             if not role:
                 raise Failure("Pod lacks a verified owner UID")
-            verify_pod(pod, role, self.env.approval.images[role])
-        state = self.env.store.objects(
-            f"runs/{self.env.approval.run_id}/", STATE, CEILINGS["state_objects"]
-        )
-        if sum(int(obj["size"]) for obj in state) > CEILINGS["state_bytes"]:
+            expected = None
+            if role == "application":
+                expected = (
+                    self.cell_shape(pod) if self.cloudtasks else POD_RESOURCES["smoke"]
+                )
+            verify_pod(pod, role, images[role], expected)
+        cells = [self.current_cell] if self.cloudtasks else None
+        state = self.remaining_state([] if cells == [None] else cells)
+        if sum(int(obj["size"]) for obj, _ in state) > self.ceilings["state_bytes"]:
             raise Failure("State byte ceiling exceeded")
         return items, pods
 
-    def clean_state(self):
-        prefix = f"runs/{self.env.approval.run_id}/"
-        objects = self.env.store.objects(prefix, STATE, CEILINGS["state_objects"] + 1)
+    def clean_state(self, cell_ids=None):
+        objects = self.remaining_state(cell_ids, self.ceilings["state_objects"] + 1)
         state_deadline = self.env.clock() + self.env.schedule.state_cleanup_seconds
-        for obj in objects:
+        for obj, bucket in objects:
             if self.env.clock() >= state_deadline:
                 raise Failure("State cleanup deadline exceeded")
-            self.env.store.delete(obj["name"], obj["generation"], STATE)
-        if self.env.store.objects(prefix, STATE):
+            self.env.store.delete(obj["name"], obj["generation"], bucket)
+        if self.remaining_state(cell_ids):
             raise Failure("State prefix is not empty after generation-checked deletion")
+
+    def retained_evidence(self):
+        """Benchmark rows and receipts that remain for the later collector."""
+        run_id = self.env.approval.run_id
+        retained = {}
+        for cell_id in self.env.approval.cell_ids:
+            objects = self.env.store.objects(
+                f"runs/{run_id}/cells/{cell_id}/", BENCHMARK, 100000
+            )
+            if objects:
+                retained[cell_id] = {
+                    "objects": len(objects),
+                    "bytes": sum(int(obj["size"]) for obj in objects),
+                }
+        return retained
+
+    def approved_manifest(self, cell_id):
+        """The delivered manifest of a cell, from the immutable run evidence."""
+        try:
+            manifests, _ = self.env.store.read(
+                f"runs/{self.env.approval.run_id}/application.json"
+            )
+        except Failure:
+            return None
+        return next(
+            (m for m in manifests or [] if m["metadata"]["name"] == cell_id), None
+        )
+
+    def adopt_intended_cell(self, items, manifest=None):
+        """Adopt a cell the supervisor intended but never recorded, if it exists.
+
+        Uses the cached control record: intents cannot be written once a stop
+        or cleanup is recorded, so the record read at entry is current. Returns
+        the adopted object, or None. A same-named object with another nonce or
+        a spec outside the approved manifest is left alone and reported.
+        """
+        approval = self.env.approval
+        intent = self.env.records.cache.cell_intent
+        if not intent or "cell:" + intent["cell"] in self.env.roots:
+            return None
+        obj = next(
+            (
+                o
+                for o in items
+                if o["kind"] == "FlinkDeployment"
+                and o["metadata"]["namespace"] == approval.application_namespace
+                and o["metadata"]["name"] == intent["cell"]
+            ),
+            None,
+        )
+        if obj is None:
+            return None
+        manifest = manifest or self.approved_manifest(intent["cell"])
+        if (
+            obj["metadata"].get("annotations", {}).get(NONCE) != approval.nonce
+            or manifest is None
+            or digest(manifest) != intent["manifest_sha256"]
+            or not contains(obj["spec"], manifest["spec"])
+        ):
+            # Without the approved manifest the object cannot be verified, so
+            # it is neither adopted nor deleted; the idle check reports it.
+            self.env.emit(
+                "cell-adoption-refused",
+                {
+                    "cell": intent["cell"],
+                    "uid": obj["metadata"]["uid"],
+                    "manifest": manifest is not None,
+                },
+            )
+            return None
+        try:
+            self.env.remember("cell:" + intent["cell"], obj)
+        except Failure:
+            # The record could not be updated; the object is still ours to
+            # delete in this pass, and the runner's settlement adopts again.
+            self.env.evidence_failed = True
+        return obj
+
+    def intent_pending(self, items, intent, force_at):
+        """Whether the runner must wait for an intended cell to materialize.
+
+        The supervisor persisted a create intent, no matching object exists
+        yet, and the supervisor Job is still active: its create may still be
+        in flight, so the runner's cleanup does not declare the namespace
+        clear before the force window. The supervisor's own cleanup knows its
+        create outcome and never waits.
+        """
+        if (
+            not intent
+            or self.env.actor != "runner"
+            or "cell:" + intent["cell"] in self.env.roots
+            or self.env.clock() >= force_at
+        ):
+            return False
+        job = self.env.root("supervisor")
+        if not job:
+            return False
+        status = job.get("status", {})
+        finished = bool(
+            status.get("succeeded", 0)
+            or status.get("failed", 0)
+            or any(
+                c.get("status") == "True" and c.get("type") in ("Complete", "Failed")
+                for c in status.get("conditions", [])
+            )
+        )
+        return not finished
 
     def run(self, reason, success=False):
         self.env.namespaces()
@@ -207,60 +398,80 @@ class Cleanup:
         end, force_at = schedule.cleanup_end, schedule.force_at
         # Capture ownership before deleting any parent, and retain that graph
         # in mutable control storage for a later recovery process.
+        namespace = self.env.approval.application_namespace
         before = self.inventory()
-        known = ownership(
-            before,
-            {self.env.roots["application"]["uid"]}
-            if "application" in self.env.roots
-            else set(),
-        )
+        keys = [key for key in self.application_keys() if key in self.env.roots]
+        known = ownership(before, {self.env.roots[key]["uid"] for key in keys})
         known |= {
-            uid for uid, ref in self.env.observed.items() if ref["namespace"] == SMOKE
+            uid
+            for uid, ref in self.env.observed.items()
+            if ref["namespace"] == namespace
         }
-        app = self.env.root("application")
-        if app:
-            try:
-                self.env.kube.delete(app)
-            except Failure:
-                pass  # Retry during the bounded cleanup loop.
+        for key in keys:
+            app = self.env.root(key)
+            if app:
+                try:
+                    self.env.kube.delete(app)
+                except Failure:
+                    pass  # Retry during the bounded cleanup loop.
         # Keep the Operator running while it handles the FlinkDeployment's
         # finalizer. Observe descendants before GC can remove their parent.
         cleared = False
+        apps_extra = []
+        intent = self.env.records.cache.cell_intent if self.cloudtasks else None
+        manifest = self.approved_manifest(intent["cell"]) if intent else None
         while self.env.clock() < end:
             items = self.inventory()
+            if self.cloudtasks:
+                # A cell create issued just before the stop can land after the
+                # snapshot above; adopt it by intent, nonce and manifest.
+                adopted = self.adopt_intended_cell(items, manifest)
+                if adopted is not None:
+                    known.add(adopted["metadata"]["uid"])
+                    key = "cell:" + intent["cell"]
+                    if key in self.env.roots and key not in keys:
+                        keys.append(key)
+                    else:
+                        apps_extra = [adopted]
+                for key in self.env.roots:
+                    if key.startswith("cell:") and key not in keys:
+                        keys.append(key)
+                        known.add(self.env.roots[key]["uid"])
             known = ownership(items, known)
             run_objects = [obj for obj in items if obj["metadata"]["uid"] in known]
-            app = self.env.root("application")
-            if not run_objects:
+            apps = [app for key in keys if (app := self.env.root(key))]
+            if not run_objects and not self.intent_pending(items, intent, force_at):
                 cleared = True
                 break
-            if app:
+            for app in apps + apps_extra:
                 self.env.kube.delete(app)
+            apps_extra = []
             if self.env.clock() >= force_at:
-                self.quota(SMOKE, None)
+                self.quota(namespace, None)
                 # Stop workload controllers before removing their Pods. UID
                 # preconditions reject any replacement with the same name.
                 for kind in ("Deployment", "ReplicaSet", "Pod", "Service", "ConfigMap"):
                     for obj in run_objects:
                         if obj["kind"] == kind:
                             self.env.kube.delete(obj)
-                app = self.env.root("application")
-                if app and app["metadata"].get("finalizers"):
-                    try:
-                        self.env.kube.patch(
-                            app,
-                            [
-                                {
-                                    "op": "replace",
-                                    "path": "/metadata/finalizers",
-                                    "value": [],
-                                }
-                            ],
-                        )
-                    except ApiError as error:
-                        if error.status not in (404, 409, 422):
-                            raise
-                        # The next inventory rechecks the root UID before retry.
+                for key in keys:
+                    app = self.env.root(key)
+                    if app and app["metadata"].get("finalizers"):
+                        try:
+                            self.env.kube.patch(
+                                app,
+                                [
+                                    {
+                                        "op": "replace",
+                                        "path": "/metadata/finalizers",
+                                        "value": [],
+                                    }
+                                ],
+                            )
+                        except ApiError as error:
+                            if error.status not in (404, 409, 422):
+                                raise
+                            # The next inventory rechecks the root UID before retry.
             self.env.sleep(min(POLL, max(0, end - self.env.clock())))
         if not cleared:
             self.env.emit(
@@ -271,12 +482,26 @@ class Cleanup:
                 "Owned workload remains; Operator and environment lock retained for recovery"
             )
         # Evidence or storage failures must not keep paid resources alive.
+        queue_clean = True
+        if self.cloudtasks:
+            self.current_cell = None
+            try:
+                release_queue(self.env)
+            except (Failure, ValueError, OSError) as error:
+                queue_clean = False
+                self.env.emit("queue-cleanup-failed", {"cause": str(error)})
         state_clean = False
         try:
             self.clean_state()
             state_clean = True
         except (Failure, ValueError, OSError) as error:
             self.env.emit("state-cleanup-failed", {"cause": str(error)})
+        if self.cloudtasks:
+            try:
+                self.env.emit("benchmark-evidence-retained", self.retained_evidence())
+                self.env.ledger.interrupt(self.env.approval.run_id, self.env.clock())
+            except (Failure, ValueError, OSError) as error:
+                self.env.emit("ledger-interrupt-failed", {"cause": str(error)})
         self.scale_operator(0)
 
         def operator_stopped():
@@ -290,19 +515,21 @@ class Cleanup:
         self.env.wait(
             operator_stopped, max(self.env.clock() + schedule.operator_grace, end)
         )
-        self.quota(SMOKE, None)
+        self.quota(namespace, None)
         self.quota(SYSTEM, None)
+        clean = success and state_clean and queue_clean and not self.env.evidence_failed
         self.env.emit(
             "cleanup-ready",
             {
-                "success": success and state_clean and not self.env.evidence_failed,
+                "success": clean,
                 "state_clean": state_clean,
+                "queue_clean": queue_clean,
             },
         )
         try:
             self.env.records.set_phase(
                 Phase.CLEANED,
-                success=success and state_clean and not self.env.evidence_failed,
+                success=clean,
                 state_clean=state_clean,
                 evidence_failed=self.env.evidence_failed,
             )
@@ -358,4 +585,13 @@ def verify_idle(env):
             pending = True
     if pending:
         raise IdlePending("Controllers have not observed the idle state")
+    if env.queues is not None and env.records.cache.queue_intent:
+        try:
+            remaining = env.queues.get(QUEUE_POLL_MASK)
+        except Failure as error:
+            if transient(error):
+                raise IdlePending("Queue readback is unavailable") from error
+            raise
+        if remaining is not None:
+            raise Failure("Benchmark queue remains after cleanup")
     return [{"kind": obj["kind"], "metadata": obj["metadata"]} for obj in items]

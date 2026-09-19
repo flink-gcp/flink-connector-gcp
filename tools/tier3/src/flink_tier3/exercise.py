@@ -19,7 +19,6 @@ import copy
 import re
 
 from .common import ApiError, Failure, TransportError, contains, digest, timestamp, utc
-from .model import Phase
 from .policy import RECOVERY, SMOKE, STATE
 
 
@@ -88,17 +87,7 @@ class RecoveryExercise:
         return self.stage in ("upgrade", "failover")
 
     def check_open(self):
-        self.env.namespaces()
-        control = self.env.refresh()
-        if (
-            self.env.stopping
-            or self.env.evidence_failed
-            or control.evidence_failed
-            or control.stop_requested
-            or control.phase != Phase.RUNNING
-        ):
-            raise Failure("Recovery exercise has been stopped")
-        self.env.assert_owner()
+        self.env.require_running("Recovery exercise has been stopped")
         if self.env.clock() >= min(self.deadline, self.env.schedule.cleanup_at):
             raise Failure("Recovery exercise deadline expired: " + self.stage)
 

@@ -111,6 +111,9 @@ class MeasurementOptionsTest {
         assertThat(options.receiptPrefix())
                 .isEqualTo(
                         "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/receipts/");
+        assertThat(options.rowsPrefix())
+                .isEqualTo(
+                        "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/rows/");
         assertThatThrownBy(
                         () ->
                                 MeasurementOptions.parse(

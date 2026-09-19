@@ -104,6 +104,14 @@ Named failures retain the requested name so deduplicated replay can be reconcile
 It does not establish the reason for cancellation; an RPC reporting `DEADLINE_EXCEEDED` retains that status.
 The row describes the RPC future, whereas the committer classifies its local expiry as `DEADLINE_EXCEEDED` in connector error-class metrics; those two observations need not carry the same status.
 
+Window mode writes the rows through the installed Flink GCS filesystem plugin as gzip-compressed CSV parts under `gs://flink-gcp-cloudtasks-benchmark/runs/<run>/cells/<cell>/rows/<incarnation>-<NNNNNN>.csv.gz`.
+Part indices start at `000001` and are contiguous within a creator incarnation.
+Each part is created with `NO_OVERWRITE`, so a repeated incarnation fails instead of replacing evidence.
+A part is opened by its first row and rolled before the next row once it holds 8 MiB of uncompressed rows or has been open for 60 seconds.
+Only a closed part is durable and counted; an abrupt process loss loses at most the open part.
+Pod logs carry only Flink logs in window mode.
+Record-count mode still prints the rows to standard output for local wiring checks.
+
 The payload records the origin on entry to serialization.
 The completion timestamp precedes output formatting and is captured before notifying the production runtime of the RPC result.
 This interval includes body generation, naming, staging, checkpoint waiting, client admission and RPC completion after the serializer entry.
@@ -115,10 +123,10 @@ Its serializer-to-completion value is `-1` when the process UUID changes; an ana
 The wall-clock origin is retained for separately bounded recovery observations.
 Per-attempt rows include retries and are not themselves unique-record throughput; the analyzer must reconcile sequence/name outcomes and successful job completion.
 
-Successful RPC completion is published only after evidence output succeeds.
+Successful RPC completion is published only after the evidence output accepts the row; in window mode that means the row entered the open part, not that the part is durable.
 An output failure becomes a failed result unless the observation future has already been cancelled.
 Caller cancellation is forwarded to the underlying RPC and can complete the observation future before its evidence row is written.
-Logging remains part of the workload's CPU and backpressure cost, even though its formatting is outside the recorded completion timestamp.
+Row formatting and compression remain part of the workload's CPU and backpressure cost, even though they are outside the recorded completion timestamp.
 Per-record output requires an evidence-loss check and a measured overhead control before service results can support a verdict.
 
 ## Calibration controls
@@ -146,14 +154,17 @@ A restored source can start above sequence zero; these receipts report mapping b
 Each RPC client registers a creator incarnation before its first attempt; that UUID also identifies its CSV rows.
 Registration failure closes the client and prevents admitting it to the sink.
 At close, a separate terminal receipt records reserved attempts, completed calls, successful observer callbacks, output failure, attempt-limit exhaustion and client-close failure.
+It also records the rows in closed parts as `rows_exported`, the number of closed parts as `parts_closed`, and whether closing the open part failed as `rows_flush_failed`.
+The client is closed first, then the open part, and only then is the snapshot taken, so a flush failure is visible in the receipt and is still raised to the runtime after the receipt is written.
 The attempt count comes from RPC admission, independently of the CSV exporter.
-The terminal snapshot is complete only when all three counts agree and none of those failures occurred.
+The terminal snapshot is complete only when all three counts agree, none of those failures occurred, and, for a CSV-enabled cell, `rows_exported` equals `observations`.
+The counts-only control writes no rows, so its snapshot does not require that equality.
 Close with an outstanding callback produces an incomplete snapshot; a later callback never upgrades that persisted snapshot.
 An abrupt process loss can leave a registration without a terminal receipt.
 
-The collector must discover registrations independently of the logs, require matching terminal receipts for a steady-state result, and compare exported rows with the terminal counts.
+The collector must discover registrations independently of the logs, require matching terminal receipts for a steady-state result, and compare the rows decoded from the parts with `rows_exported` and the terminal counts.
 Thus losing the final CSV row or all rows from one registered creator cannot be concealed by counting the remaining CSV itself.
-A complete receipt certifies local accounting, not successful service creation, durable CSV export, job success or a performance pass.
+A complete receipt certifies local accounting and that every part closed without a reported error; it does not certify successful service creation, a read-back of the parts, job success or a performance pass.
 Read back the receipts and reconcile record/task outcomes and job status before accepting a cell.
 Recovery evidence must explicitly account for incomplete prior incarnations instead of inventing their missing observations.
 

@@ -30,6 +30,7 @@ kubernetes/
   schemas/objects.cue            # Supported Kubernetes kinds
   pkg/flink/application.cue      # Standard Flink application defaults
   pkg/smoke/application.cue      # Generic stateful smoke application contract
+  pkg/cloudtasks/application.cue # Cloud Tasks measurement cell contract
   apps/smoke/                    # Internal Java application and image payload
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
@@ -105,8 +106,8 @@ The package deliberately leaves image, ServiceAccount and application-specific f
 An upgrade requiring state preservation must explicitly select its upgrade mode and recovery inputs.
 
 The root supplies common project labels.
-`runs/common.cue` adds the run ID, RFC 3339 expiry and `tier3-smoke` namespace to resource metadata.
-For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount, parallelism from one to two, `v2_2` and `allowNonRestoredState: false`.
+`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, or `tier3-cloudtasks`) to resource metadata.
+For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`, while in `tier3-cloudtasks` it requires the `cloudtasks-benchmark` ServiceAccount, parallelism 1, 4 or 16 and `v1_20` or `v2_2`.
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
 [Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.

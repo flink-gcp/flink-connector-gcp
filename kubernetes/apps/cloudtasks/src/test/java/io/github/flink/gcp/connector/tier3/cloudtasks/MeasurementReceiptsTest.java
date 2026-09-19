@@ -47,12 +47,26 @@ class MeasurementReceiptsTest {
         Path end = directory.resolve("creator-" + incarnation + "-terminal.json");
         assertThat(start).exists();
         assertThat(end).doesNotExist();
-        terminal.accept(new ObservedTaskCreator.Terminal(3, 3, 3, false, false, false));
+        terminal.accept(
+                new ObservedTaskCreator.Terminal(3, 3, 3, false, false, false, 3, 2, false, true));
         var json = new ObjectMapper();
         var birth = json.readTree(Files.readString(start));
         var result = json.readTree(Files.readString(end));
         assertThat(result.path("attempts").asLong()).isEqualTo(3);
+        assertThat(result.path("rows_exported").asLong()).isEqualTo(3);
+        assertThat(result.path("parts_closed").asLong()).isEqualTo(2);
+        assertThat(result.path("rows_flush_failed").asBoolean()).isFalse();
+        assertThat(result.path("rows_flush_failed").isBoolean()).isTrue();
+        assertThat(result.path("csv_enabled").asBoolean()).isTrue();
         assertThat(result.path("complete").asBoolean()).isTrue();
+        assertThat(result.fieldNames())
+                .toIterable()
+                .containsSubsequence(
+                        "client_close_failed",
+                        "rows_exported",
+                        "parts_closed",
+                        "rows_flush_failed",
+                        "complete");
         assertThat(result.path("incarnation").asText()).isEqualTo(incarnation.toString());
         assertThat(result.path("process")).isEqualTo(birth.path("process"));
         assertThat(result.path("run_id").asText()).isEqualTo(options.runId);
@@ -62,7 +76,7 @@ class MeasurementReceiptsTest {
                         () ->
                                 terminal.accept(
                                         new ObservedTaskCreator.Terminal(
-                                                4, 4, 4, false, false, false)))
+                                                4, 4, 4, false, false, false, 4, 1, false, true)))
                 .isInstanceOf(java.io.UncheckedIOException.class);
         assertThat(json.readTree(Files.readString(end)).path("attempts").asLong()).isEqualTo(3);
     }

@@ -38,8 +38,29 @@ COST_RATES = {key: Decimal(value) for key, value in _policy["cost_rates"].items(
 CEILINGS = _policy["ceilings"]
 POD_RESOURCES = _policy["pod_resources"]
 RECOVERY = _policy["recovery"]
+CLOUDTASKS = _policy["environment"]["cloudtasks"]
+BENCHMARK = _policy["environment"]["benchmark"]
+CLOUDTASKS_POLICY = _policy["cloudtasks"]
+CLOUDTASKS_CEILINGS = _policy["cloudtasks_ceilings"]
+CLOUDTASKS_POD_RESOURCES = _policy["cloudtasks_pod_resources"]
+
+# Application namespaces first, then the control namespace.
+NAMESPACES = (SMOKE, CLOUDTASKS, SYSTEM)
+
+# Published Cloud Tasks application package and Operator flinkVersion per line.
+FLINK_LINES = {
+    "2.2.1": ("cloudtasks-measurement", "v2_2"),
+    "1.20.4": ("cloudtasks-measurement-flink120", "v1_20"),
+}
 
 RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\Z")
+
+
+# Mirrors MeasurementOptions.label in the measurement application.
+CELL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}\Z")
+
+
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")

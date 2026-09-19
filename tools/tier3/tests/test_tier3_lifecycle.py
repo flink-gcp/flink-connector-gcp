@@ -966,6 +966,11 @@ def prepared_supervisor(env):
     runner = lifecycle(env)
     job = env[0].put(obj("Job", "supervisor", rt.SYSTEM))
     runner.env.remember("supervisor", job)
+    return runner, supervisor_pod(env, job)
+
+
+def supervisor_pod(env, job):
+    """A Running supervisor Pod owned by the Job, shaped like the delivery."""
     pod = obj("Pod", "supervisor-pod", rt.SYSTEM, job["metadata"]["uid"])
     pod["spec"] = {
         "containers": [
@@ -998,7 +1003,7 @@ def prepared_supervisor(env):
     }
     pod["status"]["phase"] = "Running"
     env[0].put(pod)
-    return runner, pod
+    return pod
 
 
 @pytest.mark.parametrize(
@@ -1686,13 +1691,26 @@ def test_approval_is_an_independent_frozen_snapshot(env):
 
 
 def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
+    import re
+
     import yaml
 
     schedule = rt.Approval.from_dict(env[2]).schedule
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
-    assert (
-        schedule.serial_budget <= workflow["jobs"]["lifecycle"]["timeout-minutes"] * 60
+    timeout = workflow["jobs"]["lifecycle"]["timeout-minutes"]
+    # The workflow selects a longer timeout only for Cloud Tasks sessions.
+    match = re.fullmatch(
+        r"\$\{\{ inputs\.scenario == 'cloudtasks' && (\d+) \|\| (\d+) \}\}",
+        str(timeout),
     )
+    session_minutes, smoke_minutes = (
+        (int(match[1]), int(match[2])) if match else (int(timeout), int(timeout))
+    )
+    assert schedule.serial_budget <= smoke_minutes * 60
+    longest = rt.Schedule.for_window(
+        env[3](), env[3]() + rt.CLOUDTASKS_CEILINGS["session_seconds"]
+    )
+    assert longest.serial_budget <= session_minutes * 60
     assert schedule.cleanup_at == schedule.expires_at - 900
     assert schedule.active_seconds(env[3]()) == 3420
     late = schedule.cleanup_window(schedule.expires_at + 60)
@@ -2253,7 +2271,7 @@ def test_cli_completed_recovery_reaches_idle_and_retains_lock_for_plans(
         runner.create_application(app(env))
         env[1].write("runs/test-1310/application.json", app(env))
     snapshots = []
-    monkeypatch.setattr(cli.wf, "snapshot", lambda kube: snapshots.append(kube))
+    monkeypatch.setattr(cli.wf, "snapshot", lambda kube, *_a: snapshots.append(kube))
     monkeypatch.setattr(cli.wf, "external", lambda _path, **kwargs: env[0])
     monkeypatch.setattr(
         cli.wf,
@@ -2272,8 +2290,8 @@ def test_cli_completed_recovery_reaches_idle_and_retains_lock_for_plans(
     monkeypatch.setattr(
         rt,
         "Environment",
-        lambda kube, store, approval: environment(
-            kube, store, approval, env[3], env[3].sleep
+        lambda kube, store, approval, **kwargs: environment(
+            kube, store, approval, env[3], env[3].sleep, **kwargs
         ),
     )
     cli.recover(
@@ -2320,7 +2338,7 @@ def test_cli_start_settles_once_after_the_last_admission_call(
     monkeypatch.setattr(
         cli.wf,
         "snapshot",
-        lambda _kube: (
+        lambda _kube, *_a: (
             env[2]["namespaces"],
             env[2]["operator_uid"],
             env[2]["images"]["operator"],
@@ -2350,8 +2368,8 @@ def test_cli_start_settles_once_after_the_last_admission_call(
     monkeypatch.setattr(
         rt,
         "Environment",
-        lambda kube, store, approval: environment(
-            kube, store, approval, env[3], env[3].sleep
+        lambda kube, store, approval, **kwargs: environment(
+            kube, store, approval, env[3], env[3].sleep, **kwargs
         ),
     )
     create = env[0].create

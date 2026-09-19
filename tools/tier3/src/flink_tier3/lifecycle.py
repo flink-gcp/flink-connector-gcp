@@ -29,19 +29,53 @@ import flink_tier3 as rt
 from . import bootstrap
 from . import runner as runner_api
 from . import workflow as wf
+from .cloudtasks import QUEUE_POLL_MASK, Ledger, Queues, load_session
 from .exercise import validate_manifests
-from .policy import RECOVERY
+from .model import queue_name, session_plan
+from .policy import CLOUDTASKS_CEILINGS, DIGEST, FLINK_LINES, RECOVERY
 
 ROOT = Path.cwd()
 APPROVAL = "APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1"
+CLOUDTASKS_APPROVAL = (
+    "APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES"
+)
+SCENARIOS = ("smoke", "generic-recovery", "cloudtasks")
+
+
+def runner_for(approval, kube, store, queues=None, ledger=None):
+    """Build the external runner with the scenario's collaborators."""
+    if approval.get("scenario") == "cloudtasks":
+        queues = queues or Queues(
+            rt.authorized_session(rt.GoogleToken()), approval["queue"]
+        )
+        ledger = ledger or Ledger(store, approval["campaign"])
+    return runner_api.Runner(
+        rt.Environment(kube, store, approval, queues=queues, ledger=ledger)
+    )
+
+
+def session_inputs(args):
+    """Resolve the reviewed session file, Flink line and live application digest."""
+    if not rt.RUN_ID.fullmatch(args.session or ""):
+        raise rt.Failure("Cloud Tasks sessions need a reviewed --session name")
+    if args.flink_version not in FLINK_LINES:
+        raise rt.Failure("Cloud Tasks sessions need a supported --flink-version")
+    if not DIGEST.fullmatch(args.application_digest or ""):
+        raise rt.Failure("Cloud Tasks sessions need a sha256 --application-digest")
+    session = load_session(
+        ROOT / "kubernetes/lifecycle/sessions" / (args.session + ".toml")
+    )
+    image = rt.GAR + FLINK_LINES[args.flink_version][0] + "@" + args.application_digest
+    return session, args.flink_version, image
 
 
 def start(args, store):
     scenario = getattr(args, "scenario", "smoke")
-    if scenario not in ("smoke", "generic-recovery"):
+    if scenario not in SCENARIOS:
         raise rt.Failure("Unknown smoke scenario")
+    cloudtasks = scenario == "cloudtasks"
     if (
-        args.approve != APPROVAL
+        args.approve != (CLOUDTASKS_APPROVAL if cloudtasks else APPROVAL)
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
         or args.sha != os.environ.get("GITHUB_SHA")
     ):
@@ -54,20 +88,58 @@ def start(args, store):
         raise rt.Failure("Run ID already has immutable evidence; choose a new ID")
     now = time.time()
     end = rt.timestamp(args.expires_at)
-    if not 3300 <= end - now <= 3600:
+    session = line = application_image = None
+    if cloudtasks:
+        session, line, application_image = session_inputs(args)
+        plan = session_plan(session["cells"]) + CLOUDTASKS_CEILINGS["cleanup_seconds"]
+        if (
+            not plan
+            <= end - now
+            <= min(CLOUDTASKS_CEILINGS["session_seconds"], plan + 600)
+        ):
+            raise rt.Failure(
+                "Dispatch expiry must cover the session plan plus cleanup, "
+                "within ten minutes and the session ceiling"
+            )
+    elif not 3300 <= end - now <= 3600:
         raise rt.Failure("Dispatch expiry must be 55 to 60 minutes ahead")
     nonce = uuid.uuid4().hex
     owner = wf.execution("run", nonce) | {"run_id": args.run_id}
+    namespace = rt.CLOUDTASKS if cloudtasks else rt.SMOKE
     kube = wf.external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
-        True, "create", "flink.apache.org", "flinkdeployments", rt.SMOKE
+        True, "create", "flink.apache.org", "flinkdeployments", namespace
     )
-    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube)
+    queues = ledger = None
+    if cloudtasks:
+        # Cheap refusals before any lock or cluster mutation.
+        queues = Queues(
+            rt.authorized_session(rt.GoogleToken()), queue_name(args.run_id)
+        )
+        if queues.get(QUEUE_POLL_MASK) is not None:
+            raise rt.Failure("Queue already exists; this run does not own it")
+        ledger = Ledger(store, session["campaign"])
+        ledger.admit([cell["id"] for cell in session["cells"]])
+    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, namespace)
     schedule = rt.Schedule.for_window(now, end)
     active = schedule.active_seconds(time.time())
     render_options = {"scenario": scenario} if scenario != "smoke" else {}
+    manifest_options = {}
+    if cloudtasks:
+        render_options.update(
+            cells=json.dumps(session["cells"], separators=(",", ":")),
+            flink_version=line,
+            application_image=application_image,
+            target=rt.CLOUDTASKS_POLICY["target"],
+        )
+        manifest_options = {"expression": "cellManifests"}
     application = wf.render(
-        args.run_id, nonce, args.expires_at, active, **render_options
+        args.run_id,
+        nonce,
+        args.expires_at,
+        active,
+        **manifest_options,
+        **render_options,
     )
     bundle = wf.render(
         args.run_id,
@@ -79,11 +151,18 @@ def start(args, store):
     )
     images = {
         "operator": operator_image,
-        "smoke": application["spec"]["image"],
         "supervisor": bundle["supervisor"]["spec"]["template"]["spec"]["containers"][0][
             "image"
         ],
     }
+    if cloudtasks:
+        if any(m["spec"]["image"] != application_image for m in application):
+            raise rt.Failure(
+                "Rendered cells do not use the dispatched application image"
+            )
+        images["application"] = application_image
+    else:
+        images["smoke"] = application["spec"]["image"]
     receipts = wf.image_receipts(
         rt.authorized_session(rt.GoogleToken()), images, args.expires_at
     )
@@ -122,12 +201,34 @@ def start(args, store):
             upgrade_application_sha256=rt.digest(upgrade),
         )
         validate_manifests(application, upgrade)
+    if cloudtasks:
+        if len(application) != len(session["cells"]):
+            raise rt.Failure("Rendered cell count differs from the session")
+        approval.update(
+            version=3,
+            scenario=scenario,
+            campaign=session["campaign"],
+            flink_version=line,
+            queue=queues.name,
+            target=rt.CLOUDTASKS_POLICY["target"],
+            cells=[
+                {**cell, "manifest_sha256": rt.digest(manifest)}
+                for cell, manifest in zip(session["cells"], application, strict=True)
+            ],
+            cloudtasks_ceilings=rt.CLOUDTASKS_CEILINGS,
+            cloudtasks_pod_resources=rt.CLOUDTASKS_POD_RESOURCES,
+        )
     rt.validate_approval(approval, time.time())
     wf.save(args.directory / "owner.json", owner)
     rt.EnvironmentLock(store).acquire(owner)
     # Recheck idle after acquiring exclusivity; the earlier snapshot cannot
     # authorize a change that raced an infrastructure apply.
-    if wf.snapshot(kube) != (namespaces, operator_uid, operator_image, baseline):
+    if wf.snapshot(kube, namespace) != (
+        namespaces,
+        operator_uid,
+        operator_image,
+        baseline,
+    ):
         raise rt.Failure("Foundation changed while acquiring the environment lock")
     wf.save(args.directory / "approval.json", approval)
     store.write(f"runs/{args.run_id}/approval.json", approval)
@@ -135,6 +236,8 @@ def start(args, store):
     store.write(f"runs/{args.run_id}/images.json", receipts)
     if upgrade is not None:
         store.write(f"runs/{args.run_id}/upgrade-application.json", upgrade)
+    if cloudtasks:
+        store.write(f"runs/{args.run_id}/session.json", session)
     store.write(
         f"_control/runs/{args.run_id}.json",
         {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},
@@ -151,7 +254,7 @@ def start(args, store):
         "delivery.resources",
         **render_options,
     )
-    runner = runner_api.Runner(rt.Environment(kube, store, approval))
+    runner = runner_for(approval, kube, store, queues, ledger)
 
     def stop(_number, _frame):
         runner.env.stopping = True
@@ -160,7 +263,9 @@ def start(args, store):
     signal.signal(signal.SIGINT, stop)
     failed = True
     try:
-        runner.start(bundle["config"], bundle["supervisor"], application)
+        runner.start(
+            bundle["config"], bundle["supervisor"], None if cloudtasks else application
+        )
         failed = False
     finally:
         runner.settle(request_stop=failed)
@@ -235,9 +340,7 @@ def recover(args, store):
                     "success": False,
                 },
             )
-        runner_api.Runner(rt.Environment(kube, store, approval)).settle(
-            request_stop=True
-        )
+        runner_for(approval, kube, store).settle(request_stop=True)
     elif owner["kind"] == "run":
         wf.snapshot(kube)
     # Infrastructure recovery already passed the idle preflight. A previous
@@ -260,9 +363,7 @@ def finish(args, store):
     success = True
     if approval_path.exists():
         approval = json.loads(approval_path.read_text())
-        runner = runner_api.Runner(
-            rt.Environment(wf.external(args.kubeconfig), store, approval)
-        )
+        runner = runner_for(approval, wf.external(args.kubeconfig), store)
         runner.env.records.evidence(
             "empty-plans",
             {
@@ -335,9 +436,10 @@ def main(argv=None):
     run.add_argument("--sha", required=True)
     run.add_argument("--expires-at", required=True)
     run.add_argument("--approve", required=True)
-    run.add_argument(
-        "--scenario", choices=("smoke", "generic-recovery"), default="smoke"
-    )
+    run.add_argument("--scenario", choices=SCENARIOS, default="smoke")
+    run.add_argument("--session")
+    run.add_argument("--flink-version", choices=tuple(FLINK_LINES))
+    run.add_argument("--application-digest")
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)
     sub.add_parser("plans")
@@ -352,6 +454,14 @@ def main(argv=None):
         parser.error("--kubeconfig is required")
     if args.command == "lock" and args.operation == "acquire" and args.kind is None:
         parser.error("lock acquire requires --kind")
+    if args.command == "start":
+        session_flags = (args.session, args.flink_version, args.application_digest)
+        if args.scenario == "cloudtasks" and not all(session_flags):
+            parser.error(
+                "cloudtasks requires --session, --flink-version and --application-digest"
+            )
+        if args.scenario != "cloudtasks" and any(session_flags):
+            parser.error("session inputs apply only to the cloudtasks scenario")
     store = rt.Storage()
     {
         "start": start,

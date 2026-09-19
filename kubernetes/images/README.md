@@ -95,7 +95,7 @@ The `smoke` reference in the same package supplies the complete application imag
 The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
-The Cloud Tasks application needs its first authorized publication and a separately reviewed digest adoption before any delivery can select it.
+The Cloud Tasks application needs its first authorized publication before a session dispatch can name its digest; that digest is a dispatch input verified live against the registry, not a pin in this package.
 Publication supplies no Cloud Tasks workload admission or service-measurement approval.
 
 ## Retention and acceptance

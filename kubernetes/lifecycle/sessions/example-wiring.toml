@@ -1,0 +1,53 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Reviewed example session for tests and documentation. It exercises the cell
+# vocabulary and the per-cell manifest rendering; it authorizes nothing. A real
+# session needs its own review, queue and dispatch approval.
+
+campaign = "example"
+
+[[cells]]
+id = "example-wiring-a"
+arm = "UNNAMED"
+body_bytes = 1024
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 10
+warmup_seconds = 60
+observation_seconds = 180
+record_limit = 2430
+attempt_limit = 3645
+control_delay_millis = 0
+emit_attempts = true
+
+[[cells]]
+id = "example-wiring-b"
+arm = "STAGED_HASH"
+body_bytes = 1024
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+channel_pool_size = 1
+distribution = "even"
+offered_rate = 100
+warmup_seconds = 60
+observation_seconds = 180
+record_limit = 26100
+attempt_limit = 9788
+control_delay_millis = 0
+emit_attempts = true

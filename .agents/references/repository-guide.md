@@ -576,7 +576,12 @@ its image or workload identity, also read `kubernetes/apps/smoke/README.md`. Use
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
 The parameterized lifecycle delivery uses `flink-tier3 render` to supply package-source JSON;
-see `kubernetes/lifecycle/README.md` for the complete offline command.
+see `kubernetes/lifecycle/README.md` for the complete offline command. The `cloudtasks` scenario
+renders one FlinkDeployment per cell of a reviewed session file under
+`kubernetes/lifecycle/sessions/`; before changing the cell vocabulary, the queue lifecycle or the
+session ceilings, read that runbook's session section, `kubernetes/apps/cloudtasks/README.md` and
+ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks.py` and
+`policy.toml` in agreement.
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
 dedicated kubeconfig; GKE API discovery verifies that endpoint.
