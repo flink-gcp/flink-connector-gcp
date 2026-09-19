@@ -47,6 +47,7 @@ locals {
   lifecycle_roles = {
     "tier3-smoke"      = local.lifecycle_application_rules
     "tier3-cloudtasks" = local.lifecycle_application_rules
+    "tier3-bigquery"   = local.lifecycle_application_rules
     "tier3-system" = [
       { api_groups = [""], resources = ["pods", "services", "configmaps", "resourcequotas", "persistentvolumeclaims"], verbs = local.read_verbs },
       { api_groups = ["apps"], resources = ["deployments", "replicasets", "statefulsets"], verbs = local.read_verbs },

@@ -28,6 +28,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket for separately approved Cloud Tasks benchmarks |
 | `flink-gcp/cloudtasks-lifecycle.tf` | Queue control and benchmark state cleanup grants for the runner and supervisor |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
+| `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
 | `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
@@ -169,6 +170,44 @@ The Operator plan should update the idle Helm release in place, adding a Role/Ro
 Review the actual CI plans and rendered chart before merge.
 The dependent admission path was implemented after that apply, idle verification and empty refreshed plans.
 No queue, workload or paid measurement is admitted by these grants; execution still requires the session approval phrase, a published application digest and the separately approved cell list.
+
+### BigQuery trial foundation
+
+[Issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312) uses the existing Flink 2.2.1 and Operator 1.15.0 baseline.
+Its [GCP foundation](flink-gcp/tier3-bigquery.tf) creates the persistent `flink_gcp_tier3_bigquery` dataset and `flink-gcp-tier3-bigquery` state bucket in `us-central1`, plus the `tier3-bigquery` workload account.
+The dataset is empty between trials and has a 24-hour default table expiration; the runner must still delete each trial's tables and verify their absence.
+Dataset destruction is protected and does not delete contents automatically.
+The state bucket uses Standard storage, uniform access, public-access prevention, no object versioning or soft delete, and a one-day lifecycle for `runs/` objects.
+The Kubernetes identity `tier3-bigquery/bigquery` may impersonate the workload account.
+
+Dataset-scoped custom roles separate the three actors:
+
+| Actor | Dataset permissions |
+| --- | --- |
+| Workload | `bigquery.tables.get/updateData`: read table metadata and append to pre-created tables |
+| Runner | `bigquery.datasets.get`, `bigquery.tables.create/get/getData/list/delete`: check the dataset, admit tables, validate and clean up |
+| Supervisor | The runner's dataset permissions except `bigquery.tables.create` |
+
+The workload receives no query-job, table-creation, table-deletion or IAM-administration grant.
+The runtime must use `CREATE_NEVER` with an explicit location and pre-created matching schemas.
+The dataset bindings cover every table in this dedicated dataset, not one run prefix.
+The runner and supervisor also receive project-wide `bigquery.jobs.create/get/update` so either actor can inspect and cancel an outstanding validation query after the other fails.
+These job permissions can inspect and cancel other principals' jobs in the project; they are not scoped to the dataset or an approved run.
+The later runtime must record exact query IDs before submission, enforce the approved query and byte budget, and limit recovery to those IDs.
+The existing project-wide Role Admin grant lets the apply identity manage these four custom roles.
+
+All three actors can list and read the dedicated state bucket and use Object User under `runs/`.
+That grant covers all runs in the bucket; run ownership must be checked by the lifecycle code before deletion.
+The workload receives no access to the evidence bucket or environment lock.
+The runtime must keep checkpoint, savepoint and HA paths under `runs/`.
+A separately approved checkpoint write and restore with the pinned Flink GCS filesystem is a follow-up acceptance requirement; these static grants alone do not establish filesystem compatibility.
+
+The GCP plan should add 19 resources without changing existing resources.
+The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-prerequisites-for-bigquery) precede the bootstrap plan, which imports six objects and adds five job/lifecycle objects.
+The administrator extends the two existing ClusterRoles before that plan; after refresh their rules should already match, with only possible metadata reconciliation.
+Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
+Keep the common helper and Helm watch set unchanged until that verification proves the runner can read the new namespace.
+Application publication, runtime admission and all paid trials require subsequent changes and separate execution approval.
 
 ### Operator installation follows the cluster
 
