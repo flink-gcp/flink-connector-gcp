@@ -26,6 +26,7 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | `operator` | [Flink Kubernetes Operator 1.15.0](https://github.com/apache/flink-kubernetes-operator/tree/release-1.15.0), Java and Operator/standalone JARs | Copy the AMD64 digest pinned in the workflow |
 | `flink` | [Flink 2.2.1, Scala 2.12, Java 17](https://github.com/apache/flink-docker/tree/983be3455636eb12cd1d3dee1efc8e32c4b875db/2.2/scala_2.12-java17-ubuntu), including `opt/flink-gs-fs-hadoop-2.2.1.jar` | Copy the AMD64 digest pinned in the workflow |
 | `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), CA certificates, kubectl 1.35.7 and the [locked official Python SDKs](../../tools/tier3/pyproject.toml) | Export the Tier-3 member dependencies, then build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
+| `cloudtasks-measurement` | Reviewed Flink base pin, the [Cloud Tasks measurement application](../apps/cloudtasks/README.md) and unmodified runtime dependency JARs | Build the application payload with Maven, then its Dockerfile for AMD64 |
 | `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
@@ -48,6 +49,7 @@ mise x -- just tier3-lifecycle-requirements
 Run the export recipe before a local Docker build as well; the publication workflow runs it before cloud authentication.
 The locked export fails when dependency declarations and `uv.lock` disagree.
 Docker's setup-buildx, metadata and build-push actions build it, apply a full-commit `sha-...` tag and OCI labels, and publish it.
+The Cloud Tasks context is `kubernetes/apps/cloudtasks`; its `.dockerignore` admits only the Dockerfile, application JAR and packaged runtime dependency JARs.
 The lifecycle build context is only `kubernetes/images/lifecycle`; the smoke context is `kubernetes/apps/smoke`, with `.dockerignore` allowing only the Dockerfile and two packaged JARs.
 
 Source images retain their upstream notices, licenses and OS package metadata.
@@ -76,17 +78,19 @@ gh workflow run tier3-images.yaml --repo flink-gcp/flink-connector-gcp \
   --ref main -f expected_sha="$REVIEWED_MAIN_SHA"
 ```
 
-The workflow verifies the smoke JAR and local recovery tests before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes the lifecycle tools and smoke images with BuildKit.
+The workflow verifies the smoke and Cloud Tasks measurement applications before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes the lifecycle tools and both application images with BuildKit.
 It uses one standard Ubuntu runner, permits one publication at a time and has a 30-minute job timeout.
 The fixed source digests define what is transferred; there is no custom image-content inspector, capacity quota or intermediate receipt format.
 Docker's login action logs out when the job ends.
 
-A successful run lists all four GAR digest references in the GitHub Actions job summary.
+A successful run lists all five GAR digest references in the GitHub Actions job summary.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
 The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
 The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
+The Cloud Tasks application needs its first authorized publication and a separately reviewed digest adoption before any delivery can select it.
+Publication supplies no Cloud Tasks workload admission or service-measurement approval.
 
 ## Retention and acceptance
 

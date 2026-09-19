@@ -79,6 +79,7 @@ jobs:
       lanes: ${{ steps.derive.outputs.lanes }}
       check_notice_sources: ${{ steps.derive.outputs.check_notice_sources }}
       run_tier3_smoke: ${{ steps.derive.outputs.run_tier3_smoke }}
+      run_tier3_cloudtasks: ${{ steps.derive.outputs.run_tier3_cloudtasks }}
     steps:
       # A pull_request checkout is the base-into-head merge commit
       # (refs/pull/N/merge); fetching its two parents as well (depth 2) makes
@@ -329,12 +330,41 @@ jobs:
       - name: Build and test the application without GCP
         run: just tier3-smoke-verify
 
+  tier3_cloudtasks:
+    name: Verify Tier-3 Cloud Tasks measurement application
+    needs: changes
+    if: needs.changes.outputs.run_tier3_cloudtasks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: maven-verify-
+
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: just
+
+      - name: Build and test the application without GCP
+        run: just tier3-cloudtasks-verify
+
   # The gate rejects an unrequested skip as well as failures in either build path.
   verify_passed:
     name: Verify passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, build, tier3_smoke, api_tiers, option_docs, metric_docs, javadoc_links, gated_tags, skill_frontmatter]
+    needs: [changes, build, tier3_smoke, tier3_cloudtasks, api_tiers, option_docs, metric_docs, javadoc_links, gated_tags, skill_frontmatter]
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -342,7 +372,7 @@ jobs:
       - name: Evaluate every job result
         env:
           NEEDS: ${{ toJSON(needs) }}
-          SKIPPED_OK: ${{ needs.changes.outputs.run_build == 'false' && 'build' || '' }} ${{ needs.changes.outputs.run_tier3_smoke == 'false' && 'tier3_smoke' || '' }}
+          SKIPPED_OK: ${{ needs.changes.outputs.run_build == 'false' && 'build' || '' }} ${{ needs.changes.outputs.run_tier3_smoke == 'false' && 'tier3_smoke' || '' }} ${{ needs.changes.outputs.run_tier3_cloudtasks == 'false' && 'tier3_cloudtasks' || '' }}
         run: scripts/ci-gate.py
 
   # The Flink API tier audit (issue #103): fails when the main sources add a
