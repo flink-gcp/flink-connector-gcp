@@ -82,6 +82,14 @@ it. It refuses to start unless the environment gates are set, runs the gated cla
 per-service gates select, and asserts afterwards that they actually ran, so a silently skipped
 suite cannot pass as a green one. A few deliberately manual cases — slow schema-propagation
 observations — sit behind gates of their own, outside `just e2e`.
+
+Each connector runs even when an earlier connector test fails, provided the App Engine fixture has returned to its stopped, zero-instance state.
+The recipe removes selected old reports before starting and validates the full XML reports against that run's inventory at exit, including on failure.
+Missing, stale, truncated, mismatched, failed or skipped results fail the run.
+`target/e2e/evidence/` contains the per-class results and summary retained by GitHub Actions for 14 days.
+The exported evidence contains selected method names, outcomes and Java stack frames; it omits report properties, environment values and arbitrary test output.
+Full test output remains in the job log.
+
 These suites create and delete billed resources; each run costs real money, which is why CI
 runs them on a weekly schedule (plus manual dispatch) rather than per pull request.
 

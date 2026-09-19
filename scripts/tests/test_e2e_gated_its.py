@@ -57,7 +57,7 @@ REQUIRED = (
     "CLOUDTASKS_IT_PROJECT",
 )
 
-REPORT = '<?xml version="1.0"?>\n<testsuite name="{fqcn}" tests="{tests}" skipped="{skipped}">\n'
+REPORT = '<?xml version="1.0"?>\n<testsuite name="{fqcn}" tests="{tests}" skipped="{skipped}" failures="0" errors="0">\n'
 
 
 @pytest.fixture()
@@ -107,6 +107,10 @@ def tree(tmp_path):
         path = tmp_path / module / "target" / "surefire-reports" / f"TEST-p.{name}.xml"
         path.parent.mkdir(parents=True, exist_ok=True)
         text = REPORT.format(fqcn=f"p.{name}", tests=tests, skipped=skipped)
+        for index in range(tests):
+            outcome = "<skipped/>" if index < skipped else ""
+            text += f'<testcase name="method{index}" classname="p.{name}">{outcome}</testcase>'
+        text += "</testsuite>"
         path.write_text('<?xml version="1.0"?>\n<testsuite' if truncated else text)
         return path
 
@@ -427,7 +431,9 @@ def test_require_env_names_the_missing_variable(tree, missing):
 
 
 def test_assert_ran_accepts_reports_that_show_tests_running(tree):
-    for source in full_suite(tree):
+    sources = full_suite(tree)
+    assert tree("--prepare-reports").returncode == 0
+    for source in sources:
         tree.report(source.stem)
     result = tree("--assert-ran")
     assert result.returncode == 0, result.stderr
@@ -435,6 +441,7 @@ def test_assert_ran_accepts_reports_that_show_tests_running(tree):
 
 def test_assert_ran_rejects_a_missing_report(tree):
     sources = full_suite(tree)
+    assert tree("--prepare-reports").returncode == 0
     for source in sources[1:]:
         tree.report(source.stem)
     result = tree("--assert-ran")
@@ -450,13 +457,17 @@ def test_assert_ran_rejects_a_missing_report(tree):
     ],
 )
 def test_assert_ran_rejects_a_report_that_did_not_run(tree, tests, skipped):
-    for source in full_suite(tree):
+    sources = full_suite(tree)
+    assert tree("--prepare-reports").returncode == 0
+    for source in sources:
         tree.report(source.stem, tests=tests, skipped=skipped)
     assert tree("--assert-ran").returncode == 1
 
 
 def test_assert_ran_rejects_a_truncated_report(tree):
-    for source in full_suite(tree):
+    sources = full_suite(tree)
+    assert tree("--prepare-reports").returncode == 0
+    for source in sources:
         tree.report(source.stem, truncated=True)
     result = tree("--assert-ran")
     assert result.returncode == 1
@@ -509,7 +520,9 @@ def test_the_build_excludes_the_gated_tag_by_default():
 def test_compatibility_sources_are_discovered_checked_and_required_to_run(
     tree, source_root
 ):
-    for source in full_suite(tree):
+    sources = full_suite(tree)
+    assert tree("--prepare-reports").returncode == 0
+    for source in sources:
         tree.report(source.stem)
     tree.add("CompatITCase", gate="BIGTABLE_IT_PROJECT", source_root=source_root)
     result = tree("--check-tags")
@@ -520,9 +533,12 @@ def test_compatibility_sources_are_discovered_checked_and_required_to_run(
     )
     assert tree("--check-tags").returncode == 0
     assert "CompatITCase" in tree("--for-gate", "BIGTABLE_IT_PROJECT").stdout
+    assert tree("--prepare-reports").returncode == 0
+    for source in sources:
+        tree.report(source.stem)
     result = tree("--assert-ran")
     assert result.returncode == 1
-    assert "p.CompatITCase produced no surefire report" in result.stderr
+    assert "p.CompatITCase: NOT_RUN" in result.stderr
     tree.report("CompatITCase")
     result = tree("--assert-ran")
     assert result.returncode == 0, result.stderr

@@ -311,20 +311,21 @@ worktree-env:
 # the variables come from the uncommitted .env, which mise loads — and which a
 # fresh worktree does not have until `just worktree-env` links it (issue #156).
 #
-# The shape is scripts/e2e-gated-its.sh around four Maven calls. The Cloud
+# scripts/e2e-gated-its.sh owns preparation, connector runs and final reporting. The Cloud
 # Tasks App Engine class runs first inside appengine-e2e-fixture.sh's exact
 # start/test/stop lifecycle; the other connectors start only after that script
-# has verified STOPPED with zero instances.
+# has verified STOPPED with zero instances. Each subsequent connector runs even
+# if an earlier test failed; all failures are aggregated after report validation.
 # The pre-flight makes a missing variable an error before any build minutes are
 # spent, and the assertion afterwards proves the gated classes ran — without
 # it, @EnabledIfEnvironmentVariable turns lost credentials into a green run.
 #
-# The execution id on the surefire:test call is load-bearing, same as in
+# The execution id on the runner's surefire:test calls is load-bearing, same as in
 # binary-compat: -Dtest overrides includes on *every* surefire execution, so
 # without @integration-tests the default-test execution would run the same
 # classes a second time.
 #
-# The install step mirrors binary-compat's: the two -pl builds below are
+# The install step mirrors binary-compat's: the runner's -pl builds are
 # reactor subsets, so the test-utils module the gated tests depend on (#27)
 # and the base module the connectors compile against (#61) must come from
 # ~/.m2, not the reactor. Same hand-run cost too — the
@@ -354,12 +355,7 @@ worktree-env:
 #
 # Run the real-GCP gated ITCases and assert they actually ran.
 e2e:
-    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --require-env
-    {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
-    scripts/appengine-e2e-fixture.sh run -- {{ mvn }} -pl flink-connector-gcp-cloudtasks surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(mise x uv -- uv run --locked scripts/e2e-gated-its.sh --for-gate CLOUDTASKS_IT_PROJECT)"
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(mise x uv -- uv run --locked scripts/e2e-gated-its.sh --except-gate CLOUDTASKS_IT_PROJECT)"
-    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --assert-ran
+    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --run -- {{ mvn }}
 
 # The two markers a gated real-GCP ITCase carries have to stay together: the
 # @EnabledIfEnvironmentVariable the E2E suite is discovered by, and the
