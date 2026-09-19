@@ -50,7 +50,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>That outcome covers the two service behaviors the emulator cannot provide. Rejected and
  * retained deliveries are redelivered, but the response does not loop through the dead-letter
  * attempt budget, and the ordered sequence remains intact across the stop. Message volume and the
- * response window are deliberately small because this is a gated, billable test.
+ * response window are deliberately small because this is a gated, billable test. The two callbacks
+ * needed to cross the one-message capacity have their own readiness deadline; only the second
+ * callback starts the limit-response deadline.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
@@ -96,7 +98,7 @@ class PubSubBackpressuredSplitBufferRealGcpITCase extends AbstractPubSubRealGcpI
                         1,
                         Long.MAX_VALUE,
                         OrderingMode.PER_KEY);
-        BackpressuredArm.runFor(RESPONSE_WINDOW, List.of(arm));
+        arm.runUntilLimit(COLLECT_TIMEOUT, RESPONSE_WINDOW);
 
         LOG.info("Real Pub/Sub hard-limit response (#1138): {}", arm);
         assertThat(arm.limitExceeded()).isNotNull();

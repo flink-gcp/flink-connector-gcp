@@ -342,6 +342,31 @@ final class BackpressuredArm {
         }
     }
 
+    /**
+     * Runs the one-message, undrained arm until the crossing callback and limit response are
+     * observed.
+     */
+    void runUntilLimit(Duration readinessTimeout, Duration responseTimeout) throws Exception {
+        if (ratePerSecond != 0) {
+            throw new IllegalStateException("A hard-limit response probe must not drain records");
+        }
+        try (AutoCloseable teardown =
+                () -> Closers.closeAll(this::sample, this::recordClientState, this::close)) {
+            start();
+            SubscriberLimitAwaiter.await(readinessTimeout, responseTimeout, this::limitObservation);
+        }
+    }
+
+    private SubscriberLimitAwaiter.Observation limitObservation() {
+        sample();
+        Subscriber opened = client.get();
+        ApiService.State state = opened == null ? null : opened.state();
+        Throwable failure =
+                state == ApiService.State.FAILED ? opened.failureCause() : drainFailure.get();
+        return new SubscriberLimitAwaiter.Observation(
+                callbackDeliveries(), limitExceeded.get() != null, state, failure, toString());
+    }
+
     /** Opens the subscriber, which is when delivery starts, and starts the clock. */
     private void start() {
         reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
