@@ -216,21 +216,23 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     StagedMutationTestSink.Input input(long sequence) {
-        StagedMutationTestSink.Input original = super.input(sequence);
         try {
-            int phase = ledger.entry(sequence).phase;
-            long hash = hash(sequence);
-            String row =
-                    hot && sequence % 10 != 0
-                            ? "hot"
-                            : String.format(java.util.Locale.ROOT, "%016x-%d", hash, sequence);
-            return new StagedMutationTestSink.Input(
-                    original.table(),
-                    ByteString.copyFromUtf8(phase + "/" + row),
-                    original.mutations());
+            return input(sequence, ledger.entry(sequence).phase);
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }
+    }
+
+    /** The input for a slot whose phase is already known, as during a ledger scan. */
+    StagedMutationTestSink.Input input(long sequence, int phase) {
+        StagedMutationTestSink.Input original = super.input(sequence);
+        long hash = hash(sequence);
+        String row =
+                hot && sequence % 10 != 0
+                        ? "hot"
+                        : String.format(java.util.Locale.ROOT, "%016x-%d", hash, sequence);
+        return new StagedMutationTestSink.Input(
+                original.table(), ByteString.copyFromUtf8(phase + "/" + row), original.mutations());
     }
 
     static long hash(long sequence) {
@@ -420,11 +422,13 @@ final class Stage2Harness extends LocalStagedHarness {
 
     void verifyFakeSums() throws IOException {
         Map<String, Long> expected = new HashMap<>();
-        for (int i = 0; i < ledger.capacity; i++) {
-            if (ledger.entry(i).status == 2) {
-                expected.merge(input(i).row().toStringUtf8(), 1L, Long::sum);
-            }
-        }
+        ledger.scan(
+                (sequence, entry) -> {
+                    if (entry.status == 2) {
+                        expected.merge(
+                                input(sequence, entry.phase).row().toStringUtf8(), 1L, Long::sum);
+                    }
+                });
         for (Map.Entry<String, Long> row : expected.entrySet()) {
             Map<String, ByteString> actual = store.cells.get(tableName(table) + "/" + row.getKey());
             if (actual == null
@@ -442,23 +446,27 @@ final class Stage2Harness extends LocalStagedHarness {
         Map<String, Long> expectedMarkers = new HashMap<>();
         Set<String> expectedRows = new HashSet<>();
         Map<String, Long> expectedSums = new HashMap<>();
-        for (int i = 0; i < ledger.capacity; i++) {
-            Stage2Ledger.Entry entry = ledger.entry(i);
-            if (entry.status == 0) {
-                continue;
-            }
-            if (entry.status != 2) {
-                throw new IOException("Readback attempted before drain");
-            }
-            String row = input(i).row().toStringUtf8();
-            expectedRows.add(row);
-            expectedSums.merge(row, 1L, Long::sum);
-            if (staged) {
-                if (entry.marker.isEmpty() || expectedMarkers.put(entry.marker, (long) i) != null) {
-                    throw new IOException("Missing or duplicate expected marker identity");
-                }
-            }
-        }
+        // Phase per acknowledged slot (0 = not acknowledged), so the per-row checks below need
+        // no further inventory reads.
+        byte[] acknowledgedPhase = new byte[ledger.capacity];
+        ledger.scan(
+                (sequence, entry) -> {
+                    if (entry.status == 0) {
+                        return;
+                    }
+                    if (entry.status != 2) {
+                        throw new IOException("Readback attempted before drain");
+                    }
+                    acknowledgedPhase[(int) sequence] = (byte) entry.phase;
+                    String row = input(sequence, entry.phase).row().toStringUtf8();
+                    expectedRows.add(row);
+                    expectedSums.merge(row, 1L, Long::sum);
+                    if (staged
+                            && (entry.marker.isEmpty()
+                                    || expectedMarkers.put(entry.marker, sequence) != null)) {
+                        throw new IOException("Missing or duplicate expected marker identity");
+                    }
+                });
         BigtableDataSettings.Builder settings =
                 emulator
                         ? BigtableDataSettings.newBuilderForEmulator(
@@ -503,7 +511,9 @@ final class Stage2Harness extends LocalStagedHarness {
                                         + Long.BYTES;
                         Long sequence = expectedMarkers.remove(cell.getQualifier().toStringUtf8());
                         if (sequence == null
-                                || !input(sequence).row().equals(row.getKey())
+                                || !input(sequence, acknowledgedPhase[(int) (long) sequence])
+                                        .row()
+                                        .equals(row.getKey())
                                 || cell.getTimestamp() != 0
                                 || !cell.getValue().toStringUtf8().equals("1")) {
                             throw new IOException(
@@ -520,9 +530,12 @@ final class Stage2Harness extends LocalStagedHarness {
                             throw new IOException(
                                     "Payload sequence is outside the input inventory");
                         }
-                        if (ledger.entry(sequence).status != 2
-                                || !input(sequence).row().equals(row.getKey())
-                                || !input(sequence)
+                        int phase = acknowledgedPhase[(int) sequence];
+                        StagedMutationTestSink.Input generated =
+                                phase == 0 ? null : input(sequence, phase);
+                        if (generated == null
+                                || !generated.row().equals(row.getKey())
+                                || !generated
                                         .mutations()
                                         .get(0)
                                         .getSetCell()

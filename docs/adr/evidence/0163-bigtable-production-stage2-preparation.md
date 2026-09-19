@@ -80,6 +80,8 @@ These values reproduce the old capacity defaults; they are not a sizing recommen
 The inventory requires 64 bytes per entry.
 The percentile summary additionally allocates a `long[inventoryEntries]` array, requiring at least eight heap bytes per configured entry before sorting overhead and other live state.
 Neither the inventory file budget nor the work-directory budget bounds that heap allocation; calibrate the complete run, including summary generation, with the frozen JVM heap limit.
+The summary, the fake-sum check and the service readback walk every configured slot after the observation with one buffered sequential scan, and readback keeps a compact per-slot phase table (one byte per configured slot) so its per-row checks make no further inventory reads.
+Until 2026-09-19 they read each slot separately, one seek and five unbuffered reads per slot; with the [lean campaign's](../0166-bigtable-implementation-precedes-final-stage2-acceptance.md#lean-execution-and-recorded-failures-2026-09-19) 8,000,000-slot inventory that cost more than four minutes per pass on the observation host, and the campaign's first run exceeded its reservation in readback before it could record an outcome (recorded with that campaign's evidence).
 `stagedEntries` and `stagedBytes` bound each writer interval; they do not bound total heap or pending checkpoint collections.
 `workBytes` bounds the entire working directory, including inventory and checkpoint files.
 The sample-file cap remains 8 MiB.

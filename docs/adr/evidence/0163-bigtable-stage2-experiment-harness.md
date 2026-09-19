@@ -36,7 +36,7 @@ A continuous source admits through Flink backpressure until a wall-clock window 
 Its deterministic sequence is also bounded by a safety input capacity.
 Every distinct admission and successful acknowledgement occupies one fixed 64-byte disk slot; completed requests, payloads and futures are not retained by the timed receiver.
 The ledger bounds storage to 64 MB and one million inputs.
-Post-run percentile sorting and readback allocate arrays/maps bounded by that capacity, outside the admission window.
+Post-run percentile sorting and readback allocate arrays/maps bounded by that capacity, outside the admission window; since 2026-09-19 they read the inventory once with a sequential scan, and readback keeps a compact per-slot phase table so its per-row checks make no further inventory reads (see the [production preparation record](0163-bigtable-production-stage2-preparation.md#offline-matrix-and-local-calibration)).
 This is a single-process experiment: ledger timestamps and the static run registry do not support migration to another JVM.
 Fresh JVMs isolate repetitions; correctness recovery restarts tasks and MiniClusters within a repetition.
 
