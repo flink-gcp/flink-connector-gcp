@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.FieldValueList;
@@ -30,6 +31,8 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -51,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * annotations.
  */
 public final class RealBigQuery {
+
+    private static final Logger LOG = LoggerFactory.getLogger(RealBigQuery.class);
 
     private RealBigQuery() {}
 
@@ -123,18 +128,32 @@ public final class RealBigQuery {
     /**
      * Attempts every given table deletion and reports failures; the dataset's default table
      * expiration (24 h, set in {@code opentofu/flink-gcp/it-resources.tf}) is the backstop for a
-     * crashed run.
+     * crashed run. A short-term table-update rate limit gets at most six attempts, with waits of
+     * one, two, four, eight and sixteen seconds. Interruption stops further cleanup.
      */
     public static void deleteTables(String... tables) {
         BigQuery client = client();
-        deleteTables(table -> client.delete(TableId.of(project(), dataset(), table)), tables);
+        deleteTables(
+                table -> client.delete(TableId.of(project(), dataset(), table)),
+                Thread::sleep,
+                tables);
     }
 
-    static void deleteTables(Consumer<String> delete, String... tables) {
+    static void deleteTables(Consumer<String> delete, Sleeper sleeper, String... tables) {
         RuntimeException failure = null;
         for (String table : tables) {
             try {
-                delete.accept(table);
+                deleteTable(delete, sleeper, table);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                IllegalStateException aborted =
+                        new IllegalStateException(
+                                "Interrupted while deleting BigQuery E2E table " + table,
+                                interrupted);
+                if (failure != null) {
+                    aborted.addSuppressed(failure);
+                }
+                throw aborted;
             } catch (RuntimeException error) {
                 if (failure == null) {
                     failure = error;
@@ -146,6 +165,50 @@ public final class RealBigQuery {
         if (failure != null) {
             throw failure;
         }
+    }
+
+    private static void deleteTable(Consumer<String> delete, Sleeper sleeper, String table)
+            throws InterruptedException {
+        BigQueryException lastRateLimit = null;
+        for (int attempt = 0; ; attempt++) {
+            if (Thread.currentThread().isInterrupted()) {
+                InterruptedException interrupted =
+                        new InterruptedException("BigQuery E2E cleanup was interrupted");
+                if (lastRateLimit != null) {
+                    interrupted.addSuppressed(lastRateLimit);
+                }
+                throw interrupted;
+            }
+            try {
+                delete.accept(table);
+                return;
+            } catch (BigQueryException error) {
+                // The REST SDK does not retry the observed 403 metadata-update rate limit.
+                if (error.getCode() != 403
+                        || !"rateLimitExceeded".equals(error.getReason())
+                        || attempt == 5) {
+                    throw error;
+                }
+                lastRateLimit = error;
+                try {
+                    long delayMillis = 1000L << attempt;
+                    LOG.warn(
+                            "Rate-limited deleting BigQuery E2E table {} (attempt {}/6); retrying in {} ms",
+                            table,
+                            attempt + 1,
+                            delayMillis);
+                    sleeper.sleep(delayMillis);
+                } catch (InterruptedException interrupted) {
+                    interrupted.addSuppressed(error);
+                    throw interrupted;
+                }
+            }
+        }
+    }
+
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
     }
 
     /** Returns the live columns of {@code table}, in order. */
