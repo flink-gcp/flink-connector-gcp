@@ -1,0 +1,6345 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Preregistered main-measurement protocol for issue #1246, converted field for
+# field from the private draft protocol-draft.json (SHA-256 32122ff01527f4e17a1eac7377c0f11430d71fabba2bce65b4c011afb5b07354).
+# It is a preparation record, not an execution authorization; the cells run
+# only inside separately approved sessions.
+
+status = "PREPARATION_ONLY_NOT_EXECUTION_AUTHORIZATION"
+version = 1
+order_seed = 1246
+pending = [
+  "reviewed implementation and image digests",
+  "calibration execution approval",
+  "calibration evidence",
+  "fixed numeric attempt, resource, runtime and cost ceilings",
+  "main measurement execution approval",
+]
+
+[capacity_search]
+growth_factor = 2
+relative_bracket_width = 0.1
+admitted_rate_fraction = 0.95
+
+[support_thresholds]
+throughput_range_over_mean_max = 0.1
+
+[support_thresholds.general]
+throughput_ratio_min = 0.7
+p95_ratio_max = 2
+
+[support_thresholds.constrained]
+throughput_ratio_min = 0.25
+p95_ratio_max = 4
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s1-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s2-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s3-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s4-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s5-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s6-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r1-a3"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r1-a4"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r1-a0"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r1-a2"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r1-a1"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r2-a4"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r2-a1"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r2-a3"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r2-a0"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r2-a2"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r3-a4"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r3-a2"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r3-a1"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r3-a0"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b1024-r3-a3"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r1-a4"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r1-a0"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r1-a1"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r1-a2"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r1-a3"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r2-a3"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r2-a1"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r2-a2"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r2-a4"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r2-a0"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r3-a0"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r3-a1"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r3-a4"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r3-a2"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f1204-s7-b65536-r3-a3"
+flink = "1.20.4"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s1-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s1-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s1"
+parallelism = 1
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s2-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s2"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s3-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s3-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s3"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s4-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s4"
+parallelism = 1
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s5-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s5-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s5"
+parallelism = 16
+concurrency = 1
+checkpoint_seconds = 1
+distribution = "even"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s6-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s6"
+parallelism = 4
+concurrency = 4
+checkpoint_seconds = 10
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 60
+observation_seconds = 180
+
+[[cells]]
+cell_id = "f221-s7-b1024-r1-a2"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r1-a4"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r1-a1"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r1-a3"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r1-a0"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r2-a4"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r2-a1"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r2-a3"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r2-a2"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r2-a0"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r3-a4"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r3-a0"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r3-a1"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r3-a2"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b1024-r3-a3"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 1024
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r1-a2"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r1-a3"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r1-a1"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r1-a4"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r1-a0"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 1
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r2-a4"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r2-a1"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r2-a2"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r2-a3"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r2-a0"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 2
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r3-a2"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_RANDOM_CONTROL"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r3-a3"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r3-a4"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "STAGED_RANDOM"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r3-a1"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "NAMED_HASH"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360
+
+[[cells]]
+cell_id = "f221-s7-b65536-r3-a0"
+flink = "2.2.1"
+shape = "s7"
+parallelism = 16
+concurrency = 16
+checkpoint_seconds = 60
+distribution = "skew"
+body_bytes = 65536
+repetition = 3
+arm = "UNNAMED"
+channel_pool_size = 1
+warmup_seconds = 120
+observation_seconds = 360

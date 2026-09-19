@@ -33,6 +33,7 @@ from .common import (
     verify_pod,
 )
 from .environment import retry_conflicts
+from .evidence import MARKER, cell_prefix, release_exported
 from .model import Phase, session_shapes, taskmanager_class
 from .policy import (
     BENCHMARK,
@@ -497,6 +498,12 @@ class Cleanup:
         except (Failure, ValueError, OSError) as error:
             self.env.emit("state-cleanup-failed", {"cause": str(error)})
         if self.cloudtasks:
+            # A session that stopped before its end hook leaves exported cells
+            # unreleased; their markers prove the copies were verified.
+            try:
+                release_exported(self.env, self.env.store)
+            except (Failure, ValueError, OSError) as error:
+                self.env.emit("benchmark-release-failed", {"cause": str(error)})
             try:
                 self.env.emit("benchmark-evidence-retained", self.retained_evidence())
                 self.env.ledger.interrupt(self.env.approval.run_id, self.env.clock())
@@ -594,4 +601,12 @@ def verify_idle(env):
             raise
         if remaining is not None:
             raise Failure("Benchmark queue remains after cleanup")
+    if approval.scenario == "cloudtasks":
+        # An exported cell must have released its benchmark prefix; a cell
+        # without a marker may keep its objects until the bucket expires them.
+        for cell_id in approval.cell_ids:
+            prefix = cell_prefix(approval.run_id, cell_id)
+            marker, _ = env.store.read(prefix + MARKER)
+            if marker is not None and env.store.objects(prefix, BENCHMARK, 100000):
+                raise Failure("An exported cell's benchmark prefix was not released")
     return [{"kind": obj["kind"], "metadata": obj["metadata"]} for obj in items]

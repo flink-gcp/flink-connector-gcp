@@ -26,9 +26,12 @@ NONCE = "a" * 32
 DIGEST = "sha256:" + "b" * 64
 
 
-def render(line):
+SESSIONS = sorted((ROOT / "kubernetes/lifecycle/sessions").glob("*.toml"))
+
+
+def render(line, session_file=None):
     session = rt.load_session(
-        ROOT / "kubernetes/lifecycle/sessions/example-wiring.toml"
+        session_file or ROOT / "kubernetes/lifecycle/sessions/example-wiring.toml"
     )
     image = rt.GAR + rt.FLINK_LINES[line][0] + "@" + DIGEST
     result = subprocess.run(
@@ -112,3 +115,17 @@ def test_rendered_cells_pass_the_runtime_manifest_contract_on_both_lines():
                 rt.validate_cell_manifest(manifest, cell, approved)
                 == (rt.FLINK_LINES[line][0])
             )
+
+
+def test_every_reviewed_session_renders_and_passes_the_contract():
+    assert [path.name for path in SESSIONS] == [
+        "calibration-1246-flink120.toml",
+        "calibration-1246.toml",
+        "example-wiring.toml",
+    ]
+    for path in SESSIONS:
+        line = "1.20.4" if path.name.endswith("flink120.toml") else "2.2.1"
+        session, image, manifests = render(line, path)
+        approved = approval(session, line, image, manifests)
+        for manifest, cell in zip(manifests, approved.cells, strict=True):
+            rt.validate_cell_manifest(manifest, cell, approved)

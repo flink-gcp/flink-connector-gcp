@@ -18,7 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-06
-- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241)
+- Updated: 2026-09-19 (calibration preregistration and evidence pipeline for #1246)
+- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)
+- Evidence: [calibration preregistration](evidence/0162-cloudtasks-assessment-1246.md)
 - Supersedes: only the Cloud Tasks requirement in [ADR-0104](0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md) and [ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md) for a separate primitive performance pass before implementation, connector-level evaluation or release
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md` § Performance decision rule
@@ -73,6 +75,7 @@ An inconclusive final assessment supplies no support or release approval; a chan
 Before any later service measurement, preregister its offered-load or capacity question and the evidence needed to answer it, calibrate the harness on the execution host, and include a sensitivity control that can detect a known regression.
 The local wait repair alone does not validate a future capacity experiment: a deliberate pacing cap still limits what its throughput can establish.
 Each real-GCP run retains separate approval of concrete resources, location, lifetime, operation/dispatch caps and cost, followed by verified cleanup.
+The [calibration preregistration](evidence/0162-cloudtasks-assessment-1246.md) fixes the execution conditions, the calibration cells and their numeric ceilings, the instrument's acceptance criteria and the protocol interpretations the owner confirms before a session; the pinned protocol, the observation and reconciliation code and the offline analyzer are part of the reviewed supervisor bundle.
 
 ## Consequences
 

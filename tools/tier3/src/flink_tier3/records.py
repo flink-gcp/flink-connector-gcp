@@ -155,6 +155,17 @@ class Records:
 
         return self._change(edit)
 
+    def record_export(self, cell_id, summary):
+        """Record one cell's verified evidence export and its byte cost."""
+
+        def edit(record):
+            if cell_id in record.exports:
+                raise Failure("Cell export was already recorded")
+            record.exports[cell_id] = copy.deepcopy(summary)
+            record.evidence_bytes += int(summary.get("evidence_bytes", 0))
+
+        return self._change(edit)
+
     def intend(self, key, manifest=True):
         fields = {
             "application": "application_intent",
@@ -227,17 +238,14 @@ class EnvironmentLock:
                 "Unfinished run records require recovery before lock acquisition"
             )
         # Immutable approvals without a final result remain blockers even if a
-        # control writer removed the mutable records.
-        names = (
-            {obj["name"] for obj in self.store.objects("runs/", maximum=100000)}
-            if inspect_runs
-            else set()
-        )
-        for name in names:
-            if (
-                name.endswith("/approval.json")
-                and name.removesuffix("approval.json") + "result.json" not in names
-            ):
+        # control writer removed the mutable records. A delimiter listing keeps
+        # the scan proportional to the number of runs, not their evidence.
+        for run in sorted(self.store.prefixes("runs/")) if inspect_runs else ():
+            approval, _ = self.store.read(run + "approval.json")
+            if approval is None:
+                continue
+            result, _ = self.store.read(run + "result.json")
+            if result is None:
                 raise Failure(
                     "An approval lacks a final idle receipt; recover it first"
                 )

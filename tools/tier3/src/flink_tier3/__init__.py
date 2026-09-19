@@ -43,6 +43,9 @@ from .common import utc as utc
 from .common import verify_pod as verify_pod
 from .environment import Environment as Environment
 from .environment import retry_conflicts as retry_conflicts
+from .evidence import Collector as Collector
+from .evidence import DirectorySource as DirectorySource
+from .evidence import Reconciler as Reconciler
 from .google import GoogleToken as GoogleToken
 from .google import Storage as Storage
 from .google import authorized_session as authorized_session
@@ -62,6 +65,7 @@ from .model import queue_name as queue_name
 from .model import session_plan as session_plan
 from .model import validate_approval as validate_approval
 from .model import validate_cells as validate_cells
+from .observe import CellObserver as CellObserver
 from .policy import BENCHMARK as BENCHMARK
 from .policy import CEILINGS as CEILINGS
 from .policy import CLOUDTASKS as CLOUDTASKS
@@ -93,4 +97,5 @@ from .policy import STATE as STATE
 from .policy import SYSTEM as SYSTEM
 from .records import EnvironmentLock as EnvironmentLock
 from .records import Records as Records
+from .supervisor import HookChain as HookChain
 from .supervisor import Supervisor as Supervisor

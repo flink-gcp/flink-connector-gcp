@@ -612,6 +612,8 @@ class RunRecord:
     cells: dict = field(default_factory=dict)
     cell_intent: dict | None = None
     operations: dict = field(default_factory=dict)
+    exports: dict = field(default_factory=dict)
+    evidence_bytes: int = 0
 
     @classmethod
     def from_dict(cls, value):

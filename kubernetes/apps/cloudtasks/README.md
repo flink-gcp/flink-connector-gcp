@@ -162,7 +162,7 @@ The counts-only control writes no rows, so its snapshot does not require that eq
 Close with an outstanding callback produces an incomplete snapshot; a later callback never upgrades that persisted snapshot.
 An abrupt process loss can leave a registration without a terminal receipt.
 
-The collector must discover registrations independently of the logs, require matching terminal receipts for a steady-state result, and compare the rows decoded from the parts with `rows_exported` and the terminal counts.
+The lifecycle collector (`flink_tier3/evidence.py`, described in the [lifecycle runbook](../../lifecycle/README.md#cloud-tasks-session)) discovers registrations from the receipts rather than the logs, requires matching terminal receipts for a steady-state result, and compares the rows decoded from the parts with `rows_exported` and the terminal counts.
 Thus losing the final CSV row or all rows from one registered creator cannot be concealed by counting the remaining CSV itself.
 A complete receipt certifies local accounting and that every part closed without a reported error; it does not certify successful service creation, a read-back of the parts, job success or a performance pass.
 Read back the receipts and reconcile record/task outcomes and job status before accepting a cell.
@@ -172,7 +172,7 @@ Receipts carry schema version 1, run/cell/arm identity, role, incarnation, proce
 They contain no task body, target URL or exception text.
 Wall/monotonic samples do not prove synchronized clocks across hosts.
 The analyzer must establish the observation window and clock bounds independently, preserving the cross-JVM latency exclusion above.
-The worker writes receipts to temporary benchmark storage; the lifecycle collector must export them to retained evidence before deleting the run prefix.
+The worker writes receipts to temporary benchmark storage; the lifecycle collector exports them to retained evidence, verified by hash, before the run prefix is released.
 Receipt writes and their failure/overhead behavior still require execution-host calibration.
 
 ## Resource boundary and remaining acceptance

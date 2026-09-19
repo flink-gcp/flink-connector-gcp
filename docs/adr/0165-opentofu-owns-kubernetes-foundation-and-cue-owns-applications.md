@@ -30,6 +30,7 @@ limitations under the License.
 - Updated: 2026-09-17 (idle Cloud Tasks namespace and workload identity)
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
+- Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -314,6 +315,11 @@ Cleanup deletes the queue only after the run persisted its intent to create it, 
 The measurement application no longer prints its per-attempt rows to stdout: the supervisor's bounded log reads cannot capture hundreds of rows per second, so rows are written as gzip parts through the Flink filesystem next to the receipts, and Pod logs carry only Flink logs.
 A truncated Pod log is therefore recorded rather than fatal for this scenario, while the smoke scenarios keep failing on truncation.
 Cleanup deletes only the cells' checkpoint state under the one-day benchmark bucket and records the retained rows and receipts; exporting them to durable evidence and reconciling them against the receipts is the next change, which must run inside the same workflow execution.
+
+That next change followed: the supervisor reconciles each cell's rows against its receipts after the cell, rewrites them into the evidence bucket with per-object hashes and a marker, releases the benchmark prefix only after the marker exists, and records one observation per poll from the Flink REST API, the TaskManagers, the queue and the Pods.
+The offline analyzer and the protocol pin ship in the same source bundle, so `runtime_sha256` covers the rules that will judge a run before it starts.
+The environment lock's scan of `runs/` moved from listing every object to a delimiter listing with two reads per run, because exported row parts would otherwise exceed its object budget within a few sessions.
+Declined: exporting rows through the supervisor's own memory (parts stream through gzip and are hashed on the way; nothing is buffered whole) and a separate analysis dependency (the analyzer uses no cloud client and needs no checkout, only the installed package).
 
 Declined: extending the 60-minute smoke window to sessions (the workflow timeout rises to six hours only for this scenario, and the session's serial budget is proven to fit inside it); pinning a placeholder application digest; letting the connector or the supervisor create queues (only the runner may, and only the approved name).
 
