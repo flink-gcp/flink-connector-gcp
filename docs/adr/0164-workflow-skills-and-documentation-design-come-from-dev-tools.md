@@ -28,8 +28,9 @@ Adopt the shared workflow skills, installation recipe and Hugo design module fro
 [flink-gcp-dev-tools](https://github.com/flink-gcp/flink-gcp-dev-tools).
 The initial Hugo pin is its merged commit `f33d4549a3be1790ef26650ba9cc35a94a44b49f`, following the
 [shared-source decision](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/f33d4549a3be1790ef26650ba9cc35a94a44b49f/docs/adr/0001-share-development-assets.md).
-The assets are first-party flink-gcp sources under Apache-2.0, extracted from this repository and
+The original shared assets are first-party flink-gcp sources under Apache-2.0, extracted from this repository and
 the protobuf library; Hugo Book remains an external module dependency.
+The shared search override adapts Hugo Book v0.14.0 and retains its upstream MIT notice.
 
 Keep the four skill directories, including their Codex metadata, as tracked copies selected by
 `dev_tools_revision` in the justfile.
@@ -55,11 +56,11 @@ procedures at the frozen source revision.
 Review records use inline comments with an empty review body and a comments array.
 All other skills remain locally maintained.
 
-Import the shared Hugo module through `docs/go.mod` and `docs/go.sum`, and remove the six local
+Import the shared Hugo module through `docs/go.mod` and `docs/go.sum`, and avoid local copies of shared
 theme files so that local precedence does not hide shared updates.
 Keep class-based highlighting and the local assets mount in the site's own configuration.
 The local mount preserves site-specific extensions beside the source-snippet sub-target mounts.
-Palette generation and theme-control changes belong in dev-tools; this repository owns content,
+Palette generation, theme-control changes and search initialization belong in dev-tools; this repository owns content,
 source-backed snippets, Javadoc, documentation version assembly and Pages deployment.
 
 ## Evidence
