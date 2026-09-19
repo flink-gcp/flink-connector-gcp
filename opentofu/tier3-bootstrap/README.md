@@ -64,10 +64,9 @@ The runner and supervisor receive the same application lifecycle Role used for s
 These are trusted Operator administrators, as described in [ADR-0165](../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md).
 
 The new namespace retains zero Pod/PVC quotas.
-The common bootstrap helper retains its existing two-namespace inspection until this foundation has been applied successfully.
-The administrator and post-apply acceptance separately verify the new namespace's observed zero quota and empty workload inventory.
-Extending the common helper's namespace inventory and the Helm watch set follows successful bootstrap apply and an empty refreshed plan.
-The existing Helm release still watches only `tier3-smoke`.
+The [successful foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35234958991) and subsequent empty refreshed plan completed the namespace prerequisites.
+After verification of the runner's new read permissions, the common bootstrap helper now inspects all three namespaces.
+The [Helm root](../tier3-operator/README.md) extends its watch set to both application namespaces while keeping zero replicas.
 The smoke runner still admits only its existing smoke scenarios.
 Application publication, Cloud Tasks admission, queue creation and performance measurements follow separately reviewed changes and numeric execution approval.
 
@@ -89,10 +88,10 @@ After merge, collect successful apply and an empty refreshed plan; separately ve
 Also verify the runner can read its quota and workload inventory through the applied lifecycle RoleBinding before extending the common helper, changing Helm or admitting work.
 An administrator grant is an authorization prerequisite, not evidence that WIF authentication or the later workload succeeds.
 
-Do not extend the common helper's namespace list in this foundation change.
+For the initial namespace foundation change, retain the common helper's existing namespace list until acceptance completes.
 A cancelled apply can leave the environment lock held before the runner's new lifecycle RoleBinding exists.
 Recovery uses that helper as the runner; requiring reads in the new namespace at that point would prevent recovery from releasing the lock.
-Keep the existing recovery inspection until the new runner permissions have been applied and verified.
+The successful apply and verified runner permissions above permit the subsequent three-namespace inspection.
 
 ## PR plan and merge apply
 
@@ -189,7 +188,7 @@ No local service-account impersonation grant is required.
 ## Next stage
 
 After bootstrap is applied and its plan is empty, the [separate Helm root](../tier3-operator/README.md) installs the idle release with `replicas = 0`, `webhook.create = false`, `skip_crds = true` and `create_namespace = false`.
-The Operator initially watches `tier3-smoke` only.
+The original release watched `tier3-smoke` only; the accepted Cloud Tasks namespace extension adds `tier3-cloudtasks` as described above.
 CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the foundation.
 The [image publication path](../../kubernetes/images/README.md) supplies GAR runtime pins.
 The [bounded lifecycle](../../kubernetes/lifecycle/README.md) supplies admission and cleanup; a generic smoke run requires separate execution approval.
@@ -237,7 +236,7 @@ Quota writes in both application namespaces also name only `tier3-idle`.
 Dynamic Pod names cannot be constrained to a run using RBAC: the runtime must check UID and ownership before deletion.
 The shared bootstrap reader binding supplies read access to the three namespace identities, the four CRDs and the named bootstrap RBAC objects.
 The lifecycle Roles do not directly grant Secret access, identity/RBAC writes, namespace/CRD writes, or unrestricted bind/escalate/impersonate.
-They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke`, including Secret access and Pod creation.
+They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke` and `tier3-cloudtasks`, including Secret access and Pod creation.
 Treat the runner and supervisor as trusted Operator administrators; the direct Role inventory is not a boundary on their reachable permissions.
 This trust does not extend to the smoke workload identity, which cannot create workloads in `tier3-system`.
 
@@ -261,7 +260,7 @@ Do not grant these rules to the plan identity, and do not disable Kubernetes esc
 After the one-time grant, CI applies the tracked Roles through the normal reviewed saved-plan path.
 This grant does not authorize quota changes, Operator scale-up or application execution.
 
-### Acceptance and next stage
+### Initial lifecycle foundation acceptance and next stage
 
 Review all three root plans before merge.
 The GCP plan adds two service accounts, one bucket and the scoped grants; it updates the existing WIF provider without changing its repository/owner condition.

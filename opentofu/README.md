@@ -26,6 +26,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
 | `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
 | `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket for separately approved Cloud Tasks benchmarks |
+| `flink-gcp/cloudtasks-lifecycle.tf` | Queue control and benchmark state cleanup grants for the runner and supervisor |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
@@ -137,7 +138,8 @@ The separate `cloudtasks-benchmark` runtime account has project-wide `roles/clou
 The Kubernetes identity `tier3-cloudtasks/cloudtasks-benchmark` may impersonate it through Workload Identity Federation for GKE; the workload ServiceAccount must carry the corresponding GCP account annotation.
 Queue operations remain project-wide, so the run supervisor must enforce exact queue names.
 Neither the node account nor the runtime account receives IAM administration permissions.
-The apply identity gains `compute.networkAdmin`, `container.clusterAdmin`, `artifactregistry.admin` and permission to attach only the dedicated node account.
+The cluster foundation grants the apply identity `compute.networkAdmin`, `container.clusterAdmin`, `artifactregistry.admin` and permission to attach the dedicated node account.
+The [Cloud Tasks lifecycle control](#cloud-tasks-lifecycle-control) extension also grants it project-wide custom-role administration.
 
 A merge applies this foundation and creates a cluster; it therefore requires resource and cost approval before merge.
 The [GKE price list](https://cloud.google.com/kubernetes-engine/pricing) checked on 2026-09-11 charges $0.10 per cluster-hour.
@@ -146,6 +148,27 @@ Without that credit, a 744-hour month costs $74.40 in cluster management fees ev
 Image/object storage, application Pods and other metered services are additional.
 No claim of zero idle cost follows from this configuration.
 Cluster deletion protection prevents accidental removal; deliberate decommissioning requires a reviewed change disabling it before deletion.
+
+### Cloud Tasks lifecycle control
+
+The [lifecycle grants](flink-gcp/cloudtasks-lifecycle.tf) explicitly select the existing runner and supervisor identities for the later Cloud Tasks benchmark admission path.
+Adding a different identity to the shared lifecycle registry does not extend these grants.
+Both receive custom roles with `cloudtasks.queues.get/pause/delete` and `cloudtasks.tasks.get/list`; only the runner also receives `cloudtasks.queues.create`.
+These roles omit queue resume/update/purge/IAM changes and task creation/deletion/run/fullView.
+The bindings are project-wide: IAM does not restrict them to the `ct1246-` prefix or an active run.
+The runtime must enforce exact queue names and run ownership, configure a queue at creation, then pause it and verify that state before admitting task creation.
+
+Each identity also receives Object Viewer on `flink-gcp-cloudtasks-benchmark` and Object User conditional on object names under `runs/`.
+Listing and reads cover the whole bucket; writes and deletes cover every run prefix, not just the current run.
+The existing benchmark worker's editor grant is unchanged.
+The apply identity receives project-wide `roles/iam.roleAdmin`, and custom-role creation depends on that binding.
+This permits administration of project custom roles beyond these two names; it does not grant Role Admin to either lifecycle identity.
+
+The GCP plan should add nine resources: two custom roles, two project bindings, four bucket bindings and the apply identity's Role Admin binding.
+The Operator plan should update the idle Helm release in place, adding a Role/RoleBinding in `tier3-cloudtasks` while preserving zero replicas and all idle quotas.
+Review the actual CI plans and rendered chart before merge.
+After merge, require successful apply, idle verification and empty refreshed plans before implementing the dependent admission path.
+No queue, workload or paid measurement is admitted by these grants; execution still requires separate numeric resource and cost approval.
 
 ### Operator installation follows the cluster
 

@@ -186,16 +186,26 @@ def test_wrong_principal_stops_before_permission_or_inventory_checks(
     assert calls == [("auth", "whoami", "-o", "json")]
 
 
-def test_preflight_rejects_active_inventory(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "namespace", ["tier3-system", "tier3-smoke", "tier3-cloudtasks"]
+)
+def test_preflight_rejects_active_inventory(monkeypatch, tmp_path, namespace):
     cluster = bootstrap.Cluster(tmp_path / "kubeconfig")
     monkeypatch.setattr(cluster, "validate_target", lambda: None)
     monkeypatch.setattr(cluster, "quota", lambda: None)
 
     def kubectl(*args):
         if args[:2] == ("get", "namespace"):
-            return result("namespace/tier3-system")
+            return result("namespace/" + args[2])
+        active = args[args.index("--namespace") + 1] == namespace
         return result(
-            json.dumps({"items": [{"kind": "Pod", "metadata": {"name": "active"}}]})
+            json.dumps(
+                {
+                    "items": [{"kind": "Pod", "metadata": {"name": "active"}}]
+                    if active
+                    else []
+                }
+            )
         )
 
     monkeypatch.setattr(cluster, "kubectl", kubectl)
@@ -356,3 +366,24 @@ def test_ci_access_failure_does_not_publish_a_wrapper(monkeypatch, tmp_path):
         cluster.ci("plan")
     assert not path_file.exists()
     assert not list(tmp_path.glob("tier3-tofu-*"))
+
+
+@pytest.mark.parametrize("field", ["pods", "persistentvolumeclaims"])
+@pytest.mark.parametrize("section", ["spec", "status"])
+def test_cloudtasks_quota_must_be_zero_and_observed(
+    monkeypatch, tmp_path, field, section
+):
+    cluster = bootstrap.Cluster(tmp_path / "kubeconfig")
+
+    def kubectl(*args):
+        quota = {
+            "spec": {"hard": {"pods": "0", "persistentvolumeclaims": "0"}},
+            "status": {"hard": {"pods": "0", "persistentvolumeclaims": "0"}},
+        }
+        if args[args.index("--namespace") + 1] == "tier3-cloudtasks":
+            quota[section]["hard"][field] = "1"
+        return result(json.dumps(quota))
+
+    monkeypatch.setattr(cluster, "kubectl", kubectl)
+    with pytest.raises(RuntimeError, match="idle quota"):
+        cluster.quota()

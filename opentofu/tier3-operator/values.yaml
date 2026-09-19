@@ -25,6 +25,7 @@ operatorPod:
       ephemeral-storage: "1Gi"
 watchNamespaces:
   - tier3-smoke
+  - tier3-cloudtasks
 webhook:
   create: false
 image:

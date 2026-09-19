@@ -28,6 +28,7 @@ limitations under the License.
 - Updated: 2026-09-15 (uv workspace member, installed CLI and package source delivery)
 - Updated: 2026-09-16 (one bounded generic recovery exercise and phase-specific oracles)
 - Updated: 2026-09-17 (idle Cloud Tasks namespace and workload identity)
+- Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -273,6 +274,28 @@ The [bootstrap runbook](../../opentofu/tier3-bootstrap/README.md#administrator-p
 CI adopts those objects and creates the workload/lifecycle identities through the ordinary PR plan and post-merge apply.
 This change starts no workload and establishes no Cloud Tasks performance result.
 Operator watch configuration, application publication, bounded admission and numeric resource/cost approval remain subsequent steps in #1246.
+
+### Cloud Tasks lifecycle control foundation
+
+The [namespace foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35234958991) completed successfully with an empty refreshed plan.
+The new namespace remained idle and the runner's namespace reads were verified before extending the shared helper.
+The helper now inspects all three namespaces, and the idle Operator watches both application namespaces.
+Helm adds only its Operator Role and RoleBinding in `tier3-cloudtasks`, bringing the rendered inventory to nine objects.
+The already-applied bootstrap installer grants cover these permissions.
+The runner and supervisor can select the Operator KSA through Jobs in `tier3-system`, so their trusted Operator-administrator reach now includes both application namespaces.
+
+The existing lifecycle GSAs also need to stop queues and remove checkpoint state after worker failure.
+Two custom roles enumerate queue get/pause/delete and task get/list; only the runner additionally receives queue create.
+Neither role grants queue resume/update/purge/IAM changes, task creation/deletion/run or task fullView.
+Project-level bindings do not enforce a queue prefix: the later runtime must check the exact approved queue and run ownership.
+The apply identity receives project-wide Role Admin to manage custom roles, including names beyond these two; custom-role creation depends on that grant.
+
+Both lifecycle identities receive bucket-wide Object Viewer and Object User conditioned on the benchmark bucket's `runs/` object prefix.
+This allows writes and deletes across all run prefixes and does not provide per-run isolation.
+The worker's existing editor role is unchanged.
+The expected GCP change is nine additions, separate from the in-place idle Helm release update.
+Review those counts against CI plans before merge, then collect successful apply, idle inventory and empty refreshed plans.
+These persistent grants prepare a separately reviewed runtime; they start no queue or workload and authorize no paid measurement.
 
 ### Ownership boundaries
 
