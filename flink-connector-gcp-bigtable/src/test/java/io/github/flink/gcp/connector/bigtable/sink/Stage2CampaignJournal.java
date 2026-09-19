@@ -125,6 +125,7 @@ final class Stage2CampaignJournal {
         state.setProperty("heartbeat", Long.toString(now));
         state.setProperty("nextRun", "0");
         state.setProperty("nextAuxiliary", "0");
+        state.setProperty("failedRuns", "0");
         state.setProperty("auxiliarySha256", auxiliary == null ? "" : auxiliary.sha256);
         state.setProperty("cell", "-1");
         state.setProperty("planSha256", planSha256);
@@ -437,13 +438,23 @@ final class Stage2CampaignJournal {
         var phase = auxiliaryPhase(name);
         update(
                 state -> {
-                    workerLive(state, phase.table(), pid, processStart);
+                    if (successful) {
+                        workerLive(state, phase.table(), pid, processStart);
+                    } else {
+                        recordable(state, phase.table(), pid, processStart);
+                    }
                     if (!name.equals(state.getProperty("activeAuxiliary"))) {
                         throw new IllegalStateException("Different auxiliary completion");
                     }
                     state.setProperty("runStatus", successful ? "OBSERVED" : "FAILED");
+                    if (!successful) {
+                        state.setProperty(
+                                "failedRuns", Long.toString(number(state, "failedRuns") + 1));
+                    }
                     record("auxiliary-" + name + "-run.properties", state);
-                    state.setProperty("phase", successful ? "RETAINING" : "STOPPED");
+                    // A failed auxiliary phase is retained as a failure and cleaned up like a
+                    // successful one so the next preregistered phase can still be observed.
+                    state.setProperty("phase", "RETAINING");
                 });
     }
 
@@ -640,24 +651,49 @@ final class Stage2CampaignJournal {
             throws IOException {
         update(
                 state -> {
-                    workerLive(state, table, pid, processStart);
+                    if (successful) {
+                        workerLive(state, table, pid, processStart);
+                    } else {
+                        recordable(state, table, pid, processStart);
+                    }
                     if (state.containsKey("activeAuxiliary")) {
                         throw new IllegalStateException(
                                 "Auxiliary observation requires its separate outcome");
                     }
                     long order = number(state, "nextRun");
                     state.setProperty("runStatus", successful ? "OBSERVED" : "FAILED");
+                    if (!successful) {
+                        state.setProperty(
+                                "failedRuns", Long.toString(number(state, "failedRuns") + 1));
+                    }
                     // Persist outcomes separately so measured liveness checks remain fixed-size.
                     record("run-" + order + ".properties", state);
-                    if (!successful) {
-                        state.setProperty("phase", "STOPPED");
-                    } else {
-                        state.setProperty("nextRun", Long.toString(order + 1));
-                        if ((order + 1) % 6 == 0) {
-                            state.setProperty("phase", "RETAINING");
-                        }
+                    // A failed, empty or censored run stays a recorded failure; the campaign
+                    // proceeds to the next preregistered run and never repeats this one.
+                    state.setProperty("nextRun", Long.toString(order + 1));
+                    if ((order + 1) % 6 == 0) {
+                        state.setProperty("phase", "RETAINING");
                     }
                 });
+    }
+
+    /**
+     * A failure may be recorded after the worker's deadline: the deadline bounds admission and
+     * measurement, and a checkpoint timeout is the expected way for a run to fail late. Identity,
+     * phase and the single active-run slot are still required so a stale worker cannot record over
+     * a different run or over a stopped campaign. The window is bounded by supervision: a heartbeat
+     * that observes the expired, still-started worker refuses, so the run reservation must cover
+     * the failure path and this relaxation only absorbs the remaining race.
+     */
+    private static void recordable(Properties state, String table, long pid, String processStart) {
+        if (!state.getProperty("phase").equals("RUNNING")
+                || !"STARTED".equals(state.getProperty("runStatus"))
+                || !table.equals(state.getProperty("workerTable"))
+                || pid != number(state, "workerPid")
+                || !processStart.equals(state.getProperty("workerStart"))) {
+            throw new IllegalStateException(
+                    "Campaign worker is not the active run; its failure cannot be recorded");
+        }
     }
 
     @FunctionalInterface
