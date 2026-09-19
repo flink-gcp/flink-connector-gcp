@@ -24,7 +24,7 @@
 # run it, which is the point: joining the E2E workflow is a decision, not an
 # accident.
 #
-# Six modes. The `e2e` recipe uses the four lifecycle modes below; default is
+# The `e2e` recipe uses --run to own execution and final reporting; default is
 # useful for an undivided manual run, and the final mode is a per-pull-request
 # check in ci.yaml via `just check-gated-tags`:
 #
@@ -36,8 +36,10 @@
 #                  below existed (issue #245 asked): the tag makes the suite
 #                  opt-in per command, and `just e2e` *is* that opt-in, so a
 #                  variable missing inside it is a broken run, not a choice
-#   --assert-ran   fail unless every gated class has a surefire report showing
-#                  tests ran and none skipped — the after-the-fact proof that
+#   --run -- CMD   run the complete suite and aggregate failures.
+#   --prepare-reports remove selected old reports and record this run's inventory.
+#   --assert-ran   fail unless every gated class has a complete fresh XML report
+#                  showing passing tests and none skipped — the after-the-fact proof that
 #                  green meant "ran", not "skipped". Without it, a workflow
 #                  that lost its credentials would go green, the worst failure
 #                  mode for a job whose purpose is catching what the emulator
@@ -45,9 +47,8 @@
 #   --for-gate     print only the classes using the named gate. The App Engine
 #                  lifecycle uses this to start its billed instance around the
 #                  Cloud Tasks class and nothing else.
-#   --except-gate  print every class except those using the named gate. The
-#                  remaining suites run only after the App Engine fixture has
-#                  returned to its stopped state.
+#   --except-gate  print every class except those using the named gate, for
+#                  callers selecting an explicit subset outside --run.
 #   --check-tags   fail unless the environment gate and @Tag("gated") sit
 #                  together on every class carrying either (issue #245)
 #
@@ -85,7 +86,9 @@ gated_sources() {
     run_tag_checker "${arguments[@]}"
 }
 
-run_tag_checker() {
+run_repository_python() {
+    local python_script=$1
+    shift
     local script_dir repository_root
     script_dir=$(cd "$(dirname "$0")" && pwd)
     repository_root=$(cd "$script_dir/.." && pwd)
@@ -93,7 +96,7 @@ run_tag_checker() {
         && [ "${VIRTUAL_ENV:-}" = "$repository_root/.venv" ] \
         && command -v python3 >/dev/null 2>&1 \
         && python3 -c 'import tree_sitter, tree_sitter_java' >/dev/null 2>&1; then
-        python3 "$script_dir/check-gated-tags.py" "$@"
+        python3 "$script_dir/$python_script" "$@"
         return
     fi
     if ! command -v mise >/dev/null 2>&1; then
@@ -108,7 +111,72 @@ run_tag_checker() {
     fi
     mise x -C "$repository_root" uv -- \
         uv run --project "$repository_root" --locked python \
-        "$script_dir/check-gated-tags.py" "$@"
+        "$script_dir/$python_script" "$@"
+}
+
+run_tag_checker() {
+    run_repository_python check-gated-tags.py "$@"
+}
+
+suite_child=''
+
+run_child() {
+    local status=0
+    "$@" &
+    suite_child=$!
+    wait "$suite_child" || status=$?
+    suite_child=''
+    return "$status"
+}
+
+cancel_suite() {
+    local status=$1
+    trap - INT TERM
+    if [ -n "$suite_child" ]; then
+        kill -TERM "$suite_child" 2>/dev/null || true
+        wait "$suite_child" || true
+    fi
+    exit "$status"
+}
+
+finish_suite() {
+    local primary=$? reports=0
+    trap - EXIT
+    scripts/e2e-gated-its.sh --assert-ran || reports=$?
+    if [ "$primary" -ne 0 ]; then
+        exit "$primary"
+    fi
+    exit "$reports"
+}
+
+run_suite() {
+    local outcome=0 gate module classes
+    local maven=("$@")
+    scripts/e2e-gated-its.sh --prepare-reports
+    trap finish_suite EXIT
+    trap 'cancel_suite 130' INT
+    trap 'cancel_suite 143' TERM
+    scripts/e2e-gated-its.sh --require-env
+    run_child "${maven[@]}" -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
+    run_child "${maven[@]}" -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
+    classes=$(scripts/e2e-gated-its.sh --for-gate CLOUDTASKS_IT_PROJECT)
+    run_child scripts/appengine-e2e-fixture.sh run -- "${maven[@]}" -pl flink-connector-gcp-cloudtasks \
+        surefire:test@integration-tests -Dtest.excluded.groups= -Dsurefire.rerunFailingTestsCount=0 "-Dtest=$classes" || outcome=1
+    # A test failure can return the same status as a failed stop. Verify the idle state
+    # independently before starting more billed fixtures.
+    run_child scripts/appengine-e2e-fixture.sh stop
+    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
+        case "$gate" in
+            BQ_IT_PROJECT) module=bigquery ;;
+            PUBSUB_IT_PROJECT) module=pubsub ;;
+            BIGTABLE_IT_PROJECT) module=bigtable ;;
+            SPANNER_IT_PROJECT) module=spanner ;;
+        esac
+        classes=$(scripts/e2e-gated-its.sh --for-gate "$gate")
+        run_child "${maven[@]}" -pl "flink-connector-gcp-$module" surefire:test@integration-tests \
+            -Dtest.excluded.groups= -Dsurefire.rerunFailingTestsCount=0 "-Dtest=$classes" || outcome=1
+    done
+    return "$outcome"
 }
 
 print_classes() {
@@ -138,7 +206,7 @@ case "${1:-}" in
         # its service and version from OpenTofu, while the lifecycle wrapper
         # exports the observed instance id only after startup.
         [ "$#" -eq 1 ] || {
-            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
             exit 2
         }
         for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT CLOUDTASKS_IT_PROJECT; do
@@ -150,65 +218,46 @@ case "${1:-}" in
         ;;
     --for-gate)
         if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
-            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
             exit 2
         fi
         print_classes "$2"
         ;;
     --except-gate)
         if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
-            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
             exit 2
         fi
         print_classes '' "$2"
         ;;
-    --assert-ran)
+    --run)
+        if [ "$#" -lt 3 ] || [ "$2" != -- ]; then
+            echo "usage: $0 --run -- MAVEN [ARG ...]" >&2
+            exit 2
+        fi
+        shift 2
+        run_suite "$@"
+        ;;
+    --prepare-reports|--assert-ran)
         [ "$#" -eq 1 ] || {
-            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            echo "usage: $0 --prepare-reports | --assert-ran" >&2
             exit 2
         }
-        failed=0
         sources=$(gated_sources)
-        while IFS= read -r src; do
-            module=${src%%/src/test/*}
-            fqcn=${src#*/src/test/}
-            fqcn=${fqcn#*/}
-            fqcn=${fqcn%.java}
-            fqcn=${fqcn//\//.}
-            report="$module/target/surefire-reports/TEST-$fqcn.xml"
-            if [ ! -f "$report" ]; then
-                echo "::error::$fqcn produced no surefire report ($report): the gated ITCase did not run" >&2
-                failed=1
-                continue
-            fi
-            # Both attributes live on the root <testsuite> element. Their
-            # absence is fatal rather than defaulted, for the same reason as in
-            # surefire-fingerprint.sh: a report truncated by a crashed fork
-            # must not read as anything.
-            tests=$(grep -m1 -o 'tests="[0-9]*"' "$report" | tr -dc '0-9' || true)
-            skipped=$(grep -m1 -o 'skipped="[0-9]*"' "$report" | tr -dc '0-9' || true)
-            if [ -z "$tests" ] || [ -z "$skipped" ]; then
-                echo "::error::$report has no tests=/skipped= attributes; refusing to trust a truncated report" >&2
-                failed=1
-            elif [ "$tests" -eq 0 ] || [ "$skipped" -ne 0 ]; then
-                echo "::error::$fqcn: tests=$tests skipped=$skipped — gated ITCases were skipped, not run (missing BQ_IT_* variables?)" >&2
-                failed=1
-            else
-                echo "$fqcn: $tests tests ran"
-            fi
-        done <<< "$sources"
-        exit "$failed"
+        mode=assert
+        [ "$1" != --prepare-reports ] || mode=prepare
+        run_repository_python e2e-reports.py "$mode" --root "$PWD" <<< "$sources"
         ;;
     --check-tags)
         [ "$#" -eq 1 ] || {
-            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
             exit 2
         }
         run_tag_checker --root "$PWD" --check
         exit
         ;;
     *)
-        echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+        echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
         exit 2
         ;;
 esac

@@ -122,6 +122,27 @@ That refactor found a second shell boundary: calling a function under `|| outcom
 [PR #643](https://github.com/flink-gcp/flink-connector-gcp/pull/643) added the fixed App Engine fixture and reused the same lifecycle wrapper after OpenTofu apply, around gated acceptance and in the shared sweep.
 The verified idle state is `STOPPED` with zero instances, and runtime instance-count changes are the only part excluded from OpenTofu ownership.
 
+## E2E execution and evidence refinement (2026-09-19)
+
+The September 19 scheduled run failed in Pub/Sub after Cloud Tasks and BigQuery passed.
+Maven then skipped Bigtable and Spanner, and the final execution assertion never ran.
+The post-run sweep succeeded, but that did not establish whether either skipped connector worked.
+
+The suite runner now executes each connector separately and returns failure if any connector fails.
+It confirms the App Engine fixture's stopped, zero-instance state before starting subsequent suites, even when the Cloud Tasks tests failed.
+A failed prerequisite build or fixture-stop confirmation still prevents later billed work.
+The external sweep and the fork and staleness limits retain their existing roles.
+
+Before execution, the runner removes selected old reports and records the discovered class inventory and start time.
+Its exit handler validates each complete XML report against that inventory, timestamp, class identity, testcase count and outcome counts.
+Missing, stale, truncated, zero-test, skipped, failed and retried reports cannot establish success.
+A caught termination is forwarded to the active child and still produces the final inventory; a forced process kill may leave only the initial not-run inventory.
+
+The workflow publishes a class summary and retains selected method names, outcomes and Java stack frames for 14 days.
+Raw Surefire XML, properties, arbitrary exception messages and standard output are excluded from that artifact because they can contain environment values or payloads.
+The original job log remains available for diagnosis.
+Synthetic tests cover connector failures, build failures, fixture-stop failure, termination, stale reports and malformed report contents.
+
 ## Alternatives declined
 
 - **Rely on test teardown and next-run startup cleanup**: neither executes after every hard-cancellation path, and the next scheduled class was one week away.

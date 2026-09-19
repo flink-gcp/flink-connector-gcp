@@ -99,8 +99,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   variables, **and the only thing that runs them** (#245; ADR-0065 records the per-shell
   incident and the marker mechanics): each gated class also carries `@Tag("gated")`, which the
   root pom excludes from every surefire execution, and this recipe is the opt-in that clears
-  it. Its pre-flight makes a missing variable an error, and a post-run assertion
-  (`scripts/e2e-gated-its.sh`) checks the gated classes actually executed. Its `-pl`-scoped
+  it. Its pre-flight makes a missing variable an error. The runner clears selected reports before
+  execution and validates complete, fresh, passing XML on every normal or trapped exit. It runs
+  connector suites independently after confirming the App Engine fixture is stopped with zero
+  instances; a failed connector does not hide later results. The workflow retains the selected
+  metadata under `target/e2e/evidence/`, never raw reports or test output. Its `-pl`-scoped
   builds install the base and test-utils modules first, for the same reactor-resolution reason
   `binary-compat` installs (#27, #61). The weekly E2E workflow (`e2e.yaml`) runs this same
   recipe via WIF; locally the variables come from the uncommitted `.env`, which a fresh
