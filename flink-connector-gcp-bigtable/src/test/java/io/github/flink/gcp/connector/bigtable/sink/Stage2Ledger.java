@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigtable.sink;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -25,6 +27,10 @@ import java.util.Arrays;
 /** Fixed-slot, disk-backed input inventory. Payloads and completed futures are never retained. */
 final class Stage2Ledger implements AutoCloseable {
     static final int SLOT_BYTES = 64;
+
+    /** Slots read per block by {@link #scan(Visitor)}; one block is 1 MiB. */
+    static final int SCAN_SLOTS = 16_384;
+
     static final int WARMUP = 1;
     static final int MEASURED = 2;
     static final int TAIL = 3;
@@ -128,13 +134,23 @@ final class Stage2Ledger implements AutoCloseable {
     }
 
     synchronized Entry entry(long sequence) throws IOException {
+        byte[] slot = new byte[SLOT_BYTES];
         file.seek(offset(sequence));
-        int status = file.readInt();
-        int phase = file.readInt();
-        long admission = file.readLong();
-        long ack = file.readLong();
+        file.readFully(slot);
+        return decode(ByteBuffer.wrap(slot));
+    }
+
+    /** Decodes one slot from the buffer's position and leaves the position after the slot. */
+    private static Entry decode(ByteBuffer slot) {
+        int start = slot.position();
+        int status = slot.getInt();
+        int phase = slot.getInt();
+        long admission = slot.getLong();
+        long ack = slot.getLong();
         byte[] marker = new byte[32];
-        file.readFully(marker);
+        slot.get(marker);
+        // The slot is padded to SLOT_BYTES; skip the unused tail.
+        slot.position(start + SLOT_BYTES);
         return new Entry(
                 status,
                 phase,
@@ -145,21 +161,62 @@ final class Stage2Ledger implements AutoCloseable {
                         : new String(marker, java.nio.charset.StandardCharsets.US_ASCII));
     }
 
+    /** Receives each inventory slot in sequence order until it returns or throws. */
+    @FunctionalInterface
+    interface Visitor {
+        void visit(long sequence, Entry entry) throws IOException;
+    }
+
+    /**
+     * Visits every slot with one buffered sequential pass over the inventory file. A per-slot
+     * {@link #entry(long)} costs several system calls, which at millions of slots takes minutes
+     * after every observation; this pass reads the same slots in large blocks. The ledger monitor
+     * is held for the whole pass, so a visitor must not take a lock that a ledger writer can hold
+     * and must not call {@code admit}, {@code marker} or {@code acknowledge}.
+     */
+    synchronized void scan(Visitor visitor) throws IOException {
+        FileChannel channel = file.getChannel();
+        ByteBuffer block = ByteBuffer.allocate(SLOT_BYTES * SCAN_SLOTS);
+        long position = 0;
+        for (long sequence = 0; sequence < capacity; ) {
+            block.clear();
+            int remaining =
+                    (int) Math.min((long) block.capacity(), (capacity - sequence) * SLOT_BYTES);
+            block.limit(remaining);
+            while (block.hasRemaining()) {
+                int read = channel.read(block, position + block.position());
+                if (read < 0) {
+                    throw new IOException("Input inventory is shorter than its capacity");
+                }
+                if (read == 0) {
+                    throw new IOException("Input inventory read made no progress");
+                }
+            }
+            block.flip();
+            while (block.remaining() >= SLOT_BYTES) {
+                visitor.visit(sequence++, decode(block));
+            }
+            position += remaining;
+        }
+    }
+
     synchronized Summary summary() throws IOException {
         if (admitted != acknowledged) {
             throw new IOException(
                     "Undrained inventory: admitted=" + admitted + ", acknowledged=" + acknowledged);
         }
         long[] latency = new long[capacity];
-        int count = 0;
-        long finalAck = measuredStart;
-        for (int i = 0; i < capacity; i++) {
-            Entry entry = entry(i);
-            if (entry.status == 2 && entry.phase == MEASURED) {
-                latency[count++] = entry.acknowledgedAt - entry.admittedAt;
-                finalAck = Math.max(finalAck, entry.acknowledgedAt);
-            }
-        }
+        int[] counted = {0};
+        long[] latestAck = {measuredStart};
+        scan(
+                (sequence, entry) -> {
+                    if (entry.status == 2 && entry.phase == MEASURED) {
+                        latency[counted[0]++] = entry.acknowledgedAt - entry.admittedAt;
+                        latestAck[0] = Math.max(latestAck[0], entry.acknowledgedAt);
+                    }
+                });
+        int count = counted[0];
+        long finalAck = latestAck[0];
         if (count == 0 || finalAck <= measuredStart) {
             throw new IOException("No measured acknowledgements");
         }
