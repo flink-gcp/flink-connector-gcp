@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
+import com.google.api.gax.rpc.NotFoundException;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.models.AppProfile;
@@ -67,20 +68,20 @@ import java.util.function.Function;
  * forkCount=2} and {@code reuseForks=true} (the #243 root-pom override on the parent's config) —
  * classes run sequentially inside two long-lived JVMs, two at once across forks. A shared holder
  * would be raced by those forks; a per-fork holder became possible with the fork reuse and was
- * declined, because a single class must stay runnable by hand and the best-effort deletion below
+ * declined, because a single class must stay runnable by hand and the per-class deletion below
  * tracks per class. The cost of the granularity is one instance per class for the length of that
  * class; the benefit is that the forks provision in parallel and every class cleans up after
  * itself.
  *
- * <p>Deletion is best-effort, so instance names carry their creation time and {@link
- * #sweepStaleInstances} deletes anything older than {@link #STALE_AFTER} before creating this
- * class's own. The integration-test fork's default ceiling is below that threshold, so the
- * age-gated sweep cannot reach an instance its owning fork is still using. The E2E workflow has a
- * separate whole-job ceiling. A class selected through surefire's {@code default-test} execution
- * after clearing the gated exclusion, or run from an IDE, does not inherit the integration-test
- * fork ceiling and can cross the age gate. A post-E2E or explicitly requested manual {@code --all}
- * sweep deliberately ignores age and can still collide with a concurrent local run; {@code
- * docs/adr/0119} records both residuals.
+ * <p>Teardown reports deletion failures. Crashes can still bypass it, so instance names carry their
+ * creation time and {@link #sweepStaleInstances} deletes anything older than {@link #STALE_AFTER}
+ * before creating this class's own. The integration-test fork's default ceiling is below that
+ * threshold, so the age-gated sweep cannot reach an instance its owning fork is still using. The
+ * E2E workflow has a separate whole-job ceiling. A class selected through surefire's {@code
+ * default-test} execution after clearing the gated exclusion, or run from an IDE, does not inherit
+ * the integration-test fork ceiling and can cross the age gate. A post-E2E or explicitly requested
+ * manual {@code --all} sweep deliberately ignores age and can still collide with a concurrent local
+ * run; {@code docs/adr/0119} records both residuals.
  *
  * <p>The {@code @EnabledIfEnvironmentVariable} gate lives on every concrete class, never here:
  * {@code scripts/e2e-gated-its.sh} discovers the suite by parsing the annotation on each file and
@@ -146,24 +147,25 @@ public abstract class AbstractBigtableRealGcpITCase {
 
     @AfterAll
     protected static void deleteInstanceAndCloseClients() throws Exception {
-        try {
+        try (AutoCloseable closeClients =
+                () -> Closers.closeAll(dataClient, tableAdmin, instanceAdmin)) {
             if (instanceAdmin != null && instanceId != null) {
-                // Bigtable refuses to delete an instance while any table has Change Streams
-                // enabled. Disable them first, then delete the only resource that keeps billing.
-                // Client close remains last so it cannot skip either operation.
+                // Disable retention before deleting the billed instance, while clients are open.
                 if (tableAdmin != null) {
                     disableChangeStreams(
                             tableAdmin.listTables(), tableAdmin::getTable, tableAdmin::updateTable);
                 }
-                instanceAdmin.deleteInstance(instanceId);
+                try {
+                    instanceAdmin.deleteInstance(instanceId);
+                } catch (NotFoundException absent) {
+                    // A failed creation may never have installed the registered instance.
+                }
             }
-        } catch (Exception e) {
-            LOG.warn(
-                    "Failed to delete instance {}; a later run's sweep reclaims it", instanceId, e);
         } finally {
-            // Closers.closeAll rather than a sequence, for the same reason: one client failing to
-            // close would otherwise leave the others open.
-            Closers.closeAll(dataClient, tableAdmin, instanceAdmin);
+            dataClient = null;
+            tableAdmin = null;
+            instanceAdmin = null;
+            instanceId = null;
         }
     }
 
@@ -193,7 +195,7 @@ public abstract class AbstractBigtableRealGcpITCase {
         }
     }
 
-    private static void disableChangeStreams(String staleInstanceId) throws IOException {
+    private static void disableChangeStreams(String staleInstanceId) throws Exception {
         try (BigtableTableAdminClient staleTableAdmin =
                 BigtableTableAdminClient.create(PROJECT, staleInstanceId)) {
             disableChangeStreams(
@@ -206,13 +208,20 @@ public abstract class AbstractBigtableRealGcpITCase {
     static void disableChangeStreams(
             List<String> tableIds,
             Function<String, Table> getTable,
-            Consumer<UpdateTableRequest> updateTable) {
+            Consumer<UpdateTableRequest> updateTable)
+            throws Exception {
+        List<AutoCloseable> updates = new ArrayList<>();
         for (String tableId : tableIds) {
-            Table table = getTable.apply(tableId);
-            if (table.getChangeStreamRetention() != null) {
-                updateTable.accept(UpdateTableRequest.of(tableId).disableChangeStreamRetention());
-            }
+            updates.add(
+                    () -> {
+                        Table table = getTable.apply(tableId);
+                        if (table.getChangeStreamRetention() != null) {
+                            updateTable.accept(
+                                    UpdateTableRequest.of(tableId).disableChangeStreamRetention());
+                        }
+                    });
         }
+        Closers.closeAll(updates);
     }
 
     /** The creation time encoded in an instance id, or null if this suite did not create it. */

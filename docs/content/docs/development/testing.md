@@ -126,3 +126,5 @@ the exclusion back to the gated tag alone:
 ```sh
 just verify -Dtest.excluded.groups=gated
 ```
+
+The [September 2026 gated E2E audit]({{< relref "docs/development/e2e-audit-2026-09" >}}) records the 46-class static review, cleanup and deadline repairs, and the boundary between the weekly suite and manual acceptance probes.

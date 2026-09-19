@@ -27,6 +27,7 @@ import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import com.google.cloud.bigquery.FieldValueList;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.List;
@@ -72,7 +74,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryDefaultStreamAtLeastOnceITCase {
 
     private static final String RUN_ID = TestNames.runId();
@@ -90,9 +92,10 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
 
     @AfterAll
-    static void cleanUp() {
-        RealBigQuery.deleteTables(tables("fan", FAN_OUT_TABLE_COUNT));
-        RealBigQuery.deleteTables(tables("restart", RESTART_TABLE_COUNT));
+    static void cleanUp() throws Exception {
+        Closers.closeAll(
+                () -> RealBigQuery.deleteTables(tables("fan", FAN_OUT_TABLE_COUNT)),
+                () -> RealBigQuery.deleteTables(tables("restart", RESTART_TABLE_COUNT)));
     }
 
     /**

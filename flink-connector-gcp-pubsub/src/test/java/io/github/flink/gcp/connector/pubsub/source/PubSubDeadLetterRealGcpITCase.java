@@ -27,12 +27,14 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.util.Collector;
 
+import com.google.api.gax.rpc.NotFoundException;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.io.IOException;
@@ -59,7 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Forwarding is service-paced: attempts are counted best-effort and the forward happens some
  * time after the last nack, so the wait is generous and the class timeout wider than the base's.
  */
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
 class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
@@ -100,7 +102,7 @@ class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
                 .sinkTo(new DiscardingSink<>());
 
         JobClient job = env.executeAsync();
-        try {
+        try (AutoCloseable cancel = () -> job.cancel().get(30, TimeUnit.SECONDS)) {
             // Nothing published before the subscription exists is retained for it, and the source
             // creates it during the startup check.
             await(
@@ -111,14 +113,6 @@ class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
 
             Set<String> deadLettered = pullAndAckUntil(deadLetterObserver, 1, FORWARDING_TIMEOUT);
             assertThat(deadLettered).containsExactly("poison");
-        } finally {
-            // Best effort, as in PubSubSourceRecoveryITCase: a job that already ended would throw
-            // here and replace the assertion error actually being reported.
-            try {
-                job.cancel().get(30, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                // Best effort only.
-            }
         }
     }
 
@@ -126,7 +120,7 @@ class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
             SubscriptionDestination subscription) {
         try {
             return describeSubscription(subscription);
-        } catch (RuntimeException e) {
+        } catch (NotFoundException e) {
             return null;
         }
     }

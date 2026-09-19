@@ -44,6 +44,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.ArrayList;
@@ -72,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(300)
+@Timeout(value = 300, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQuerySourceRealGcpITCase {
 
     private static final String TABLE = TestNames.unique("source_read");

@@ -36,6 +36,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -64,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryBufferedStreamExactlyOnceITCase {
 
     private static final String RUN_ID = TestNames.runId();

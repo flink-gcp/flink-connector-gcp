@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -120,13 +121,30 @@ public final class RealBigQuery {
     }
 
     /**
-     * Deletes the given tables, best-effort; the dataset's default table expiration (24 h, set in
-     * {@code opentofu/flink-gcp/it-resources.tf}) is the backstop for a crashed run.
+     * Attempts every given table deletion and reports failures; the dataset's default table
+     * expiration (24 h, set in {@code opentofu/flink-gcp/it-resources.tf}) is the backstop for a
+     * crashed run.
      */
     public static void deleteTables(String... tables) {
         BigQuery client = client();
+        deleteTables(table -> client.delete(TableId.of(project(), dataset(), table)), tables);
+    }
+
+    static void deleteTables(Consumer<String> delete, String... tables) {
+        RuntimeException failure = null;
         for (String table : tables) {
-            client.delete(TableId.of(project(), dataset(), table));
+            try {
+                delete.accept(table);
+            } catch (RuntimeException error) {
+                if (failure == null) {
+                    failure = error;
+                } else if (failure != error) {
+                    failure.addSuppressed(error);
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 

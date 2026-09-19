@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.source;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.NotFoundException;
 import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
@@ -64,31 +65,34 @@ class PubSubSubscriptionAdminIamRealGcpITCase extends AbstractPubSubRealGcpITCas
     }
 
     @Test
-    void describeWithoutTheGetPermissionNamesThePermissionAndRole() {
-        assertThatThrownBy(() -> deniedAdmin().describe(existingSubscription))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("pubsub.subscriptions.get")
-                .hasMessageContaining("roles/pubsub.viewer")
-                .hasCauseInstanceOf(PermissionDeniedException.class);
+    void describeWithoutTheGetPermissionNamesThePermissionAndRole() throws Exception {
+        try (SubscriptionAdmin admin = deniedAdmin()) {
+            assertThatThrownBy(() -> admin.describe(existingSubscription))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("pubsub.subscriptions.get")
+                    .hasMessageContaining("roles/pubsub.viewer")
+                    .hasCauseInstanceOf(PermissionDeniedException.class);
+        }
     }
 
     @Test
-    void createWithoutTheCreatePermissionWrapsTheDenial() {
+    void createWithoutTheCreatePermissionWrapsTheDenial() throws Exception {
         TopicDestination topic = createTopic("iam-create");
         SubscriptionDestination denied =
-                SubscriptionDestination.of(PROJECT, uniqueName("iam-create"));
+                trackSubscription(SubscriptionDestination.of(PROJECT, uniqueName("iam-create")));
 
-        assertThatThrownBy(
-                        () ->
-                                deniedAdmin()
-                                        .create(
-                                                denied,
-                                                SubscriptionCreateOptions.builder()
-                                                        .topic(topic)
-                                                        .build()))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("Failed to create Pub/Sub subscription")
-                .hasCauseInstanceOf(PermissionDeniedException.class);
+        try (SubscriptionAdmin admin = deniedAdmin()) {
+            assertThatThrownBy(
+                            () ->
+                                    admin.create(
+                                            denied,
+                                            SubscriptionCreateOptions.builder()
+                                                    .topic(topic)
+                                                    .build()))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Failed to create Pub/Sub subscription")
+                    .hasCauseInstanceOf(PermissionDeniedException.class);
+        }
         // The denied create must not have half-created anything.
         assertThat(describeSubscriptionExists(denied)).isFalse();
     }
@@ -102,12 +106,14 @@ class PubSubSubscriptionAdminIamRealGcpITCase extends AbstractPubSubRealGcpITCas
      * contract.
      */
     @Test
-    void seekWithoutTheConsumePermissionNamesThePermissionAndRole() {
-        assertThatThrownBy(() -> deniedAdmin().seek(existingSubscription, Instant.now()))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("pubsub.subscriptions.consume")
-                .hasMessageContaining("roles/pubsub.subscriber")
-                .hasCauseInstanceOf(ApiException.class);
+    void seekWithoutTheConsumePermissionNamesThePermissionAndRole() throws Exception {
+        try (SubscriptionAdmin admin = deniedAdmin()) {
+            assertThatThrownBy(() -> admin.seek(existingSubscription, Instant.now()))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("pubsub.subscriptions.consume")
+                    .hasMessageContaining("roles/pubsub.subscriber")
+                    .hasCauseInstanceOf(ApiException.class);
+        }
     }
 
     /** The production admin, authenticating as the deliberately unauthorized identity. */
@@ -125,7 +131,7 @@ class PubSubSubscriptionAdminIamRealGcpITCase extends AbstractPubSubRealGcpITCas
         try {
             describeSubscription(subscription);
             return true;
-        } catch (RuntimeException e) {
+        } catch (NotFoundException e) {
             return false;
         }
     }

@@ -26,6 +26,8 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -36,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Manually approved service acceptance; the dedicated gate excludes ordinary E2E discovery. */
 @Tag("gated")
+@Timeout(value = 180, threadMode = ThreadMode.SEPARATE_THREAD)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @EnabledIfEnvironmentVariable(named = "CLOUDTASKS_RECOVERY_ACCEPTANCE", matches = "approved")
 class CloudTasksRecoveryRealGcpITCase extends StagedRecoveryAcceptance {

@@ -191,8 +191,7 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
             int mark = run.productionCommits.size();
             try (var job = job(run, "rescale-1", sink, 1, 1_000, stop)) {
                 phase(tableApi, "rescale-1 restored job submitted");
-                ProductionRecoveryJob.awaitRunning(job);
-                phase(tableApi, "rescale-1 running; requesting stop-with-savepoint");
+                phase(tableApi, "rescale-1 awaiting running vertices before stop-with-savepoint");
                 stopWithSavepoint(job, run, directory.resolve("stop-rescale-1"), mark);
             }
             assertThat(run.staged.get())
@@ -278,6 +277,7 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
             run.minPauseMillis = HELD_INTERVAL_MILLIS;
             try (var job = job(run, "no-tx", sink, 2, HELD_INTERVAL_MILLIS, null)) {
                 job.awaitAdmissions(INPUTS);
+                ProductionRecoveryJob.awaitRunning(job);
                 Throwable direct =
                         catchThrowable(() -> job.savepoint(directory.resolve("stop-no-tx"), true));
                 failures = ProductionRecoveryJob.failureText(job, direct);
@@ -360,6 +360,7 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
     private static String stopWithSavepoint(
             LocalStagedJob job, LocalStagedHarness run, Path target, int mark) throws Exception {
         try {
+            ProductionRecoveryJob.awaitRunning(job);
             return job.savepoint(target, true);
         } catch (Exception failure) {
             // The observations need no RPC; the job status and vertex states do, and a stalled

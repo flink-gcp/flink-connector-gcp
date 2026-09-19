@@ -204,7 +204,7 @@ final class ProductionRecoveryJob {
     /** Waits until every vertex is RUNNING, which for a restored committer follows its replay. */
     static void awaitRunning(LocalStagedJob job) throws Exception {
         await(
-                "restored vertices running",
+                "local vertices running",
                 Duration.ofMillis(job.run.checkpointOperationTimeoutMillis()),
                 () -> allRunning(job),
                 () -> "status=" + job.client.getJobStatus().join());

@@ -30,6 +30,7 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.DynamicMessage;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.RealGcs;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
@@ -61,7 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_GCS_BUCKET", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryFileLoadsStreamingITCase {
 
     private static final String RUN_ID = TestNames.runId();
@@ -106,9 +108,10 @@ class BigQueryFileLoadsStreamingITCase {
     }
 
     @AfterAll
-    static void cleanUp() {
-        RealBigQuery.deleteTables(TABLE_A, TABLE_B);
-        RealGcs.deletePrefix(STAGING_PREFIX);
+    static void cleanUp() throws Exception {
+        Closers.closeAll(
+                () -> RealBigQuery.deleteTables(TABLE_A, TABLE_B),
+                () -> RealGcs.deletePrefix(STAGING_PREFIX));
     }
 
     @Test

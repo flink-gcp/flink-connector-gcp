@@ -28,11 +28,12 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AbstractBigtableRealGcpITCaseTest {
 
     @Test
-    void disablesOnlyTablesThatHaveChangeStreamsBeforeInstanceDeletion() {
+    void disablesOnlyTablesThatHaveChangeStreamsBeforeInstanceDeletion() throws Exception {
         List<UpdateTableRequest> updates = new ArrayList<>();
         Map<String, Table> tables = new LinkedHashMap<>();
         tables.put("plain", table("plain", false));
@@ -48,6 +49,26 @@ class AbstractBigtableRealGcpITCaseTest {
                 .isEqualTo("projects/project/instances/instance/tables/streamed");
         assertThat(request.getTable().hasChangeStreamConfig()).isFalse();
         assertThat(request.getUpdateMask().getPathsList()).containsExactly("change_stream_config");
+    }
+
+    @Test
+    void failedRetentionUpdateDoesNotHideOrSkipLaterTables() {
+        List<String> attempted = new ArrayList<>();
+        RuntimeException failure = new RuntimeException("retention update denied");
+        assertThatThrownBy(
+                        () ->
+                                AbstractBigtableRealGcpITCase.disableChangeStreams(
+                                        List.of("first", "second"),
+                                        id -> {
+                                            attempted.add(id);
+                                            if (id.equals("first")) {
+                                                throw failure;
+                                            }
+                                            return table(id, true);
+                                        },
+                                        request -> attempted.add("updated")))
+                .isSameAs(failure);
+        assertThat(attempted).containsExactly("first", "second", "updated");
     }
 
     private static Table table(String id, boolean changeStreams) {

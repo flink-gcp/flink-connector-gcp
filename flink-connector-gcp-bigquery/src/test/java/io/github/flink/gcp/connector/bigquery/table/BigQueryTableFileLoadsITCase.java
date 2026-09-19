@@ -27,6 +27,7 @@ import com.google.cloud.bigquery.PrimaryKey;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.TableConstraints;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.RealGcs;
 import io.github.flink.gcp.connector.testutils.TestNames;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
@@ -63,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_GCS_BUCKET", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryTableFileLoadsITCase {
 
     private static final String RUN_ID = TestNames.runId();
@@ -79,9 +81,10 @@ class BigQueryTableFileLoadsITCase {
     private static final String BATCH_METADATA_PREFIX = STAGING_ROOT + "/metadata";
 
     @AfterAll
-    static void cleanUp() {
-        RealBigQuery.deleteTables(STREAMING_TABLE, BATCH_TABLE, BATCH_METADATA_TABLE);
-        RealGcs.deletePrefix(STAGING_ROOT);
+    static void cleanUp() throws Exception {
+        Closers.closeAll(
+                () -> RealBigQuery.deleteTables(STREAMING_TABLE, BATCH_TABLE, BATCH_METADATA_TABLE),
+                () -> RealGcs.deletePrefix(STAGING_ROOT));
     }
 
     private static String withOptions(String table, String stagingPrefix, String... keysAndValues) {

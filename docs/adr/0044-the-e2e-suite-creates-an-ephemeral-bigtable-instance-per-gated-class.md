@@ -29,7 +29,7 @@ limitations under the License.
 Per gated *class*, not per run — the one deviation from [#218]'s settled design. When this
 landed it was forced (`reuseForks=false` meant a fresh JVM per class); [#243]'s root-pom
 override changed the calculus, and per-class was kept anyway: a shared holder would still be
-raced by the two forks, a single class must stay runnable by hand, and best-effort deletion
+raced by the two forks, a single class must stay runnable by hand, and per-class deletion
 tracks per class.
 
 - Nothing persistent exists to run against because a one-node instance stands at roughly
@@ -131,3 +131,11 @@ made deletion succeed; that measured recovery sequence is now the order every cl
 [#533]: https://github.com/flink-gcp/flink-connector-gcp/issues/533
 [#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196
 [#1199]: https://github.com/flink-gcp/flink-connector-gcp/issues/1199
+
+## Cleanup reporting refinement (2026-09-19)
+
+The [gated E2E audit](https://github.com/flink-gcp/flink-connector-gcp/issues/1346) changes teardown failures from warnings into test failures.
+Every table's retention update is attempted before collected failures are reported, and all clients are closed even when instance deletion fails.
+Only a not-found deletion result is accepted as already absent.
+The ordering prerequisite remains: an instance is deleted after retention has been disabled; a failure there still requires the external sweep.
+The per-class ownership, timestamped identifiers and two-hour stale threshold are unchanged.

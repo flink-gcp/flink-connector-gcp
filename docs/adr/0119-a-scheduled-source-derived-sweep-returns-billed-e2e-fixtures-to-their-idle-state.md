@@ -140,6 +140,21 @@ Its safe idle state, source of identifiers and failure behavior must be testable
 The scheduled job shortens the intended fallback interval for known fixture leaks but does not claim a hard time or spending bound, or general billing detection.
 Any proposal to manage those concerns must separately address billing-account permissions and identifier handling.
 
+## Gated timeout and cleanup refinement (2026-09-19)
+
+The [46-class audit](https://github.com/flink-gcp/flink-connector-gcp/issues/1346) applies the existing separate-thread method-timeout boundary to the remaining gated classes, including the separately gated manual probes.
+It does not change their durations, the integration-test fork ceiling or the stale-resource threshold.
+Provisioning lifecycle methods and abandoned threads still require the outer process and sweep boundaries.
+Deletion failures now fail the Bigtable, Spanner and Pub/Sub fixtures instead of being logged as warnings; client cleanup still runs.
+This improves the meaning of a passing test without claiming that Java teardown runs after a hard kill.
+
+The first integrated audit run exposed six Spanner cleanup errors: local jobs had already completed and shut down their MiniCluster before teardown requested cancellation.
+Spanner cleanup now observes the local job result first and cancels only while it is pending.
+When completion races cancellation, a failed cancellation request is accepted only after bounded observation of job termination; without that observation the cancellation failure is retained.
+
+The second integrated run found a distinct readiness race in the native Bigtable staged-sink probe: all input admissions had been observed, but Flink rejected the initial stop-savepoint because a required execution vertex was not running yet.
+That probe now uses its existing all-vertices-running observation before each stop-savepoint request, preserving the held checkpoint interval and the no-effects-before-checkpoint assertion.
+
 [#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
 [#246]: https://github.com/flink-gcp/flink-connector-gcp/issues/246
 [#630]: https://github.com/flink-gcp/flink-connector-gcp/issues/630

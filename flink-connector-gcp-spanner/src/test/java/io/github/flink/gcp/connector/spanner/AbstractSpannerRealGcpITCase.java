@@ -20,16 +20,19 @@ import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Dialect;
+import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Instance;
 import com.google.cloud.spanner.InstanceConfigId;
 import com.google.cloud.spanner.InstanceId;
 import com.google.cloud.spanner.InstanceInfo;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
+import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.spanner.admin.instance.v1.Instance.Edition;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -71,21 +74,22 @@ import java.util.Locale;
  * <p><b>Per class, not per run</b>, following {@code AbstractBigtableRealGcpITCase} and {@code
  * docs/adr/0044}: the {@code integration-tests} surefire execution that {@code just e2e} invokes
  * runs with {@code forkCount=2} and {@code reuseForks=true}, so a shared holder would be raced by
- * the two forks, a single class must stay runnable by hand, and the best-effort deletion below
- * tracks per class. A class therefore creates its databases once, in its own {@link BeforeAll}, and
- * shares them across its tests — on the service a database takes seconds to create, where the
- * emulator tests can afford one per test method.
+ * the two forks, a single class must stay runnable by hand, and the per-class deletion below tracks
+ * per class. A class therefore creates its databases once, in its own {@link BeforeAll}, and shares
+ * them across its tests — on the service a database takes seconds to create, where the emulator
+ * tests can afford one per test method.
  *
- * <p>Deletion is best-effort, so instance names carry their creation time and {@link
- * #sweepStaleInstances} deletes anything older than {@link #STALE_AFTER} before creating this
- * class's own. The integration-test fork's default ceiling is below that threshold, so the
- * age-gated sweep cannot reach an instance its owning fork is still using. The E2E workflow has a
- * separate whole-job ceiling. A class selected through surefire's {@code default-test} execution
- * after clearing the gated exclusion, or run from an IDE, does not inherit the integration-test
- * fork ceiling and can cross the age gate. A post-E2E or explicitly requested manual {@code --all}
- * sweep deliberately ignores age and can still collide with a concurrent local run; {@code
- * docs/adr/0119} records both residuals. {@code scripts/sweep-e2e.sh} reads the prefix and the
- * threshold out of this file rather than repeating them, so the two sweeps cannot drift apart.
+ * <p>Teardown reports deletion failures. Crashes can still bypass it, so instance names carry their
+ * creation time and {@link #sweepStaleInstances} deletes anything older than {@link #STALE_AFTER}
+ * before creating this class's own. The integration-test fork's default ceiling is below that
+ * threshold, so the age-gated sweep cannot reach an instance its owning fork is still using. The
+ * E2E workflow has a separate whole-job ceiling. A class selected through surefire's {@code
+ * default-test} execution after clearing the gated exclusion, or run from an IDE, does not inherit
+ * the integration-test fork ceiling and can cross the age gate. A post-E2E or explicitly requested
+ * manual {@code --all} sweep deliberately ignores age and can still collide with a concurrent local
+ * run; {@code docs/adr/0119} records both residuals. {@code scripts/sweep-e2e.sh} reads the prefix
+ * and the threshold out of this file rather than repeating them, so the two sweeps cannot drift
+ * apart.
  *
  * <p>The {@code @EnabledIfEnvironmentVariable} gate lives on every concrete class, never here:
  * {@code scripts/e2e-gated-its.sh} discovers the suite by parsing the annotation on each file and
@@ -146,22 +150,21 @@ public abstract class AbstractSpannerRealGcpITCase {
     }
 
     @AfterAll
-    protected static void deleteInstanceAndCloseClient() {
-        try {
-            // The instance goes first, before the client is closed: it is the only part of this
-            // fixture that costs money, and a client throwing on close must not be able to skip
-            // its deletion. Deleting it takes its databases with it, so there is nothing else to
-            // clean up.
+    protected static void deleteInstanceAndCloseClient() throws Exception {
+        try (AutoCloseable closeClient = () -> Closers.closeAll(spanner)) {
+            // Delete the billed instance before closing its admin client.
             if (spanner != null && instanceId != null) {
-                spanner.getInstanceAdminClient().deleteInstance(instanceId);
+                try {
+                    spanner.getInstanceAdminClient().deleteInstance(instanceId);
+                } catch (SpannerException failure) {
+                    if (failure.getErrorCode() != ErrorCode.NOT_FOUND) {
+                        throw failure;
+                    }
+                }
             }
-        } catch (RuntimeException e) {
-            LOG.warn(
-                    "Failed to delete instance {}; a later run's sweep reclaims it", instanceId, e);
         } finally {
-            if (spanner != null) {
-                spanner.close();
-            }
+            spanner = null;
+            instanceId = null;
         }
     }
 

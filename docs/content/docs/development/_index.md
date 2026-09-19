@@ -28,6 +28,7 @@ toolchain and the build.
 | | |
 |---|---|
 | [Testing]({{< relref "docs/development/testing" >}}) | The three test kinds and how to run each |
+| [Gated E2E audit]({{< relref "docs/development/e2e-audit-2026-09" >}}) | The September 2026 audit inventory, shared repairs and validation boundaries |
 | [Checks]({{< relref "docs/development/checks" >}}) | The repository-specific checkers CI runs, and the skills that answer their failures |
 | [Contributing]({{< relref "docs/development/contributing" >}}) | The issue-first process, pull-request expectations, licensing, and design records |
 

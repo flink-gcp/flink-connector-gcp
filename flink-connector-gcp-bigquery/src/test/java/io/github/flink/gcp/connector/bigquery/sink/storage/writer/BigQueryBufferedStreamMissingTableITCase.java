@@ -28,6 +28,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -84,7 +86,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 class BigQueryBufferedStreamMissingTableITCase {
 
     private static final Logger LOG =
@@ -116,14 +118,19 @@ class BigQueryBufferedStreamMissingTableITCase {
     private static final long RECORD_COUNT = 20;
 
     @AfterAll
-    static void cleanUp() {
+    static void cleanUp() throws Exception {
         // ABSENT_TABLE too: if a run ever does create it, the next one must not find it there.
-        RealBigQuery.deleteTables(
-                ABSENT_TABLE, CONTROL_TABLE, PROPAGATION_TABLE, AUTO_CREATED_TABLE);
-        RealBigQuery.deleteTables(
-                IntStream.rangeClosed(1, APPEND_TRIALS)
-                        .mapToObj(BigQueryBufferedStreamMissingTableITCase::appendTable)
-                        .toArray(String[]::new));
+        Closers.closeAll(
+                () ->
+                        RealBigQuery.deleteTables(
+                                ABSENT_TABLE, CONTROL_TABLE, PROPAGATION_TABLE, AUTO_CREATED_TABLE),
+                () ->
+                        RealBigQuery.deleteTables(
+                                IntStream.rangeClosed(1, APPEND_TRIALS)
+                                        .mapToObj(
+                                                BigQueryBufferedStreamMissingTableITCase
+                                                        ::appendTable)
+                                        .toArray(String[]::new)));
     }
 
     private static String appendTable(int trial) {
@@ -233,7 +240,7 @@ class BigQueryBufferedStreamMissingTableITCase {
     // waiting out a full ~55 s budget on all three arms would exceed it — but by then every denial
     // is already in the log, and a window that never closes ends the run at the first trial's
     // assertion rather than at this timeout.
-    @Timeout(1800)
+    @Timeout(value = 1800, threadMode = ThreadMode.SEPARATE_THREAD)
     void anAppendOnAJustCreatedTableIsMeasuredAgainstTheFlushThatSawTheWindow() throws Exception {
         NameColumnSerializer serializer = new NameColumnSerializer();
         TableSchema schema = serializer.getTableSchema(null);
