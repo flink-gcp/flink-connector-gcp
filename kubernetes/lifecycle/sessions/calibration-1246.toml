@@ -29,7 +29,7 @@
 # on one receipt field, so it measured the instrument rather than the service,
 # and this attempt starts a fresh ledger.
 
-campaign = "calibration-1246b"
+campaign = "calibration-1246c"
 
 [[cells]]
 id = "k01-pace-10"

@@ -65,7 +65,18 @@ Run `cal1246-221-20260920g` executed `k01` to `k05` and was stopped during `k06`
 It measured the instrument rather than the service: every cell reconciled `invalid` on `receipt-fields` and `missing-source-start`, because the application declares its offered rate as a double and writes `10.0`, while the reader required an integer.
 The measurement itself was intact, `k01` recording 2,430 rows against 2,430 observations, 2,430 exported rows and 2,430 distinct successful creations, and the session's 114 `observation` receipts each record the queue read back `PAUSED` with no dispatch reported.
 The reader now accepts a whole number of either JSON type, and the receipts of that run are kept as the reconciler's fixtures so the contract has a test with the writer's own output in it.
-The campaign of this file is therefore `calibration-1246b`: the ledger refuses a completed cell, which is what keeps a spent attempt from being quietly overwritten.
+Each attempt therefore takes the next campaign name: the ledger refuses a completed cell, which is what keeps a spent attempt from being quietly overwritten, so a repeat cannot reuse the ledger a previous one wrote.
+
+### Second attempt, 2026-09-20
+
+Run `cal1246b-221-4`, campaign `calibration-1246b`, executed `k01` to `k03` and stopped during `k04`.
+The reader's repair held: `k01` and `k02` reconciled `complete`, which is the first time the evidence pipeline agreed with the service's own output end to end.
+The supervisor kept the node Autopilot provisioned for it and was never preempted, which is what the larger supervisor request was for.
+The preemption moved to the Operator Pod, which shares `tier3-system` and had been scheduled onto that same node: it was preempted at 12:39:56 UTC while `k03` was running, so `k03` reconciled `restarted` and is not a steady-state measurement; four replacements were refused by the namespace quota before one landed; and at 12:54:05 UTC the supervisor read the retired Pod's log, took the 404 for a deviation and began cleanup, which settled `k04` interrupted.
+The environment reached verified idle with no lock and no queue, retaining only the interrupted cell's own benchmark evidence as the design intends, and the quota now admits the Operator's replacement while the supervisor tolerates a Pod that goes away under a log read.
+
+The campaign of this file is therefore `calibration-1246c`.
+
 There is no record-count-mode pair: record-count mode prints its rows to standard output, which the session cannot capture, and receipt writes happen at most four times per creator incarnation outside the observation window, so their cost is bounded by construction and is read from the observed busy time rather than measured separately.
 Higher offered rates are not calibrated in advance: the capacity search of the main assessment ramps each shape from a low rate and observes the instrument at every step.
 

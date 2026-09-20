@@ -28,7 +28,7 @@ PREREGISTRATION = ROOT / "docs/adr/evidence/0162-cloudtasks-assessment-1246.md"
 def test_calibration_session_matches_the_preregistered_numbers():
     session = rt.load_session(SESSIONS / "calibration-1246.toml")
     # The campaign names the attempt: the first one is spent in the ledger.
-    assert session["campaign"] == "calibration-1246b"
+    assert session["campaign"] == "calibration-1246c"
     plan = rt.validate_cells(session["cells"], manifest=False)
     assert plan == {
         "cells": 10,
@@ -57,6 +57,9 @@ def test_calibration_session_matches_the_preregistered_numbers():
     text = PREREGISTRATION.read_text()
     for figure in ("11,539,316", "1,923,195", "11,018", "11,918", "USD 8.66"):
         assert figure in text, figure
+    # The preregistration has to name the attempt this file will actually
+    # run, or a spent campaign stays recorded as the one under approval.
+    assert f"campaign of this file is therefore `{session['campaign']}`" in text
 
 
 def test_flink120_calibration_repeat_matches_the_preregistration():
