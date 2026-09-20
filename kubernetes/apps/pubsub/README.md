@@ -80,13 +80,13 @@ The emulator endpoint is a package-private test seam, absent from the deployed C
 ### Owned resource operations
 
 [`flink_tier3.pubsub`](../../../tools/tier3/src/flink_tier3/pubsub.py) supplies internal `ResourcePlan` and `Resources` helpers for the later lifecycle controller.
-These helpers are not a CLI scenario and do not admit a workload or install IAM policies.
+These helpers are not a CLI scenario and do not admit a workload.
 A plan requires a fresh run ID and a caller-generated ownership nonce of 32 lowercase hexadecimal digits.
 The caller supplies the shared authorized HTTP session, GCS `Storage` adapter and a mandatory `before_operation(phase, method, name)` guard; construction performs no authentication or I/O.
 Use the shared evidence bucket for the control record, as with the other lifecycle records.
 
 `provision()` refuses an existing control record or any of the six existing service names, including resources with matching labels.
-It then writes the exact plan to `_control/pubsub/<run-id>.json` with GCS generation-match zero before creating the three topics followed by the three subscriptions.
+It then writes the version 2 plan, including the fixed data-role bindings described below, to `_control/pubsub/<run-id>.json` with GCS generation-match zero before creating the three topics followed by the three subscriptions.
 Every service resource carries `tier3-run` and `tier3-nonce` labels.
 The helper re-reads the matching manifest before every service write and validates all six service resources after creation; `inspect()` repeats that readback validation.
 An ambiguous create stops without retrying or adopting the resource; the retained manifest permits cleanup of matching partial creation.
@@ -130,18 +130,56 @@ Pub/Sub HTTP requests use the shared 20-second timeout with redirects disabled a
 
 ### Permissions and remaining integration
 
-The workload requires input subscription metadata/consume access and output publication access; it needs no topic/subscription creation, deletion or IAM authority.
-For resource creation, the later provisioner needs `pubsub.topics.create` and `pubsub.subscriptions.create` on the project and `pubsub.topics.attachSubscription` on the input and output topics, plus metadata reads for preflight and validation.
-Cleanup needs topic/subscription metadata reads and deletion permissions on the recorded resources, plus read access to their control record.
-The provisioner also needs create/read access to that record in the evidence bucket.
-The [Pub/Sub access-control reference](https://docs.cloud.google.com/pubsub/docs/access-control#required_permissions) lists permissions for each operation.
-Scoped grant installation is separate work: the input publisher and output observer need their own data permissions, and the independent cleanup identity needs its metadata/deletion grants before admission.
-The existing Pub/Sub GSA currently has state-bucket access only.
+The [persistent IAM foundation](../../../opentofu/README.md#pubsub-lifecycle-authority) defines project-wide resource control for the runner and metadata/deletion authority for the supervisor.
+The runner can change policies on any topic or subscription in the project, including granting itself data access; the runtime's ownership checks are not an IAM restriction on that identity.
+The workload GSA receives no project-level Pub/Sub grant.
+The custom `projects/flink-gcp/roles/tier3PubSubConsumer` role contains only `pubsub.subscriptions.get` and `pubsub.subscriptions.consume` and is defined without a project binding.
 
-Synthetic tests cover the request grammar, omitted service defaults, collisions, manifest replacement, ambiguous writes and deletion, partial creation, settings drift and repeated cleanup without credentials or service calls.
+The version 2 ownership manifest freezes these explicit resource policies before creation:
+
+| Owned resource | Member at `flink-gcp.iam.gserviceaccount.com` | Role |
+| --- | --- | --- |
+| Both input topics | `tier3-runner` | `roles/pubsub.publisher` |
+| Both input subscriptions | `tier3-pubsub` | `tier3PubSubConsumer` |
+| Output topic | `tier3-pubsub` | `roles/pubsub.publisher` |
+| Output subscription | `tier3-supervisor` | `tier3PubSubConsumer` |
+
+`install_grants()` validates all resources and requires all six explicit policies to be empty before the first write.
+It requests policy version 3 to expose conditional bindings, then revalidates each resource and empty policy before setting exactly its recorded binding.
+Every write preserves the returned nonempty etag; a missing etag refuses installation, even on an otherwise empty policy.
+The [Pub/Sub policy contract](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/Policy) describes that read/modify/write concurrency precondition.
+The [GET](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/getIamPolicy) and [POST](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/setIamPolicy) operations use the same guarded transport and storage budget as the resource helpers.
+IAM requests use `grant` or `inspect-grants` phases and the resource name with its IAM method suffix (including the version query on reads).
+Both methods also call `inspect()`, whose guard callbacks use the `inspect` phase; installation ends by calling `inspect_grants()`.
+Unknown policy fields, extra or conditional bindings, ownership drift, non-success responses and ambiguous writes stop installation without retry or policy merging.
+Partial installation can be inspected through service readback and cleaned by deleting the owned resources; installation is not resumable and refuses even matching pre-existing grants.
+`inspect_grants()` validates the six resource settings and exact explicit bindings again and returns their named policies for external evidence.
+It fails when any policy is incomplete; it is not a partial-installation recovery command.
+
+A successful call has the following operation budget, measured with the shared helper and synthetic transport:
+
+| Method | Guard callbacks by phase | Pub/Sub requests | Logical GCS reads | Maximum GCS data requests |
+| --- | --- | --- | --- | --- |
+| `install_grants()` | `inspect`: 14; `grant`: 42; `inspect-grants`: 12 | 42 | 26 | 260 |
+| `inspect_grants()` | `inspect`: 7; `inspect-grants`: 12 | 12 | 7 | 70 |
+
+Reserve these bounds before entering the method and still enforce the guard before each operation.
+These totals exclude initial `provision()`, cleanup, credential refresh and the guard's own I/O; total elapsed time needs its own deadline.
+Policy reads deliberately re-read ownership, so they use more storage reads than the resource inspection that checks its manifest once.
+
+Policy readback does not prove effective permissions, propagation or the absence of inherited grants.
+During separately approved provisioning, retain fresh-resource version-3 policy responses and verify that empty policies return nonempty etags before installation.
+If that service behavior is absent, stop and clean the owned resources rather than attempting an unconditional policy write.
+Before admission, the later controller must verify access using each participating identity, retain the observations, and account for IAM propagation within its approved deadline and operation ceilings.
+The output subscription belongs to the supervisor's independent observation path; runner and workload are not granted consume access there by this plan.
+The [Pub/Sub access-control reference](https://docs.cloud.google.com/pubsub/docs/access-control#required_permissions) lists the permissions for each API operation.
+The workload uses input metadata/consume and output publish access, with no resource creation, deletion or policy mutation.
+An unsupported manifest version is reported explicitly and refused rather than upgraded or adopted; no version 1 live resource execution was performed in the preparation stage.
+
+Synthetic tests exercise resource and policy request grammar, collisions, manifest replacement, etag conflicts, ambiguous and partial writes, settings drift and repeated cleanup without credentials or service calls.
 A composition test uses the production GCS adapter with a fake client to exercise all five generation-read attempts and the guard's separate adapter-call budget.
-They do not establish live API behavior, IAM access or cross-actor lifecycle safety.
-The later controller must integrate these operations with shared admission and cleanup, install and read back scoped grants, and collect service settings as external trial evidence before starting the relay.
+These tests do not establish live API behavior, effective IAM access or cross-actor lifecycle safety.
+The later controller must integrate resource and policy operations with shared admission and cleanup, collect external service and access evidence, and reserve separately approved numeric execution ceilings before starting the relay.
 
 ## Payload and restoration
 

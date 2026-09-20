@@ -78,14 +78,38 @@ class ResourcePlan:
             for topic in self.topics()
         ]
 
+    def grants(self):
+        """Fixed data roles, recorded before resource creation or policy writes."""
+        workload = f"serviceAccount:tier3-pubsub@{PROJECT}.iam.gserviceaccount.com"
+        runner = f"serviceAccount:tier3-runner@{PROJECT}.iam.gserviceaccount.com"
+        observer = f"serviceAccount:tier3-supervisor@{PROJECT}.iam.gserviceaccount.com"
+        # Shared role ID: opentofu/flink-gcp/pubsub-lifecycle.tf.
+        consumer = f"projects/{PROJECT}/roles/tier3PubSubConsumer"
+        topics, subscriptions = self.topics(), self.subscriptions()
+        return {
+            **{
+                topic["name"]: [{"role": "roles/pubsub.publisher", "members": [member]}]
+                for topic, member in zip(
+                    topics, (runner, runner, workload), strict=True
+                )
+            },
+            **{
+                sub["name"]: [{"role": consumer, "members": [member]}]
+                for sub, member in zip(
+                    subscriptions, (workload, workload, observer), strict=True
+                )
+            },
+        }
+
     def manifest(self):
         return {
-            "version": 1,
+            "version": 2,
             "project": PROJECT,
             "run_id": self.run_id,
             "nonce": self.nonce,
             "topics": self.topics(),
             "subscriptions": self.subscriptions(),
+            "grants": self.grants(),
         }
 
 
@@ -167,6 +191,22 @@ def validate_resource(actual, expected):
         raise Failure("Pub/Sub subscription settings differ from the plan")
 
 
+def _validate_policy(policy, bindings):
+    # Version 3 reads expose conditions; no unknown policy content is overwritten.
+    if (
+        not isinstance(policy, dict)
+        or set(policy) - {"version", "etag", "bindings"}
+        or type(policy.get("version", 0)) is not int
+        or policy.get("version", 0) not in (0, 1, 3)
+        or not isinstance(policy.get("etag"), str)
+        or not policy["etag"]
+        or json_bytes(policy.get("bindings", [])) != json_bytes(bindings)
+    ):
+        raise Failure(
+            "Pub/Sub explicit IAM policy differs from the plan or lacks an etag"
+        )
+
+
 class Resources:
     """Prepare, inspect and clean a recorded plan; never admit a Flink workload.
 
@@ -195,6 +235,14 @@ class Resources:
     def _owned(self, phase):
         value, generation = self._record(phase)
         if (
+            isinstance(value, dict)
+            and "version" in value
+            and (type(value["version"]) is not int or value["version"] != 2)
+        ):
+            raise Failure(
+                "Unsupported Pub/Sub ownership manifest version; refusing adoption or cleanup"
+            )
+        if (
             value is None
             or not generation
             or str(generation) == "0"
@@ -205,13 +253,17 @@ class Resources:
     def _call(self, phase, method, expected):
         if method in ("PUT", "DELETE"):
             self._owned(phase)
-        name = expected["name"]
+        return self._request(
+            phase, method, expected["name"], expected if method == "PUT" else None
+        )
+
+    def _request(self, phase, method, name, body=None):
         self.before_operation(phase, method, name)
         try:
             response = self.http.request(
                 method,
                 BASE + name,
-                json=expected if method == "PUT" else None,
+                json=body,
                 timeout=HTTP_TIMEOUT,
                 allow_redirects=False,
             )
@@ -262,6 +314,52 @@ class Resources:
             actual = self._call("inspect", "GET", expected)
             validate_resource(actual, expected)
             observations.append(actual)
+        return observations
+
+    def _iam(self, phase, expected, policy=None):
+        self._owned(phase)
+        method = "GET" if policy is None else "POST"
+        suffix = (
+            ":getIamPolicy?options.requestedPolicyVersion=3"
+            if policy is None
+            else ":setIamPolicy"
+        )
+        return self._request(
+            phase,
+            method,
+            expected["name"] + suffix,
+            None if policy is None else {"policy": policy},
+        )
+
+    def install_grants(self):
+        """Install the recorded grants on empty policies, with etag preconditions.
+
+        Preflight all six policies, then recheck identity and empty policy before
+        each write. Never merge foreign bindings or retry a failed/ambiguous set.
+        Partial installation remains inspectable and cleanable, but is not resumed.
+        The caller's exclusive control must also span resource/policy read-write gaps.
+        """
+        self.inspect()
+        expected = self.plan.topics() + self.plan.subscriptions()
+        for resource in expected:
+            _validate_policy(self._iam("grant", resource), [])
+        for resource in expected:
+            validate_resource(self._call("grant", "GET", resource), resource)
+            current = self._iam("grant", resource)
+            _validate_policy(current, [])
+            bindings = self.plan.grants()[resource["name"]]
+            policy = {"version": 1, "etag": current["etag"], "bindings": bindings}
+            _validate_policy(self._iam("grant", resource, policy), bindings)
+        return self.inspect_grants()
+
+    def inspect_grants(self):
+        """Read exact explicit policies; this does not prove effective IAM access."""
+        self.inspect()
+        observations = []
+        for resource in self.plan.topics() + self.plan.subscriptions():
+            policy = self._iam("inspect-grants", resource)
+            _validate_policy(policy, self.plan.grants()[resource["name"]])
+            observations.append({"name": resource["name"], "policy": policy})
         return observations
 
     def cleanup(self):
