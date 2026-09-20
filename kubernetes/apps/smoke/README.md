@@ -99,7 +99,7 @@ After a successful publication, verify the recorded smoke digest in GAR and adop
 Do not insert a stand-in digest or create `ci.cue` to make a delivery render before publication.
 
 The [successful smoke publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34768916308) built main commit `053e23835782059830f871ca53f90fba43efa324` after successful GCP/bootstrap applies and empty refreshed plans.
-A GAR read confirmed the digest now selected in [pins.cue](../../images/pins.cue); both committed phases consume that pin without command-line tags.
+A GAR read confirmed the digest that [pins.cue](../../images/pins.cue) selected until the Cloud Tasks measurement publication republished the smoke image from a later commit; both committed phases consume whichever digest that pin names, without command-line tags.
 
 This preparation leaves the Operator at zero replicas and both namespaces' Pod/PVC quotas at zero.
 [Issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310) supplies admission, expiry/failure supervision and cleanup; [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) supplies separately approved GKE execution.

@@ -113,13 +113,19 @@ The Operator pin is in [Helm values](../../opentofu/tier3-operator/values.yaml),
 The `flink` field supplies the base runtime for the application-image work in [#1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309); it contains no application JAR.
 The `lifecycleTools` field supplies the Python/kubectl runtime for [#1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310).
 The [first successful smoke publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34768916308) built main commit `053e23835782059830f871ca53f90fba43efa324` on 2026-09-14 JST, after the GCP/bootstrap applies succeeded and their refreshed plans were empty.
-A GAR read of its full-commit tag confirmed `sha256:29cc0533b2e1a984343a51315cdfe4110aa028a6c040d2275a103c3cfa591a3d`, now selected by `images.smoke`.
+A GAR read of its full-commit tag confirmed `sha256:29cc0533b2e1a984343a51315cdfe4110aa028a6c040d2275a103c3cfa591a3d`, which `images.smoke` then selected until the Cloud Tasks measurement publication below.
 That smoke adoption retained the earlier Operator, Flink and lifecycle-tools pins.
 
 The [SDK image publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34844507450) built main commit `abf35f5a16e50be11432788b602bdf8357f9e8ad` on 2026-09-14.
-A GAR read of its full-commit tag confirmed the lifecycle-tools digest now selected in [pins.cue](pins.cue).
+A GAR read of its full-commit tag confirmed the lifecycle-tools digest that [pins.cue](pins.cue) selected until the Cloud Tasks measurement publication below.
 The pulled image started the shared runtime offline as UID 65532, and its requirements export matched the root uv lock export.
 This lifecycle-tools adoption retains the Operator, Flink and smoke pins.
+
+The Cloud Tasks measurement publication built main commit `339d0a90675dffee74305cebe021093c6a1f9b4b` on 2026-09-19 UTC, once for [the 2.2.1 line](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474382654) and once for [the 1.20.4 line](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488).
+Each run also republishes the smoke and lifecycle-tools images, so the same commit produced two equivalent builds of each; the pins take the later pair, which is what the commit's tag now resolves to.
+GAR reads confirmed all four digests against that tag, and the seven-day eligibility clock restarted at 2026-09-19T23:07Z for the lifecycle-tools and smoke pins.
+The application digests stay out of this file: they are dispatch inputs verified live, so the two measurement packages are never pinned.
+This adoption retains the Operator and Flink pins.
 
 For a shell or Docker build argument, read a pin with:
 

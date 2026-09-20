@@ -139,7 +139,8 @@ The successful workflow's job summary supplies digest references for a reviewed 
 The first publication completed on 2026-09-13 and supplied the initial Operator, Flink and lifecycle-tools references.
 The first smoke publication subsequently built main commit `053e23835782059830f871ca53f90fba43efa324` after the workload identity applies and empty refreshed plans; a GAR read confirmed the selected application digest.
 The [SDK publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34844507450) subsequently built main commit `abf35f5a16e50be11432788b602bdf8357f9e8ad` on 2026-09-14.
-A GAR read confirmed its lifecycle-tools digest, now selected by the CUE images package; the Operator, Flink and smoke pins remain unchanged by this adoption.
+A GAR read confirmed its lifecycle-tools digest, which the CUE images package selected until the Cloud Tasks measurement publication; the Operator, Flink and smoke pins remained unchanged by that adoption.
+The [Cloud Tasks measurement publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488) then built main commit `339d0a90675dffee74305cebe021093c6a1f9b4b` on 2026-09-19 UTC and republished the lifecycle-tools and smoke images alongside the measurement applications, so the images package now selects that pair and the Operator and Flink pins remain unchanged.
 The idle Helm release retains zero replicas and quotas while adopting the GAR reference.
 Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
@@ -305,7 +306,8 @@ These persistent grants prepare a separately reviewed runtime; they start no que
 The third lifecycle scenario admits one Cloud Tasks measurement session: an ordered cell list from a reviewed session file, executed as one FlinkDeployment at a time in `tier3-cloudtasks` under one environment lock of at most five hours.
 One approval per cell would have needed several hundred dispatches for the preregistered 420-cell assessment, so the session is the approval unit and a campaign ledger in `_control/campaigns/` records every cell's outcome across sessions and refuses to run a completed or running cell again.
 The session ceilings, JobManager/TaskManager shapes per parallelism class, queue prefix and synthetic target live in `policy.toml` beside the smoke values and are embedded byte for byte in a version 3 approval; the smoke tables and cost constant are untouched because their tests pin them.
-The published application digest is a dispatch input verified live against Artifact Registry, not a pin in `images/pins.cue`: no measurement image has been published yet, and a stand-in digest must not look like a runnable delivery.
+The published application digest is a dispatch input verified live against Artifact Registry, not a pin in `images/pins.cue`, so a stand-in digest cannot look like a runnable delivery.
+Both lines were published from `339d0a90675dffee74305cebe021093c6a1f9b4b` on 2026-09-19 UTC, by [the 2.2.1 run](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474382654) and [the 1.20.4 run](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488); their digests are recorded in the calibration preregistration rather than pinned here.
 
 The runner owns queue admission because only it holds `cloudtasks.queues.create`: it proves the run's queue absent, creates it in one request with a paused-queue configuration modelled on the accepted #1245 harness (one-hour tombstone, one dispatch per second, a single attempt), pauses it and reads back the paused state and zero dispatch counts.
 The supervisor re-reads the queue on every poll and treats any deviation as a stop; cleanup deletes the queue and a remaining queue blocks the idle receipt.

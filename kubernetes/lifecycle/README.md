@@ -221,7 +221,8 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
 ```
 
 The application digest is verified live against Artifact Registry with the same 24-hour retention margin as the other images; it is never pinned in `images/pins.cue`, and a digest for the wrong line's package is refused.
-Merging this implementation authorizes no dispatch, and no application image has been published for it yet.
+Merging this implementation authorizes no dispatch.
+The measurement application is published for both lines from `339d0a90675dffee74305cebe021093c6a1f9b4b`, by [the 2.2.1 run](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474382654) and [the 1.20.4 run](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488); the calibration preregistration records the two digests, and each session still needs its own approved dispatch.
 
 | Budget | Ceiling or stop condition |
 | --- | --- |
