@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle and deployment package)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle, deployment package and resource adapter)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub application image publication wiring)
@@ -391,7 +391,7 @@ The lifecycle package now generates the run's exact-table aggregate SQL and chec
 Count invalid rows separately, use exact distinct counts within the valid finite sequence domain, and compare each physical destination against its expected share including the remainder.
 Reject missing or invalid rows in both modes; permit and report duplicate copies only for ALO.
 Bind the requested input parameters in every aggregate row, require all destinations and bounded integer counts, and refuse malformed or oversized evidence rather than turning it into a data verdict.
-These literals detect accidental mismatches but do not authenticate results; the later executor still owes ownership/schema checks, exact-query job provenance, complete pagination, quiescent final observation and bounded billed query work.
+These literals detect accidental mismatches but do not authenticate results; the resource adapter below supplies ownership/schema and exact-query result checks, while the later executor still owes durable admission/evidence, quiescent final observation and the approved cumulative budget.
 Synthetic SQLite execution checks the generated SQL's relational semantics, not BigQuery service acceptance or streaming visibility.
 The BigQuery CUE package now describes each trial in the dedicated namespace with the existing workload identity, one JobManager and two one-slot TaskManagers, job parallelism two and autoscaling disabled.
 Use the smoke Pod shape for all three managers: 1 CPU, 2 GiB memory and 1 GiB ephemeral storage with equal requests and limits, pending approval of the complete run budget.
@@ -402,6 +402,13 @@ Disable last-state fallback and FlinkStateSnapshot resource creation in both pha
 Revisit the reporting choice when changing Operator versions.
 Synthetic renders cover all four mode/destination combinations and reject conflicting fixed settings.
 A reusable package avoids committing synthetic digests or an unapproved concrete run as a delivery, and does not extend lifecycle scenario admission.
+Prepare the BigQuery REST operations as an internal adapter with an injected authorized HTTP session, without extending scenario admission or adding a client-library dependency.
+Require a caller-persisted trial/nonce/expiration intent and a finite set of deterministic query slots with explicit per-job byte and timeout limits; retries keep the same job ID, and new visibility observations consume new slots.
+Match owned table metadata and creation receipts before cleanup, and bind successful query metadata, all result pages and billed-byte statistics to the existing oracle.
+REST `tables.delete` offers no documented generation precondition, so ownership readback cannot substitute for the executor's exclusive access and creator/writer fencing.
+Job timeout and cancellation are best-effort; the executor must confirm completion and retain ownership evidence through cleanup.
+Anonymous result tables remain private to the submitting identity; supervisor query inspection/cancellation does not imply permission to collect another identity's result rows.
+Synthetic HTTP tests establish these adapter contracts, not service acceptance, metadata freshness, a cumulative cost guarantee without durable slot accounting, or deployed recovery.
 Updated image publication, digest adoption, bounded admission/query execution and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
