@@ -53,7 +53,7 @@ RECEIPT_CEILING = 64 * 1024
 LISTING_MAXIMUM = 100000
 # A row is about 400 bytes. A part that decodes without a newline inside four
 # kibibytes is a decompression bomb rather than evidence, and the supervisor
-# has 512 MiB.
+# has 2 GiB.
 ROW_CEILING = 4096
 READ_CHUNK = 256 * 1024
 # Receipt counts bound allocations and comparisons downstream, so a count no

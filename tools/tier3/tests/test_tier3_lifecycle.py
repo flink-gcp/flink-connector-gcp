@@ -819,10 +819,38 @@ def test_inventory_observations_survive_parent_disappearance(env):
 
 
 def test_estimated_cost_and_pricing_staleness(env):
-    assert rt.estimated_cost(3600) == Decimal("0.708125")
+    # The supervisor shape carries the headroom that keeps it off a busy
+    # node; an hour of smoke still costs well under its USD 1 ceiling.
+    assert rt.estimated_cost(3600) == Decimal("0.813125")
     env[3].now = rt.timestamp(rt.PRICING_REVIEWED) + 31 * 86400
     with pytest.raises(rt.Failure, match="Pricing review"):
         rt.validate_approval(env[2], env[3]())
+
+
+def test_admission_quotas_cover_the_pods_each_namespace_will_hold(env):
+    """The quota that reaches the API server, not the helper that derives it.
+
+    Deriving the numbers is only half of it: a quota written from the wrong
+    shapes, or from a hand-written copy of them, still admits nothing. The
+    roles below are the Pods each namespace holds under a run admission.
+    """
+    runner = lifecycle(env)
+    runner.cleanup.quota(rt.SYSTEM, "run")
+    runner.cleanup.quota(rt.SMOKE, "run")
+    held = {rt.SYSTEM: ("supervisor", "operator"), rt.SMOKE: ("smoke", "smoke")}
+    for namespace, roles in held.items():
+        hard = env[0].get("ResourceQuota", namespace, "tier3-idle")["spec"]["hard"]
+        assert hard["pods"] == str(len(roles)), namespace
+        for key in ("cpu", "memory", "ephemeral-storage"):
+            needed = sum(rt.quantity(rt.POD_RESOURCES[role][key]) for role in roles)
+            for category in ("requests.", "limits."):
+                # Equal, not merely sufficient: the quota is the enforcement
+                # of the approved shapes, so slack in it is slack nobody
+                # approved.
+                assert rt.quantity(hard[category + key]) == needed, (
+                    namespace,
+                    category + key,
+                )
 
 
 def test_pod_capacity_and_effective_resources_match_approval(env):
@@ -2250,7 +2278,7 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
     assert rt.POD_RESOURCES == {
         "smoke": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
         "operator": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
-        "supervisor": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "128Mi"},
+        "supervisor": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "128Mi"},
     }
     assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1"
 

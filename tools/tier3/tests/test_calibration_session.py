@@ -40,7 +40,7 @@ def test_calibration_session_matches_the_preregistered_numbers():
     window = plan["plan_seconds"] + rt.CLOUDTASKS_CEILINGS["cleanup_seconds"]
     assert window == 11918
     cost = rt.estimated_session_cost(window, session["cells"])
-    assert cost.quantize(Decimal("0.01")) == Decimal("8.31")
+    assert cost.quantize(Decimal("0.01")) == Decimal("8.66")
     assert cost <= Decimal(rt.CLOUDTASKS_CEILINGS["additional_cost_usd"])
     ids = [cell["id"] for cell in session["cells"]]
     assert ids[0] == "k01-pace-10" and ids[-1] == "interrupt-control-k11"
@@ -55,7 +55,7 @@ def test_calibration_session_matches_the_preregistered_numbers():
             observation,
         )
     text = PREREGISTRATION.read_text()
-    for figure in ("11,539,316", "1,923,195", "11,018", "11,918", "USD 8.31"):
+    for figure in ("11,539,316", "1,923,195", "11,018", "11,918", "USD 8.66"):
         assert figure in text, figure
 
 
@@ -65,9 +65,9 @@ def test_flink120_calibration_repeat_matches_the_preregistration():
     plan = rt.validate_cells(session["cells"], manifest=False)
     assert plan["plan_seconds"] == 4110 and plan["task_creations"] == 236800
     cost = rt.estimated_session_cost(plan["plan_seconds"] + 900, session["cells"])
-    assert cost.quantize(Decimal("0.01")) == Decimal("1.29")
+    assert cost.quantize(Decimal("0.01")) == Decimal("1.44")
     text = PREREGISTRATION.read_text()
-    assert "4,110 s" in text and "236,800" in text and "USD 1.29" in text
+    assert "4,110 s" in text and "236,800" in text and "USD 1.44" in text
 
 
 def test_hook_chain_runs_every_hook_in_order_and_stops_on_failure():

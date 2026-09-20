@@ -219,8 +219,8 @@ delivery: resources: {
 						workingDir: "/lifecycle"
 						env: [{name: "POD_UID", valueFrom: fieldRef: fieldPath: "metadata.uid"}]
 						resources: {
-							requests: {cpu: "250m", memory: "512Mi", "ephemeral-storage": "128Mi"}
-							limits: {cpu: "250m", memory: "512Mi", "ephemeral-storage": "128Mi"}
+							requests: {cpu: "1", memory: "2Gi", "ephemeral-storage": "128Mi"}
+							limits: {cpu: "1", memory: "2Gi", "ephemeral-storage": "128Mi"}
 						}
 						securityContext: {
 							allowPrivilegeEscalation: false

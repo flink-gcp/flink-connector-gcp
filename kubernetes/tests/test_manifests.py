@@ -733,11 +733,22 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
             ]
         }
     ]
+    # Headroom, not appetite: a request the scheduler cannot fit into the
+    # remains of a busy node, where a system Pod preempts the supervisor
+    # within half a minute of it starting.
     assert pod["containers"][0]["resources"]["requests"] == {
-        "cpu": "250m",
-        "memory": "512Mi",
+        "cpu": "1",
+        "memory": "2Gi",
         "ephemeral-storage": "128Mi",
     }
+    # The namespace quota is derived from the policy shape, so the shape the
+    # cluster actually gets has to be that one and not a second copy of it.
+    from flink_tier3.policy import POD_RESOURCES
+
+    for category in ("requests", "limits"):
+        assert (
+            pod["containers"][0]["resources"][category] == POD_RESOURCES["supervisor"]
+        ), category
     app = json.loads(config["data"]["application.json"])
     if scenario == "cloudtasks":
         assert_example_session_manifests(app)

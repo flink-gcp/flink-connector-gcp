@@ -30,7 +30,7 @@ The main assessment has its own later approval; the scale estimate at the end is
 | Queue | `projects/flink-gcp/locations/us-central1/queues/ct1246-RUN_ID`, created with the paused-queue configuration in `flink_tier3/cloudtasks.py`, paused and read back before the first cell once the service reports it, re-read on every poll, deleted at cleanup; one queue per session, never reused |
 | Target | `https://ct1246.invalid/task`; the paused queue dispatches nothing, and the supervisor stops on any nonzero dispatch count |
 | Flink lines and images | `2.2.1` from package `cloudtasks-measurement` at `sha256:62496ae01b1e32979434184d6ccf5be0920f54fd1ae988f8f5127a0ad741af80`, `1.20.4` from `cloudtasks-measurement-flink120` at `sha256:075029e13fd92ec43145fd68a98004357ef413258ee5a6cb30e86c3c62120296`; both are dispatch inputs verified live against Artifact Registry rather than pinned. They were published on 2026-09-19 UTC and become deletion-eligible seven days later, and the lifecycle demands a further 24-hour margin, so a session whose expiry reaches 2026-09-25T22:56Z is refused and needs a republication first |
-| Pod shapes | JobManager 1 CPU / 2 GiB; TaskManager 1 CPU / 4 GiB for parallelism 1, 2 CPU / 8 GiB for 4, 4 CPU / 16 GiB for 16; one TaskManager holds every slot; Flink Pods on Spot, supervisor and Operator on normal capacity |
+| Pod shapes | supervisor 1 CPU / 2 GiB, sized so the scheduler cannot fit it into the remains of a busy node; JobManager 1 CPU / 2 GiB; TaskManager 1 CPU / 4 GiB for parallelism 1, 2 CPU / 8 GiB for 4, 4 CPU / 16 GiB for 16; one TaskManager holds every slot; Flink Pods on Spot, supervisor and Operator on normal capacity |
 | Restart strategy | fixed delay, three attempts, ten seconds; checkpoint state retained on cancellation under the cell's benchmark prefix |
 | Reviewed revision | the `main` commit named at dispatch. The images above were built from `339d0a90675dffee74305cebe021093c6a1f9b4b`, whose supervisor source bundle hashes to `runtime_sha256` `fdf3a4d046fe9d1c7c07c5db5508bf87ec77416cd6df4bf2702e0c54470ba1f1`; a dispatch from a later commit that leaves `flink_tier3/` untouched carries the same bundle hash |
 | Protocol pin | `flink_tier3/protocol_1246.toml`, converted field for field from the private draft, whose own SHA-256 is `32122ff01527f4e17a1eac7377c0f11430d71fabba2bce65b4c011afb5b07354`; the pin is part of the supervisor source bundle, so `runtime_sha256` covers it |
@@ -72,7 +72,7 @@ Higher offered rates are not calibrated in advance: the capacity search of the m
 ## Numeric ceilings of the calibration session
 
 The session policy in `policy.toml` is the hard bound; the values below are what this session is expected to need under it.
-The cell count, records, creations and plan come from `flink_tier3.model.validate_cells` over the session file; the cost comes from `estimated_session_cost` at the window's lower bound of 11,918 seconds, and reaches USD 8.49 at its upper bound of 12,518 seconds.
+The cell count, records, creations and plan come from `flink_tier3.model.validate_cells` over the session file; the cost comes from `estimated_session_cost` at the window's lower bound of 11,918 seconds, and reaches USD 8.85 at its upper bound of 12,518 seconds.
 The read estimate, the queue writes, the dispatch count and the evidence sizes are derived by hand from the poll interval, the queue protocol and the row size.
 
 | Quantity | Calibration session | Policy ceiling |
@@ -86,9 +86,9 @@ The read estimate, the queue writes, the dispatch count and the evidence sizes a
 | Pods | 4 | 4 |
 | Session plan | 11,018 s; approved window 11,918 s to 12,518 s | 18,000 s |
 | Durable evidence | rows about 80 to 120 MB compressed, receipts and observations under 60 MB | 4 GiB session, 256 MiB supervisor receipts |
-| Incremental cost | USD 8.31 at the planning bound; about USD 4.47 at the expected creation count | USD 10.00 |
+| Incremental cost | USD 8.66 at the planning bound; about USD 4.81 at the expected creation count | USD 10.00 |
 
-The Flink 1.20.4 repeat needs 4,110 s of plan, 236,800 planning-bound creations and USD 1.29 at its own window's lower bound of 5,010 seconds, USD 1.40 at the upper bound.
+The Flink 1.20.4 repeat needs 4,110 s of plan, 236,800 planning-bound creations and USD 1.44 at its own window's lower bound of 5,010 seconds, USD 1.57 at the upper bound.
 The planning bound assumes one JobMaster's restart budget; a JobManager failover resets it, so the cell deadline and the paused queue, not the bound, cap what a misbehaving cell can spend.
 
 ## Acceptance criteria for the instrument
@@ -130,7 +130,7 @@ Adding the ten minutes of startup and three minutes of teardown each cell is pla
 The capacity search adds one cell per probe: simulating the pinned search from an initial 25 records per second reaches the planning capacities below in six probes for the single-subtask shape, nine for the three shapes planned at 500 records per second, ten for the sixteen-subtask single-concurrency shape and eleven for the two sixteen-by-sixteen shapes, so the 28 groups of shape, body and line need 260 probe cells, or 86.6 hours.
 The campaign is therefore about 224 hours of cell time, 137.9 for the pinned cells and 86.6 for the probes, and a probe that has to be repeated adds to it.
 The per-session cell ceiling of 20 bounds 680 cells at 34 sessions, and the five-hour window, of which cleanup reserves the last 15 minutes, bounds the same time at 48, so the campaign needs at least 48 sessions as the ceilings stand.
-Compute at the policy rates is about USD 181 for that cell time, with the largest parallelism class accounting for 108 of the 224 hours.
+Compute at the policy rates is about USD 204 for that cell time, with the largest parallelism class accounting for 108 of the 224 hours.
 Creations depend on the accepted rates: at planning capacities of 25 records per second for the single-subtask shape, 400 for the sixteen-subtask single-concurrency shape, 500 for the four-subtask and one-subtask sixteen-concurrency shapes and 3,000 for the two sixteen-by-sixteen shapes, the sources would emit about 256 million records (USD 103 at USD 0.40 per million); halving the two largest shapes to 1,000 records per second brings that to about 112 million (USD 45).
 The 260 probe cells add about 88 million records of their own at those capacities (USD 35), because the search spends most of its probes near the accepted rate.
 The planning bound over those cells is several times the expected count, so the per-session creation ceiling binds long before the cost ceiling does.

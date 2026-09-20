@@ -48,17 +48,40 @@ from .policy import (
 )
 
 
+def sum_resources(shapes):
+    """The canonical quantities a quota needs to admit every shape given.
+
+    Writing that sum by hand makes a Pod shape and its quota two facts, and a
+    change to one silently starves the other. A canonical quantity rounds
+    toward zero and these sums carry no slack, so a total that does not render
+    exactly would produce a quota rejecting the Pods it was sized for; that is
+    a policy the reviewer has to see rather than one to round away.
+    """
+    shapes = list(shapes)
+    hard = {}
+    for key in ("cpu", "memory", "ephemeral-storage"):
+        total = sum(quantity(shape[key]) for shape in shapes)
+        hard[key] = canonical_quantity(total, key)
+        if quantity(hard[key]) < total:
+            raise Failure(f"Quota {key} rounds below the shapes it must admit")
+    return hard
+
+
 def session_resources(approval):
     """Quota for one JobManager plus the largest approved TaskManager class."""
-    jobmanager, taskmanager = session_shapes(
-        approval.cells, approval.cloudtasks_pod_resources
+    return sum_resources(
+        session_shapes(approval.cells, approval.cloudtasks_pod_resources)
     )
-    return {
-        key: canonical_quantity(
-            quantity(jobmanager[key]) + quantity(taskmanager[key]), key
-        )
-        for key in ("cpu", "memory", "ephemeral-storage")
-    }
+
+
+def system_resources():
+    """The supervisor and the Operator, which share `tier3-system`."""
+    return sum_resources([POD_RESOURCES["supervisor"], POD_RESOURCES["operator"]])
+
+
+def application_resources():
+    """The two Pods of a smoke or recovery application."""
+    return sum_resources([POD_RESOURCES["smoke"]] * 2)
 
 
 class Cleanup:
@@ -115,11 +138,11 @@ class Cleanup:
             elif admission == "session":
                 resources = session_resources(self.env.approval)
             else:
-                resources = {
-                    "cpu": "1250m" if namespace == SYSTEM else "2",
-                    "memory": "2560Mi" if namespace == SYSTEM else "4Gi",
-                    "ephemeral-storage": "1152Mi" if namespace == SYSTEM else "2Gi",
-                }
+                resources = (
+                    system_resources()
+                    if namespace == SYSTEM
+                    else application_resources()
+                )
             hard.update(
                 {
                     "pods": str(pods),
