@@ -411,6 +411,23 @@ Helm adds only the Pub/Sub Operator Role and RoleBinding, bringing its rendered 
 The runner and supervisor retain their trusted Operator-administrator role, now reaching Pub/Sub namespace Secrets and Pod creation through the Operator KSA.
 Application admission and service permissions remain separate from this idle scope extension.
 
+### Pub/Sub DataStream application preparation
+
+The [DataStream recovery application](../../kubernetes/apps/pubsub/README.md) follows the applied namespace and idle Operator foundation for [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+Its opt-in build targets the Flink 2.2.1 / Java 17 runtime and relays two pre-created input subscriptions into one pre-created output topic with production source/sink builders and workload ADC.
+The job has no resource-administration authority; the external provisioner must record exclusive run ownership and settings before admission, and cleanup must refuse unproved ownership.
+Service permissions, image publication, CUE admission and independent lifecycle supervision remain subsequent implementation.
+
+Preserve four distinct identities: logical input, input Pub/Sub message, observer processing call and output Pub/Sub message.
+A fresh observation UUID per processing call distinguishes repeated input processing from repeated publication of one already serialized observation; retaining output message IDs distinguishes either from the collector's own redelivery.
+The offline oracle checks completeness and reports all four duplicate populations without treating deduplicated completeness as exactly-once behavior.
+Its evidence limits bound local analysis, not service cost or workload execution.
+
+The checkpointed union-state guard fixes the run and logical input domain while permitting parallelism one/two rescaling with stable operator UIDs.
+Local emulator/MiniCluster tests exercise both DataStream RPC paths, TaskManager-loss checkpoint recovery and savepoint restoration in both directions.
+They establish neither service replay timing nor deployed recovery; a later independently observed trial must prove the fault's completed-checkpoint boundary and expected replay cohort.
+Table entry points and actual service-resource lifecycle remain separate acceptance work on the parent.
+
 ### Ownership boundaries
 
 There are separate state and application boundaries for GCP infrastructure, Kubernetes bootstrap, Helm and application runs.

@@ -633,6 +633,7 @@ def test_ignored_only_skips_the_build(ci_maven_args):
         "run_tier3_smoke": "false",
         "run_tier3_cloudtasks": "false",
         "run_tier3_bigquery": "false",
+        "run_tier3_pubsub": "false",
         "run_build": "false",
         "lanes": "[]",
         "check_notice_sources": "false",
@@ -919,3 +920,32 @@ def test_bigquery_application_and_its_dependencies_select_its_build(
 )
 def test_unrelated_changes_do_not_select_bigquery_application(ci_maven_args, path):
     assert not ci_maven_args.requires_tier3_bigquery([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/pubsub/src/main/java/Relay.java",
+        "flink-connector-gcp-pubsub/pom.xml",
+        "flink-connector-gcp-base/src/main/java/Shared.java",
+        "flink-connector-gcp-test-utils/src/main/java/Fixture.java",
+        "pom.xml",
+        "justfile",
+        ".github/workflows/verify.yaml",
+    ],
+)
+def test_pubsub_application_inputs_select_its_lane(ci_maven_args, path):
+    assert ci_maven_args.requires_tier3_pubsub([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tools/tier3/src/flink_tier3/bootstrap.py",
+        "kubernetes/apps/cloudtasks/pom.xml",
+        "opentofu/tier3-bootstrap/pubsub.tf",
+        "docs/content/_index.md",
+    ],
+)
+def test_unrelated_inputs_do_not_select_pubsub_application(ci_maven_args, path):
+    assert not ci_maven_args.requires_tier3_pubsub([path])

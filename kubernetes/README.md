@@ -210,3 +210,9 @@ Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flin
 
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 Its local tests cover input restoration and emulator sink wiring; BigQuery lifecycle admission, image publication and deployed trials remain subsequent work.
+
+## Pub/Sub recovery application
+
+The [internal DataStream relay and output oracle](apps/pubsub/README.md) prepare [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) using the production connector and local emulator recovery tests.
+Build them with `just tier3-pubsub-verify`.
+The relay's unbounded runtime still requires image publication, resource/permission provisioning, application admission and independent lifecycle supervision before real execution.

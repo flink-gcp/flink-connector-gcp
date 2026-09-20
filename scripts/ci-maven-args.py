@@ -115,6 +115,7 @@ Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
   run_tier3_cloudtasks=true|false selects the opt-in Cloud Tasks measurement application.
+  run_tier3_pubsub=true|false selects the opt-in Pub/Sub recovery application.
   run_tier3_bigquery=true|false selects the opt-in BigQuery recovery application.
   run_tier3_smoke=true|false   selects the opt-in smoke application for its own
                           inputs and shared build inputs; --full selects it too.
@@ -213,7 +214,7 @@ def requires_tier3_application(files: list[str], application: str) -> bool:
         "kubernetes/images/pins.cue",
     }
     prefixes = (f"kubernetes/apps/{application}/", ".mvn/", "tools/maven/")
-    if application in ("cloudtasks", "bigquery"):
+    if application in ("cloudtasks", "bigquery", "pubsub"):
         prefixes += (
             f"flink-connector-gcp-{application}/",
             "flink-connector-gcp-base/",
@@ -228,6 +229,10 @@ def requires_tier3_smoke(files: list[str]) -> bool:
 
 def requires_tier3_cloudtasks(files: list[str]) -> bool:
     return requires_tier3_application(files, "cloudtasks")
+
+
+def requires_tier3_pubsub(files: list[str]) -> bool:
+    return requires_tier3_application(files, "pubsub")
 
 
 def requires_tier3_bigquery(files: list[str]) -> bool:
@@ -474,6 +479,7 @@ def main() -> None:
         print("run_tier3_smoke=true")
         print("run_tier3_cloudtasks=true")
         print("run_tier3_bigquery=true")
+        print("run_tier3_pubsub=true")
         emit(
             run_build=True,
             built=modules,
@@ -483,6 +489,7 @@ def main() -> None:
         return
 
     files = changed_files(args)
+    print(f"run_tier3_pubsub={'true' if requires_tier3_pubsub(files) else 'false'}")
     print(f"run_tier3_smoke={'true' if requires_tier3_smoke(files) else 'false'}")
     print(
         f"run_tier3_cloudtasks={'true' if requires_tier3_cloudtasks(files) else 'false'}"
