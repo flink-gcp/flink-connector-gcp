@@ -48,6 +48,7 @@ Commands that read CUE or OpenTofu inputs require a repository checkout.
 The current directory is the default root; an installed CLI can select another checkout with `flink-tier3 --repository /path/to/checkout COMMAND ...`.
 Other relative arguments, including kubeconfig and evidence paths, remain relative to the caller's current directory.
 The in-cluster `supervisor` command needs only the projected package and approval/application data.
+The offline `bigquery query` and `bigquery assess` commands also work outside the checkout and perform no cloud operations; the [BigQuery application runbook](../kubernetes/apps/bigquery/README.md#offline-query-oracle) defines their aggregate contract and evidence limits.
 
 The [lifecycle runbook](../kubernetes/lifecycle/README.md) defines execution approval and cleanup.
 Third-party dependencies remain installed in the pinned image, while the reviewed package source is projected through an immutable ConfigMap.

@@ -69,7 +69,8 @@ Rows contain nullable `run_id STRING`, `sequence INTEGER`, `destination INTEGER`
 Padding is deterministic pseudorandom data derived from run ID and sequence, avoiding an all-zero fixture.
 Replay serializes the same sequence into the same bytes and table.
 The deployed query oracle must require every expected sequence in its correct table; EO additionally requires exact uniqueness, while ALO records duplicate multiplicities.
-That oracle, temporary-table deletion and ownership checks belong to the subsequent lifecycle implementation.
+The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
+Its deployed execution, temporary-table deletion and ownership checks still belong to the subsequent lifecycle implementation.
 
 ## State and observations
 
@@ -126,6 +127,74 @@ An observer-output RuntimeException leaves the delegate's result unchanged and i
 Disabled INFO logging, transport loss or abrupt process termination can also lose evidence without a detectable final gap.
 The external collector must retain writer registrations and correlate these incomplete observations with Flink metrics, checkpoint history and query oracles; missing events are not evidence of zero activity.
 The observer holds counters and one handle per wrapped appender, and retains no row, response future or unbounded event collection.
+
+### Offline query oracle
+
+The `flink-tier3 bigquery` commands prepare the final data check without contacting GCP.
+They require the exact run ID, mode, destination count and finite input record count from the approved trial; they do not infer these from observed output.
+For example, from the repository root:
+
+```sh
+mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery query \
+  --run-id example-1312 --mode EO --destinations 10 --records 200 > oracle.sql
+mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery assess \
+  --run-id example-1312 --mode EO --destinations 10 --records 200 --result aggregate.json > oracle-report.json
+```
+
+The first command writes GoogleSQL; it submits no query.
+The second requires an already collected JSON array of aggregate objects and prints one JSON report to standard output; the example redirects it to `oracle-report.json`.
+These commands do not provide the missing query submission/export step.
+An installed CLI can run either command outside the checkout.
+The array must contain every result row, with the generated field names; BigQuery INT64 strings and JSON integers are accepted.
+Missing, repeated or extra destinations, a changed input identity, inconsistent counts, duplicate JSON keys or evidence over 64 KiB are rejected.
+Exit code zero means the query-result check passed, one means a data mismatch, and two means invalid input or unreadable evidence.
+
+Each object in `aggregate.json` has this shape; this example shows only destination zero, while the complete array must contain all 10 or 50 destinations:
+
+```json
+{
+  "run_id": "example-1312",
+  "mode": "EO",
+  "expected_records": "200",
+  "destinations": "10",
+  "destination": "0",
+  "total_rows": "20",
+  "valid_rows": "20",
+  "distinct_sequences": "20"
+}
+```
+
+The result collector must flatten each query-result row into these named fields using the returned schema and retain all pages.
+A raw REST `rows[].f[].v` envelope or job-metadata wrapper is not this format.
+The collector and its authorized submission/export path remain subsequent implementation.
+
+The query reads exactly the run's 10 or 50 named tables and emits an aggregate even for an empty table.
+It counts every row, including rows with another run ID, null identity fields, an out-of-range sequence, or a mismatch between physical table, declared destination and sequence modulo destination count.
+Only rows satisfying all those conditions contribute to `valid_rows` and exact `distinct_sequences`.
+It uses [exact aggregate functions](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/aggregate_functions), without an approximate distinct count or a WHERE clause that could hide invalid rows.
+The expected sequence count for each table includes the remainder when the input count is not divisible by the destination count.
+A matching distinct count over the valid finite sequence domain proves completeness for that table; a matching total count alone would let a missing row and a duplicate cancel.
+
+| Report field | Meaning |
+| --- | --- |
+| `invalid_rows` | All observed rows minus rows with valid identity, range and routing |
+| `missing_sequences` | Expected sequences minus distinct valid sequences, summed across tables |
+| `duplicate_rows` | Valid rows minus distinct valid sequences; extra copies, not the number of duplicated identities |
+| `verdict` | `pass` only with no invalid or missing rows, and also no duplicate rows in EO mode |
+
+ALO reports duplicate copies while permitting them; EO rejects them.
+The report includes per-destination counts and totals, with `scope=query-result` to distinguish this check from a deployed recovery verdict.
+It does not inspect payload bytes, prove table ownership, authenticate evidence, establish a checkpoint/fault boundary or prove that no later writes occur.
+Identity fields in the aggregate bind the input parameters for accidental-mismatch detection; they are query literals, not a service attestation.
+A substituted or edited aggregate can pass this offline check.
+In particular, generating and assessing an EO trial with `--mode ALO` can permit duplicates when that input count also fits the ALO limit.
+Rows contain no mode field, so this check cannot discover that mistake; the executor must take the mode from the approved application configuration, and the report must be interpreted with its recorded mode.
+
+The later executor must verify table ownership/schema and the completed query job, bind its exact SQL and all result pages to the approved trial, and retain query statistics and immutable evidence.
+It must enforce query deadlines, maximum bytes billed and a cumulative retry/visibility budget before submitting anything, and run the final check after the workload has stopped writing.
+The local tests execute the generated SQL unchanged on synthetic SQLite tables to exercise row, NULL, empty-table and duplicate semantics.
+Their SQLite build must provide the `MOD` math function.
+That coverage does not establish BigQuery query acceptance or streaming visibility; an authorized service run remains an acceptance gate.
 
 The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.

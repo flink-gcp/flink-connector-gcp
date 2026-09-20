@@ -386,7 +386,13 @@ Log writer incarnation, subtask/attempt, local appender identity, stream, rows, 
 Return the original future with no callbacks: observed invocations include connector retries, but neither count SDK-internal attempts nor prove server acknowledgement or query visibility.
 Observation output is best-effort; sequence gaps and recorded output failures are evidence limits, and abrupt termination can lose the tail without a final marker.
 Account for synchronous logging overhead in the deployed characterization rather than treating these observations as a capacity measurement.
-Updated image publication, digest adoption, bounded admission, query oracles and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
+The lifecycle package now generates the run's exact-table aggregate SQL and checks complete downloaded aggregate arrays offline.
+Count invalid rows separately, use exact distinct counts within the valid finite sequence domain, and compare each physical destination against its expected share including the remainder.
+Reject missing or invalid rows in both modes; permit and report duplicate copies only for ALO.
+Bind the requested input parameters in every aggregate row, require all destinations and bounded integer counts, and refuse malformed or oversized evidence rather than turning it into a data verdict.
+These literals detect accidental mismatches but do not authenticate results; the later executor still owes ownership/schema checks, exact-query job provenance, complete pagination, quiescent final observation and bounded billed query work.
+Synthetic SQLite execution checks the generated SQL's relational semantics, not BigQuery service acceptance or streaming visibility.
+Updated image publication, digest adoption, bounded admission/query execution and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
 
