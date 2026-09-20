@@ -243,9 +243,11 @@ class BigQueryLifecycle:
         self._change(submitted)
         return result
 
-    def collect_query(self, name):
+    def collect_query(self, name, *, max_bytes=None):
         """Persist successful job evidence before recording its durable pointer."""
         self._runner()
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
+            raise ValueError("Query evidence limit must be a positive byte count")
         state = self._read()
         saved = state["queries"].get(name)
         if saved is None or saved["stage"] == "reserved":
@@ -259,6 +261,8 @@ class BigQueryLifecycle:
                 or digest(value) != saved["evidence"]["sha256"]
             ):
                 raise Failure("BigQuery query evidence was replaced or removed")
+            if max_bytes is not None and len(json_bytes(value)) > max_bytes:
+                raise Failure("BigQuery query evidence exceeds its byte budget")
             return value["result"]
         result = self.api.results(saved["slot"])
         artifact = {
@@ -267,6 +271,8 @@ class BigQueryLifecycle:
             "slot": saved["slot"],
             "result": result,
         }
+        if max_bytes is not None and len(json_bytes(artifact)) > max_bytes:
+            raise Failure("BigQuery query evidence exceeds its byte budget")
         try:
             generation = self.env.store.write(path, artifact)
         except ApiError as error:

@@ -365,6 +365,42 @@ A completed pass marks only the BigQuery component clean; it does not set run su
 Synthetic tests cover conditional-update conflicts, restarts, lost responses, stop races, evidence generations, pending queries and receipt-based cleanup, including composition with the REST adapter.
 They do not establish authenticated handoff, a functioning external barrier or real-service acceptance.
 
+### Query requests and runner release
+
+[`flink_tier3.bigquery_handoff`](../../../tools/tier3/src/flink_tier3/bigquery_handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
+It has no production caller: the generic `Runner`, `Supervisor`, approval validator and CLI still do not admit BigQuery execution.
+The caller must authenticate both actors, allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
+The token binds records; it is not an authentication credential or a lease that another process may take over.
+After initializing this protocol on an empty resource intent, all runner provisioning and query calls must use it rather than the resource controller directly.
+
+The supervisor persists one observation request at a time with an immutable name and deadline.
+The runner reserves a deterministic query slot, submits and polls that job, and collects results with its own identity.
+Each new observation consumes another slot; repeated polls do not submit a completed or pending job again.
+The supervisor reads the resulting evidence object and checks its recorded generation, hash, intent, observation name and slot without calling the private query-result API.
+Query evidence bytes are divided equally among the reserved slots and checked on the complete serialized artifact before writing and when reading it.
+This bounds those query artifacts, not telemetry or the whole run's evidence; the executor must allocate the other evidence separately.
+Request deadlines must fit inside the shared query window and table expiry.
+An expired uncollected request ends observation processing for the trial; it cannot be abandoned to skip a required baseline or reuse its slot.
+The caller must stop, release and clean up rather than retry a later observation.
+The protocol checks deadlines before admitting each query operation; adapter request deadlines remain the caller's responsibility, and neither check is a hard service-side stop.
+
+A conditional record update marks each runner call in flight before it starts.
+Stopping sets the run-global stop flag as well as the BigQuery component flag; release also stops admission for the whole run.
+This closes new requests and calls but does not acknowledge runner release.
+Release is permanent and requires no in-flight or unresolved call; cleanup additionally requires the resource controller's external quiescence barrier and terminal query checks.
+If a creating operation raises, its marker remains unresolved even when some of its work is known to have completed.
+This conservatively blocks release and cleanup, including after a lost response, process failure or partial provisioning interrupted by stop.
+Neither elapsed time nor a replacement process automatically clears the marker; incident recovery remains external work.
+After a completed call or a failed read/collection, the runner attempts to clear its marker, since no BigQuery table or job creation remains unresolved by that call.
+It retries only this conditional acknowledgement, with at most three attempts including the initial attempt, using a unique invocation ID so a lost response cannot clear a later call.
+An already clear marker is accepted as acknowledged; a different active invocation aborts immediately without another attempt.
+Persistent control-storage failures can still leave the marker unresolved and require external recovery; no resource operation is retried by this mechanism.
+A completed collection may finish after stop, and the supervisor may read retained evidence after release.
+Release does not prove Flink termination, settle unknown service operations, exclude other lifecycle processes or authorize deletion by itself.
+
+Synthetic tests interleave the two actors through shared generation-checked storage, including stop during provisioning, submission and collection, lost responses, acknowledgement failures, invocation identity, expired requests, actor roles, pending jobs, replaced evidence and byte limits.
+They do not establish authenticated handoff, workload fencing, real-service acceptance or a deployed recovery verdict.
+
 The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
 The fixed dataset and namespace grants already exist, but checkpoint/savepoint restore through the conditional GCS grants remains a live acceptance gate.

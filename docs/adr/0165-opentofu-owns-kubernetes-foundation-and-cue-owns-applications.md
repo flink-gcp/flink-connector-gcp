@@ -578,3 +578,27 @@ Install wheels at build time and validate imports before publication.
 The shared runner and supervisor retain lifecycle policy; official SDKs supply authentication and API transport.
 Publish through the existing reviewed-main workflow before adopting its GAR digest in the runtime change.
 This image preparation does not change the selected runtime digest or admit a workload.
+
+### BigQuery query handoff and release
+
+Keep result collection on the submitting runner and communicate observation requests and evidence pointers through the existing conditional run record.
+Bind the handoff to one runner token, explicit query evidence bytes and an absolute query deadline before any resource provisioning.
+The caller authenticates actors and excludes token reuse by another process; the token is record identity, not authorization.
+Serialize observation requests, reserve a new deterministic slot for each snapshot, and divide query artifact bytes equally among the slots.
+The supervisor validates the archived object's generation, hash and trial/observation identity without relying on access to the runner's private result table.
+
+Persist an in-flight marker before each runner operation and require an explicit permanent runner release before cleanup can invoke its external workload barrier.
+Keep a creating operation's marker after any exception: a lost response or partially completed multi-table provisioning does not prove that every service operation has settled.
+This deliberately sacrifices automatic cleanup after such failures; a process restart, elapsed deadline or matching token does not grant takeover or clear uncertainty.
+Read and collection failures may clear their marker after returning because those operations do not create BigQuery tables or jobs.
+Make at most three conditional completion-acknowledgement attempts, including the initial attempt, with an invocation ID that refuses to clear a later call after a lost write response.
+Accept an already clear marker as acknowledged, but abort immediately on a different active invocation; retrying that invariant violation could hide it after the later call finishes.
+Persistent control-storage failure still requires external recovery; never retry the resource operation as part of this acknowledgement.
+An expired observation aborts further observations for the trial but still allows release and cleanup; skipping a required baseline is not a recovery strategy.
+Stop and release set the run-global stop flag, so they terminate admission for the whole run.
+The existing barrier still must fence writers, other creators and server-side work, and cleanup still waits for terminal query jobs.
+Declined: treating the stop flag or an expired heartbeat as proof that the submitting actor can no longer create resources.
+
+This is internal protocol preparation with synthetic interleaving tests.
+The generic runner/supervisor loops, authenticated entrypoints, BigQuery approval admission, Kubernetes workload fencing and final idle verification remain subsequent integration work.
+It changes no deployed image, grants or paid-trial authorization.
