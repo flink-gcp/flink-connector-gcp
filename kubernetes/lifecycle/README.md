@@ -99,7 +99,7 @@ The Operator uses its tracked normal-capacity template.
 | JobManager | tier3-smoke | 1 | Spot | 1 | 2 GiB | 1 GiB |
 | TaskManager | tier3-smoke | 1 | Spot | 1 | 2 GiB | 1 GiB |
 | Operator | tier3-system | 1 | Normal | 1 | 2 GiB | 1 GiB |
-| Supervisor | tier3-system | 1 | Normal | 0.25 | 0.5 GiB | 0.125 GiB |
+| Supervisor | tier3-system | 1 | Normal | 1 | 2 GiB | 0.125 GiB |
 
 | Budget | Ceiling or stop condition |
 | --- | --- |
@@ -116,8 +116,8 @@ Every observation also checks actual container counts, image digests, effective 
 State and telemetry are polling stop thresholds, not service-side write quotas; writes between observations can exceed a threshold before cleanup begins.
 Evidence export uses conditional creates and a separate budget for each writer; it stops admission when an export fails or its budget is exhausted.
 
-The conservative cost model charges all 3.25 CPUs at USD 0.10 per CPU-hour, all 6.5 GiB memory at USD 0.02 per GiB-hour, and all 3.125 GiB ephemeral storage at USD 0.001 per GiB-hour, even for Spot Pods.
-Including USD 0.25 for the bounded storage, requests and telemetry gives USD 0.708125 for a full hour.
+The conservative cost model charges all 4 CPUs at USD 0.10 per CPU-hour, all 8 GiB memory at USD 0.02 per GiB-hour, and all 3.125 GiB ephemeral storage at USD 0.001 per GiB-hour, even for Spot Pods.
+Including USD 0.25 for the bounded storage, requests and telemetry gives USD 0.813125 for a full hour.
 Those rates exceed the [published Iowa Autopilot prices](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-09-14; admission refuses a pricing review older than 30 days.
 This is an execution budget model, not a real-time billing meter or a cloud billing cutoff.
 The standing cluster fee and existing persistent infrastructure are outside incremental cost.

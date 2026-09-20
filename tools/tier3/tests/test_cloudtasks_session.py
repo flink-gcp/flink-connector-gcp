@@ -2014,3 +2014,28 @@ def test_a_queue_is_never_created_after_the_admission_deadline(env):
         ct.admit_queue(runner.env)
     assert ("create",) not in queues.calls
     assert runner.env.refresh().queue is None
+
+
+def test_the_system_quota_admits_the_supervisor_and_the_operator():
+    """A Pod shape and its quota must not be two facts that can disagree."""
+    from flink_tier3.cleanup import system_resources
+
+    supervisor = rt.POD_RESOURCES["supervisor"]
+    operator = rt.POD_RESOURCES["operator"]
+    quota = system_resources()
+    for key in ("cpu", "memory", "ephemeral-storage"):
+        assert rt.quantity(quota[key]) == rt.quantity(supervisor[key]) + rt.quantity(
+            operator[key]
+        ), key
+    # The shapes as they stand: enough for both Pods, and no more.
+    assert quota == {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "1152Mi"}
+
+
+def test_a_quota_that_cannot_be_rendered_exactly_is_refused():
+    """These sums carry no slack, so rounding one down starves a Pod."""
+    from flink_tier3.cleanup import sum_resources
+
+    # A canonical CPU quantity truncates to whole millicores.
+    shape = {"cpu": "0.0015", "memory": "1Gi", "ephemeral-storage": "1Gi"}
+    with pytest.raises(rt.Failure, match="rounds below the shapes"):
+        sum_resources([shape])

@@ -178,7 +178,9 @@ def test_complete_identity_and_budget_bindings(
     assert proposal["limits"]["query_bytes"] == 48 * 1024**3
     assert proposal["cleanup_at"] == "2026-09-21T01:15:00Z"
     assert proposal["limits"]["pods"] == 5
-    assert proposal["cost"]["usd"] == "2.19165625"
+    # The supervisor's shape is shared, and it grew so the scheduler cannot
+    # squeeze it onto a busy node; the trial's estimate grows with it.
+    assert proposal["cost"]["usd"] == "2.34915625"
     assert json.loads(bundle["delivery"]["config"]["data"]["proposal.json"]) == proposal
     assert len(renderer) == 1
     with pytest.raises(Failure, match="Incomplete run approval"):
