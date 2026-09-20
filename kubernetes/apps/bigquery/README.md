@@ -57,6 +57,40 @@ Both writers reach every destination, while each row retains `sequence % destina
 The job enables checkpoints every 30 seconds with at most one concurrent checkpoint.
 Writer and buffered-stream options retain their production defaults; this workload does not search capacity or tune those defaults.
 
+## Deployment definition
+
+[`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator 1.15.0 schema and Flink 2.2.1 application image.
+A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO` or `EO`) and `run.destinations` (`10` or `50`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
+Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
+The offered rate is fixed at 1 MiB/s.
+The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
+
+Use this package from a delivery under `runs/` with `run.namespace: "tier3-bigquery"` and the usual run ID, image and expiry inputs.
+The package sets the namespace and the existing `bigquery` ServiceAccount; the run hierarchy supplies resource labels, expiry annotation and AMD64 Spot selectors on the common and manager-specific Pod templates.
+[`tests/fixtures/bigquery.cue`](../../tests/fixtures/bigquery.cue) shows the package composition used by the disposable render tests.
+No concrete run, image digest or execution window is selected by this package.
+
+The definition requests one JobManager and two TaskManagers, each with 1 CPU, 2 GiB memory and 1 GiB ephemeral storage; container requests equal limits.
+The application total is 3 CPUs, 6 GiB memory and 3 GiB ephemeral storage, excluding the Operator and supervisor.
+Each TaskManager has one slot, job parallelism is two and autoscaling is disabled; the Java graph retains its source parallelism of one and sink parallelism of two.
+These resource choices follow the smoke Pod shape and still need approval in the complete trial budget; they do not establish sufficient heap or a runtime Pod ceiling.
+No PVC or application volume is requested.
+
+Checkpoints run every 30 seconds with at most one concurrent checkpoint, a 120-second timeout and two retained checkpoints.
+The hashmap backend uses filesystem checkpoint storage, with checkpoints, savepoints and Kubernetes HA state below `gs://flink-gcp-tier3-bigquery/runs/<run-id>/` in separate `checkpoints`, `savepoints` and `ha` prefixes.
+The fixed-delay restart strategy permits three attempts with a ten-second delay; the external supervisor must bound wall-clock runtime and repeated process incarnations.
+
+For the upgrade, render the same inputs with `run.phase: "upgrade"` and update the same deployment.
+Both phases use `upgradeMode: savepoint` and `allowNonRestoredState: false`; only the phase argument and `--require-restored` change, with the latter becoming `true` on upgrade.
+The definition also sets `kubernetes.operator.job.upgrade.last-state-fallback.enabled=false` so an unavailable savepoint cannot be replaced by last-state recovery, and `kubernetes.operator.snapshot.resource.enabled=false` to use Operator 1.15.0's status-based savepoint reporting instead of separate FlinkStateSnapshot resources.
+These settings follow the [generic recovery exercise](../../lifecycle/README.md#generic-recovery-exercise); an Operator upgrade must revisit this version-specific reporting choice.
+The running application's checkpointed identity also rejects changed input parameters on restore.
+The package describes that transition; it does not wait for baseline observations, prove a completed savepoint, apply the upgrade or delete the JobManager.
+
+`just tier3-check` renders both phases for all four mode/destination combinations against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and the phase-only argument change.
+Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
+A later executor must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
+
 ## Table and row identity
 
 Every destination is in the fixed `flink-gcp.flink_gcp_tier3_bigquery` dataset.

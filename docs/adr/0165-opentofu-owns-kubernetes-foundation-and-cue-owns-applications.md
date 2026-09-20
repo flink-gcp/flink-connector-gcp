@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring and appender observations)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle and deployment package)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub application image publication wiring)
@@ -392,6 +392,15 @@ Reject missing or invalid rows in both modes; permit and report duplicate copies
 Bind the requested input parameters in every aggregate row, require all destinations and bounded integer counts, and refuse malformed or oversized evidence rather than turning it into a data verdict.
 These literals detect accidental mismatches but do not authenticate results; the later executor still owes ownership/schema checks, exact-query job provenance, complete pagination, quiescent final observation and bounded billed query work.
 Synthetic SQLite execution checks the generated SQL's relational semantics, not BigQuery service acceptance or streaming visibility.
+The BigQuery CUE package now describes each trial in the dedicated namespace with the existing workload identity, one JobManager and two one-slot TaskManagers, job parallelism two and autoscaling disabled.
+Use the smoke Pod shape for all three managers: 1 CPU, 2 GiB memory and 1 GiB ephemeral storage with equal requests and limits, pending approval of the complete run budget.
+Keep the application image input restricted to the fixed GAR package and a digest; this is format validation, not provenance verification or pin adoption.
+Both phases retain the same input identity, state paths under the run's BigQuery bucket prefix, 30-second checkpoints and savepoint upgrade mode.
+The upgrade changes only the phase and requires restored state; validate both manifests and preserve the input contract before applying either.
+Disable last-state fallback and FlinkStateSnapshot resource creation in both phases, as in the generic recovery exercise, so the savepoint trial and its status-based reporting retain that exercise's recovery and cleanup assumptions.
+Revisit the reporting choice when changing Operator versions.
+Synthetic renders cover all four mode/destination combinations and reject conflicting fixed settings.
+A reusable package avoids committing synthetic digests or an unapproved concrete run as a delivery, and does not extend lifecycle scenario admission.
 Updated image publication, digest adoption, bounded admission/query execution and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
