@@ -16,7 +16,9 @@ The recipe builds `target/bigquery-recovery.jar` and copies runtime dependencies
 The Dockerfile places these JARs in `/opt/flink/usrlib/` over the reviewed Flink base image and enables its bundled GCS filesystem plugin.
 The entry point is `io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob`; the job URI is `local:///opt/flink/usrlib/bigquery-recovery.jar`.
 No dependency download is needed at Pod startup.
-Publication wiring, an approved image digest and workload admission remain subsequent preparation.
+The [manual publication workflow](../../../.github/workflows/tier3-images.yaml) verifies and builds this payload as the `bigquery-recovery` GAR package.
+Its first dispatch needs separate publication approval; an approved image digest and workload admission remain subsequent preparation.
+The application CI lane builds the Dockerfile against the same public Flink 2.2.1 digest without publishing or using GCP credentials.
 
 Unit tests cover argument bounds, destination identities, serialized row sizes, Java serialization, input gaps and checkpoint state incompatibility.
 Local MiniCluster tests restore the source and input identity operator from a checkpoint and a savepoint using a discard sink.
