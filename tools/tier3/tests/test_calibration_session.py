@@ -27,7 +27,8 @@ PREREGISTRATION = ROOT / "docs/adr/evidence/0162-cloudtasks-assessment-1246.md"
 
 def test_calibration_session_matches_the_preregistered_numbers():
     session = rt.load_session(SESSIONS / "calibration-1246.toml")
-    assert session["campaign"] == "calibration-1246"
+    # The campaign names the attempt: the first one is spent in the ledger.
+    assert session["campaign"] == "calibration-1246b"
     plan = rt.validate_cells(session["cells"], manifest=False)
     assert plan == {
         "cells": 10,

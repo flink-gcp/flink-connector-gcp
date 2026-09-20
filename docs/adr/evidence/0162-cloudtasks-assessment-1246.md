@@ -58,6 +58,14 @@ Warm-up and observation windows follow the protocol rule, max(60 s, two checkpoi
 | `interrupt-control-k11` | TaskManager killed 60 s after warm-up; proves the incomplete-evidence path | 1, 1, 1 s | 10 | 2,430 |
 
 A second reviewed file, [`calibration-1246-flink120.toml`](../../../kubernetes/lifecycle/sessions/calibration-1246-flink120.toml), repeats `k01` to `k04` on Flink 1.20.4 in a separate session and campaign under its own approval.
+
+### First attempt, 2026-09-19
+
+Run `cal1246-221-20260920g` executed `k01` to `k05` and was stopped during `k06`.
+It measured the instrument rather than the service: every cell reconciled `invalid` on `receipt-fields` and `missing-source-start`, because the application declares its offered rate as a double and writes `10.0`, while the reader required an integer.
+The measurement itself was intact, `k01` recording 2,430 rows against 2,430 observations, 2,430 exported rows and 2,430 distinct successful creations, and the session's 114 `observation` receipts each record the queue read back `PAUSED` with no dispatch reported.
+The reader now accepts a whole number of either JSON type, and the receipts of that run are kept as the reconciler's fixtures so the contract has a test with the writer's own output in it.
+The campaign of this file is therefore `calibration-1246b`: the ledger refuses a completed cell, which is what keeps a spent attempt from being quietly overwritten.
 There is no record-count-mode pair: record-count mode prints its rows to standard output, which the session cannot capture, and receipt writes happen at most four times per creator incarnation outside the observation window, so their cost is bounded by construction and is read from the observed busy time rather than measured separately.
 Higher offered rates are not calibrated in advance: the capacity search of the main assessment ramps each shape from a low rate and observes the instrument at every step.
 
