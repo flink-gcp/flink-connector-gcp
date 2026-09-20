@@ -83,7 +83,8 @@ The read estimate, the queue writes, the dispatch count and the evidence sizes a
 | Queue administration writes | create, pause, delete | 6 per actor |
 | Metered reads | about 8,000 (735 polls, nine REST reads and one queue read each; a discovery or restart poll adds one) | 60,000 per actor |
 | Dispatches | 0 | 0 |
-| Pods | 4 | 4 |
+| Pods | 4 running, 5 admitted | 5 |
+| Replacement slot | `tier3-system` only; the Spot namespaces keep exact quotas, because a replacement TaskManager of the largest approved class would nearly double what the session quota enforces, and the restart accompanying one already invalidates the cell it was measuring. A Pod stuck `Terminating` can hold the slot for as long as its node stays unreachable, which the cost model does not charge: USD 0.141 per hour, taking the session from USD 8.66 to USD 9.13 at the planning bound if it were held throughout | 5 Pods |
 | Session plan | 11,018 s; approved window 11,918 s to 12,518 s | 18,000 s |
 | Durable evidence | rows about 80 to 120 MB compressed, receipts and observations under 60 MB | 4 GiB session, 256 MiB supervisor receipts |
 | Incremental cost | USD 8.66 at the planning bound; about USD 4.81 at the expected creation count | USD 10.00 |

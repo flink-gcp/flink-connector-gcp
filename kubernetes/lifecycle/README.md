@@ -69,7 +69,7 @@ Merging this implementation does not authorize a dispatch.
 
 A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, and the ceilings below.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
-The workflow input must contain `APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1` verbatim.
+The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1` verbatim.
 Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
 The last 15 minutes are reserved for cleanup, leaving at most 45 minutes for startup and the 30-minute smoke job.
 A Cloud Tasks session's evidence is downloaded and analyzed after the run; see [Local verification and evidence](#local-verification-and-evidence).
@@ -81,7 +81,7 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f run_id=APPROVED_RUN_ID \
   -f reviewed_sha=APPROVED_MAIN_SHA \
   -f expires_at=APPROVED_UTC_EXPIRY \
-  -f 'approval=APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1'
+  -f 'approval=APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1'
 ```
 
 For the recovery exercise, also pass `-f scenario=generic-recovery`.
@@ -103,17 +103,22 @@ Requests equal limits for every container.
 The supervisor excludes Spot through required node affinity and runs in `tier3-system`, independently of the two Spot Flink Pods.
 The Operator uses its tracked normal-capacity template.
 
-| Workload | Namespace | Maximum Pods | Capacity | CPU per Pod | Memory per Pod | Ephemeral storage per Pod |
+| Workload | Namespace | Pods running | Capacity | CPU per Pod | Memory per Pod | Ephemeral storage per Pod |
 | --- | --- | ---: | --- | ---: | ---: | ---: |
 | JobManager | tier3-smoke | 1 | Spot | 1 | 2 GiB | 1 GiB |
 | TaskManager | tier3-smoke | 1 | Spot | 1 | 2 GiB | 1 GiB |
-| Operator | tier3-system | 1 | Normal | 1 | 2 GiB | 1 GiB |
+| Operator | tier3-system | 1 (+1 replacement slot) | Normal | 1 | 2 GiB | 1 GiB |
 | Supervisor | tier3-system | 1 | Normal | 1 | 2 GiB | 0.125 GiB |
+
+`tier3-system` is sized for a third Pod of the Operator's shape, and nothing runs in it.
+A preempted Pod holds its quota until it finishes terminating, so without that slot the Deployment's own replacement is refused.
+The Spot namespaces get no such slot on purpose, for a reason of cost rather than of detection: a replacement TaskManager of the largest approved class would nearly double what the session quota enforces.
+What a replacement costs the measurement is scenario-specific; for a Cloud Tasks cell the restart that accompanies it already invalidates the cell, and for a smoke run an owned replacement that restores the same lineage can now finish successfully.
 
 | Budget | Ceiling or stop condition |
 | --- | --- |
 | Duration | Absolute expiry within 60 minutes; begin cleanup 15 minutes before it |
-| Pods | Four total; two in each namespace |
+| Pods | Five total: two in each namespace, and one slot a replacement occupies while the Pod it replaces terminates |
 | PVCs | Zero throughout admission and cleanup |
 | State | Stop on observed usage above 1 GiB or 10,000 objects in the run prefix |
 | Logs | Stop at 100 MiB collected; stop if the initial 1 MiB or a later 64 KiB read would truncate |
@@ -127,6 +132,7 @@ Evidence export uses conditional creates and a separate budget for each writer; 
 
 The conservative cost model charges all 4 CPUs at USD 0.10 per CPU-hour, all 8 GiB memory at USD 0.02 per GiB-hour, and all 3.125 GiB ephemeral storage at USD 0.001 per GiB-hour, even for Spot Pods.
 Including USD 0.25 for the bounded storage, requests and telemetry gives USD 0.813125 for a full hour.
+The replacement slot is not charged, because it is quota rather than a running Pod; a Pod that occupied it for a whole hour would add USD 0.141 and reach USD 0.954125, still inside the approved USD 1 but with USD 0.046 of margin rather than USD 0.187.
 Those rates exceed the [published Iowa Autopilot prices](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-09-14; admission refuses a pricing review older than 30 days.
 This is an execution budget model, not a real-time billing meter or a cloud billing cutoff.
 The standing cluster fee and existing persistent infrastructure are outside incremental cost.
@@ -162,6 +168,9 @@ The email scope lets GKE identify the impersonated service account by the email 
 The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint observations.
 The first log read retains up to 1 MiB of startup history; subsequent reads retain up to 64 KiB since the previous observation.
 Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.
+A Pod that went away between the inventory listing and its log read has that read retired and recorded as `retired-pod-log-unavailable`; a 404 for a Pod that is still there, under the same UID and without a deletion timestamp, still fails the run.
+Deciding that needs a second read of the Pod, so a transient status on that read is recorded as `pod-presence-unavailable` and tolerated for two consecutive polls rather than being read as proof the Pod is alive; the third fails the run, as does a refusal that answers about the caller rather than about the Pod.
+That tolerance is what lets a preempted Pod be replaced mid-run, and it is also why an application Pod deleted from outside the run is no longer detected by the log read alone.
 Ordinary smoke success requires the job to finish, smoke progress to establish its lineage, and at least one completed checkpoint to have been observed through the UID-owned REST service.
 Progress from another run/phase or a changed lineage fails the run, including an unexpected fresh start following disruption.
 Failure, cancellation, resource/evidence limits or the test deadline enters cleanup.
@@ -221,7 +230,7 @@ This implementation prepares [issue #1311](https://github.com/flink-gcp/flink-co
 ## Cloud Tasks session
 
 A `cloudtasks` dispatch admits one measurement session for [issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246): an ordered list of cells from a reviewed session file, executed one FlinkDeployment at a time in `tier3-cloudtasks`.
-The workflow input must contain `APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES` verbatim, and the dispatch names `session` (a file under [sessions/](sessions/) without its `.toml` suffix), `flink_version` (`2.2.1` or `1.20.4`) and `application_digest` (the published `sha256:` digest of that line's measurement application package).
+The workflow input must contain `APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES` verbatim, and the dispatch names `session` (a file under [sessions/](sessions/) without its `.toml` suffix), `flink_version` (`2.2.1` or `1.20.4`) and `application_digest` (the published `sha256:` digest of that line's measurement application package).
 Expiry must cover the session plan plus 15 minutes of cleanup and lie within ten minutes of that sum, at most 300 minutes ahead; the plan is the sum over cells of ten minutes of startup, the nominal input window and three minutes of teardown.
 After obtaining that separate execution approval and a published digest, dispatch with the approved values:
 
@@ -231,7 +240,7 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f flink_version=2.2.1 -f application_digest=sha256:PUBLISHED_DIGEST \
   -f run_id=APPROVED_RUN_ID -f reviewed_sha=APPROVED_MAIN_SHA \
   -f expires_at=APPROVED_UTC_EXPIRY \
-  -f 'approval=APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
+  -f 'approval=APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
 ```
 
 The application digest is verified live against Artifact Registry with the same 24-hour retention margin as the other images; it is never pinned in `images/pins.cue`, and a digest for the wrong line's package is refused.
@@ -242,7 +251,7 @@ The measurement application is published for both lines from `339d0a90675dffee74
 | --- | --- |
 | Duration | Absolute expiry within 300 minutes; begin cleanup 15 minutes before it |
 | Cells | At most 20 per session, each with a unique ID that is not `running` or `completed` in the campaign ledger |
-| Pods | Four total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system` |
+| Pods | Five total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system`, and one slot a replacement occupies while the Pod it replaces terminates |
 | Task creations | Planning bound over the session: each cell's per-creator attempt limit times its subtasks times the four incarnations one JobMaster's fixed-delay strategy allows, at most 12,000,000; the expected count is the cells' record totals, and an attempt limit must at least cover the busiest creator's records (all of them at parallelism 1, nine tenths under skew, an even share otherwise) |
 | Queue administration | At most six queue writes per actor (create, pause and delete are the only ones issued, none retried); zero dispatches, checked on every poll |
 | Reads | At most 60,000 metered Cloud Tasks, Flink REST and evidence-storage requests per actor, counted one per listing, receipt, part and rewrite; the chunk reads behind a part and the metadata read after a rewrite are not counted separately. A poll costs about ten, a session about 12,000 |

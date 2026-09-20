@@ -71,6 +71,7 @@ class Supervisor:
         self.cleanup = Cleanup(env, bigquery=bigquery, quiesce=quiesce)
         self.log_bytes = 0
         self.log_since = {}
+        self.pod_read_failures = {}
         self.log_stopped = False
         self.exercise = (
             RecoveryExercise(env, upgrade)
@@ -153,23 +154,43 @@ class Supervisor:
             try:
                 data = self.env.kube.logs(pod, since)
             except ApiError as error:
-                if (
-                    not self.exercise
-                    or not self.exercise.recovering
-                    or error.status != 404
-                ):
+                # A Pod can be replaced between the inventory listing and this
+                # read; a preempted Operator is the measured case. What makes
+                # the 404 benign is the Pod being gone, or on its way out,
+                # and not the scenario.
+                if error.status != 404:
                     raise
-                current = self.env.kube.get(
-                    "Pod", pod["metadata"]["namespace"], pod["metadata"]["name"]
-                )
+                try:
+                    current = self.env.kube.get(
+                        "Pod", pod["metadata"]["namespace"], pod["metadata"]["name"]
+                    )
+                except Failure as unresolved:
+                    # That re-read is the whole guard, so a re-read saying
+                    # nothing about the Pod is not proof the Pod is alive. The
+                    # next poll lists the namespace again and settles it. The
+                    # allowance is this Pod's: another Pod answering cannot
+                    # buy it a further poll, and cannot spend its own.
+                    if (
+                        not transient(unresolved)
+                        or self.pod_read_failures.get(uid, 0) >= 2
+                    ):
+                        raise
+                    self.pod_read_failures[uid] = self.pod_read_failures.get(uid, 0) + 1
+                    self.env.emit("pod-presence-unavailable", {"uid": uid})
+                    continue
+                self.pod_read_failures.pop(uid, None)
                 if (
                     current
                     and current["metadata"]["uid"] == uid
                     and not current["metadata"].get("deletionTimestamp")
                 ):
                     raise
-                self.env.emit("retired-pod-log-unavailable", {"uid": uid})
+                self.env.emit(
+                    "retired-pod-log-unavailable",
+                    {"uid": uid, "namespace": pod["metadata"]["namespace"]},
+                )
                 continue
+            self.pod_read_failures.pop(uid, None)
             self.log_bytes += len(data)
             truncated = len(data) >= (65536 if since else MIB)
             exhausted = self.log_bytes > self.cleanup.ceilings["log_bytes"]
@@ -191,6 +212,10 @@ class Supervisor:
                 if self.exercise:
                     self.exercise.progress(pod, decoded)
             self.log_since[uid] = before
+        listed = {pod["metadata"]["uid"] for pod in pods}
+        self.pod_read_failures = {
+            uid: count for uid, count in self.pod_read_failures.items() if uid in listed
+        }
         if self.env.evidence_failed:
             raise Failure("Durable evidence export failed")
 

@@ -177,7 +177,7 @@ def test_complete_identity_and_budget_bindings(
     assert proposal["limits"]["input_bytes"] == 1800 * 1024**2
     assert proposal["limits"]["query_bytes"] == 48 * 1024**3
     assert proposal["cleanup_at"] == "2026-09-21T01:15:00Z"
-    assert proposal["limits"]["pods"] == 5
+    assert proposal["limits"]["pods"] == 6
     # The supervisor's shape is shared, and it grew so the scheduler cannot
     # squeeze it onto a busy node; the trial's estimate grows with it.
     assert proposal["cost"]["usd"] == "2.34915625"

@@ -573,7 +573,7 @@ def test_reviewed_session_policy_preserves_the_fixed_contract():
     assert rt.CLOUDTASKS_CEILINGS == {
         "session_seconds": 18000,
         "cleanup_seconds": 900,
-        "pods": 4,
+        "pods": 5,
         "pvcs": 0,
         "cells": 20,
         "task_creations": 12000000,
@@ -599,7 +599,7 @@ def test_reviewed_session_policy_preserves_the_fixed_contract():
     assert rt.CLOUDTASKS_POLICY["target"] == "https://ct1246.invalid/task"
     assert (
         cli.CLOUDTASKS_APPROVAL
-        == "APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES"
+        == "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES"
     )
     assert rt.CEILINGS["evidence_bytes"] == 104857600  # smoke unchanged
     session = rt.load_session(
@@ -2016,7 +2016,7 @@ def test_a_queue_is_never_created_after_the_admission_deadline(env):
     assert runner.env.refresh().queue is None
 
 
-def test_the_system_quota_admits_the_supervisor_and_the_operator():
+def test_the_system_quota_admits_the_operator_replacing_itself():
     """A Pod shape and its quota must not be two facts that can disagree."""
     from flink_tier3.cleanup import system_resources
 
@@ -2024,11 +2024,13 @@ def test_the_system_quota_admits_the_supervisor_and_the_operator():
     operator = rt.POD_RESOURCES["operator"]
     quota = system_resources()
     for key in ("cpu", "memory", "ephemeral-storage"):
-        assert rt.quantity(quota[key]) == rt.quantity(supervisor[key]) + rt.quantity(
-            operator[key]
-        ), key
-    # The shapes as they stand: enough for both Pods, and no more.
-    assert quota == {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "1152Mi"}
+        # A preempted Operator Pod holds its quota while it terminates, so the
+        # replacement needs a slot of its own or the Deployment cannot recover.
+        assert rt.quantity(quota[key]) == rt.quantity(
+            supervisor[key]
+        ) + 2 * rt.quantity(operator[key]), key
+    # The shapes as they stand: both Pods, one replacement, and no more.
+    assert quota == {"cpu": "3", "memory": "6Gi", "ephemeral-storage": "2176Mi"}
 
 
 def test_a_quota_that_cannot_be_rendered_exactly_is_refused():

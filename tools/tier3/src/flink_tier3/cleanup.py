@@ -80,8 +80,17 @@ def session_resources(approval):
 
 
 def system_resources():
-    """The supervisor and the Operator, which share `tier3-system`."""
-    return sum_resources([POD_RESOURCES["supervisor"], POD_RESOURCES["operator"]])
+    """The supervisor, the Operator, and the Operator's replacement.
+
+    A preempted Pod holds its quota until it finishes terminating, so a quota
+    sized for the steady state refuses the Deployment's own recovery. Measured
+    on 2026-09-20: the Operator Pod was preempted mid-session, four
+    replacements were refused with `exceeded quota: tier3-idle`, and the
+    session died when the supervisor next read the retired Pod's log.
+    """
+    return sum_resources(
+        [POD_RESOURCES["supervisor"]] + [POD_RESOURCES["operator"]] * 2
+    )
 
 
 def application_resources():
@@ -152,20 +161,17 @@ class Cleanup:
             raise Failure("Quota identity changed")
         hard = copy.deepcopy(saved["hard"])
         if admission:
-            pods = 1 if admission == "supervisor" else 2
             if admission == "supervisor":
-                resources = POD_RESOURCES["supervisor"]
+                pods, resources = 1, POD_RESOURCES["supervisor"]
             elif admission == "session":
-                resources = session_resources(self.env.approval)
+                pods, resources = 2, session_resources(self.env.approval)
             elif namespace == BIGQUERY:
-                pods = 3
-                resources = sum_resources([POD_RESOURCES["smoke"]] * pods)
+                pods, resources = 3, sum_resources([POD_RESOURCES["smoke"]] * 3)
+            elif namespace == SYSTEM:
+                # Two Pods run here; the third is the replacement slot.
+                pods, resources = 3, system_resources()
             else:
-                resources = (
-                    system_resources()
-                    if namespace == SYSTEM
-                    else application_resources()
-                )
+                pods, resources = 2, application_resources()
             hard.update(
                 {
                     "pods": str(pods),

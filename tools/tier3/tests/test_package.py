@@ -100,7 +100,7 @@ print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
     assert Path(payload["file"]).is_relative_to(installed)
     assert payload["sources"] == package_sources()
     assert payload["digest"] == source_digest()
-    assert payload["pods"] == 4
+    assert payload["pods"] == 5
 
 
 def test_repository_argument_routes_bootstrap_without_changing_relative_paths(

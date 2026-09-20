@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       approval:
-        description: 'Type APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1, or APPROVE ONE CLOUD TASKS SESSION: 4 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
+        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
         required: true
         type: string
       session:
