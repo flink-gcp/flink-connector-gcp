@@ -526,6 +526,21 @@ The controller limits its control portion to 256 KiB and adds guarded logical co
 The [runbook](../../kubernetes/apps/pubsub/README.md#durable-preparation-and-cleanup) states the caller's budget, exclusive-control and external quiescence obligations.
 Numeric execution ceilings, CLI admission, deployed actor handoff and recovery evidence remain subsequent work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
+### Pub/Sub message evidence
+
+Keep the runner's input publisher separate from the supervisor's output subscriber, using the fixed resource grants and names.
+Before each bounded input batch, save a create-only intent containing its exact payloads and identity; refuse an existing intent rather than retry an ambiguous publication.
+Retain the ordered service response so later assessment can correlate logical inputs with input publication IDs.
+Before acknowledging output, retain every output service message ID and payload outside the job JVM in the existing oracle's TSV encoding.
+Keep collector redelivery visible by retaining every batch independently, without deduplication or logical-payload filtering.
+An empty pull does not prove drain, and an ACK response does not prove the absence of future redelivery.
+
+The internal message helper bounds one call's messages and response bytes; the caller still owns authenticated actor binding, prepared-resource checks, exclusive run authority, durable aggregate budgets, deadlines and quiescence before cleanup.
+A guard runs before every service call and logical evidence upload; helper calls perform no automatic retries or evidence replacement.
+Use retained intents to attribute ambiguous outcomes, and retain malformed decoded responses without acknowledging them.
+The [runbook](../../kubernetes/apps/pubsub/README.md#input-publication-and-output-collection) defines the operation counts, local caps and remaining integration obligations.
+This stage adds no runnable scenario or real-service recovery claim under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+
 ### Pub/Sub lifecycle IAM preparation
 
 Define the persistent custom roles and project bindings in OpenTofu, and keep per-run topic/subscription policies in the guarded runtime helper.
