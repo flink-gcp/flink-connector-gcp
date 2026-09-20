@@ -27,6 +27,7 @@ watchNamespaces:
   - tier3-smoke
   - tier3-cloudtasks
   - tier3-bigquery
+  - tier3-pubsub
 webhook:
   create: false
 image:

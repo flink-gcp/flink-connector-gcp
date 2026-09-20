@@ -41,6 +41,7 @@ def documents():
         "tier3-smoke",
         "tier3-cloudtasks",
         "tier3-bigquery",
+        "tier3-pubsub",
     ):
         objects.extend(
             [
@@ -89,7 +90,7 @@ def documents():
                     "namespace": "tier3-system",
                 },
                 "data": {
-                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery\n"
+                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub\n"
                 },
             },
             {
@@ -333,6 +334,7 @@ def test_bad_chart_never_reaches_helm(monkeypatch, tmp_path, case):
         "watch-extra",
         "watch-missing-cloudtasks",
         "watch-missing-bigquery",
+        "watch-missing-pubsub",
         "watch-duplicate",
         "config-scalar",
         "binding-subject",
@@ -378,10 +380,11 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
     elif case.startswith("watch-"):
         watched = {
             "watch-all": "",
-            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,default",
-            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery",
-            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks",
-            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-bigquery",
+            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,default",
+            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery,tier3-pubsub",
+            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks,tier3-pubsub",
+            "watch-missing-pubsub": "tier3-smoke,tier3-cloudtasks,tier3-bigquery",
+            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigquery",
         }[case]
         objects[-2]["data"]["flink-conf.yaml"] = (
             "kubernetes.operator.watched.namespaces: " + watched
@@ -416,6 +419,8 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
         "cloudtasks-wrong-binding",
         "bigquery-missing",
         "bigquery-wrong-binding",
+        "pubsub-missing",
+        "pubsub-wrong-binding",
     ],
 )
 def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
@@ -430,6 +435,7 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
         account = {
             "tier3-cloudtasks": "cloudtasks-benchmark",
             "tier3-bigquery": "bigquery",
+            "tier3-pubsub": "pubsub",
         }.get(namespace, "smoke")
         if (
             case == "cloudtasks-missing"
@@ -443,6 +449,12 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             and kind == "serviceaccount"
         ):
             raise RuntimeError("BigQuery ServiceAccount not found")
+        if (
+            case == "pubsub-missing"
+            and namespace == "tier3-pubsub"
+            and kind == "serviceaccount"
+        ):
+            raise RuntimeError("Pub/Sub ServiceAccount not found")
         if case == "missing" and kind == "serviceaccount":
             raise RuntimeError("ServiceAccount not found")
         if kind == "crd":
@@ -475,6 +487,7 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                         case == "bigquery-wrong-binding"
                         and namespace == "tier3-bigquery"
                     )
+                    or (case == "pubsub-wrong-binding" and namespace == "tier3-pubsub")
                     else account,
                     "namespace": namespace,
                 }
@@ -567,6 +580,33 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                 "-o",
                 "json",
             ),
+            (
+                "get",
+                "serviceaccount",
+                "pubsub",
+                "--namespace",
+                "tier3-pubsub",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "role",
+                "tier3-pubsub-job",
+                "--namespace",
+                "tier3-pubsub",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "rolebinding",
+                "tier3-pubsub-job",
+                "--namespace",
+                "tier3-pubsub",
+                "-o",
+                "json",
+            ),
         ]
     else:
         with pytest.raises(RuntimeError):
@@ -624,6 +664,7 @@ def test_unknown_root_is_rejected(tmp_path):
         "live-image",
         "live-config",
         "live-rbac",
+        "pubsub-live-rbac",
         "live-resources",
     ],
 )
@@ -680,6 +721,12 @@ def test_post_apply_verification_reads_release_and_live_resources(
             actual["data"] = {}
         if case == "live-rbac" and actual["kind"] == "Role":
             actual["rules"] = []
+        if (
+            case == "pubsub-live-rbac"
+            and actual["kind"] == "Role"
+            and actual["metadata"]["namespace"] == "tier3-pubsub"
+        ):
+            actual["rules"] = []
         if case == "live-resources" and actual["kind"] == "Deployment":
             actual["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"][
                 "memory"
@@ -690,7 +737,7 @@ def test_post_apply_verification_reads_release_and_live_resources(
     monkeypatch.setattr(cluster, "kubectl", kubectl)
     if case == "idle":
         cluster.verify_operator()
-        assert len(calls) == 13
+        assert len(calls) == 15
     else:
         with pytest.raises(RuntimeError):
             cluster.verify_operator()
