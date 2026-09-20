@@ -444,7 +444,7 @@ def test_rejects_run_names_before_mutation(env, value):
 @pytest.mark.parametrize(
     "change",
     [
-        lambda a: a["ceilings"].update(pods=5),
+        lambda a: a["ceilings"].update(pods=6),
         lambda a: a.update(expires_at="2028-01-01T00:00:00+00:00"),
         lambda a: a["namespaces"][rt.SMOKE]["hard"].update(pods="1"),
         lambda a: a["images"].update(smoke="evil@sha256:" + "a" * 64),
@@ -848,7 +848,15 @@ def test_admission_quotas_cover_the_pods_each_namespace_will_hold(env):
     runner = lifecycle(env)
     runner.cleanup.quota(rt.SYSTEM, "run")
     runner.cleanup.quota(rt.SMOKE, "run")
-    held = {rt.SYSTEM: ("supervisor", "operator"), rt.SMOKE: ("smoke", "smoke")}
+    # The third `tier3-system` entry is the slot a replacement occupies while
+    # the Pod it replaces terminates; nothing runs in it.
+    held = {
+        rt.SYSTEM: ("supervisor", "operator", "operator"),
+        rt.SMOKE: ("smoke", "smoke"),
+    }
+    # The per-namespace quotas and the flat Pod ceiling are one allowance seen
+    # from two sides; drifting apart would admit a Pod the audit then stops.
+    assert sum(len(roles) for roles in held.values()) == rt.CEILINGS["pods"]
     for namespace, roles in held.items():
         hard = env[0].get("ResourceQuota", namespace, "tier3-idle")["spec"]["hard"]
         assert hard["pods"] == str(len(roles)), namespace
@@ -1586,6 +1594,340 @@ def test_successful_supervisor_without_cleaned_record_enters_recovery_promptly(e
     assert runner.env.refresh().phase == rt.Phase.CLEANED
 
 
+def supervisor_records(env, event=None):
+    """The supervisor's emitted records, payloads included."""
+    return [
+        value
+        for (bucket, name), (value, _generation) in env[1].data.items()
+        if bucket == rt.EVIDENCE
+        and name.startswith("runs/test-1310/supervisor/")
+        and (event is None or value["event"] == event)
+    ]
+
+
+def log_failure(status, path="pods/supervisor-pod/log"):
+    def logs(*_args, **_kwargs):
+        raise rt.ApiError(status, "GET", path)
+
+    return logs
+
+
+def pod_reader(env, monkeypatch, answer):
+    """Answer only the re-read of `supervisor-pod`; delegate everything else.
+
+    Patching `get` wholesale would let a future audit or root re-read inside
+    the poll take this stub's answer and leave the test green while covering
+    a different call.
+    """
+    real, seen = env[0].get, []
+
+    def get(kind, namespace, name, *args, **kwargs):
+        if (kind, namespace, name) != ("Pod", rt.SYSTEM, "supervisor-pod"):
+            return real(kind, namespace, name, *args, **kwargs)
+        seen.append((kind, namespace, name))
+        return answer()
+
+    monkeypatch.setattr(env[0], "get", get)
+    return seen
+
+
+def second_pod(env, pod, name="supervisor-pod-2"):
+    other = copy.deepcopy(pod)
+    other["metadata"]["name"] = name
+    other["metadata"]["uid"] = name + "-uid"
+    env[0].put(other)
+    return other
+
+
+def test_a_pod_replaced_mid_poll_retires_its_log_instead_of_stopping(env, monkeypatch):
+    """A preempted Operator Pod must not end a session that is going fine.
+
+    The inventory lists the Pod, the service replaces it, and the log read
+    then answers 404. Measured on 2026-09-20: the Operator was preempted, the
+    supervisor read the retired Pod's log, and a session stopped after three
+    of its ten cells. The Pod being gone is what makes the 404 benign, so the
+    recovery belongs to every scenario rather than to the exercise alone.
+    """
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    # The service already replaced it; only the stale listing still has it.
+    env[0].data.pop(("Pod", rt.SYSTEM, pod["metadata"]["name"]))
+    supervisor.telemetry([], [pod])
+    retired = supervisor_records(env, "retired-pod-log-unavailable")
+    # The namespace is how an operator reading the evidence learns which Pod
+    # went away, so the record has to carry it.
+    assert [record["payload"] for record in retired] == [
+        {"uid": pod["metadata"]["uid"], "namespace": rt.SYSTEM}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "replace"),
+    [
+        ("gone", lambda pod: None),
+        ("replaced", lambda pod: {"metadata": dict(pod["metadata"], uid="other-uid")}),
+        (
+            "terminating",
+            lambda pod: {
+                "metadata": dict(pod["metadata"], deletionTimestamp="2026-09-20T00:00Z")
+            },
+        ),
+    ],
+)
+def test_every_way_a_pod_leaves_retires_its_log(env, monkeypatch, name, replace):
+    """Gone, replaced under the same name, or on its way out: all benign."""
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    seen = pod_reader(env, monkeypatch, lambda: replace(pod))
+    supervisor.telemetry([], [pod])
+    assert seen == [("Pod", rt.SYSTEM, "supervisor-pod")], name
+    assert supervisor_records(env, "retired-pod-log-unavailable"), name
+
+
+def test_a_pod_replaced_mid_poll_keeps_collecting_the_pods_behind_it(env, monkeypatch):
+    """Retiring one Pod's log must not abandon the rest of the poll.
+
+    A real poll carries several Pods. Leaving the loop here would silently
+    drop every later Pod's log for the rest of the session.
+    """
+    supervisor, pod = prepared_supervisor(env)
+    other = second_pod(env, pod)
+
+    def logs(target, _since=None):
+        if target["metadata"]["uid"] == pod["metadata"]["uid"]:
+            raise rt.ApiError(404, "GET", "pods/supervisor-pod/log")
+        return b"final log\n"
+
+    monkeypatch.setattr(env[0], "logs", logs)
+    env[0].data.pop(("Pod", rt.SYSTEM, pod["metadata"]["name"]))
+    supervisor.telemetry([], [pod, other])
+    # The retired read is charged to nobody and leaves no resume window; the
+    # healthy Pod behind it is still collected.
+    assert supervisor.log_bytes == len(b"final log\n")
+    assert list(supervisor.log_since) == [other["metadata"]["uid"]]
+
+
+def test_a_tolerated_outage_keeps_collecting_the_pods_behind_it(env, monkeypatch):
+    """Same obligation on the tolerance path as on the retire path."""
+    supervisor, pod = prepared_supervisor(env)
+    other = second_pod(env, pod)
+
+    def logs(target, _since=None):
+        if target["metadata"]["uid"] == pod["metadata"]["uid"]:
+            raise rt.ApiError(404, "GET", "pods/supervisor-pod/log")
+        return b"final log\n"
+
+    monkeypatch.setattr(env[0], "logs", logs)
+    pod_reader(
+        env,
+        monkeypatch,
+        lambda: (_ for _ in ()).throw(rt.ApiError(503, "GET", "pods/supervisor-pod")),
+    )
+    supervisor.telemetry([], [pod, other])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 1}
+    assert list(supervisor.log_since) == [other["metadata"]["uid"]]
+
+
+def test_an_unresolved_pod_re_read_is_tolerated_then_fatal(env, monkeypatch):
+    """The re-read is the guard, so its own outage is not a liveness proof.
+
+    A 404 on the log plus a 503 on the Pod says nothing about the Pod. Calling
+    that "still alive" would end a session for the transport rather than for
+    anything observed, which is the failure this change exists to remove.
+    """
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    pod_reader(
+        env,
+        monkeypatch,
+        lambda: (_ for _ in ()).throw(rt.ApiError(503, "GET", "pods/supervisor-pod")),
+    )
+    for _ in range(2):
+        supervisor.telemetry([], [pod])
+    unresolved = supervisor_records(env, "pod-presence-unavailable")
+    assert [record["payload"] for record in unresolved] == [
+        {"uid": pod["metadata"]["uid"]}
+    ] * 2
+    # Tolerated, not ignored: an outage that does not pass stops the run.
+    with pytest.raises(rt.ApiError) as error:
+        supervisor.telemetry([], [pod])
+    assert error.value.status == 503
+
+
+def test_the_re_read_tolerance_counts_consecutive_outages(env, monkeypatch):
+    """Two outages hours apart are not the same thing as an outage.
+
+    Without a reset, a session that survived a blip in its first minutes
+    would treat an unrelated one in its last as the third strike and stop.
+    """
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    # The Pod really is gone; the outage decides whether the re-read says so.
+    env[0].data.pop(("Pod", rt.SYSTEM, pod["metadata"]["name"]))
+    outage = [True]
+
+    def answer():
+        if outage[0]:
+            raise rt.ApiError(503, "GET", "pods/supervisor-pod")
+
+    pod_reader(env, monkeypatch, answer)
+    for _ in range(2):
+        supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 2}
+    outage[0] = False
+    supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {}
+    # A later, separate outage gets the whole allowance again rather than
+    # inheriting the earlier one's third strike.
+    outage[0] = True
+    for _ in range(2):
+        supervisor.telemetry([], [pod])
+    with pytest.raises(rt.ApiError):
+        supervisor.telemetry([], [pod])
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 504, "transport"])
+def test_every_answerless_re_read_is_tolerated_not_only_a_503(env, monkeypatch, status):
+    """A read is answerless or it is not; 503 is not the only way to say so."""
+    from flink_tier3.common import TransportError
+
+    unresolved = (
+        TransportError("GET pods/supervisor-pod: connection reset")
+        if status == "transport"
+        else rt.ApiError(status, "GET", "pods/supervisor-pod")
+    )
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    pod_reader(env, monkeypatch, lambda: (_ for _ in ()).throw(unresolved))
+    supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 1}
+    assert supervisor_records(env, "pod-presence-unavailable")
+
+
+def test_one_pod_cannot_spend_or_replenish_another_pods_allowance(env, monkeypatch):
+    """The allowance belongs to a Pod, not to the poll.
+
+    A shared counter lets a healthy Pod reset an unresolved one's budget on
+    every poll, so the unresolved Pod never reaches the third strike and its
+    logs are never collected; and it lets a Pod that has left the inventory
+    spend the allowance of one that has not.
+    """
+    supervisor, pod = prepared_supervisor(env)
+    other = second_pod(env, pod)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+
+    def answer(kind, namespace, name, *args, **kwargs):
+        if name == other["metadata"]["name"]:
+            # This one answers: it is terminating, so its log is retired.
+            return {"metadata": dict(other["metadata"], deletionTimestamp="2026-09Z")}
+        raise rt.ApiError(503, "GET", "pods/supervisor-pod")
+
+    monkeypatch.setattr(env[0], "get", answer)
+    for _ in range(2):
+        supervisor.telemetry([], [pod, other])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 2}
+    # The Pod that keeps answering has not bought the other one a third poll.
+    with pytest.raises(rt.ApiError) as error:
+        supervisor.telemetry([], [pod, other])
+    assert error.value.status == 503
+
+
+def test_a_log_that_reads_again_clears_that_pods_allowance(env, monkeypatch):
+    """A Pod whose log comes back is a Pod whose presence is settled.
+
+    Without clearing, a Pod that survived two blips early would be stopped by
+    a single unrelated one later, however many healthy polls came between.
+    """
+    supervisor, pod = prepared_supervisor(env)
+    failing = [True]
+
+    def logs(_pod, _since=None):
+        if failing[0]:
+            raise rt.ApiError(404, "GET", "pods/supervisor-pod/log")
+        return b"back\n"
+
+    monkeypatch.setattr(env[0], "logs", logs)
+    pod_reader(
+        env,
+        monkeypatch,
+        lambda: (_ for _ in ()).throw(rt.ApiError(503, "GET", "pods/supervisor-pod")),
+    )
+    for _ in range(2):
+        supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 2}
+    failing[0] = False
+    supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {}
+    # The allowance is whole again rather than one short of stopping.
+    failing[0] = True
+    supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 1}
+
+
+def test_a_pod_that_leaves_the_inventory_takes_its_allowance_with_it(env, monkeypatch):
+    """Otherwise a count nobody is spending stops an unrelated Pod later."""
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    pod_reader(
+        env,
+        monkeypatch,
+        lambda: (_ for _ in ()).throw(rt.ApiError(503, "GET", "pods/supervisor-pod")),
+    )
+    for _ in range(2):
+        supervisor.telemetry([], [pod])
+    assert supervisor.pod_read_failures == {pod["metadata"]["uid"]: 2}
+    # The next inventory does not list it; the run continues without it.
+    supervisor.telemetry([], [])
+    assert supervisor.pod_read_failures == {}
+
+
+def test_a_pod_re_read_refused_outright_is_never_tolerated(env, monkeypatch):
+    """403 is an answer about us, not about the Pod; it was never transient."""
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    pod_reader(
+        env,
+        monkeypatch,
+        lambda: (_ for _ in ()).throw(rt.ApiError(403, "GET", "pods/supervisor-pod")),
+    )
+    with pytest.raises(rt.ApiError) as error:
+        supervisor.telemetry([], [pod])
+    assert error.value.status == 403
+    assert supervisor.pod_read_failures == {}
+
+
+def test_a_404_for_a_pod_that_is_still_there_is_still_fatal(env, monkeypatch):
+    """Only a Pod that actually went away explains a missing log."""
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(404))
+    with pytest.raises(rt.ApiError) as error:
+        supervisor.telemetry([], [pod])
+    assert error.value.status == 404
+
+
+def test_a_log_read_that_failed_for_another_reason_is_still_fatal(env, monkeypatch):
+    """The recovery is for a missing Pod, not for every failed log read."""
+    supervisor, pod = prepared_supervisor(env)
+    monkeypatch.setattr(env[0], "logs", log_failure(500))
+    env[0].data.pop(("Pod", rt.SYSTEM, pod["metadata"]["name"]))
+    with pytest.raises(rt.ApiError) as error:
+        supervisor.telemetry([], [pod])
+    assert error.value.status == 500
+    assert not supervisor_records(env, "retired-pod-log-unavailable")
+
+
+def test_the_pod_ceiling_admits_the_replacement_slot_and_refuses_one_more(env):
+    """Five Pods is the four that run plus one replacement, and no more."""
+    runner, pod = prepared_supervisor(env)
+    for n in range(2, 6):
+        second_pod(env, pod, f"supervisor-pod-{n}")
+    _items, pods = runner.cleanup.audit()
+    assert len(pods) == 5
+    second_pod(env, pod, "supervisor-pod-6")
+    with pytest.raises(rt.Failure, match="count ceiling"):
+        runner.cleanup.audit()
+
+
 def test_initial_log_over_its_ceiling_is_not_silently_accepted(env, monkeypatch):
     supervisor, pod = prepared_supervisor(env)
     monkeypatch.setattr(env[0], "logs", lambda *_args: b"x" * rt.MIB)
@@ -2273,7 +2615,7 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
     assert rt.CEILINGS == {
         "seconds": 3600,
         "cleanup_seconds": 900,
-        "pods": 4,
+        "pods": 5,
         "pvcs": 0,
         "state_bytes": 1073741824,
         "state_objects": 10000,
@@ -2291,7 +2633,7 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
         "operator": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
         "supervisor": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "128Mi"},
     }
-    assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 4 PODS, 60 MINUTES, USD 1"
+    assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1"
 
 
 def test_supervisor_source_identity_covers_every_module_and_policy(tmp_path):

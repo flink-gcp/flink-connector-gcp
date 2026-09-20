@@ -166,8 +166,8 @@ def test_unreviewed_trial_is_rejected(prepared, key, value):
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("pods", 6),
-        ("pods", 5.0),
+        ("pods", 7),
+        ("pods", 6.0),
         ("pvcs", False),
         ("state_bytes", 2**31),
         ("additional_cost_usd", "10.00"),
@@ -215,12 +215,14 @@ def test_admission_window_and_pricing_review_are_enforced(prepared):
         Approval.from_dict(value)
 
 
-def test_three_application_pods_and_two_control_pods_fit_exact_quotas(prepared):
+def test_three_application_pods_and_the_control_pods_fit_their_quotas(prepared):
     environment, *_ = prepared
     cleanup = Cleanup(environment)
     cleanup.quota(BIGQUERY, "run")
     cleanup.quota(rt.SYSTEM, "run")
-    for namespace, count in ((BIGQUERY, 3), (rt.SYSTEM, 2)):
+    # Two control Pods run; `tier3-system`'s third is the slot a replacement
+    # occupies while the Pod it replaces terminates.
+    for namespace, count in ((BIGQUERY, 3), (rt.SYSTEM, 3)):
         hard = environment.kube.get("ResourceQuota", namespace, "tier3-idle")["spec"][
             "hard"
         ]
@@ -478,12 +480,18 @@ def five_pods(environment, application):
     return runner.cleanup
 
 
-def test_inventory_accepts_five_budgeted_pods_and_rejects_a_sixth(prepared):
+def test_inventory_accepts_the_budgeted_pods_and_rejects_one_more(prepared):
     environment, application, *_ = prepared
     cleanup = five_pods(environment, application)
     assert len(cleanup.audit()[1]) == 5
+    # The sixth is the slot a replacement occupies while the Pod it replaces
+    # terminates; without it the Deployment's own recovery is refused.
     workload_pod(
         environment, "extra-tm", "application", environment.root("application")
+    )
+    assert len(cleanup.audit()[1]) == 6
+    workload_pod(
+        environment, "seventh-tm", "application", environment.root("application")
     )
     with pytest.raises(Failure, match="Pod/PVC count"):
         cleanup.audit()

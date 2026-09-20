@@ -42,7 +42,10 @@ ephemeral-storage = "0.001"
 [ceilings]
 seconds = 3600
 cleanup_seconds = 900
-pods = 4
+# At most five Pods observed at once: the four that run, and one replacement
+# slot. This count is flat over the inventory; the per-namespace quota, not
+# this number, decides where that slot may be spent.
+pods = 5
 pvcs = 0
 state_bytes = 1073741824
 state_objects = 10000
@@ -60,7 +63,9 @@ ephemeral-storage = "1Gi"
 [bigquery_ceilings]
 seconds = 5400
 cleanup_seconds = 900
-pods = 5
+# Three application Pods and two control Pods run, and `tier3-system` admits
+# one replacement while the Pod it replaces terminates.
+pods = 6
 pvcs = 0
 state_bytes = 1073741824
 state_objects = 10000
@@ -110,7 +115,7 @@ task_operation_usd_per_million = "0.40"
 [cloudtasks_ceilings]
 session_seconds = 18000
 cleanup_seconds = 900
-pods = 4
+pods = 5
 pvcs = 0
 cells = 20
 task_creations = 12000000
