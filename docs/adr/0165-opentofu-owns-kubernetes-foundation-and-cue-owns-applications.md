@@ -32,6 +32,7 @@ limitations under the License.
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
 - Updated: 2026-09-20 (idle BigQuery namespace, data containers and workload identity)
+- Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -347,6 +348,20 @@ The [BigQuery bootstrap procedure](../../opentofu/tier3-bootstrap/README.md#admi
 CI then imports those prerequisites and applies the remaining foundation through the ordinary saved-plan workflow.
 Keep the common preflight and Helm watch set unchanged until apply, idle inventory, runner reads and empty refreshed plans have been verified.
 Application publication and bounded execution follow separately; these persistent grants provide no deployed BigQuery result and authorize no paid trial.
+
+### Pub/Sub GCP preparation
+
+For [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361), prepare a dedicated `tier3-pubsub` GSA and `flink-gcp-tier3-pubsub` state bucket in the GCP root before extending the Kubernetes foundation.
+Use the generic smoke bucket's regional STANDARD storage, uniform access, public access prevention, disabled versioning/soft delete and one-day expiry policy.
+The workload receives bucket-scoped `roles/storage.objectUser` and trusts the future `tier3-pubsub/pubsub` KSA.
+The existing lifecycle runner and supervisor receive object reads/listing and `runs/`-restricted object mutation for state cleanup, following the smoke state policy.
+The workload receives no Pub/Sub permissions until the application and owned-resource design identifies their required scope.
+
+The separate bucket keeps recovery state and cleanup permissions apart from the smoke, Cloud Tasks and routine E2E fixtures.
+A shared workload identity or reuse of another scenario's state bucket would couple their grants and retained-state cleanup.
+The GCP preparation introduces no namespace, Operator watch change, topic/subscription or running workload.
+Verify its reviewed CI apply and empty refreshed plan before the bootstrap stage adds the KSA, idle quotas and namespaced RBAC.
+Application delivery, ownership-aware run lifecycle and separately approved execution remain dependent stages; this decision does not claim deployed recovery acceptance.
 
 ### Ownership boundaries
 

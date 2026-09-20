@@ -29,6 +29,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/cloudtasks-lifecycle.tf` | Queue control and benchmark state cleanup grants for the runner and supervisor |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
+| `flink-gcp/tier3-pubsub.tf` | Pub/Sub recovery workload identity, one-day state bucket and lifecycle state access |
 | `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
@@ -120,6 +121,7 @@ commands require `CLOUDTASKS_IT_PROJECT` and authenticated `gcloud` access.
 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) owns the shared GKE Autopilot rig.
 [Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) supplies its first Cloud Tasks performance scenario.
+[Issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) adds the [Pub/Sub recovery preparation](#pubsub-tier-3-preparation).
 Routine E2E remains on MiniCluster; this rig is on demand and does not gate a release.
 
 ### Persistent foundation
@@ -208,6 +210,32 @@ The administrator extends the two existing ClusterRoles before that plan; after 
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
 Keep the common helper and Helm watch set unchanged until that verification proves the runner can read the new namespace.
 Application publication, runtime admission and all paid trials require subsequent changes and separate execution approval.
+
+### Pub/Sub Tier-3 preparation
+
+[Issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) separates deployed Pub/Sub recovery from routine MiniCluster E2E.
+The first preparation stage defines the `tier3-pubsub` GSA and `flink-gcp-tier3-pubsub` STANDARD bucket in `us-central1`.
+The workload has `roles/storage.objectUser` over the entire bucket, including every run's state.
+The planned checkpoint, savepoint and HA layout is beneath `runs/<run-id>/`; this path convention is not an IAM restriction.
+Uniform bucket access and public access prevention are enabled; versioning and soft delete are disabled, and objects become deletion-eligible after one day.
+Export final evidence through the existing Tier-3 evidence facility before temporary state expires.
+An object lifecycle rule cannot stop a running job.
+
+The GSA trusts only `tier3-pubsub/pubsub` through GKE Workload Identity.
+The existing runner and supervisor receive bucket-wide object reads/listing plus `roles/storage.objectUser` restricted to the `runs/` object prefix for cleanup.
+These permissions allow the later lifecycle implementation to inspect and remove state without borrowing the workload identity or receiving bucket administration.
+Run ownership checks still belong to that implementation; a prefix grant does not identify which run the caller may clean.
+
+This stage changes only the GCP root and defines eight resource instances: one GSA, one bucket, the workload bucket grant, the KSA impersonation grant, and two state-access grants for each lifecycle identity.
+Review the PR's saved plan for exactly these additions and no unrelated changes before merging; merge triggers the ordinary CI apply.
+After apply, inspect the bucket policy and IAM, confirm the apply result and an empty refreshed GCP plan, and retain that evidence in the issue before advancing.
+If the apply fails, review the fresh plan in the recovery draft PR opened by tfaction rather than replaying the stale saved plan.
+
+The namespace/KSA, installer and job RBAC, zero idle quotas and Operator watch extension follow in a separate bootstrap stage after the GCP foundation is verified.
+Pub/Sub topic/subscription grants are deliberately deferred until the concrete application and run-owned resource design specifies the required operations.
+No Pub/Sub data, resource-administration or service-account-key permissions are introduced here.
+Application/image publication, run admission, fault injection, ownership-aware service cleanup and separately approved numeric execution ceilings remain later steps.
+This configuration does not create topics/subscriptions or start Kubernetes workloads, and it does not establish live Pub/Sub recovery.
 
 ### Operator installation follows the cluster
 
