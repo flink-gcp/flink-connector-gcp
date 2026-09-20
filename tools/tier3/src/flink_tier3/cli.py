@@ -35,15 +35,15 @@ def main(argv=None):
         "supervisor",
         "render",
         "analyze",
+        "bigquery",
     ):
         commands.add_parser(command, add_help=False)
     args, remaining = parser.parse_known_args(argv)
     module = import_module(
         "." + {"supervisor": "runtime"}.get(args.command, args.command), __package__
     )
-    # The supervisor runs in-cluster and analyze reads a downloaded mirror;
-    # neither needs the checkout.
-    if args.command not in ("supervisor", "analyze"):
+    # The supervisor runs in-cluster; offline analysis commands need no checkout.
+    if args.command not in ("supervisor", "analyze", "bigquery"):
         from . import bootstrap, lifecycle, schemas, workflow
 
         root = args.repository.resolve()
