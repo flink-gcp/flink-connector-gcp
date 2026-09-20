@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle, deployment package, resource adapter and durable resource controller)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle, deployment package, resource adapter, durable resource controller and offline execution proposal)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub application image publication wiring)
@@ -418,6 +418,12 @@ A stop flag closes subsequent admission but cannot fence an in-flight service re
 Require an external barrier covering all creator/writer processes and server-side creation requests before cancellation and deletion; this component does not implement that barrier.
 Pending or unreadable submitted jobs prevent table deletion, and component cleanup does not assert whole-environment idle state.
 Synthetic generation-conflict and restart tests hold these controller contracts; BigQuery approval validation, authenticated actor integration and evidence budget enforcement remain caller work.
+Before wiring the actors, render one unapproved execution proposal from explicit trial inputs.
+Bind the resource plan, repeated-trial ordinal, fixed finite input, proposed windows/cost and initial/upgrade/supervisor hashes in the ConfigMap alongside an empty approval document.
+The CUE delivery reuses the BigQuery package for both phases and retains the phase-only savepoint transition.
+The offline renderer accepts this scenario, while lifecycle execution validation continues to reject it.
+A declared revision and digest-shaped image are inputs to later provenance checks, not publication or execution evidence.
+Keep the cost calculation a planning estimate with an explicit reserve; it cannot bound service bills or replace final resource and cost approval.
 Updated image publication, digest adoption, bounded admission/query execution and complete cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation

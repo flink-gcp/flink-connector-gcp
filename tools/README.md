@@ -50,7 +50,8 @@ Other relative arguments, including kubeconfig and evidence paths, remain relati
 The in-cluster `supervisor` command needs only the projected package and approval/application data.
 The offline `bigquery query` and `bigquery assess` commands also work outside the checkout and perform no cloud operations; the [BigQuery application runbook](../kubernetes/apps/bigquery/README.md#offline-query-oracle) defines their aggregate contract and evidence limits.
 The internal [BigQuery resource adapter](../kubernetes/apps/bigquery/README.md#resource-adapter) prepares owned table and bounded query operations for a future executor.
-The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after a caller-provided quiescence barrier; no CLI command or lifecycle scenario invokes either component yet.
+The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after a caller-provided quiescence barrier; no lifecycle execution scenario invokes either component yet.
+The render-only [BigQuery execution proposal](../kubernetes/apps/bigquery/README.md#offline-execution-proposal) binds the resource plan and both application phases to a reviewable supervisor bundle without creating an approval.
 
 The [lifecycle runbook](../kubernetes/lifecycle/README.md) defines execution approval and cleanup.
 Third-party dependencies remain installed in the pinned image, while the reviewed package source is projected through an immutable ConfigMap.

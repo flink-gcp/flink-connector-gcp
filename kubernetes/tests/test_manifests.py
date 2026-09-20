@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from flink_tier3 import bigquery_plan, workflow
 from flink_tier3.bundle import package_sources
 
 KUBERNETES = Path(__file__).resolve().parents[1]
@@ -1872,3 +1873,127 @@ def test_pubsub_companion_and_application_use_the_selected_run_namespace(
     else:
         assert result.returncode != 0, result.stdout
         assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize("mode,records", [("ALO", 28800), ("EO", 1843200)])
+@pytest.mark.parametrize("destinations", [10, 50])
+def test_bigquery_proposal_delivery_binds_both_phases(
+    module, mode, records, destinations
+):
+    result = cue(
+        module,
+        "export",
+        "./lifecycle",
+        "--out",
+        "json",
+        "-e",
+        "[application, upgradeApplication, delivery.resources]",
+        "-t",
+        "scenario=bigquery-recovery",
+        "-t",
+        "run_id=proposal-1312",
+        "-t",
+        "nonce=" + "a" * 32,
+        "-t",
+        "expires_at=2026-09-21T01:30:00Z",
+        "-t",
+        "active_seconds=5220",
+        "-t",
+        "bigquery_mode=" + mode,
+        "-t",
+        "bigquery_destinations=" + str(destinations),
+        "-t",
+        "application_image=us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
+        + SYNTHETIC_DIGEST,
+    )
+    assert result.returncode == 0, result.stderr
+    initial, upgrade, delivery = json.loads(result.stdout)
+    expected = json.loads(json.dumps(initial))
+    expected["spec"]["job"]["args"][3] = "upgrade"
+    expected["spec"]["job"]["args"][-1] = "true"
+    assert upgrade == expected
+    assert initial["metadata"]["namespace"] == "tier3-bigquery"
+    assert initial["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32
+    assert initial["spec"]["job"]["args"] == [
+        "--run-id",
+        "proposal-1312",
+        "--phase",
+        "initial",
+        "--mode",
+        mode,
+        "--destinations",
+        str(destinations),
+        "--records",
+        str(records),
+        "--bytes-per-second",
+        "1048576",
+        "--require-restored",
+        "false",
+    ]
+    assert initial["spec"]["job"]["parallelism"] == 2
+    assert initial["spec"]["taskManager"]["replicas"] == 2
+    config = delivery["config"]
+    assert config["immutable"] is True
+    assert json.loads(config["data"]["approval.json"]) == {}
+    assert json.loads(config["data"]["application.json"]) == initial
+    assert json.loads(config["data"]["upgrade-application.json"]) == upgrade
+    supervisor = delivery["supervisor"]
+    assert supervisor["metadata"]["namespace"] == "tier3-system"
+    assert supervisor["spec"]["activeDeadlineSeconds"] == 5220
+    projection = supervisor["spec"]["template"]["spec"]["volumes"][0]["configMap"][
+        "items"
+    ]
+    assert json.loads(config["data"]["proposal.json"]) == {}
+    mounted = {item["path"]: config["data"][item["key"]] for item in projection}
+    assert len(mounted) == len(projection)
+    assert mounted.keys() == {
+        "approval.json",
+        "application.json",
+        "upgrade-application.json",
+        "proposal.json",
+    } | {"flink_tier3/" + name for name in package_sources()}
+    assert {"key": "proposal.json", "path": "proposal.json"} in projection
+    assert {
+        "key": "upgrade-application.json",
+        "path": "upgrade-application.json",
+    } in projection
+
+
+@pytest.mark.parametrize("mode", ["ALO", "EO"])
+@pytest.mark.parametrize("destinations", [10, 50])
+def test_bigquery_prepare_accepts_real_cue_delivery(
+    module, monkeypatch, mode, destinations
+):
+    root = module.parent
+    module.rename(root / "kubernetes")
+    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setenv("GOMAXPROCS", "2")
+    bundle = bigquery_plan.prepare(
+        run_id="proposal-1312",
+        nonce="a" * 32,
+        started_at="2026-09-21T00:00:00Z",
+        expires_at="2026-09-21T01:30:00.000Z",
+        active_seconds=5220,
+        revision="b" * 40,
+        application_image="us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
+        + SYNTHETIC_DIGEST,
+        trial={
+            "version": 1,
+            "mode": mode,
+            "destinations": destinations,
+            "repetition": 1,
+            "query_slots": 12,
+            "maximum_bytes_billed": 4 * 1024**3,
+            "query_timeout_ms": 60000,
+            "additional_cost_usd": "5.00",
+        },
+    )
+    proposal = bundle["proposal"]
+    assert proposal["approved"] is False
+    assert proposal["resources"]["trial"]["mode"] == mode
+    assert proposal["resources"]["trial"]["destinations"] == destinations
+    assert (
+        proposal["expires_at"]
+        == bundle["application"]["metadata"]["annotations"]["flink-gcp.io/expires-at"]
+    )
+    assert json.loads(bundle["delivery"]["config"]["data"]["proposal.json"]) == proposal

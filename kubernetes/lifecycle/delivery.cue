@@ -20,22 +20,27 @@ import (
 	"time"
 	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 	cloudtasks "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/cloudtasks"
+	bigquery "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/bigquery"
 	smoke "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/smoke"
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-runID:         string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$" @tag(run_id)
-nonce:         string & =~"^[0-9a-f]{32}$"                       @tag(nonce)
-expires:       time.Time                                         @tag(expires_at)
-approval:      *"{}" | string                                    @tag(approval)
-activeSeconds: int & >0                                          @tag(active_seconds,type=int)
-scenario:      *"smoke" | "generic-recovery" | "cloudtasks"      @tag(scenario)
+runID:         string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                  @tag(run_id)
+nonce:         string & =~"^[0-9a-f]{32}$"                                        @tag(nonce)
+expires:       time.Time                                                          @tag(expires_at)
+approval:      *"{}" | string                                                     @tag(approval)
+activeSeconds: int & >0                                                           @tag(active_seconds,type=int)
+scenario:      *"smoke" | "generic-recovery" | "cloudtasks" | "bigquery-recovery" @tag(scenario)
 // Cloud Tasks only: a JSON array of session cells, the runtime line, the
 // published application digest for that line and the synthetic HTTPS target.
 cells:            *"[]" | string      @tag(cells)
 flinkVersion:     *"2.2.1" | "1.20.4" @tag(flink_version)
 applicationImage: *"" | string        @tag(application_image)
 targetURL:        *"" | string        @tag(target)
+// Offline BigQuery proposal inputs; these do not extend lifecycle admission.
+bigqueryMode:         *"EO" | "ALO"  @tag(bigquery_mode)
+bigqueryDestinations: *10 | 50       @tag(bigquery_destinations,type=int)
+proposal:             *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
 packageSources: {
 	"__init__.py"!:                 string
@@ -47,14 +52,15 @@ packageSources: {
 
 // A smoke run is bounded by one 60-minute approval; a measurement session by
 // its plan plus cleanup, at most 300 minutes.
-if scenario != "cloudtasks" {activeSeconds: <=3420}
+if scenario == "smoke" || scenario == "generic-recovery" {activeSeconds: <=3420}
+if scenario == "bigquery-recovery" {activeSeconds: <=5220}
 if scenario == "cloudtasks" {activeSeconds: <=17820}
 
 // Use the same namespace, image, Spot and schema constraints as ordinary runs.
 // Each scenario declares its application expression and its application.json
 // entry inside one body: a field declared in a comprehension body is visible
 // only to references inside that body.
-if scenario != "cloudtasks" {
+if scenario == "smoke" || scenario == "generic-recovery" {
 	application: (runPolicy & {
 		run: {id: runID, expiresAt: expires, image: images.smoke}
 		delivery: resources: app: (smoke.#Application & {run: {
@@ -132,6 +138,30 @@ if scenario == "cloudtasks" {
 	delivery: resources: config: data: "application.json": json.Marshal(cellManifests)
 }
 
+// Both BigQuery phases come from the same input identity and fixed package.
+// approval.json remains empty in offline proposals; runtime validation refuses it.
+if scenario == "bigquery-recovery" {
+	_applications: [for trialPhase in ["initial", "upgrade"] {
+		(runPolicy & {
+			run: {id: runID, expiresAt: expires, namespace: "tier3-bigquery", image: applicationImage}
+			delivery: resources: app: (bigquery.#Application & {
+				run: {id: runID, image: applicationImage, phase: trialPhase
+					mode: bigqueryMode, destinations: bigqueryDestinations
+				}
+			}).resource & {
+				metadata: annotations: "flink-gcp.io/approval": nonce
+				metadata: annotations: "flink-gcp.io/scenario": scenario
+			}
+		}).delivery.resources.app
+	}]
+	application:        _applications[0]
+	upgradeApplication: _applications[1]
+	delivery: resources: config: data: {
+		"application.json": json.Marshal(application)
+		"proposal.json":    proposal
+	}
+}
+
 let sharedMetadata = {
 	namespace: "tier3-system"
 	labels: "flink-gcp.io/run-id": runID
@@ -154,7 +184,7 @@ delivery: resources: {
 			}
 			"approval.json": approval
 			// application.json is declared by the selected scenario's body above.
-			if scenario == "generic-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
+			if scenario == "generic-recovery" || scenario == "bigquery-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
 		}
 	}
 	supervisor: {
@@ -206,7 +236,8 @@ delivery: resources: {
 						},
 						{key: "approval.json", path: "approval.json"},
 						{key: "application.json", path: "application.json"},
-						if scenario == "generic-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
+						if scenario == "bigquery-recovery" {{key: "proposal.json", path: "proposal.json"}},
+						if scenario == "generic-recovery" || scenario == "bigquery-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
 					]}}]
 				}
 			}
