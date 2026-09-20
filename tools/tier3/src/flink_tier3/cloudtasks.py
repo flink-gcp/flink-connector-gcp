@@ -137,6 +137,14 @@ class Queues:
 
 
 TRANSIENT_STATUSES = (408, 429, 500, 502, 503, 504)
+# A queue is not readable the instant it is created. The service answers a
+# transient status or nothing at all while it initializes, and reports the
+# state it held before the pause for a moment after it, so admission waits
+# for the queue to settle rather than spending a whole session on one read.
+QUEUE_SETTLE_SECONDS = 120
+QUEUE_SETTLE_POLL = 5
+# The only state a queue reports on the way to the pause it was just given.
+QUEUE_SETTLING_STATE = "RUNNING"
 
 
 def transient(error):
@@ -161,28 +169,109 @@ def dispatched(readback):
     return observed > CLOUDTASKS_CEILINGS["dispatches"]
 
 
+def admission_deadline(env):
+    """The end of the session's admission allowance, one cell's startup."""
+    return env.schedule.started + CLOUDTASKS_POLICY["cell_startup_seconds"]
+
+
+def admission_budget_open(env):
+    """Refuse an admission step taken after the session's own allowance.
+
+    ``Environment.admission_open`` proves the approval, the phase and this
+    run's ownership, and knows nothing of this scenario's startup budget.
+    The settling windows are bounded by that budget through
+    ``settle_deadline``; this is the check the irreversible step carries, so
+    a window that ends exactly at the deadline cannot still create a queue.
+    """
+    if env.clock() >= admission_deadline(env):
+        raise Failure("Session admission deadline expired")
+
+
+def settle_deadline(env, seconds):
+    """The end of a settling window, never past what admission may spend.
+
+    Admission is allowed one cell's startup allowance for the whole session,
+    so a service that keeps answering transiently must not push the queue's
+    creation past that budget on top of it.
+    """
+    return min(env.clock() + seconds, admission_deadline(env))
+
+
+def absent_before_create(env, seconds=QUEUE_SETTLE_SECONDS, poll=QUEUE_SETTLE_POLL):
+    """Whether the run's queue name is free, retrying a read that says nothing.
+
+    A transient failure here reports on the service, not on the name, and a
+    single one would cost the whole session. The read is repeated until it
+    answers or the window closes; an answer naming an existing queue still
+    refuses the run, because this run would not own it.
+    """
+    deadline = settle_deadline(env, seconds)
+    while True:
+        env.admission_open()
+        try:
+            return env.queues.get(QUEUE_POLL_MASK) is None
+        except Failure as error:
+            if not transient(error) or env.clock() >= deadline:
+                raise
+        env.sleep(min(poll, max(0, deadline - env.clock())))
+
+
+def settled_readback(env, seconds=QUEUE_SETTLE_SECONDS, poll=QUEUE_SETTLE_POLL):
+    """The paused readback that admits the queue, once the service settles.
+
+    An absent, unreadable or still-running answer inside the window is the
+    queue initializing, not a deviation. A readback that names another queue,
+    carries a configuration outside the approved one, or shows any dispatch
+    is a deviation whenever it arrives, and never waits.
+    """
+    deadline = settle_deadline(env, seconds)
+    readback, waits = None, 0
+    while True:
+        env.admission_open()
+        try:
+            readback = env.queues.get()
+        except Failure as error:
+            if not transient(error):
+                raise
+            readback = None
+        if readback is not None:
+            if (
+                readback.get("name") != env.queues.name
+                or not contains(readback, QUEUE_CONFIGURATION)
+                or dispatched(readback)
+                # Only the pre-pause state is a queue still settling. Any
+                # other answer, including none at all, is a deviation now.
+                or readback.get("state") not in (QUEUE_SETTLING_STATE, "PAUSED")
+            ):
+                break
+            if readback.get("state") == "PAUSED":
+                if waits:
+                    env.emit("queue-initializing", {"reads": waits})
+                return readback
+        waits += 1
+        if env.clock() >= deadline:
+            break
+        env.sleep(min(poll, max(0, deadline - env.clock())))
+    env.emit("queue-deviation", {"phase": "admission", "readback": readback})
+    raise Failure("Queue readback is not the paused approved configuration")
+
+
 def admit_queue(env):
     """Create the run's queue, pause it, and prove the paused readback."""
     queues = env.queues
-    if queues.get(QUEUE_POLL_MASK) is not None:
+    if not absent_before_create(env):
         raise Failure("Queue already exists; this run does not own it")
     # Persist that this run is about to create its queue: cleanup may delete
     # the name only after this intent exists, never a queue it merely found.
     env.records.intend("queue")
+    # The settling window may have spent the rest of the admission budget.
+    env.admission_open()
+    admission_budget_open(env)
     created = queues.create()
     if created.get("name") != queues.name:
         raise Failure("Created queue name differs from the approved name")
     queues.pause()
-    readback = queues.get()
-    if (
-        readback is None
-        or readback.get("name") != queues.name
-        or readback.get("state") != "PAUSED"
-        or not contains(readback, QUEUE_CONFIGURATION)
-        or dispatched(readback)
-    ):
-        env.emit("queue-deviation", {"phase": "admission", "readback": readback})
-        raise Failure("Queue readback is not the paused approved configuration")
+    readback = settled_readback(env)
     env.emit("queue-admitted", {"readback": readback})
     env.records.set_queue(readback)
     return readback
