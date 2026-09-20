@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.bigquery.BigQueryEmulatorContainers;
 import org.junit.jupiter.api.Timeout;
@@ -88,27 +89,51 @@ class RecoveryJobITCase {
                         options,
                         BigQueryEmulatorContainers.grpcEndpoint(EMULATOR),
                         BigQueryEmulatorContainers.restEndpoint(EMULATOR));
-        try (var writer = sink.createWriter(new StubWriterInitContext(0))) {
-            SinkWriter.Context context =
-                    new SinkWriter.Context() {
-                        @Override
-                        public long currentWatermark() {
-                            return Long.MIN_VALUE;
-                        }
+        try (var capture = LogCapture.of(AppenderObservations.class, LogCapture.Level.INFO)) {
+            try (var writer = sink.createWriter(new StubWriterInitContext(0))) {
+                SinkWriter.Context context =
+                        new SinkWriter.Context() {
+                            @Override
+                            public long currentWatermark() {
+                                return Long.MIN_VALUE;
+                            }
 
-                        @Override
-                        public Long timestamp() {
-                            return null;
-                        }
-                    };
-            // Concurrent appends lock the emulator's SQLite database. Exercise each destination's
-            // production RPC path sequentially; RecoveryRoutingITCase measures the parallel graph.
-            // Each stream gets one append, avoiding the emulator's follow-up stream-binding bug.
-            for (long destination = 0; destination < destinations; destination++) {
-                writer.write(destination, context);
-                writer.write(destination + destinations, context);
-                writer.flush(false);
+                            @Override
+                            public Long timestamp() {
+                                return null;
+                            }
+                        };
+                // Concurrent appends lock the emulator's SQLite database. Exercise each
+                // destination's
+                // production RPC path sequentially; RecoveryRoutingITCase measures the parallel
+                // graph.
+                // Each stream gets one append, avoiding the emulator's follow-up stream-binding
+                // bug.
+                for (long destination = 0; destination < destinations; destination++) {
+                    writer.write(destination, context);
+                    writer.write(destination + destinations, context);
+                    writer.flush(false);
+                }
             }
+            var observations = capture.getMessages();
+            assertThat(observations).hasSize(1 + 3 * destinations);
+            for (String operation : new String[] {"open", "append", "close"}) {
+                assertThat(
+                                observations.stream()
+                                        .filter(
+                                                line ->
+                                                        line.contains(
+                                                                "operation="
+                                                                        + operation
+                                                                        + " outcome=returned")))
+                        .hasSize(destinations);
+            }
+            assertThat(observations)
+                    .allSatisfy(
+                            line ->
+                                    assertThat(line)
+                                            .contains("runId=" + options.runId, "lostEvents=0"));
+            assertThat(observations.get(observations.size() - 1)).contains("openAppenders=0");
         }
         Set<Long> seen = new HashSet<>();
         for (int destination = 0; destination < destinations; destination++) {

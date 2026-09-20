@@ -100,7 +100,8 @@ The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
 The Cloud Tasks application needs its first authorized publication before a session dispatch can name its digest; that digest is a dispatch input verified live against the registry, not a pin in this package.
-The BigQuery application likewise needs an authorized first publication and a separately reviewed digest before workload admission.
+The [first BigQuery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`, before the application added appender observations.
+The updated application needs another authorized publication and a separately reviewed digest before workload admission.
 Publication supplies no Cloud Tasks or BigQuery workload admission or service-measurement approval.
 
 ## Retention and acceptance

@@ -17,13 +17,16 @@ The Dockerfile places these JARs in `/opt/flink/usrlib/` over the reviewed Flink
 The entry point is `io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob`; the job URI is `local:///opt/flink/usrlib/bigquery-recovery.jar`.
 No dependency download is needed at Pod startup.
 The [manual publication workflow](../../../.github/workflows/tier3-images.yaml) verifies and builds this payload as the `bigquery-recovery` GAR package.
-Its first dispatch needs separate publication approval; an approved image digest and workload admission remain subsequent preparation.
+The [first publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built commit `116f2b8d9f992ecca7282d6320468db2b4a5c196` before appender observations were added.
+This changed payload needs another reviewed publication and digest before workload admission.
 The application CI lane builds the Dockerfile against the same public Flink 2.2.1 digest without publishing or using GCP credentials.
 
 Unit tests cover argument bounds, destination identities, serialized row sizes, Java serialization, input gaps and checkpoint state incompatibility.
+Observation tests check original futures and exceptions, exact rows and offsets, failed opens/closes, reopening identities and log-output failures.
+Sink tests serialize both observed sinks, construct their job graphs, create production writers, and round-trip a buffered writer state through restore and snapshot; the committer receives no appender observer.
 Local MiniCluster tests restore the source and input identity operator from a checkpoint and a savepoint using a discard sink.
 Separate local graph tests verify both writers reach every destination for both modes and destination counts.
-Emulator tests create the application's production default-stream writer for both destination counts, write each destination sequentially, then query every table.
+Emulator tests create the application's production default-stream writer for both destination counts, write each destination sequentially, check the open/append/close observations, then query every table.
 The application graph is tested separately: concurrent appends caused SQLite lock errors and RPC retries inside the pinned emulator in CI.
 The pinned emulator assigns buffered offsets across streams and can hang on multi-stream flush, so it cannot exercise the production EO writer for this workload.
 Existing connector tests cover that writer with deterministic service doubles; this application still needs real BigQuery EO validation.
@@ -82,6 +85,48 @@ The fields include run ID, phase, lineage, restoration status, processed count a
 These are source-side observations, not sink acknowledgements or query-visible row counts.
 An abrupt attempt failure can lose logs; the later collector must correlate these observations with Flink checkpoint history and query results.
 
-The deployed exercise still needs approved manifests, image publication, appender lifecycle/send observations, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
+### Appender call observations
+
+The application decorates the default-stream appender factory and the buffered writer's service factory through internal sink hooks.
+The production writers retain their options, timers, retry logic, writer-state serializers, pre-commit topology and committer implementation.
+The factory hooks run for each new or restored writer; the buffered committer uses its original service factory.
+No observation object or live client travels in the serialized job graph.
+
+At INFO level, `bigquery-appender v=1` emits a writer-registration line and one result line for each appender open, append invocation and close invocation.
+Each writer incarnation receives a fresh UUID, including after failover or upgrade.
+Appender IDs increase within that incarnation; reopening the same stream receives a new ID.
+Use the run ID, phase, mode, subtask, attempt and writer UUID together when correlating logs across TaskManagers.
+
+| Field | Meaning |
+| --- | --- |
+| `sequence` | Monotonic observation sequence within one writer incarnation, starting at one |
+| `appender`, `stream` | Local appender ID and buffered stream name or synthesized default-stream label; zero/`none` for writer registration |
+| `operation`, `outcome` | `writer/created`, or `open`, `append`, `close` with `returned` or `threw` |
+| `rows`, `protoRowsBytes` | Rows and serialized `ProtoRows` bytes supplied to this append invocation, including connector re-appends and synchronous rejections; zero for other operations |
+| `offset` | Supplied buffered append offset; `-1` for default-stream calls and non-append events |
+| `callNanos` | Time until the delegate returned or threw; for append this ends at future hand-off |
+| `elapsedNanos` | Elapsed monotonic time since this writer's observer was created; compare only within that incarnation |
+| `openAppenders` | Successful observed opens minus first successful closes; a failed close leaves the handle unresolved |
+| `lostEvents` | Cumulative observer-output RuntimeExceptions before this event; backend drops are not detectable here |
+| `failure` | Exception class for a synchronous failure, otherwise `none`; messages and row payloads are omitted |
+
+For ALO, `stream` is synthesized as `<table path>/streams/_default` before opening the appender; it is not read back from the SDK.
+The production factory passes the short `<table path>/_default` name to the SDK, while the emulator factory uses the longer form.
+Normalize these labels when correlating logs; an open failure still carries the intended destination label.
+
+The appender returns the identical `ApiFuture`; the observer adds no callback, retry, wait or cancellation behavior.
+An append's `returned` outcome establishes only that the delegate returned a future, even if that future is already failed.
+It establishes neither a physical network attempt nor server acknowledgement or query visibility.
+SDK-internal retries are opaque; connector-issued re-appends are separate observed invocations.
+`protoRowsBytes` includes the `ProtoRows` envelope, but excludes the full RPC framing and SDK retries; it is not a billable-byte measure.
+The logged open count is an appender-handle observation, not a connection count or a proof that a failed close retained its resource.
+
+Logs are best-effort and synchronous, so their cost can affect throughput and must be accounted for in the deployed characterization.
+An observer-output RuntimeException leaves the delegate's result unchanged and increments `lostEvents`; later sequence gaps expose those missed events.
+Disabled INFO logging, transport loss or abrupt process termination can also lose evidence without a detectable final gap.
+The external collector must retain writer registrations and correlate these incomplete observations with Flink metrics, checkpoint history and query oracles; missing events are not evidence of zero activity.
+The observer holds counters and one handle per wrapped appender, and retains no row, response future or unbounded event collection.
+
+The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
 The fixed dataset and namespace grants already exist, but checkpoint/savepoint restore through the conditional GCS grants remains a live acceptance gate.

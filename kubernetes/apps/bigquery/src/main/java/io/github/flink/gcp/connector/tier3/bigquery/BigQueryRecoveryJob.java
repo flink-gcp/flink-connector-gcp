@@ -98,6 +98,6 @@ public final class BigQueryRecoveryJob {
         if (grpcEndpoint != null) {
             builder.emulatorEndpoint(grpcEndpoint).emulatorRestEndpoint(restEndpoint);
         }
-        return builder.build();
+        return ObservedSinks.observe(builder.build(), options);
     }
 }
