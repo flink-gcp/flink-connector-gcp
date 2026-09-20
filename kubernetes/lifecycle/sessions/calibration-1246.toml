@@ -21,8 +21,15 @@
 # CSV output; k09 and k10 exercise the staged gauges and the random-name
 # control; interrupt-control-k11 loses its TaskManager after warm-up to
 # prove the incomplete-evidence path.
+#
+# The campaign is the attempt, not the question. `calibration-1246` was spent
+# on 2026-09-19: run `cal1246-221-20260920g` executed k01 to k05 and recorded
+# them `completed`, and the ledger refuses a completed cell so that evidence
+# cannot be silently replaced. Every cell of that attempt reconciled `invalid`
+# on one receipt field, so it measured the instrument rather than the service,
+# and this attempt starts a fresh ledger.
 
-campaign = "calibration-1246"
+campaign = "calibration-1246b"
 
 [[cells]]
 id = "k01-pace-10"

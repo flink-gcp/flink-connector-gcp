@@ -84,6 +84,10 @@ SOURCE_FIELDS = (
     "wall_millis",
     "monotonic_nanos",
 )
+# The application parses the offered rate as a double, so its receipts carry
+# it as a JSON number that may be written `10.0`. The protocol admits only
+# whole rates, so the value must be integral without having to be an integer.
+INTEGRAL_FIELDS = ("offered_rate",)
 TERMINAL_COUNTS = (
     "attempts",
     "completed",
@@ -552,7 +556,12 @@ class Reconciler:
             fields = ("attempt_limit", "wall_millis", "monotonic_nanos")
         else:
             fields = TERMINAL_COUNTS + ("wall_millis", "monotonic_nanos")
-        if not all(_integer(receipt.get(name)) for name in fields) or (
+        if not all(
+            _integral(receipt.get(name))
+            if name in INTEGRAL_FIELDS
+            else _integer(receipt.get(name))
+            for name in fields
+        ) or (
             role == "creator"
             and phase == "terminal"
             and not all(isinstance(receipt.get(name), bool) for name in TERMINAL_FLAGS)
@@ -808,6 +817,13 @@ class Reconciler:
 
 def _integer(value):
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _integral(value):
+    """A whole number, whichever JSON type the writer chose for it."""
+    if _integer(value):
+        return True
+    return isinstance(value, float) and value.is_integer()
 
 
 def _bounded(terminal):

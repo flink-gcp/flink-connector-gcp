@@ -1046,6 +1046,14 @@ limitations under the License.
                              it cannot keep a header. Root-relative, like the
                              NOTICE exclude above. -->
                         <exclude>uv.lock</exclude>
+                        <!-- Receipts the measurement application really wrote,
+                             copied unaltered from the evidence bucket so the
+                             reconciler is tested against the other side of its
+                             contract rather than against fixtures the reader
+                             also authored. Altering them to carry a header
+                             would destroy the only property that makes them
+                             worth keeping. -->
+                        <exclude>tools/tier3/tests/receipts/*.json</exclude>
                         <exclude>**/src/test/resources/**</exclude>
                         <!-- The SQL uber-jar's licensing payload. Its NOTICE is a fragment
                              the shade plugin's ApacheNoticeResourceTransformer aggregates,
