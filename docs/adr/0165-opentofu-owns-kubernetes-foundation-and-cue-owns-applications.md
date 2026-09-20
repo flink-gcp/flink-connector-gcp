@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery namespace, data containers and workload identity)
+- Updated: 2026-09-20 (idle BigQuery namespace, data containers, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
@@ -284,10 +284,10 @@ Operator watch configuration, application publication, bounded admission and num
 
 The [namespace foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35234958991) completed successfully with an empty refreshed plan.
 The new namespace remained idle and the runner's namespace reads were verified before extending the shared helper.
-The helper now inspects all three namespaces, and the idle Operator watches both application namespaces.
-Helm adds only its Operator Role and RoleBinding in `tier3-cloudtasks`, bringing the rendered inventory to nine objects.
+At that stage, the helper inspected three namespaces, and the idle Operator watched smoke and Cloud Tasks.
+Helm added only its Operator Role and RoleBinding in `tier3-cloudtasks`, bringing the rendered inventory to nine objects.
 The already-applied bootstrap installer grants cover these permissions.
-The runner and supervisor can select the Operator KSA through Jobs in `tier3-system`, so their trusted Operator-administrator reach now includes both application namespaces.
+The runner and supervisor can select the Operator KSA through Jobs in `tier3-system`, so that extension gave them trusted Operator-administrator reach into both smoke and Cloud Tasks.
 
 The existing lifecycle GSAs also need to stop queues and remove checkpoint state after worker failure.
 Two custom roles enumerate queue get/pause/delete and task get/list; only the runner additionally receives queue create.
@@ -346,7 +346,14 @@ Bootstrap adds the `tier3-bigquery` namespace, zero quotas, installer access, wo
 An administrator first establishes the six importable namespace/quota/installer objects and extends the existing named namespace rules, preserving existing identities.
 The [BigQuery bootstrap procedure](../../opentofu/tier3-bootstrap/README.md#administrator-prerequisites-for-bigquery) requires review and approval of the concrete mutations before this step.
 CI then imports those prerequisites and applies the remaining foundation through the ordinary saved-plan workflow.
-Keep the common preflight and Helm watch set unchanged until apply, idle inventory, runner reads and empty refreshed plans have been verified.
+The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed the six imports, five bootstrap additions and 19 GCP additions.
+The refreshed bootstrap plan in CI and the separate refreshed GCP plan were empty.
+Runner-impersonated quota and workload reads verified the applied lifecycle RoleBinding against observed zero quotas and an empty namespace.
+After this acceptance, extend common preflight to all four namespaces and the idle Operator watch set to smoke, Cloud Tasks and BigQuery.
+Helm adds the BigQuery Operator Role and RoleBinding, bringing the rendered inventory to eleven resources while preserving zero replicas.
+Before Operator plan/apply, the helper also requires the BigQuery job identity and RoleBinding.
+The runner and supervisor remain trusted Operator administrators; selecting its KSA through system Jobs now reaches BigQuery Secret access and Pod creation as well.
+Existing lifecycle scenarios still admit only their own applications; the BigQuery application and runtime remain subsequent work.
 Application publication and bounded execution follow separately; these persistent grants provide no deployed BigQuery result and authorize no paid trial.
 
 ### Pub/Sub GCP preparation

@@ -187,9 +187,10 @@ def test_wrong_principal_stops_before_permission_or_inventory_checks(
 
 
 @pytest.mark.parametrize(
-    "namespace", ["tier3-system", "tier3-smoke", "tier3-cloudtasks"]
+    "namespace", ["tier3-system", "tier3-smoke", "tier3-cloudtasks", "tier3-bigquery"]
 )
-def test_preflight_rejects_active_inventory(monkeypatch, tmp_path, namespace):
+@pytest.mark.parametrize("kind", ["Pod", "FlinkDeployment"])
+def test_preflight_rejects_active_inventory(monkeypatch, tmp_path, namespace, kind):
     cluster = bootstrap.Cluster(tmp_path / "kubeconfig")
     monkeypatch.setattr(cluster, "validate_target", lambda: None)
     monkeypatch.setattr(cluster, "quota", lambda: None)
@@ -197,11 +198,18 @@ def test_preflight_rejects_active_inventory(monkeypatch, tmp_path, namespace):
     def kubectl(*args):
         if args[:2] == ("get", "namespace"):
             return result("namespace/" + args[2])
-        active = args[args.index("--namespace") + 1] == namespace
+        if args[:2] == ("get", "crd"):
+            return result("customresourcedefinition/" + args[2])
+        active = args[args.index("--namespace") + 1] == namespace and (
+            kind == "Pod"
+            and args[1].startswith("pods,")
+            or kind == "FlinkDeployment"
+            and args[1] == "flinkdeployments.flink.apache.org"
+        )
         return result(
             json.dumps(
                 {
-                    "items": [{"kind": "Pod", "metadata": {"name": "active"}}]
+                    "items": [{"kind": kind, "metadata": {"name": "active"}}]
                     if active
                     else []
                 }
@@ -209,7 +217,7 @@ def test_preflight_rejects_active_inventory(monkeypatch, tmp_path, namespace):
         )
 
     monkeypatch.setattr(cluster, "kubectl", kubectl)
-    with pytest.raises(RuntimeError, match="workload objects"):
+    with pytest.raises(RuntimeError, match="workload objects|Flink run objects"):
         cluster.preflight()
 
 
@@ -370,8 +378,9 @@ def test_ci_access_failure_does_not_publish_a_wrapper(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("field", ["pods", "persistentvolumeclaims"])
 @pytest.mark.parametrize("section", ["spec", "status"])
-def test_cloudtasks_quota_must_be_zero_and_observed(
-    monkeypatch, tmp_path, field, section
+@pytest.mark.parametrize("namespace", ["tier3-cloudtasks", "tier3-bigquery"])
+def test_application_quota_must_be_zero_and_observed(
+    monkeypatch, tmp_path, field, section, namespace
 ):
     cluster = bootstrap.Cluster(tmp_path / "kubeconfig")
 
@@ -380,7 +389,7 @@ def test_cloudtasks_quota_must_be_zero_and_observed(
             "spec": {"hard": {"pods": "0", "persistentvolumeclaims": "0"}},
             "status": {"hard": {"pods": "0", "persistentvolumeclaims": "0"}},
         }
-        if args[args.index("--namespace") + 1] == "tier3-cloudtasks":
+        if args[args.index("--namespace") + 1] == namespace:
             quota[section]["hard"][field] = "1"
         return result(json.dumps(quota))
 

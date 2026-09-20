@@ -66,8 +66,8 @@ These are trusted Operator administrators, as described in [ADR-0165](../../docs
 
 The new namespace retains zero Pod/PVC quotas.
 The [successful foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35234958991) and subsequent empty refreshed plan completed the namespace prerequisites.
-After verification of the runner's new read permissions, the common bootstrap helper now inspects all three namespaces.
-The [Helm root](../tier3-operator/README.md) extends its watch set to both application namespaces while keeping zero replicas.
+After verification of the runner's new read permissions, that extension added Cloud Tasks to the common bootstrap helper and the [Helm root](../tier3-operator/README.md), keeping zero replicas.
+The later BigQuery acceptance below extends the current helper to four namespaces and the watch set to three application namespaces.
 The smoke runner still admits only its existing smoke scenarios.
 Application publication, Cloud Tasks admission, queue creation and performance measurements follow separately reviewed changes and numeric execution approval.
 
@@ -116,8 +116,11 @@ The two ClusterRoles may have metadata reconciliation but must not be replaced.
 
 After the merge-triggered apply, require an empty refreshed plan and separately verify that `tier3-bigquery` has zero Pod/PVC quotas, no workload objects and the expected job identity.
 Verify the runner's access to its quota and workload inventory through the applied lifecycle RoleBinding.
-Only a subsequent change may add this namespace to the common helper's preflight or Helm watch set.
-This ordering preserves recovery of an interrupted foundation apply: the helper must not require namespace reads before those reads have been granted.
+The [successful foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) imported the six prerequisites and added the five job/lifecycle objects; its refreshed bootstrap plan was empty.
+The GCP apply added 19 resources, and a separate refreshed GCP plan was empty.
+Runner-impersonated quota and workload reads confirmed observed zero Pod/PVC limits and an empty namespace after the lifecycle RoleBinding was applied.
+These checks permit the common helper to inspect all four namespaces and the idle Helm watch set to include BigQuery.
+The ordering preserves recovery of an interrupted foundation apply: the helper must not require namespace reads before those reads have been granted.
 
 ## PR plan and merge apply
 
@@ -214,7 +217,7 @@ No local service-account impersonation grant is required.
 ## Next stage
 
 After bootstrap is applied and its plan is empty, the [separate Helm root](../tier3-operator/README.md) installs the idle release with `replicas = 0`, `webhook.create = false`, `skip_crds = true` and `create_namespace = false`.
-The original release watched `tier3-smoke` only; the accepted Cloud Tasks namespace extension adds `tier3-cloudtasks` as described above.
+The original release watched `tier3-smoke` only; the accepted Cloud Tasks and BigQuery namespace extensions add `tier3-cloudtasks` and `tier3-bigquery` as described above.
 CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the foundation.
 The [image publication path](../../kubernetes/images/README.md) supplies GAR runtime pins.
 The [bounded lifecycle](../../kubernetes/lifecycle/README.md) supplies admission and cleanup; a generic smoke run requires separate execution approval.
@@ -262,7 +265,7 @@ Quota writes in all three application namespaces also name only `tier3-idle`.
 Dynamic Pod names cannot be constrained to a run using RBAC: the runtime must check UID and ownership before deletion.
 The shared bootstrap reader binding supplies read access to the four namespace identities, the four CRDs and the named bootstrap RBAC objects.
 The lifecycle Roles do not directly grant Secret access, identity/RBAC writes, namespace/CRD writes, or unrestricted bind/escalate/impersonate.
-They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke` and `tier3-cloudtasks`, including Secret access and Pod creation.
+They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke`, `tier3-cloudtasks` and `tier3-bigquery`, including Secret access and Pod creation.
 Treat the runner and supervisor as trusted Operator administrators; the direct Role inventory is not a boundary on their reachable permissions.
 This trust does not extend to the smoke workload identity, which cannot create workloads in `tier3-system`.
 
