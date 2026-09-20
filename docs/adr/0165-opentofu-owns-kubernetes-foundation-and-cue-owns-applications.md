@@ -36,6 +36,7 @@ limitations under the License.
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub application image publication wiring)
 - Updated: 2026-09-20 (Pub/Sub deployment package and completed publication)
+- Updated: 2026-09-20 (owned Pub/Sub resource operations and partial-creation cleanup)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -471,6 +472,23 @@ Use one slot per TaskManager and one or two TaskManagers so rescaling and active
 The initial/upgrade arguments preserve run identity and logical input bounds, with savepoint upgrades and restored-state checks.
 Synthetic deliveries exercise the package and shared run policy without committing an executable run or adding a lifecycle scenario.
 Actual admission still requires owned service resources and grants, independent supervision, a reviewed total Pod budget, live image retention and separately approved execution limits.
+
+### Pub/Sub owned resource preparation
+
+The Pub/Sub resource helper fixes two input topic/subscription pairs and one output pair under the approved run identity.
+It refuses existing resources, records all creation intent in a create-only GCS control object before service writes, and labels each created resource with the run and ownership nonce.
+Service readback must match the frozen settings in the [application runbook](../../kubernetes/apps/pubsub/README.md#owned-resource-operations) before a later controller may admit the workload.
+An ambiguous create stops; matching partial creation can be cleaned using the retained manifest, but provisioning cannot adopt or resume it.
+Cleanup checks the manifest, labels and topic bindings, deletes subscriptions before topics, and confirms absence while retaining the record.
+An owned subscription with the service's `_deleted-topic_` marker remains cleanable, while inspection still requires its expected live binding.
+Keep the retained intent under `_control/pubsub/`, outside the `_control/runs/` prefix that blocks shared lock acquisition.
+The lifecycle still owns the separate active-run record and removes it only after final evidence and owned cleanup complete.
+
+Pub/Sub deletion has no generation precondition, so this record is not a substitute for exclusive control of the resources.
+A mandatory caller guard must enforce approval, shared environment ownership and the appropriate admission or cleanup budget before each Pub/Sub request or logical storage call, with exclusive control spanning read/delete gaps.
+The caller reserves the whole storage call's request/time budget, including the shared adapter's generation-read repetitions; a guard callback is not an individual HTTP-request counter.
+The helper uses the existing authorized HTTP session without automatic retries and does not implement that cross-actor lifecycle or grant installation.
+It remains preparation for separately approved execution; synthetic operation tests establish neither live service behavior nor deployed recovery acceptance.
 
 ### Ownership boundaries
 

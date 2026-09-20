@@ -55,7 +55,7 @@ The rendered job arguments use the application's `--name=value` syntax, match Fl
 That phase does not locate a savepoint or prove a checkpoint boundary: the later controller must retain and select recovery state, keep the run/input domain fixed and observe successful restoration.
 The logical input domain and restart count do not bound elapsed execution or billable service operations.
 
-Before deployment, implement the owned-resource provisioner and scoped service grants described below, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
+Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
 Table entry points and deployed recovery acceptance remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
@@ -77,17 +77,71 @@ All three subscriptions must exist before any corresponding publication, includi
 The job uses ADC, provides no key-file option, never creates a subscription and sets the sink to `CREATE_NEVER`.
 The emulator endpoint is a package-private test seam, absent from the deployed CLI.
 
-The external provisioner must reserve a fresh run ID, refuse existing same-name resources and retain an immutable manifest of the exact resource names, project, run ID and ownership nonce.
-It must attach run/nonce ownership labels, verify topic bindings and service settings before admission, and refuse adoption or deletion when the recorded ownership is missing or inconsistent.
-Pub/Sub resource names can be reused after deletion; names or label checks alone do not make deletion atomic with replacement.
-The shared environment lock and exclusive control of run resources must cover provisioning through cleanup; unexpected replacement is an incident to reconcile, not permission to delete by prefix.
-These provisioner and cleanup operations are requirements for the later lifecycle implementation, not implemented features of this application.
+### Owned resource operations
+
+[`flink_tier3.pubsub`](../../../tools/tier3/src/flink_tier3/pubsub.py) supplies internal `ResourcePlan` and `Resources` helpers for the later lifecycle controller.
+These helpers are not a CLI scenario and do not admit a workload or install IAM policies.
+A plan requires a fresh run ID and a caller-generated ownership nonce of 32 lowercase hexadecimal digits.
+The caller supplies the shared authorized HTTP session, GCS `Storage` adapter and a mandatory `before_operation(phase, method, name)` guard; construction performs no authentication or I/O.
+Use the shared evidence bucket for the control record, as with the other lifecycle records.
+
+`provision()` refuses an existing control record or any of the six existing service names, including resources with matching labels.
+It then writes the exact plan to `_control/pubsub/<run-id>.json` with GCS generation-match zero before creating the three topics followed by the three subscriptions.
+Every service resource carries `tier3-run` and `tier3-nonce` labels.
+The helper re-reads the matching manifest before every service write and validates all six service resources after creation; `inspect()` repeats that readback validation.
+An ambiguous create stops without retrying or adopting the resource; the retained manifest permits cleanup of matching partial creation.
+Re-running `provision()` against that manifest is refused.
+The retained intent lives outside `_control/runs/`, whose contents block new shared environment locks.
+The later lifecycle must separately maintain its active run control record before provisioning until owned cleanup and final evidence complete; the Pub/Sub intent is not that active-run record.
+
+| Service setting | Required value |
+| --- | --- |
+| Topic persistence region | `us-central1`, without in-transit region enforcement |
+| Topic retention, schema, KMS key, ingestion or message transforms | Unset |
+| Subscription delivery | Pull, with no filter, dead-letter policy, retry policy or transforms |
+| Acknowledgement deadline | 30 seconds |
+| Unacknowledged message retention | 1 day |
+| Subscription inactivity expiration | 1 day |
+| Retain acknowledged messages, ordering, exactly-once delivery | Disabled |
+
+The service may omit false scalar fields and return integral durations with fractional zeros; readback accepts those representations.
+The [subscription API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions) defines these settings; an unset retry policy uses immediate redelivery, and inactivity expiration is not a run deadline.
+Subscriptions can expire after one day without subscriber activity; provision within the approved admission window and revalidate presence and settings immediately before admitting the workload.
+The [topic API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics) defines the persistence policy and optional topic features.
+The relay makes an at-least-once contract; the connector rejects service-side exactly-once-delivery subscriptions.
+
+`cleanup()` requires the matching manifest, verifies resource labels and subscription topic bindings, and deletes subscriptions before topics.
+For cleanup only, it also accepts the service's `_deleted-topic_` marker on an owned subscription, so a topic deleted earlier does not prevent removing that subscription; a different live topic binding still refuses deletion.
+Inspection requires the expected live binding and identifies absent resources by name.
+It confirms absence after each deletion and retains the control record for repeated cleanup and reconciliation.
+Settings drift does not erase ownership, but missing or inconsistent recorded identity refuses deletion.
+Failures stop that call, including stopping before topic deletion when subscription cleanup fails.
+No listing, prefix deletion, same-name adoption or Pub/Sub request retry is performed.
+
+Pub/Sub resource names can be reused after deletion, and the [subscription](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/delete) and [topic](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/delete) delete APIs accept no generation precondition.
+Names and ownership labels therefore do not make deletion atomic with replacement.
+The caller's shared environment lock and exclusive control of run resources must cover provisioning through cleanup, including each read/delete gap; unexpected replacement is an incident to reconcile.
+The guard runs before each Pub/Sub request or logical storage adapter call and must prove current approval, exclusive ownership and the appropriate admission or cleanup budget.
+For a control-record `GET`, the shared adapter reads metadata and then generation-matched data, repeating on a generation race at most five times: reserve up to ten GCS data requests for that single callback.
+A control-record `PUT` callback denotes the logical create upload, whose GCS HTTP method is `POST`.
+The caller must reserve the whole adapter call's request and time budget; callback counts are not HTTP-request counts, and credential refresh and the guard's own I/O require additional caller accounting.
+The helper delegates those checks to the caller; it does not implement durable operation counters, the lock, deadlines or independent supervision.
+Pub/Sub HTTP requests use the shared 20-second timeout with redirects disabled and no automatic retry; this is a per-request transport limit, not a total elapsed-time or cost ceiling.
+
+### Permissions and remaining integration
 
 The workload requires input subscription metadata/consume access and output publication access; it needs no topic/subscription creation, deletion or IAM authority.
-The later provisioner owns creation, topic attachment and scoped grant installation; the input publisher and output observer receive their own data permissions, and the independent cleanup identity receives only the required metadata/deletion operations.
-Exact IAM policy installation and service-setting enforcement remain prerequisites before a real run; the existing Pub/Sub GSA currently has state-bucket access only.
-That lifecycle must explicitly fix retention, acknowledgement deadline, ordering, exactly-once-delivery and expiry settings.
-The connector rejects service-side exactly-once-delivery subscriptions; this relay makes only an at-least-once contract.
+For resource creation, the later provisioner needs `pubsub.topics.create` and `pubsub.subscriptions.create` on the project and `pubsub.topics.attachSubscription` on the input and output topics, plus metadata reads for preflight and validation.
+Cleanup needs topic/subscription metadata reads and deletion permissions on the recorded resources, plus read access to their control record.
+The provisioner also needs create/read access to that record in the evidence bucket.
+The [Pub/Sub access-control reference](https://docs.cloud.google.com/pubsub/docs/access-control#required_permissions) lists permissions for each operation.
+Scoped grant installation is separate work: the input publisher and output observer need their own data permissions, and the independent cleanup identity needs its metadata/deletion grants before admission.
+The existing Pub/Sub GSA currently has state-bucket access only.
+
+Synthetic tests cover the request grammar, omitted service defaults, collisions, manifest replacement, ambiguous writes and deletion, partial creation, settings drift and repeated cleanup without credentials or service calls.
+A composition test uses the production GCS adapter with a fake client to exercise all five generation-read attempts and the guard's separate adapter-call budget.
+They do not establish live API behavior, IAM access or cross-actor lifecycle safety.
+The later controller must integrate these operations with shared admission and cleanup, install and read back scoped grants, and collect service settings as external trial evidence before starting the relay.
 
 ## Payload and restoration
 
