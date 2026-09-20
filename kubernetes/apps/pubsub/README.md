@@ -233,6 +233,50 @@ The caller must keep exclusive control and writer quiescence through settlement;
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
 Deployed supervisor handoff, message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
 
+## Input publication and output collection
+
+[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub_messages.py) supplies internal data helpers for the later runnable controller.
+Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the authenticated actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
+The role parameter checks routing only; the caller must authenticate the runner or supervisor and bind that identity, the plan and input domain to current approval.
+The guard must verify prepared resources and effective access, the active run and exclusive actor authority, stop/deadline conditions and the complete traffic, evidence and operation budget before every call.
+A storage `PUT` callback denotes a create-only logical upload (GCS HTTP `POST`); it includes the adapter's complete request/time budget, and guard and credential I/O require additional accounting.
+The guard receives phase `publish` for input intent, publication and response storage, `collect` for output intent, pull and response/observation storage, and `acknowledge` for the ACK request and receipt.
+Method `PUT` always denotes storage, while `POST` always denotes a Pub/Sub data request in this helper.
+These helpers do not yet connect the CLI or implement durable aggregate counters, actor handoff or the cleanup quiescence barrier.
+
+The runner calls `publish(input_index, start, count)` for one interval of at most 100 logical inputs on one of the two planned input topics.
+It stores the exact request and run/nonce/domain binding in `runs/<run-id>/pubsub/messages/<nonce>/input/<index>/<start>-<count>/intent.json` with generation-match zero before publishing.
+An existing intent refuses that interval, including after a restart, a lost intent-write response or an ambiguous publication response.
+A successful service response is saved as `response.json` before returning its IDs; the [publish API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/publish) binds returned IDs to request order.
+The helper rejects missing, empty or repeated IDs within the batch.
+A missing receipt means the outcome is unknown, not that the service accepted no messages.
+The caller must freeze disjoint phase cohorts or explicitly account for duplicate publication through overlapping intervals; changing an interval does not bypass the trial's total input budget.
+
+The supervisor calls `collect(batch_id, max_messages=100)` for one pull from the planned output subscription.
+It creates an intent before the pull and saves the decoded response before interpreting its received-message envelopes.
+It then writes `observations.json`, containing every output message ID and full payload as the offline oracle's unpadded base64url TSV, before sending any acknowledgement.
+Append each batch's `tsv` value once when assembling the oracle input; preserve repeated lines and repeated deliveries across different batches.
+It decodes both standard and URL-safe Base64, with or without padding, following the [ProtoJSON bytes format](https://protobuf.dev/programming-guides/json/#representation-of-each-type), and emits canonical unpadded base64url in the TSV.
+The collector preserves foreign, empty and binary payloads for the oracle to reject; it does not validate relay semantics, filter logical identities or deduplicate messages.
+Malformed envelopes, invalid encoding or exceeded local limits retain the response and stop without acknowledgement.
+Malformed JSON, transport failure or a response over the transport cap leaves the intent but may have no response receipt.
+
+An evidence-write failure, including a committed write with a lost response, prevents the following acknowledgement.
+An ambiguous ACK retains the observations; another pull requires a new batch ID and may record the same output again.
+A successful ACK response is followed by a create-only `acknowledged.json` receipt; its absence leaves ACK outcome unknown.
+The [acknowledge API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) permits expired IDs and repeated acknowledgements, so this receipt records a successful API response without promising no redelivery.
+An [empty pull](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull) is saved without sending ACKs and is not evidence of a drained subscription.
+No API operation or evidence upload is retried by the helper, and no existing evidence is overwritten or removed.
+The caller must preserve intents and evidence through assessment and must not reuse a run's batch paths after deleting them.
+
+Each call admits at most 100 messages, a streamed response of 1 MiB, an output payload of 4096 decoded bytes, a message ID of 1024 UTF-8 bytes and an ACK ID of 4096 UTF-8 bytes.
+These are local collection limits, not Pub/Sub service limits; decoded response JSON and serialized GCS evidence can be larger than the wire representation.
+Budget each publication for two logical GCS writes and one Pub/Sub request, and each nonempty collection for four logical GCS writes and two Pub/Sub requests (an empty collection uses three writes and one request).
+Reserve storage for both the response and the TSV representation, including JSON encoding overhead, and account for every repeated batch and failed attempt.
+The shared 20-second HTTP timeout applies to transport waits, not total trial elapsed time; the response byte cap does not bound service billing or an integrated trial's storage and request counts.
+Before cleanup, the caller must stop and fence both actors and prove their in-flight requests quiescent, even if a helper has returned a timeout.
+Synthetic tests establish request/evidence ordering and refusal behavior; they do not establish effective IAM access, service ACK behavior or deployed recovery acceptance.
+
 ## Payload and restoration
 
 Each UTF-8 input payload is `v1|<run-id>|<input-index>|<sequence>` with canonical decimal numbers and sequence in `[0, records-per-subscription)`.
