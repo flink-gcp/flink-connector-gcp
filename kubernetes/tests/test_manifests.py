@@ -1369,3 +1369,267 @@ def test_ci_discovers_and_renders_lifecycle(module):
         app["spec"]["podTemplate"]["metadata"]["labels"]["flink-gcp.io/run-id"]
         == "probe"
     )
+
+
+def bigquery_leaf(module, **changes):
+    inputs = {
+        "id": "bq-contract",
+        "expiresAt": "2026-09-20T08:00:00Z",
+        "namespace": "tier3-bigquery",
+        "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
+        + SYNTHETIC_DIGEST,
+        "phase": "initial",
+        "mode": "EO",
+        "destinations": 10,
+        **changes,
+    }
+    path = leaf(module, "runs/bigquery", {"run": inputs})
+    shutil.copyfile(
+        KUBERNETES / "tests/fixtures/bigquery.cue", module / path / "delivery.cue"
+    )
+    return path
+
+
+@pytest.mark.parametrize("mode,records", [("ALO", 28800), ("EO", 1843200)])
+@pytest.mark.parametrize("destinations", [10, 50])
+def test_bigquery_initial_and_upgrade_preserve_the_trial(
+    module, mode, records, destinations
+):
+    from flink_tier3.bigquery import Trial
+
+    applications = []
+    for phase in ("initial", "upgrade"):
+        path = bigquery_leaf(module, mode=mode, destinations=destinations, phase=phase)
+        rendered = cue(module, "cmd", "render", path)
+        assert rendered.returncode == 0, rendered.stderr
+        [app] = list(yaml.safe_load_all(rendered.stdout))
+        applications.append(app)
+        assert app["metadata"]["name"] == "bq-contract"
+        assert app["metadata"]["namespace"] == "tier3-bigquery"
+        assert app["metadata"]["labels"]["flink-gcp.io/run-id"] == "bq-contract"
+        assert (
+            app["metadata"]["annotations"]["flink-gcp.io/expires-at"]
+            == "2026-09-20T08:00:00Z"
+        )
+        spec = app["spec"]
+        assert spec["flinkVersion"] == "v2_2"
+        assert spec["serviceAccount"] == "bigquery"
+        assert spec["mode"] == "native"
+        assert spec["image"].endswith("bigquery-recovery@" + SYNTHETIC_DIGEST)
+        assert spec["job"] == {
+            "jarURI": "local:///opt/flink/usrlib/bigquery-recovery.jar",
+            "entryClass": "io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob",
+            "parallelism": 2,
+            "state": "running",
+            "upgradeMode": "savepoint",
+            "allowNonRestoredState": False,
+            "args": [
+                "--run-id",
+                "bq-contract",
+                "--phase",
+                phase,
+                "--mode",
+                mode,
+                "--destinations",
+                str(destinations),
+                "--records",
+                str(records),
+                "--bytes-per-second",
+                "1048576",
+                "--require-restored",
+                str(phase == "upgrade").lower(),
+            ],
+        }
+        args = dict(
+            zip(spec["job"]["args"][::2], spec["job"]["args"][1::2], strict=True)
+        )
+        trial = Trial(
+            args["--run-id"],
+            args["--mode"],
+            int(args["--destinations"]),
+            int(args["--records"]),
+        )
+        assert sum(trial.expected(i) for i in range(destinations)) == records
+        config = spec["flinkConfiguration"]
+        assert config["taskmanager.numberOfTaskSlots"] == "1"
+        assert config["job.autoscaler.enabled"] == "false"
+        assert (
+            config["kubernetes.operator.job.upgrade.last-state-fallback.enabled"]
+            == "false"
+        )
+        assert config["kubernetes.operator.snapshot.resource.enabled"] == "false"
+        assert config["execution.checkpointing.interval"] == "30 s"
+        assert config["execution.checkpointing.max-concurrent-checkpoints"] == "1"
+        assert config["execution.checkpointing.timeout"] == "120 s"
+        assert config["execution.checkpointing.num-retained"] == "2"
+        assert config["state.backend.type"] == "hashmap"
+        assert config["execution.checkpointing.storage"] == "filesystem"
+        assert config["high-availability.type"] == "kubernetes"
+        assert config["restart-strategy.type"] == "fixed-delay"
+        assert config["restart-strategy.fixed-delay.attempts"] == "3"
+        assert config["restart-strategy.fixed-delay.delay"] == "10 s"
+        for option, suffix in [
+            ("execution.checkpointing.dir", "checkpoints"),
+            ("execution.checkpointing.savepoint-dir", "savepoints"),
+            ("high-availability.storageDir", "ha"),
+        ]:
+            assert (
+                config[option]
+                == f"gs://flink-gcp-tier3-bigquery/runs/bq-contract/{suffix}"
+            )
+        for manager, replicas in (("jobManager", 1), ("taskManager", 2)):
+            assert spec[manager]["replicas"] == replicas
+            assert spec[manager]["resource"] == {"cpu": 1, "memory": "2Gi"}
+            template = spec[manager]["podTemplate"]
+            assert (
+                template["metadata"]["labels"]["flink-gcp.io/run-id"] == "bq-contract"
+            )
+            assert template["spec"]["nodeSelector"] == {
+                "kubernetes.io/arch": "amd64",
+                "cloud.google.com/gke-spot": "true",
+            }
+            assert "volumes" not in template["spec"]
+            [container] = template["spec"]["containers"]
+            assert container["name"] == "flink-main-container"
+            assert (
+                container["resources"]["requests"]
+                == container["resources"]["limits"]
+                == {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
+            )
+    # Updating the same deployment changes only the phase and restored-state requirement.
+    for app in applications:
+        app["spec"]["job"].pop("args")
+    assert applications[0] == applications[1]
+
+
+@pytest.mark.parametrize(
+    "mode,records", [("ALO", 100), ("ALO", 32768), ("EO", 100), ("EO", 2097152)]
+)
+def test_bigquery_record_boundaries_render(module, mode, records):
+    path = bigquery_leaf(module, mode=mode, destinations=50, records=records)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    args = app["spec"]["job"]["args"]
+    assert args[args.index("--records") + 1] == str(records)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"mode": "UNKNOWN"},
+        {"destinations": 11},
+        {"phase": "resume"},
+        {"mode": "ALO", "records": 32769},
+        {"mode": "EO", "records": 2097153},
+        {"destinations": 50, "records": 99},
+        {"records": 0},
+        {"records": "100"},
+        {"namespace": "tier3-smoke"},
+        {"id": "../another"},
+        {
+            "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink@"
+            + SYNTHETIC_DIGEST
+        },
+        {
+            "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery:latest"
+        },
+    ],
+)
+def test_bigquery_rejects_invalid_trial_inputs(module, changes):
+    path = bigquery_leaf(module, **changes)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"flinkVersion": "v2_3"},
+        {"serviceAccount": "smoke"},
+        {"job": {"parallelism": 1}},
+        {"job": {"allowNonRestoredState": True}},
+        {"job": {"upgradeMode": "stateless"}},
+        {"taskManager": {"replicas": 1}},
+        {"flinkConfiguration": {"taskmanager.numberOfTaskSlots": "2"}},
+        {"flinkConfiguration": {"job.autoscaler.enabled": "true"}},
+        {
+            "flinkConfiguration": {
+                "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "true"
+            }
+        },
+        {
+            "flinkConfiguration": {
+                "kubernetes.operator.snapshot.resource.enabled": "true"
+            }
+        },
+        {"flinkConfiguration": {"execution.checkpointing.dir": "gs://other/state"}},
+        {
+            "taskManager": {
+                "podTemplate": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "flink-main-container",
+                                "resources": {"limits": {"memory": "4Gi"}},
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "jobManager": {
+                "podTemplate": {
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                }
+            }
+        },
+    ],
+)
+def test_bigquery_delivery_cannot_change_fixed_topology(module, override):
+    path = bigquery_leaf(module)
+    (module / path / "override.cue").write_text(
+        "package tier3\n"
+        + json.dumps({"delivery": {"resources": {"app": {"spec": override}}}})
+    )
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"flinkVersion": "v1_20"},
+        {"serviceAccount": "smoke"},
+        {"job": {"parallelism": 1}},
+        {
+            "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@"
+            + SYNTHETIC_DIGEST
+        },
+    ],
+)
+def test_bigquery_namespace_policy_without_application_package(module, override):
+    # A plain resource prevents package constraints from masking run policy.
+    document = workload()
+    document["run"]["namespace"] = "tier3-bigquery"
+    spec = document["delivery"]["resources"]["job"]["spec"]
+    spec.update(
+        flinkVersion="v2_2",
+        serviceAccount="bigquery",
+        image="us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
+        + SYNTHETIC_DIGEST,
+    )
+    spec["job"]["parallelism"] = 2
+    path = leaf(module, "runs/plain-bigquery", document)
+    valid = cue(module, "cmd", "render", path)
+    assert valid.returncode == 0, valid.stderr
+    [app] = list(yaml.safe_load_all(valid.stdout))
+    assert app["metadata"]["namespace"] == "tier3-bigquery"
+    spec.update(override)
+    leaf(module, "runs/plain-bigquery", document)
+    invalid = cue(module, "cmd", "render", path)
+    assert invalid.returncode != 0, invalid.stdout
+    assert not invalid.stdout.strip()

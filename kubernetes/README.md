@@ -30,6 +30,7 @@ kubernetes/
   schemas/objects.cue            # Supported Kubernetes kinds
   pkg/flink/application.cue      # Standard Flink application defaults
   pkg/smoke/application.cue      # Generic stateful smoke application contract
+  pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
   pkg/cloudtasks/application.cue # Cloud Tasks measurement cell contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
@@ -107,8 +108,9 @@ The package deliberately leaves image, ServiceAccount and application-specific f
 An upgrade requiring state preservation must explicitly select its upgrade mode and recovery inputs.
 
 The root supplies common project labels.
-`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, or `tier3-cloudtasks`) to resource metadata.
+`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-cloudtasks`, or `tier3-bigquery`) to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`, while in `tier3-cloudtasks` it requires the `cloudtasks-benchmark` ServiceAccount, parallelism 1, 4 or 16 and `v1_20` or `v2_2`.
+In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism two and `v2_2`.
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
 [Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.
@@ -116,6 +118,8 @@ The Flink base image has no application JAR; each actual delivery still supplies
 The [generic smoke application](apps/smoke/README.md) supplies that JAR, a dedicated workload identity and a reusable `pkg/smoke.#Application` definition.
 Its committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries share concrete run inputs and the published `images.smoke` pin.
 They update the same deployment sequentially; the [application runbook](apps/smoke/README.md#deployment-and-storage) records the planned window, expiry and independent render commands.
+The [BigQuery application package](apps/bigquery/README.md#deployment-definition) supplies initial and savepoint-upgrade definitions for both delivery modes and destination counts.
+Its synthetic deliveries are checked locally; a concrete approved delivery and lifecycle admission remain subsequent work.
 The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
