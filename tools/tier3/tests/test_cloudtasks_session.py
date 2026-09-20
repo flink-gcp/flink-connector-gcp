@@ -1857,3 +1857,160 @@ def test_a_queue_deviation_stops_a_poll_before_it_observes_anything(env, monkeyp
     # The deviating readback is taken before that poll's observers run, so no
     # observation is recorded for a queue that had already resumed.
     assert seen == [2]
+
+
+# --- admission tolerates a queue that is still initializing ---------------------
+
+
+def initializing(queues, answers):
+    """Make the readback answer ``answers`` before the queue settles paused.
+
+    The service does not answer for a queue it has just created, so the fake
+    injects those answers at the moment of the pause, where production meets
+    them: a transient status, or the state the queue held before the pause.
+    """
+
+    def at_pause():
+        queues.read_errors = [a for a in answers if isinstance(a, Exception)]
+        queues.pause_leaves_running = any(a == "RUNNING" for a in answers)
+
+    queues.on_pause = at_pause
+    return queues
+
+
+def test_admission_waits_for_a_queue_that_is_still_readable_only_later(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    initializing(
+        queues, [rt.ApiError(503, "GET", "queues"), rt.ApiError(503, "GET", "queues")]
+    )
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    readback = ct.admit_queue(runner.env)
+    assert readback["state"] == "PAUSED"
+    assert runner.env.refresh().queue["state"] == "PAUSED"
+    # The two unreadable answers are recorded, not treated as a deviation.
+    assert "queue-initializing" in evidence_events(env, "runner")
+    # One read before the create, two that could not answer, one that did.
+    assert [c[0] for c in queues.calls].count("get") == 4
+
+
+def test_admission_waits_for_a_queue_that_still_reports_running(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    # The pause is accepted, but the queue still reports the state it held.
+    queues.pause_leaves_running = True
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    reads, original = [], queues.get
+
+    def get(read_mask=ct.QUEUE_READ_MASK):
+        answer = original(read_mask)
+        reads.append(read_mask)
+        if len(reads) >= 2:  # the service reports the pause from now on
+            queues.pause_leaves_running = False
+            queues.state = "PAUSED"
+        return answer
+
+    queues.get = get
+    readback = ct.admit_queue(runner.env)
+    # The first readback still said RUNNING. Admission waited for the state to
+    # settle rather than calling a queue it had just paused a deviation.
+    assert readback["state"] == "PAUSED"
+    assert len(reads) == 3
+
+
+def test_a_dispatching_queue_is_refused_without_waiting(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    queues.executed_last_minute = 1
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    before = env[3].now
+    with pytest.raises(rt.Failure, match="paused approved configuration"):
+        ct.admit_queue(runner.env)
+    # A dispatch is never an initialization delay, so admission does not wait.
+    assert env[3].now == before
+
+
+def test_a_non_transient_read_failure_is_not_retried(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    initializing(queues, [rt.ApiError(403, "GET", "queues")])
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    with pytest.raises(rt.ApiError):
+        ct.admit_queue(runner.env)
+
+
+def test_the_pre_create_read_survives_a_transient_failure(env):
+    session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    queues.read_errors = [rt.ApiError(503, "GET", "queues")]
+    runner = runner_for(env, queues)
+    # The name is free; one unreadable answer must not cost the session.
+    assert ct.absent_before_create(runner.env) is True
+    assert [c[0] for c in queues.calls] == ["get", "get"]
+
+
+def test_a_settling_window_never_outlives_the_admission_budget(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    # Admission has already spent all but twenty seconds of its allowance.
+    clock = env[3]
+    clock.now = (
+        runner.env.schedule.started + rt.CLOUDTASKS_POLICY["cell_startup_seconds"] - 20
+    )
+    queues.read_errors = [rt.ApiError(503, "GET", "queues") for _ in range(20)]
+    with pytest.raises(rt.Failure):
+        ct.admit_queue(runner.env)
+    # The window stopped at the budget rather than running its own two minutes.
+    assert clock.now <= (
+        runner.env.schedule.started + rt.CLOUDTASKS_POLICY["cell_startup_seconds"]
+    )
+    assert ("create",) not in queues.calls
+
+
+def test_an_unexpected_queue_state_is_a_deviation_not_a_delay(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    original, before = queues.get, env[3].now
+
+    def get(read_mask=ct.QUEUE_READ_MASK):
+        answer = original(read_mask)
+        if answer is not None:
+            answer.pop("state", None)  # neither paused nor the settling state
+        return answer
+
+    queues.get = get
+    with pytest.raises(rt.Failure, match="paused approved configuration"):
+        ct.admit_queue(runner.env)
+    # A state outside the settling one is refused at once, like a dispatch.
+    assert env[3].now == before
+
+
+def test_a_queue_is_never_created_after_the_admission_deadline(env):
+    """The read that answers at the deadline must not still create the queue."""
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    _supervisor, _pod = prepared_session(env, manifests, queues)
+    runner = runner_for(env, queues)
+    runner.cleanup.scale_operator(1)
+    clock = env[3]
+    clock.now = ct.admission_deadline(runner.env) - 1
+    # One unreadable answer, then the name reads free exactly at the deadline.
+    queues.read_errors = [rt.ApiError(503, "GET", "queues")]
+    with pytest.raises(rt.Failure, match="admission deadline"):
+        ct.admit_queue(runner.env)
+    assert ("create",) not in queues.calls
+    assert runner.env.refresh().queue is None
