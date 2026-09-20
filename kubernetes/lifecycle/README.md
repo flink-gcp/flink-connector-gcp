@@ -48,6 +48,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery_lifecycle.py` | Internal durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier; not wired into admission |
 | `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations; not wired into admission |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
+| `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The fixed approval phrase and existing ceiling values remain unchanged.

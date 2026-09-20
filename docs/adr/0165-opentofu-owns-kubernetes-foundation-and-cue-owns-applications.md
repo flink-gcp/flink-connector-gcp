@@ -38,6 +38,7 @@ limitations under the License.
 - Updated: 2026-09-20 (Pub/Sub deployment package and completed publication)
 - Updated: 2026-09-20 (owned Pub/Sub resource operations and partial-creation cleanup)
 - Updated: 2026-09-20 (Pub/Sub lifecycle authority and recorded resource policies)
+- Updated: 2026-09-20 (durable Pub/Sub preparation and service-cleanup settlement gates)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -503,6 +504,27 @@ A mandatory caller guard must enforce approval, shared environment ownership and
 The caller reserves the whole storage call's request/time budget, including the shared adapter's generation-read repetitions; a guard callback is not an individual HTTP-request counter.
 The helper uses the existing authorized HTTP session without automatic retries and does not implement that cross-actor lifecycle.
 It remains preparation for separately approved execution; synthetic operation tests establish neither live service behavior nor deployed recovery acceptance.
+
+### Durable Pub/Sub preparation control
+
+Compose the resource helper with active run control before adding runnable Pub/Sub admission.
+Bind the resource plan to the approved application digest, run identity and nonce; allow only the submitting runner to claim one preparation attempt through a generation-checked transition.
+Persist creation intent before the helper's manifest write, retain successful settings and explicit-policy observations outside the workload, and refuse preparation replay after ambiguity.
+A separate supervisor can stop and reclaim partial work, provided its caller proves all creators, writers and in-flight requests quiescent first.
+Without creation intent, preserve any existing service names.
+With creation intent but no resource manifest, permit only guarded absence checks of all six names; an existing resource or uncertain read blocks settlement without authorizing deletion.
+The resource helper owns this branch through `cleanup_or_confirm_absent()`; strict `cleanup()` still requires its manifest.
+A replaced manifest still refuses cleanup.
+
+Keep the active record when cleanup is uncertain, and guard Operator shutdown and final settlement until recorded Pub/Sub service cleanup is complete and the shared stop is set.
+Final settlement preserves cleaned Pub/Sub intent and observations in the result receipt; when either snapshot carries Pub/Sub, reuse requires the complete computed result to match, including its success verdict and plans.
+This refuses presence/absence mismatches and stale success receipts after concurrent evidence failures.
+A fresh cleanup attempt returns to `cleaning` even after prior success, so uncertain rechecks close settlement again.
+Before deleting active Pub/Sub control, compare the complete current record with the receipt snapshot and use its observed generation; concurrent changes retain control and the lock.
+This gate preserves existing behavior for records without Pub/Sub state.
+The controller limits its control portion to 256 KiB and adds guarded logical control accesses; helper-only operation counts do not bound an integrated lifecycle.
+The [runbook](../../kubernetes/apps/pubsub/README.md#durable-preparation-and-cleanup) states the caller's budget, exclusive-control and external quiescence obligations.
+Numeric execution ceilings, CLI admission, deployed actor handoff and recovery evidence remain subsequent work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ### Pub/Sub lifecycle IAM preparation
 

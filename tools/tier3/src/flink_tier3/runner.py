@@ -17,6 +17,7 @@ import flink_tier3 as rt
 
 from .cloudtasks import admission_budget_open, admit_queue
 from .policy import RECOVERY
+from .pubsub_lifecycle import require_pubsub_clean
 
 
 class Runner:
@@ -314,6 +315,7 @@ class Runner:
     def finalize(self, plans):
         rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
         control = self.env.refresh()
+        require_pubsub_clean(control)
         if (
             plans.get("nonce") != self.env.approval.nonce
             or plans.get("roots") != ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
@@ -375,15 +377,28 @@ class Runner:
                 },
                 evidence_bytes=control.evidence_bytes,
             )
+        if control.pubsub is not None:
+            result["pubsub"] = control.pubsub
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)
         if previous is None:
             self.env.store.write(path, result)
-        elif previous.get("nonce") != result["nonce"] or not previous.get("idle"):
+        elif (
+            previous.get("nonce") != result["nonce"]
+            or not previous.get("idle")
+            or (
+                (control.pubsub is not None or previous.get("pubsub") is not None)
+                and rt.json_bytes(previous) != rt.json_bytes(result)
+            )
+        ):
             raise rt.Failure("Final receipt conflicts with approval")
         if previous is not None:
             result = previous
-        _, generation = self.env.records.read()
+        current, generation = self.env.records.read()
+        if (control.pubsub is not None or current.pubsub is not None) and (
+            rt.json_bytes(current.to_dict()) != rt.json_bytes(control.to_dict())
+        ):
+            raise rt.Failure("Run control changed during Pub/Sub finalization")
         self.env.store.delete(self.env.records.path, generation)
         rt.EnvironmentLock(self.env.store).release(self.env.approval.lock_owner)
         return result["success"]

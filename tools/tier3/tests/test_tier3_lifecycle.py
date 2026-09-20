@@ -2805,3 +2805,151 @@ def test_render_failure_exposes_bounded_cue_diagnostic(monkeypatch, diagnostic):
     with pytest.raises(rt.Failure) as error:
         cli.wf.render("test-run", "a" * 32, "2026-09-15T01:00:00Z", 3300)
     assert str(error.value) == "CUE rendering failed (exit 1): " + diagnostic[-2000:]
+
+
+@pytest.mark.parametrize(
+    "state", [{"stage": "preparing"}, {}, False, {"stage": "cleaned"}]
+)
+def test_pending_pubsub_cleanup_blocks_operator_shutdown_and_finalization(env, state):
+    runner = lifecycle(env, cli.runner_api.Runner)
+    runner.cleanup.scale_operator(1)
+    runner.env.records._change(lambda record: setattr(record, "pubsub", state))
+    with pytest.raises(rt.Failure, match="Pub/Sub resource cleanup is incomplete"):
+        runner.cleanup.scale_operator(0)
+    assert ("scale", 0) not in env[0].calls
+    with pytest.raises(rt.Failure, match="Pub/Sub resource cleanup is incomplete"):
+        runner.finalize(
+            {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+        )
+    assert env[1].read(rt.ENVIRONMENT)[0] is not None
+    assert env[1].read(runner.env.records.path)[0] is not None
+    assert env[1].read("runs/test-1310/result.json")[0] is None
+
+
+def test_cleaned_pubsub_record_allows_normal_settlement(env):
+    runner = lifecycle(env, cli.runner_api.Runner)
+    runner.cleanup.scale_operator(1)
+
+    def cleaned(record):
+        record.pubsub = {
+            "stage": "cleaned",
+            "resources": [
+                {"name": "owned-topic", "labels": {"tier3-run": "test-1310"}}
+            ],
+            "policies": [{"name": "owned-topic", "policy": {"etag": "observed"}}],
+        }
+        record.stop_requested = True
+
+    runner.env.records._change(cleaned)
+    saved = runner.env.refresh().pubsub
+    runner.cleanup.scale_operator(0)
+    assert ("scale", 0) in env[0].calls
+    runner.finalize({"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True})
+    assert env[1].read(rt.ENVIRONMENT)[0] is None
+    assert env[1].read(runner.env.records.path)[0] is None
+
+    assert env[1].read("runs/test-1310/result.json")[0]["pubsub"] == saved
+
+
+@pytest.mark.parametrize("previous", [None, {"stage": "cleaned", "resources": []}])
+def test_prior_receipt_without_matching_pubsub_observations_retains_control(
+    env, previous
+):
+    runner = lifecycle(env, cli.runner_api.Runner)
+
+    def cleaned(record):
+        record.pubsub = {"stage": "cleaned", "resources": [{"name": "owned-topic"}]}
+        record.stop_requested = True
+
+    runner.env.records._change(cleaned)
+    receipt = {
+        "nonce": env[2]["nonce"],
+        "sha": env[2]["sha"],
+        "idle": True,
+        "success": False,
+        "plans": {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True},
+    }
+    if previous is not None:
+        receipt["pubsub"] = previous
+    path = "runs/test-1310/result.json"
+    generation = env[1].write(path, receipt)
+    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+    with pytest.raises(rt.Failure, match="Final receipt conflicts"):
+        runner.finalize(plans)
+    assert env[1].read(rt.ENVIRONMENT)[0] is not None
+    assert env[1].read(runner.env.records.path)[0] is not None
+    receipt["pubsub"] = runner.env.refresh().pubsub
+    env[1].write(path, receipt, generation)
+    assert runner.finalize(plans) is False
+    assert env[1].read(rt.ENVIRONMENT)[0] is None
+    assert env[1].read(runner.env.records.path)[0] is None
+    assert env[1].read(path)[0] == receipt
+
+
+def test_prior_pubsub_receipt_with_missing_control_snapshot_retains_lock(env):
+    runner = lifecycle(env, cli.runner_api.Runner)
+    env[1].write(
+        "runs/test-1310/result.json",
+        {
+            "nonce": env[2]["nonce"],
+            "idle": True,
+            "success": False,
+            "pubsub": {"stage": "cleaned", "resources": []},
+            "sha": env[2]["sha"],
+            "plans": {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True},
+        },
+    )
+    with pytest.raises(rt.Failure, match="Final receipt conflicts"):
+        runner.finalize(
+            {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+        )
+    assert env[1].read(rt.ENVIRONMENT)[0] is not None
+    assert env[1].read(runner.env.records.path)[0] is not None
+
+
+def test_pubsub_finalization_retains_control_changed_during_receipt_write(env):
+    runner = lifecycle(env, cli.runner_api.Runner)
+
+    def cleaned(record):
+        record.pubsub = {"stage": "cleaned", "resources": []}
+        record.stop_requested = True
+
+    runner.env.records._change(cleaned)
+    env[1].before_write = lambda: runner.env.records._change(
+        lambda record: record.pubsub.update(stage="cleaning")
+    )
+    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+    with pytest.raises(
+        rt.Failure, match="Run control changed during Pub/Sub finalization"
+    ):
+        runner.finalize(plans)
+    assert runner.env.refresh().pubsub["stage"] == "cleaning"
+    assert env[1].read(rt.ENVIRONMENT)[0] is not None
+    runner.env.records._change(cleaned)
+    assert runner.finalize(plans) is False
+    assert env[1].read(rt.ENVIRONMENT)[0] is None
+
+
+def test_pubsub_retry_refuses_success_receipt_invalidated_by_evidence_failure(env):
+    runner = lifecycle(env, cli.runner_api.Runner)
+
+    def cleaned(record):
+        record.pubsub = {"stage": "cleaned", "resources": []}
+        record.stop_requested = True
+        record.success = True
+
+    runner.env.records._change(cleaned)
+    env[1].before_write = lambda: runner.env.records._change(
+        lambda record: setattr(record, "evidence_failed", True)
+    )
+    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+    with pytest.raises(
+        rt.Failure, match="Run control changed during Pub/Sub finalization"
+    ):
+        runner.finalize(plans)
+    assert env[1].read("runs/test-1310/result.json")[0]["success"] is True
+    assert runner.env.refresh().evidence_failed
+    with pytest.raises(rt.Failure, match="Final receipt conflicts"):
+        runner.finalize(plans)
+    assert env[1].read(rt.ENVIRONMENT)[0] is not None
+    assert runner.env.refresh().evidence_failed

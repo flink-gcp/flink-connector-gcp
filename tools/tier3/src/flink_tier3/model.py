@@ -615,6 +615,7 @@ class RunRecord:
     exports: dict = field(default_factory=dict)
     evidence_bytes: int = 0
     bigquery: dict | None = None
+    pubsub: dict | None = None
 
     @classmethod
     def from_dict(cls, value):

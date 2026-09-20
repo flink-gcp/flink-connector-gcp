@@ -46,6 +46,7 @@ from .policy import (
     STATE,
     SYSTEM,
 )
+from .pubsub_lifecycle import require_pubsub_clean
 
 
 def session_resources(approval):
@@ -157,6 +158,7 @@ class Cleanup:
             self.env.admission_open()
         else:
             self.env.assert_owner()
+            require_pubsub_clean(self.env.refresh())
         # ScaleSpec omits zero replicas from its JSON representation.
         if scale["spec"].get("replicas", 0) != replicas:
             patch = [
