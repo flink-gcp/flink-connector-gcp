@@ -79,7 +79,7 @@ The emulator endpoint is a package-private test seam, absent from the deployed C
 
 ### Owned resource operations
 
-[`flink_tier3.pubsub`](../../../tools/tier3/src/flink_tier3/pubsub.py) supplies internal `ResourcePlan` and `Resources` helpers for the later lifecycle controller.
+[`flink_tier3.pubsub`](../../../tools/tier3/src/flink_tier3/pubsub.py) supplies internal `ResourcePlan` and `Resources` helpers for the internal durable lifecycle controller.
 These helpers are not a CLI scenario and do not admit a workload.
 A plan requires a fresh run ID and a caller-generated ownership nonce of 32 lowercase hexadecimal digits.
 The caller supplies the shared authorized HTTP session, GCS `Storage` adapter and a mandatory `before_operation(phase, method, name)` guard; construction performs no authentication or I/O.
@@ -92,7 +92,7 @@ The helper re-reads the matching manifest before every service write and validat
 An ambiguous create stops without retrying or adopting the resource; the retained manifest permits cleanup of matching partial creation.
 Re-running `provision()` against that manifest is refused.
 The retained intent lives outside `_control/runs/`, whose contents block new shared environment locks.
-The later lifecycle must separately maintain its active run control record before provisioning until owned cleanup and final evidence complete; the Pub/Sub intent is not that active-run record.
+The durable controller below maintains separate active run control before provisioning; the retained Pub/Sub manifest is not that active-run record.
 
 | Service setting | Required value |
 | --- | --- |
@@ -178,8 +178,60 @@ An unsupported manifest version is reported explicitly and refused rather than u
 
 Synthetic tests exercise resource and policy request grammar, collisions, manifest replacement, etag conflicts, ambiguous and partial writes, settings drift and repeated cleanup without credentials or service calls.
 A composition test uses the production GCS adapter with a fake client to exercise all five generation-read attempts and the guard's separate adapter-call budget.
-These tests do not establish live API behavior, effective IAM access or cross-actor lifecycle safety.
-The later controller must integrate resource and policy operations with shared admission and cleanup, collect external service and access evidence, and reserve separately approved numeric execution ceilings before starting the relay.
+These resource-helper tests do not establish live API behavior, effective IAM access or deployed cross-actor lifecycle safety.
+Runnable scenario integration in [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) still needs external service/access evidence and separately approved numeric execution ceilings before starting the relay.
+
+`Resources.cleanup_or_confirm_absent()` selects strict owned cleanup or absence confirmation through one additional guarded manifest read.
+A present manifest delegates to `cleanup()` and its ownership checks; an absent manifest permits only six guarded name reads, refuses any existing resource, and never authorizes deletion or adoption.
+Its caller must prove quiescence and budget this manifest read plus the selected path's reads/writes, including the control guard's I/O.
+The durable controller below uses this entry point; the original `cleanup()` still refuses a missing manifest.
+
+### Durable preparation and cleanup
+
+[`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub_lifecycle.py) connects the resource helper to the existing generation-checked active run record.
+It is an internal caller contract for `pubsub-recovery`; the CLI approval parser does not yet accept that scenario.
+The caller validates the full application contract, authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and budget/deadline guard.
+The controller additionally binds the exact approved application digest, namespace, application name and run-ID argument to the resource plan.
+The [IAM apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35504842276) succeeded; subsequent role/binding readback matched the three custom roles and two project bindings, and a local refreshed GCP plan was empty.
+These foundation observations do not establish per-resource data access or a recovery result.
+
+`initialize()` saves immutable resource/application intent in `_control/runs/<run-id>.json` before preparation.
+Only the submitting runner may initialize or prepare.
+`prepare()` claims one attempt through a conditional transition from `initialized` to `preparing`; a competing or restarted runner cannot repeat it, even after a lost response.
+Before the helper writes its resource manifest, the controller records `creation_intent: true` in the active run.
+Successful resource-settings readback and the final explicit-policy readback are retained in that record, outside the workload JVM, before the stage becomes `prepared`.
+The Pub/Sub portion of control is limited to 256 KiB; a failed observation write leaves its partial service work attributable for cleanup, without permitting preparation to resume.
+This is bounded control evidence, not the later output-message evidence stream or proof of effective permissions.
+
+Every helper operation retains its original budget callback and rechecks active intent, environment ownership and the relevant stage; preparation also refuses a shared stop, evidence failure or a run phase outside approved/ready.
+The controller guards its own logical accesses with `(control, GET|UPDATE, active-run-path)` callbacks, including repeated edits after conditional-write conflicts.
+An uncontended update invokes the control guard twice: once before entering the record adapter and once before its edit/write; each conflict retry invokes it again before the next edit/write.
+The callback budget must include each logical operation's lock and active-record reads, writes and retries, as well as callback and credential I/O.
+The helper-only table above excludes these controller operations; it cannot size an integrated run.
+There is no numeric execution policy in this controller.
+
+`cleanup(quiesce)` is available to the runner or independent supervisor.
+It first persists the shared stop and `cleaning` stage, then requires the caller's barrier to return exactly `True` after proving all creators, writers, replacements and their in-flight service calls quiescent.
+The stop flag alone cannot prove that an earlier API request has stopped at the server.
+After the barrier, the controller rechecks ownership and delegates deletion to the strict resource helper.
+If creation intent was never recorded, cleanup leaves any colliding service names untouched because this attempt authorized no resource writes.
+If creation intent was recorded but the resource manifest is absent, cleanup checks all six planned service names with guarded reads and succeeds only when every name is absent.
+This covers a lost creation-intent write response or a crash before the manifest write without reconstructing ownership or deleting anything.
+An existing resource, an uncertain absence read or a replaced manifest blocks cleanup.
+A barrier failure, uncertain ownership, lost deletion response or failed control write retains active run control; cleanup can be retried, and successful retries recheck owned service absence.
+A retry from `cleaned` first returns to `cleaning`, so an uncertain fresh check closes settlement again; a previous absence observation does not override a failed recheck.
+Missing-manifest cases with remaining resources require separate investigation; preparation cannot repair or adopt them.
+
+The controller marks only service cleanup complete; it does not set run success, remove Flink state, shut down the Operator, delete active control or release the environment lock.
+Shared Operator shutdown and final receipt/lock release refuse a present Pub/Sub record unless its stage is `cleaned` and the shared stop is set.
+Final settlement copies the cleaned Pub/Sub control portion, including its intent and retained observations, into `runs/<run-id>/result.json` before deleting active control.
+When either active control or a prior receipt carries Pub/Sub, reuse requires equality with the complete computed result, including the Pub/Sub snapshot, success verdict and plans.
+A receipt invalidated by a concurrent evidence failure remains a conflict on retry; it cannot restore a stale success verdict or release the lock.
+Before deleting active control, Pub/Sub finalization compares its complete current record with the snapshot used for the receipt, then deletes against that observed generation.
+A concurrent cleanup or evidence update retains the record and lock for retry; runs with no Pub/Sub state in either snapshot keep their existing behavior.
+The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
+Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
+Deployed supervisor handoff, message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
 
 ## Payload and restoration
 

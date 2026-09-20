@@ -362,6 +362,32 @@ class Resources:
             observations.append({"name": resource["name"], "policy": policy})
         return observations
 
+    def cleanup_or_confirm_absent(self):
+        """Clean owned resources, or prove absence when the manifest is absent.
+
+        One guarded manifest read selects the path. A present manifest uses
+        strict cleanup with its own ownership reads; a missing manifest permits
+        only six guarded name reads and refuses any remaining resource. Neither
+        path adopts resources. The caller still owns quiescence and budgets.
+        """
+        manifest, generation = self._record("cleanup")
+        if manifest is None and str(generation) == "0":
+            return self._confirm_absent()
+        return self.cleanup()
+
+    def _confirm_absent(self):
+        """Confirm all planned names absent without a manifest or any deletion.
+
+        This read-only check cannot adopt an existing resource. The caller must
+        still prove quiescence and retain exclusive control through settlement.
+        """
+        absent = []
+        for expected in self.plan.subscriptions() + self.plan.topics():
+            if self._call("cleanup", "GET", expected) is not None:
+                raise Failure("Pub/Sub resource exists without confirmed ownership")
+            absent.append(expected["name"])
+        return absent
+
     def cleanup(self):
         """Delete owned subscriptions before topics; retain the intent record.
 
