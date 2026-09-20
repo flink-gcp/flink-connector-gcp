@@ -36,7 +36,12 @@ def result(value):
 
 def documents():
     objects = []
-    for namespace in ("tier3-system", "tier3-smoke", "tier3-cloudtasks"):
+    for namespace in (
+        "tier3-system",
+        "tier3-smoke",
+        "tier3-cloudtasks",
+        "tier3-bigquery",
+    ):
         objects.extend(
             [
                 {
@@ -84,7 +89,7 @@ def documents():
                     "namespace": "tier3-system",
                 },
                 "data": {
-                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks\n"
+                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery\n"
                 },
             },
             {
@@ -327,6 +332,7 @@ def test_bad_chart_never_reaches_helm(monkeypatch, tmp_path, case):
         "watch-all",
         "watch-extra",
         "watch-missing-cloudtasks",
+        "watch-missing-bigquery",
         "watch-duplicate",
         "config-scalar",
         "binding-subject",
@@ -372,9 +378,10 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
     elif case.startswith("watch-"):
         watched = {
             "watch-all": "",
-            "watch-extra": "tier3-smoke,tier3-cloudtasks,default",
-            "watch-missing-cloudtasks": "tier3-smoke",
-            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-cloudtasks",
+            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,default",
+            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery",
+            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks",
+            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-bigquery",
         }[case]
         objects[-2]["data"]["flink-conf.yaml"] = (
             "kubernetes.operator.watched.namespaces: " + watched
@@ -407,6 +414,8 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
         "wrong-binding",
         "cloudtasks-missing",
         "cloudtasks-wrong-binding",
+        "bigquery-missing",
+        "bigquery-wrong-binding",
     ],
 )
 def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
@@ -418,13 +427,22 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
         kind, name = arguments[1:3]
         item = {"metadata": {"name": name}}
         namespace = arguments[4] if kind != "crd" else ""
-        account = "cloudtasks-benchmark" if namespace == "tier3-cloudtasks" else "smoke"
+        account = {
+            "tier3-cloudtasks": "cloudtasks-benchmark",
+            "tier3-bigquery": "bigquery",
+        }.get(namespace, "smoke")
         if (
             case == "cloudtasks-missing"
             and namespace == "tier3-cloudtasks"
             and kind == "serviceaccount"
         ):
             raise RuntimeError("Cloud Tasks ServiceAccount not found")
+        if (
+            case == "bigquery-missing"
+            and namespace == "tier3-bigquery"
+            and kind == "serviceaccount"
+        ):
+            raise RuntimeError("BigQuery ServiceAccount not found")
         if case == "missing" and kind == "serviceaccount":
             raise RuntimeError("ServiceAccount not found")
         if kind == "crd":
@@ -452,6 +470,10 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                     or (
                         case == "cloudtasks-wrong-binding"
                         and namespace == "tier3-cloudtasks"
+                    )
+                    or (
+                        case == "bigquery-wrong-binding"
+                        and namespace == "tier3-bigquery"
                     )
                     else account,
                     "namespace": namespace,
@@ -515,6 +537,33 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                 "tier3-cloudtasks-job",
                 "--namespace",
                 "tier3-cloudtasks",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "serviceaccount",
+                "bigquery",
+                "--namespace",
+                "tier3-bigquery",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "role",
+                "tier3-bigquery-job",
+                "--namespace",
+                "tier3-bigquery",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "rolebinding",
+                "tier3-bigquery-job",
+                "--namespace",
+                "tier3-bigquery",
                 "-o",
                 "json",
             ),
@@ -641,7 +690,7 @@ def test_post_apply_verification_reads_release_and_live_resources(
     monkeypatch.setattr(cluster, "kubectl", kubectl)
     if case == "idle":
         cluster.verify_operator()
-        assert len(calls) == 11
+        assert len(calls) == 13
     else:
         with pytest.raises(RuntimeError):
             cluster.verify_operator()

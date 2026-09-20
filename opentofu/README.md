@@ -208,7 +208,8 @@ The GCP plan should add 19 resources without changing existing resources.
 The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-prerequisites-for-bigquery) precede the bootstrap plan, which imports six objects and adds five job/lifecycle objects.
 The administrator extends the two existing ClusterRoles before that plan; after refresh their rules should already match, with only possible metadata reconciliation.
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
-Keep the common helper and Helm watch set unchanged until that verification proves the runner can read the new namespace.
+The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed with empty refreshed bootstrap and GCP plans; runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
+The common helper now inspects all four namespaces, and the idle Helm watch set adds `tier3-bigquery` after this acceptance.
 Application publication, runtime admission and all paid trials require subsequent changes and separate execution approval.
 
 ### Pub/Sub Tier-3 preparation

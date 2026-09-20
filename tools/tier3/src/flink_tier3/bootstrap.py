@@ -33,8 +33,8 @@ import yaml
 
 ROOT = Path.cwd()
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
-NAMESPACES = ("tier3-system", "tier3-smoke", "tier3-cloudtasks")
-OPERATOR_WATCH_NAMESPACES = {"tier3-smoke", "tier3-cloudtasks"}
+NAMESPACES = ("tier3-system", "tier3-smoke", "tier3-cloudtasks", "tier3-bigquery")
+OPERATOR_WATCH_NAMESPACES = {"tier3-smoke", "tier3-cloudtasks", "tier3-bigquery"}
 MAX_CHART_BYTES = 2 * 1024 * 1024
 OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
 CRDS = tuple(
@@ -57,9 +57,11 @@ OPERATOR_RESOURCES = {
     ("Role", "tier3-system", "flink-operator"),
     ("Role", "tier3-smoke", "flink-operator"),
     ("Role", "tier3-cloudtasks", "flink-operator"),
+    ("Role", "tier3-bigquery", "flink-operator"),
     ("RoleBinding", "tier3-system", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-smoke", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-cloudtasks", "flink-operator-role-binding"),
+    ("RoleBinding", "tier3-bigquery", "flink-operator-role-binding"),
 }
 
 
@@ -86,7 +88,7 @@ def operator_documents(source, expected_image):
         or set(identities) != OPERATOR_RESOURCES
     ):
         raise ValueError(
-            "Operator chart must render exactly the nine owned idle resources"
+            f"Operator chart must render exactly the {len(OPERATOR_RESOURCES)} owned idle resources"
         )
     for item in documents:
         expected_api = {
@@ -141,7 +143,8 @@ def operator_documents(source, expected_image):
                 for config in configurations
             ):
                 raise ValueError(
-                    "Operator configuration must watch only tier3-smoke and tier3-cloudtasks"
+                    "Operator configuration must watch only tier3-smoke, "
+                    "tier3-cloudtasks and tier3-bigquery"
                 )
         if item["kind"] == "RoleBinding" and (
             item["roleRef"]
@@ -219,7 +222,9 @@ def prepare_operator_chart(root, *, download=True):
     ).stdout
     documents = operator_documents(rendered, repository + "@" + image["digest"])
     (cache / "operator-rendered.yaml").write_text(rendered)
-    print("Verified Operator chart " + pin["version"] + " and nine idle resources")
+    print(
+        f"Verified Operator chart {pin['version']} and {len(documents)} idle resources"
+    )
     return pin, documents
 
 
@@ -519,6 +524,7 @@ class Cluster:
         for namespace, account, role in (
             ("tier3-smoke", "smoke", "tier3-smoke-job"),
             ("tier3-cloudtasks", "cloudtasks-benchmark", "tier3-cloudtasks-job"),
+            ("tier3-bigquery", "bigquery", "tier3-bigquery-job"),
         ):
             for kind, name in (
                 ("serviceaccount", account),
@@ -554,7 +560,7 @@ class Cluster:
                         "Application RoleBinding does not bind its bootstrap identity"
                     )
         print(
-            "Verified four Established CRDs and both persistent application identities"
+            "Verified four Established CRDs and all three persistent application identities"
         )
 
     def verify_operator(self):
@@ -626,7 +632,8 @@ class Cluster:
                     "Live Operator Deployment is not idle at the pinned version"
                 )
         print(
-            "Verified deployed Operator release, nine owned resources, zero Pods/PVCs and zero replicas"
+            f"Verified deployed Operator release, {len(OPERATOR_RESOURCES)} owned resources, "
+            "zero Pods/PVCs and zero replicas"
         )
 
     def ci(self, mode):

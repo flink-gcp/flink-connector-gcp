@@ -202,7 +202,7 @@ It cannot declare the bootstrap resource kinds, which prevents accidental owners
 
 The bootstrap runbook documents credentials, RBAC, initial administrator permission grants, adoption of existing resources and CI plan/apply.
 The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
-The Operator namespace is `tier3-system`; it watches `tier3-smoke` and `tier3-cloudtasks`.
-Both application namespaces retain zero Pod/PVC quotas until separately approved admission.
+The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks` and `tier3-bigquery`.
+All three application namespaces retain zero Pod/PVC quotas until separately approved admission.
 Cloud Tasks workload admission and performance measurements remain later connector work.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.

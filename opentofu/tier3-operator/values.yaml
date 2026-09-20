@@ -26,6 +26,7 @@ operatorPod:
 watchNamespaces:
   - tier3-smoke
   - tier3-cloudtasks
+  - tier3-bigquery
 webhook:
   create: false
 image:
