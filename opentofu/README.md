@@ -209,7 +209,7 @@ The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-p
 The administrator extends the two existing ClusterRoles before that plan; after refresh their rules should already match, with only possible metadata reconciliation.
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
 The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed with empty refreshed bootstrap and GCP plans; runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
-The common helper now inspects all four namespaces, and the idle Helm watch set adds `tier3-bigquery` after this acceptance.
+That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extends the current scope.
 Application publication, runtime admission and all paid trials require subsequent changes and separate execution approval.
 
 ### Pub/Sub Tier-3 preparation
@@ -233,7 +233,8 @@ After apply, inspect the bucket policy and IAM, confirm the apply result and an 
 If the apply fails, review the fresh plan in the recovery draft PR opened by tfaction rather than replaying the stale saved plan.
 
 The [Pub/Sub bootstrap stage](tier3-bootstrap/README.md#pubsub-recovery-foundation) adds the namespace/KSA, installer and job RBAC, lifecycle access and zero idle quotas after the GCP foundation is verified.
-The Operator watch extension follows only after bootstrap apply, idle inventory, runner reads and an empty refreshed plan are verified.
+The [bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan; separate reads verified the Pub/Sub identity, observed zero quotas, empty inventory and runner access.
+The common helper now inspects all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) adds `tier3-pubsub` to its watch set.
 Pub/Sub topic/subscription grants are deliberately deferred until the concrete application and run-owned resource design specifies the required operations.
 No Pub/Sub data, resource-administration or service-account-key permissions are introduced here.
 Application/image publication, run admission, fault injection, ownership-aware service cleanup and separately approved numeric execution ceilings remain later steps.

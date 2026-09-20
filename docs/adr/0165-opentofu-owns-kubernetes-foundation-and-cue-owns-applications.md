@@ -33,7 +33,7 @@ limitations under the License.
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
 - Updated: 2026-09-20 (idle BigQuery namespace, data containers, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
-- Updated: 2026-09-20 (idle Pub/Sub namespace and workload identity)
+- Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -383,6 +383,13 @@ CI adopts those prerequisites and creates workload/lifecycle identities through 
 Keep the common preflight and Helm watch set unchanged until successful apply, idle inventory, runner reads and an empty refreshed plan establish the new foundation.
 This preserves recovery of an interrupted apply before the new lifecycle binding is available.
 Pub/Sub service grants, application delivery and separately approved recovery execution remain subsequent stages of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+
+The [Pub/Sub bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded, imported the six prerequisites and created five workload/lifecycle objects, then produced an empty refreshed plan.
+Separate reads confirmed the namespace identity, job KSA/RBAC, observed zero Pod/PVC quotas and empty workload inventory; runner-impersonated reads verified its quota and inventory access.
+These observations permit the common helper to include the fifth namespace and the idle Operator to watch Pub/Sub alongside smoke, Cloud Tasks and BigQuery.
+Helm adds only the Pub/Sub Operator Role and RoleBinding, bringing its rendered inventory to thirteen resources while retaining zero replicas and the existing image/chart pins.
+The runner and supervisor retain their trusted Operator-administrator role, now reaching Pub/Sub namespace Secrets and Pod creation through the Operator KSA.
+Application admission and service permissions remain separate from this idle scope extension.
 
 ### Ownership boundaries
 

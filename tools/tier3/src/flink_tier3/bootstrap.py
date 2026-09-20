@@ -33,8 +33,19 @@ import yaml
 
 ROOT = Path.cwd()
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
-NAMESPACES = ("tier3-system", "tier3-smoke", "tier3-cloudtasks", "tier3-bigquery")
-OPERATOR_WATCH_NAMESPACES = {"tier3-smoke", "tier3-cloudtasks", "tier3-bigquery"}
+NAMESPACES = (
+    "tier3-system",
+    "tier3-smoke",
+    "tier3-cloudtasks",
+    "tier3-bigquery",
+    "tier3-pubsub",
+)
+OPERATOR_WATCH_NAMESPACES = {
+    "tier3-smoke",
+    "tier3-cloudtasks",
+    "tier3-bigquery",
+    "tier3-pubsub",
+}
 MAX_CHART_BYTES = 2 * 1024 * 1024
 OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
 CRDS = tuple(
@@ -58,10 +69,12 @@ OPERATOR_RESOURCES = {
     ("Role", "tier3-smoke", "flink-operator"),
     ("Role", "tier3-cloudtasks", "flink-operator"),
     ("Role", "tier3-bigquery", "flink-operator"),
+    ("Role", "tier3-pubsub", "flink-operator"),
     ("RoleBinding", "tier3-system", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-smoke", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-cloudtasks", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-bigquery", "flink-operator-role-binding"),
+    ("RoleBinding", "tier3-pubsub", "flink-operator-role-binding"),
 }
 
 
@@ -143,8 +156,8 @@ def operator_documents(source, expected_image):
                 for config in configurations
             ):
                 raise ValueError(
-                    "Operator configuration must watch only tier3-smoke, "
-                    "tier3-cloudtasks and tier3-bigquery"
+                    "Operator configuration must watch only "
+                    + ", ".join(sorted(OPERATOR_WATCH_NAMESPACES))
                 )
         if item["kind"] == "RoleBinding" and (
             item["roleRef"]
@@ -525,6 +538,7 @@ class Cluster:
             ("tier3-smoke", "smoke", "tier3-smoke-job"),
             ("tier3-cloudtasks", "cloudtasks-benchmark", "tier3-cloudtasks-job"),
             ("tier3-bigquery", "bigquery", "tier3-bigquery-job"),
+            ("tier3-pubsub", "pubsub", "tier3-pubsub-job"),
         ):
             for kind, name in (
                 ("serviceaccount", account),
@@ -560,7 +574,7 @@ class Cluster:
                         "Application RoleBinding does not bind its bootstrap identity"
                     )
         print(
-            "Verified four Established CRDs and all three persistent application identities"
+            "Verified four Established CRDs and all persistent application identities"
         )
 
     def verify_operator(self):
