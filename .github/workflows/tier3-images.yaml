@@ -75,6 +75,14 @@ jobs:
       - name: Verify the smoke application payload
         run: just tier3-smoke-verify
 
+      - name: Verify the BigQuery recovery payload
+        run: just tier3-bigquery-verify
+
+      - name: Read the reviewed BigQuery base
+        id: bigquery_base
+        run: |
+          printf 'image=%s/flink@%s\n' "$GAR" "${FLINK_SOURCE##*@}" >> "$GITHUB_OUTPUT"
+
       - name: Select the reviewed Cloud Tasks runtime
         id: cloudtasks_base
         env:
@@ -181,11 +189,31 @@ jobs:
           tags: ${{ steps.cloudtasks_meta.outputs.tags }}
           labels: ${{ steps.cloudtasks_meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: bigquery_meta
+        with:
+          images: ${{ env.GAR }}/bigquery-recovery
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        id: bigquery_build
+        with:
+          context: kubernetes/apps/bigquery
+          platforms: linux/amd64
+          build-args: |
+            FLINK_IMAGE=${{ steps.bigquery_base.outputs.image }}
+            FLINK_VERSION=2.2.1
+          push: true
+          tags: ${{ steps.bigquery_meta.outputs.tags }}
+          labels: ${{ steps.bigquery_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
           SMOKE_DIGEST: ${{ steps.smoke_build.outputs.digest }}
           CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
+          BIGQUERY_DIGEST: ${{ steps.bigquery_build.outputs.digest }}
+          BIGQUERY_BASE: ${{ steps.bigquery_base.outputs.image }}
           CLOUDTASKS_BASE: ${{ steps.cloudtasks_base.outputs.image }}
           CLOUDTASKS_PACKAGE: ${{ steps.cloudtasks_base.outputs.package }}
         run: |
@@ -198,4 +226,6 @@ jobs:
             printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST"
             printf '%s\n' "$CLOUDTASKS_BASE"
             printf '%s/%s@%s\n' "$GAR" "$CLOUDTASKS_PACKAGE" "$CLOUDTASKS_DIGEST"
+            printf '%s\n' "$BIGQUERY_BASE"
+            printf '%s/bigquery-recovery@%s\n' "$GAR" "$BIGQUERY_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"

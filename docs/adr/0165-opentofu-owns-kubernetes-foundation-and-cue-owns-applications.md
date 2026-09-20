@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set and finite recovery application)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application and publication wiring)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
@@ -372,7 +372,10 @@ Emulator tests cover production ALO writer wiring and routing with one sequentia
 Concurrent appends caused SQLite lock errors and repeated RPC retries in CI; parallel graph coverage therefore uses the local capture sink.
 The pinned emulator assigns buffered offsets across streams and can hang on multi-stream flush, so this application requires real-service EO validation; the connector retains its deterministic buffered-service tests.
 Neither establishes deployed exactly-once recovery or the conditional GCS grant's checkpoint/restore behavior.
-Image publication, bounded admission, query oracles and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
+The manual image workflow verifies and packages this application as `bigquery-recovery` on the fixed Flink 2.2.1 AMD64 base, independently of the Cloud Tasks runtime selection.
+Its restricted Docker context carries only the Dockerfile and packaged JARs; the application CI lane builds that image from the same public base without pushing it.
+The authorized publication path uses the existing GAR-scoped publisher identity and includes the image and base digests in its summary.
+The first publication dispatch, digest adoption, bounded admission, appender observations, query oracles and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
 
