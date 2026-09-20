@@ -13,7 +13,7 @@
 # limitations under the License.
 
 locals {
-  namespaces = toset(["tier3-system", "tier3-smoke", "tier3-cloudtasks"])
+  namespaces = toset(["tier3-system", "tier3-smoke", "tier3-cloudtasks", "tier3-bigquery"])
   labels = {
     "app.kubernetes.io/part-of"    = "flink-tier3"
     "app.kubernetes.io/managed-by" = "opentofu"

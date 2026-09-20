@@ -25,7 +25,7 @@ The existing GCP root retains GKE, GAR, GSA and IAM ownership; the separate [Ope
 
 ## Resources and identities
 
-This root owns `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, their idle quotas, installer RBAC, the four Flink CRDs and the persistent smoke and Cloud Tasks job identities.
+This root owns `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, their idle quotas, installer RBAC, the four Flink CRDs and the persistent smoke, Cloud Tasks and BigQuery job identities.
 The Helm release owns its Operator Deployment, configuration, ServiceAccount, Roles/RoleBindings and release Secrets.
 Its chart-managed job identity/RBAC, namespace creation and CRD installation are disabled.
 No resource in this root starts a Pod or allocates a PVC.
@@ -33,14 +33,15 @@ The [lifecycle foundation](#lifecycle-foundation) also owns the dedicated superv
 
 | Identity | Added Kubernetes permissions |
 | --- | --- |
-| `opentofu-plan` | Read all three namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
-| `opentofu` | Manage bootstrap and Helm objects in the three namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
+| `opentofu-plan` | Read all four namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
+| `opentofu` | Manage bootstrap and Helm objects in the four namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
 | `tier3-smoke/smoke` | The chart's job permissions for Pods, ConfigMaps and Deployments in `tier3-smoke` |
+| `tier3-bigquery/bigquery` | The same job permissions in `tier3-bigquery`; no permissions in `tier3-system` |
 | `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads |
 
 The installer holds the explicit chart permission inventory so Kubernetes permits creating and binding its Roles without unrestricted `bind`, `escalate` or `impersonate` grants.
 The existing GCP IAM permissions remain effective: additive Kubernetes RBAC does not narrow them.
-The apply identity can manage quotas in the three namespaces and the declared cluster-scoped foundation.
+The apply identity can manage quotas in the four namespaces and the declared cluster-scoped foundation.
 Kubernetes RBAC cannot restrict `create` by resource name: create grants cover those four resource kinds, while get/update/patch grants on existing cluster-scoped objects name the owned resources.
 No cluster-scoped delete, unrestricted bind/escalate or workload permissions in other namespaces are added.
 Expanding the owned namespace/CRD authorization boundary may require an administrator to grant the new permissions first; ordinary changes within it run entirely through CI.
@@ -49,7 +50,7 @@ Plan/apply identities are the existing GitHub WIF service accounts, not applicat
 The smoke KSA is annotated for `tier3-smoke@flink-gcp.iam.gserviceaccount.com`.
 The GCP root owns that GSA, its bucket-scoped object grant and the impersonation trust for this KSA; the [application runbook](../../kubernetes/apps/smoke/README.md) describes the storage and runtime boundary.
 
-All three namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclaims: "0"`.
+All four namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclaims: "0"`.
 A quota does not terminate existing Pods, and scaling down the Operator does not stop Flink jobs.
 Paid workload admission uses the [bounded lifecycle](../../kubernetes/lifecycle/README.md) and needs separate execution approval with concrete limits and stop conditions.
 
@@ -72,6 +73,9 @@ Application publication, Cloud Tasks admission, queue creation and performance m
 
 ### Administrator prerequisites for the namespace extension
 
+This procedure records the completed Cloud Tasks extension.
+For the next extension, use [the BigQuery prerequisites](#administrator-prerequisites-for-bigquery); do not replay the older namespace list below.
+
 CI cannot create or delegate permissions its apply identity does not hold.
 Before the first PR plan, an administrator establishes the following reviewed prerequisites while the environment is idle:
 
@@ -92,6 +96,28 @@ For the initial namespace foundation change, retain the common helper's existing
 A cancelled apply can leave the environment lock held before the runner's new lifecycle RoleBinding exists.
 Recovery uses that helper as the runner; requiring reads in the new namespace at that point would prevent recovery from releasing the lock.
 The successful apply and verified runner permissions above permit the subsequent three-namespace inspection.
+
+### Administrator prerequisites for BigQuery
+
+The [BigQuery foundation](../README.md#bigquery-trial-foundation) adds `tier3-bigquery` without starting a workload or changing the Operator watch set.
+Before this extension's first PR plan, prepare and review the concrete manifests against the following sources and the current live inventory:
+
+1. Create the `tier3-bigquery` Namespace and its `tier3-idle` ResourceQuota from `namespaces.tf`, with both Pod and PVC ceilings zero.
+2. Create its `tier3-helm-plan` and `tier3-helm-apply` Roles and User RoleBindings, matching the two `tier3-bigquery-*` entries in `access.tf` exactly.
+3. Extend only the namespace `resourceNames` in the existing `tier3-bootstrap-reader` and `tier3-bootstrap-writer` ClusterRoles to `["tier3-bigquery", "tier3-cloudtasks", "tier3-smoke", "tier3-system"]`.
+   Preserve their UIDs, other rules and bindings; check UID and resourceVersion when applying each patch.
+4. Verify zero quotas, an empty namespace, allowed and denied installer operations, and unchanged identities of the existing foundation objects.
+
+Stop on a colliding prerequisite instead of adopting or overwriting an unverified object.
+Obtain approval for these concrete administrator changes before applying them.
+Create neither the BigQuery KSA/job RBAC nor its lifecycle RoleBinding in this step, and do not apply the OpenTofu root locally.
+The import loops adopt the six prerequisites; the reviewed CI plan then creates the KSA, job Role/RoleBinding and lifecycle Role/RoleBinding.
+The two ClusterRoles may have metadata reconciliation but must not be replaced.
+
+After the merge-triggered apply, require an empty refreshed plan and separately verify that `tier3-bigquery` has zero Pod/PVC quotas, no workload objects and the expected job identity.
+Verify the runner's access to its quota and workload inventory through the applied lifecycle RoleBinding.
+Only a subsequent change may add this namespace to the common helper's preflight or Helm watch set.
+This ordering preserves recovery of an interrupted foundation apply: the helper must not require namespace reads before those reads have been granted.
 
 ## PR plan and merge apply
 
@@ -226,15 +252,15 @@ The recovery workflow must separately validate its triggering workflow and the s
 The supervisor trust selects only `tier3-system/tier3-supervisor` through Workload Identity Federation for GKE.
 Neither identity reuses the installer, image publisher or smoke application account.
 
-The bootstrap root creates the supervisor KSA in `tier3-system`, annotates it for its GSA and binds both runtime identities to `tier3-lifecycle` Roles in all three namespaces.
+The bootstrap root creates the supervisor KSA in `tier3-system`, annotates it for its GSA and binds both runtime identities to `tier3-lifecycle` Roles in all four namespaces.
 The supervisor Job and source ConfigMap also belong in `tier3-system`.
 The smoke KSA can create Pods and Deployments only in `tier3-smoke`, so it cannot select the supervisor KSA through a workload it creates.
 In `tier3-smoke`, the lifecycle Roles allow FlinkDeployment admission/finalizer cleanup, workload deletion and bounded observation through Pod logs and the Service proxy.
 In `tier3-system`, writes cover supervisor Jobs/ConfigMaps, deletion of Pods, scale changes on `flink-kubernetes-operator` and updates to `tier3-idle`.
 The runtime must verify ownership before changing or deleting a Job or ConfigMap, including the chart-owned Operator configuration in that namespace.
-Quota writes in both application namespaces also name only `tier3-idle`.
+Quota writes in all three application namespaces also name only `tier3-idle`.
 Dynamic Pod names cannot be constrained to a run using RBAC: the runtime must check UID and ownership before deletion.
-The shared bootstrap reader binding supplies read access to the three namespace identities, the four CRDs and the named bootstrap RBAC objects.
+The shared bootstrap reader binding supplies read access to the four namespace identities, the four CRDs and the named bootstrap RBAC objects.
 The lifecycle Roles do not directly grant Secret access, identity/RBAC writes, namespace/CRD writes, or unrestricted bind/escalate/impersonate.
 They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke` and `tier3-cloudtasks`, including Secret access and Pod creation.
 Treat the runner and supervisor as trusted Operator administrators; the direct Role inventory is not a boundary on their reachable permissions.

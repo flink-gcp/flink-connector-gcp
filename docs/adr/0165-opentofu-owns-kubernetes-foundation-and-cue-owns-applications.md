@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0165: OpenTofu owns Kubernetes foundation and CUE owns applications
 
 - Status: Accepted
-- Date: 2026-09-11
+- Date: 2026-09-11; revised by [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312) (2026-09-20)
 - Updated: 2026-09-12 (CI ownership, initial CRD apply recovery and idle Helm root)
 - Updated: 2026-09-13 (digest-pinned GAR publication and seven-day image expiry)
 - Updated: 2026-09-14 (generic stateful smoke artifact and workload storage identity)
@@ -31,7 +31,8 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)
+- Updated: 2026-09-20 (idle BigQuery namespace, data containers and workload identity)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -322,6 +323,28 @@ The environment lock's scan of `runs/` moved from listing every object to a deli
 Declined: exporting rows through the supervisor's own memory (parts stream through gzip and are hashed on the way; nothing is buffered whole) and a separate analysis dependency (the analysis module imports no cloud client and the command needs no checkout, although the installed package's own imports still load them).
 
 Declined: extending the 60-minute smoke window to sessions (the workflow timeout rises to six hours only for this scenario, and the session's serial budget is proven to fit inside it); pinning a placeholder application digest; letting the connector or the supervisor create queues (only the runner may, and only the approved name).
+
+### BigQuery namespace and data foundation
+
+For [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), retain Flink 2.2.1 and Operator 1.15.0 for the Storage Write trials.
+The GCP root owns a dedicated persistent dataset with a 24-hour table expiration, a one-day run-state bucket, and the `tier3-bigquery` GSA trusted by `tier3-bigquery/bigquery`.
+Trials own their temporary tables and state, and must delete them explicitly; expiry is a fallback.
+The dataset remains empty between trials, is protected from destruction, and cannot automatically delete its contents during destruction.
+
+Use dataset-scoped custom roles rather than project-wide BigQuery data roles.
+The writer can read table metadata and append rows, but cannot create tables or query their contents.
+The runner pre-creates matching tables and both lifecycle actors can inspect, query and delete them; the supervisor cannot create tables.
+Both lifecycle actors receive project-wide query create/get/update permissions so recovery can inspect and cancel the other actor's outstanding query.
+Those permissions reach other jobs in the project: exact query-ID ownership and query budgets belong to the runtime, not to these IAM bindings.
+State-bucket listing and reads cover the whole bucket, and Object User covers all `runs/` objects.
+Neither dataset nor storage IAM provides per-run isolation.
+
+Bootstrap adds the `tier3-bigquery` namespace, zero quotas, installer access, workload KSA/job RBAC and the existing application lifecycle Role.
+An administrator first establishes the six importable namespace/quota/installer objects and extends the existing named namespace rules, preserving existing identities.
+The [BigQuery bootstrap procedure](../../opentofu/tier3-bootstrap/README.md#administrator-prerequisites-for-bigquery) requires review and approval of the concrete mutations before this step.
+CI then imports those prerequisites and applies the remaining foundation through the ordinary saved-plan workflow.
+Keep the common preflight and Helm watch set unchanged until apply, idle inventory, runner reads and empty refreshed plans have been verified.
+Application publication and bounded execution follow separately; these persistent grants provide no deployed BigQuery result and authorize no paid trial.
 
 ### Ownership boundaries
 
