@@ -224,11 +224,47 @@ A substituted or edited aggregate can pass this offline check.
 In particular, generating and assessing an EO trial with `--mode ALO` can permit duplicates when that input count also fits the ALO limit.
 Rows contain no mode field, so this check cannot discover that mistake; the executor must take the mode from the approved application configuration, and the report must be interpreted with its recorded mode.
 
-The later executor must verify table ownership/schema and the completed query job, bind its exact SQL and all result pages to the approved trial, and retain query statistics and immutable evidence.
-It must enforce query deadlines, maximum bytes billed and a cumulative retry/visibility budget before submitting anything, and run the final check after the workload has stopped writing.
+The [resource adapter](#resource-adapter) supplies table ownership/schema checks and binds a completed query job's SQL and all result pages to a trial.
+The later executor must persist its intent and query statistics as immutable evidence, enforce the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
 The local tests execute the generated SQL unchanged on synthetic SQLite tables to exercise row, NULL, empty-table and duplicate semantics.
 Their SQLite build must provide the `MOD` math function.
 That coverage does not establish BigQuery query acceptance or streaming visibility; an authorized service run remains an acceptance gate.
+
+### Resource adapter
+
+[`flink_tier3.bigquery_resources`](../../../tools/tier3/src/flink_tier3/bigquery_resources.py) provides internal REST v2 table and query operations for the future executor.
+It has no CLI route and does not extend lifecycle admission.
+Its synthetic HTTP tests cover request construction, lost responses, ownership conflicts, cleanup and result pagination; real-service acceptance remains pending.
+
+The caller must persist one `ResourcePlan` before any write: the approved `Trial`, a fresh 32-character hexadecimal nonce, an absolute table expiration, the number of query slots, maximum bytes billed per slot and job timeout.
+These values have no operational defaults or implied approval.
+Reuse that intent unchanged across restarts, reserve each slot durably before submission and retain the table creation receipts and returned query evidence.
+The plan permits only the trial's 10 or 50 table names in the fixed dataset and query slots numbered from zero through `query_slots - 1` in `us-central1`.
+Slot count times maximum bytes billed is the planned query-byte ceiling when all actors use that unchanged plan and the same submitting identity; approval must also account for storage, writes, cluster resources and other costs.
+
+Table creation sets the application's four nullable fields, explicit expiration within the next 24 hours, and labels binding run ID, nonce and the complete trial identity.
+A matching existing table can reconcile a lost create response; a same-name table with different ownership, schema or expiration is refused.
+This metadata check does not prove emptiness: admission still requires exclusive access, absence checks and a quiescent data check because streaming metadata can lag.
+Deletion requires a matching receipt and a fresh read with the same creation timestamp.
+The [documented `tables.delete` API](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/tables/delete) exposes no generation precondition, so this read and delete are not atomic.
+Before cleanup, the executor must stop and fence all creators/writers and hold exclusive lifecycle access through deletion; an external actor replacing a table between those calls remains outside that guarantee.
+Missing ownership evidence refuses deletion, and expiration is only a fallback.
+
+Each query slot has a deterministic job ID that does not change after a timeout or restart.
+Submission checks an existing job or reconciles a create conflict against the exact generated SQL, identity labels, region, byte ceiling, timeout and disabled legacy SQL/query cache.
+There are no automatic retries, fresh retry IDs or polling loops in the adapter.
+A new visibility observation must consume another durably reserved slot; reusing a slot reads the same job's result.
+The [REST job configuration](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfiguration) bounds billed query bytes, but `jobTimeoutMs` is a best-effort service cancellation request.
+The adapter checks the caller's absolute deadline before requests and between streamed response chunks, caps each response at 1 MiB and bounds request timeouts by the remaining time.
+These checks do not establish a hard wall-clock stop or cancel an already submitted job.
+Cleanup can request cancellation only after validating that slot's job, and must poll its status separately until `DONE` before treating cancellation as complete.
+
+Result collection requires a successful `DONE` job and billed-byte statistics within its limit.
+It checks every page's job reference, completion, total row count and scalar schema, follows page tokens with a destination-count-plus-one page ceiling, and refuses repeated tokens, missing/duplicate destinations and aggregates over 64 KiB.
+It flattens the returned `f`/`v` cells using the schema, runs the offline oracle, and returns the full job metadata/statistics, rows and `scope=query-result` report for the caller to persist.
+It does not establish checkpoint provenance, table quiescence or a deployed recovery verdict.
+Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
+Supervisor handoff, immutable evidence storage, shared deadlines and final idle verification remain executor work.
 
 The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
