@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application and publication wiring)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring and appender observations)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
@@ -376,7 +376,16 @@ Neither establishes deployed exactly-once recovery or the conditional GCS grant'
 The manual image workflow verifies and packages this application as `bigquery-recovery` on the fixed Flink 2.2.1 AMD64 base, independently of the Cloud Tasks runtime selection.
 Its restricted Docker context carries only the Dockerfile and packaged JARs; the application CI lane builds that image from the same public base without pushing it.
 The authorized publication path uses the existing GAR-scoped publisher identity and includes the image and base digests in its summary.
-The first publication dispatch, digest adoption, bounded admission, appender observations, query oracles and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
+The [first application publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`; its GAR tag and digest were verified before the appender observations below were added.
+The application now observes appender creation, append invocation and close through two protected factory hooks on the internal storage sinks.
+Create the observer per new or restored writer; preserve the production writer, processing-time service, options, retry logic, state serializers, topology and committer.
+The buffered hook decorates writer services only; the committer retains its original factory.
+This keeps observation code out of the connector's metric inventories and avoids copying writer construction and failure-handler cleanup into the application.
+Log writer incarnation, subtask/attempt, local appender identity, stream, rows, serialized `ProtoRows` bytes, offset, hand-off timing and synchronous outcome without retaining payloads or futures.
+Return the original future with no callbacks: observed invocations include connector retries, but neither count SDK-internal attempts nor prove server acknowledgement or query visibility.
+Observation output is best-effort; sequence gaps and recorded output failures are evidence limits, and abrupt termination can lose the tail without a final marker.
+Account for synchronous logging overhead in the deployed characterization rather than treating these observations as a capacity measurement.
+Updated image publication, digest adoption, bounded admission, query oracles and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
 

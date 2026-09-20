@@ -113,7 +113,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T>, BigQue
             // task-thread-only state.
             return new BigQueryDefaultStreamWriter<>(
                     config,
-                    createRowAppenderFactory(),
+                    createRowAppenderFactory(context),
                     createTableAdmin(),
                     context.metricGroup(),
                     options,
@@ -131,6 +131,17 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T>, BigQue
             Closers.closeAllSuppressing(e, config.getFailureHandler()::close);
             throw e;
         }
+    }
+
+    /**
+     * Creates this writer's appender factory. Internal applications may decorate it to observe
+     * appender calls while retaining the production writer, options and processing-time service.
+     *
+     * @param context this writer's runtime context
+     * @return the runtime appender factory
+     */
+    protected RowAppenderFactory createRowAppenderFactory(WriterInitContext context) {
+        return createRowAppenderFactory();
     }
 
     /** Returns the runtime appender factory wired from this sink's configuration. */

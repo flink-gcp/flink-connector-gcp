@@ -206,7 +206,7 @@ public class BigQueryBufferedStreamSink<T>
             return new BigQueryBufferedStreamWriter<>(
                     config,
                     options,
-                    serviceFactory,
+                    createWriterServiceFactory(context),
                     tableAdminFactory.get(),
                     context.metricGroup(),
                     context.getTaskInfo().getIndexOfThisSubtask(),
@@ -226,6 +226,17 @@ public class BigQueryBufferedStreamSink<T>
             Closers.closeAllSuppressing(e, config.getFailureHandler()::close);
             throw e;
         }
+    }
+
+    /**
+     * Creates the service factory for a new or restored writer. Internal applications may decorate
+     * writer-side appender calls; committers continue using the original service factory.
+     *
+     * @param context this writer's runtime context
+     * @return the writer's runtime service factory
+     */
+    protected BufferedStreamServiceFactory createWriterServiceFactory(WriterInitContext context) {
+        return serviceFactory;
     }
 
     @Override

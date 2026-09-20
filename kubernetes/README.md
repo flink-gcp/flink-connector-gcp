@@ -209,7 +209,8 @@ Cloud Tasks workload admission and performance measurements remain later connect
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
 
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
-Its local tests cover input restoration and emulator sink wiring; BigQuery lifecycle admission, image publication and deployed trials remain subsequent work.
+Its tests cover input restoration, emulator sink wiring and appender observations.
+The first image publication predates the appender observations; updated publication, BigQuery lifecycle admission and deployed trials remain subsequent work.
 
 ## Pub/Sub recovery application
 
