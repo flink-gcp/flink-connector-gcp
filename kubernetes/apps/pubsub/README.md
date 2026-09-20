@@ -231,7 +231,7 @@ Before deleting active control, Pub/Sub finalization compares its complete curre
 A concurrent cleanup or evidence update retains the record and lock for retry; runs with no Pub/Sub state in either snapshot keep their existing behavior.
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
-Deployed supervisor handoff, message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
+Deployed supervisor handoff, integrated message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
 
 ## Input publication and output collection
 
@@ -242,7 +242,8 @@ The guard must verify prepared resources and effective access, the active run an
 A storage `PUT` callback denotes a create-only logical upload (GCS HTTP `POST`); it includes the adapter's complete request/time budget, and guard and credential I/O require additional accounting.
 The guard receives phase `publish` for input intent, publication and response storage, `collect` for output intent, pull and response/observation storage, and `acknowledge` for the ACK request and receipt.
 Method `PUT` always denotes storage, while `POST` always denotes a Pub/Sub data request in this helper.
-These helpers do not yet connect the CLI or implement durable aggregate counters, actor handoff or the cleanup quiescence barrier.
+Use the shared reservation wrapper below when composing these helpers with prepared run control.
+Neither layer connects the CLI, hands off actors or implements the cleanup quiescence barrier.
 
 The runner calls `publish(input_index, start, count)` for one interval of at most 100 logical inputs on one of the two planned input topics.
 It stores the exact request and run/nonce/domain binding in `runs/<run-id>/pubsub/messages/<nonce>/input/<index>/<start>-<count>/intent.json` with generation-match zero before publishing.
@@ -276,6 +277,49 @@ Reserve storage for both the response and the TSV representation, including JSON
 The shared 20-second HTTP timeout applies to transport waits, not total trial elapsed time; the response byte cap does not bound service billing or an integrated trial's storage and request counts.
 Before cleanup, the caller must stop and fence both actors and prove their in-flight requests quiescent, even if a helper has returned a timeout.
 Synthetic tests establish request/evidence ordering and refusal behavior; they do not establish effective IAM access, service ACK behavior or deployed recovery acceptance.
+
+## Shared traffic reservations
+
+[`PubSubTraffic`](../../../tools/tier3/src/flink_tier3/pubsub_traffic.py) composes `Messages` with the prepared `PubSubLifecycle` control record.
+The submitting runner supplies explicit `TrafficLimits` and calls `initialize()` while the run is still `APPROVED` or `READY`, before any data helper call.
+Initialization binds the immutable limits and the application's exact `--records-per-subscription=N` domain to the existing application digest and resource intent.
+Both actors must use this wrapper from their first data operation; it cannot account for earlier evidence or direct calls to `Messages`.
+A restarted wrapper requires the same binding and continues the durable counters; initialization cannot reset them.
+
+Each reservation uses the active record's generation-checked update, re-reading ownership, run state, deadlines and counters on a conflict.
+The limits below are positive integers with no defaults; the maximum accepted values constrain this internal protocol and do not authorize a trial.
+
+| Limit | Reserved amount | Maximum accepted value |
+| --- | --- | --- |
+| `publish_calls` | One per admitted input batch | 20,000 |
+| `pull_calls` | One per admitted output batch | 2,000 |
+| `input_messages` | Requested input batch size, including repeated or overlapping intervals | 20,000 |
+| `input_bytes` | Exact UTF-8 input payload bytes, excluding Base64, request overhead and service billing minimums | 2,560,000 |
+| `output_messages` | Requested pull count, even for an empty, short or ambiguous response | 200,000 |
+| `pubsub_requests` | One before every publish, pull or acknowledge POST | 30,000 |
+| `evidence_bytes` | Exact serialized JSON bytes before every attempted message-evidence upload | 67,108,864 |
+
+Reservations are never refunded after an ambiguous operation or failed upload.
+A lost reservation response sends no dependent operation but may have consumed the durable budget.
+A failed evidence reservation or upload latches local evidence failure and records the shared failure flag through guarded control, refusing subsequent batches from either actor.
+If that failure cannot be recorded, the wrapper raises an explicit restart-barrier error; the caller must stop both actors independently before retrying or restarting, because another process cannot observe an unpersisted failure.
+A retry with an existing intent can consume a new batch and evidence reservation before the create-only collision refuses its service call.
+That collision also latches shared evidence failure and stops further admission by either actor; the wrapper treats attempted evidence replacement as a run failure.
+Message evidence uses the common byte counter for both actors, including response JSON, observations and ACK receipts; active control, manifests and other trial evidence require additional accounting.
+Cleanup preserves the traffic binding and counters, and final settlement copies them with the complete Pub/Sub control portion into `result.json`.
+
+The explicit `admit_until` timestamp must not exceed the schedule's `cleanup_at`.
+New intents and Pub/Sub requests require `RUNNING`, prepared resources, current ownership and an open admission window with no shared or local stop/evidence failure.
+A call already admitted may retain its response, observations or ACK receipt after admission stops and during `CLEANING`, within the remaining evidence budget and approval expiry.
+A following ACK is a new request and is refused after stop.
+Ownership loss, completed service cleanup or approval expiry also closes evidence admission.
+These checks admit individual operations; they do not cancel an in-flight HTTP request or replace the external actor-quiescence barrier.
+
+The caller still validates the complete application and numeric execution approval, authenticates both actors, verifies effective permissions and keeps exclusive resource control through cleanup and settlement.
+The resource controller's mandatory guard remains active: credential refresh, guard I/O, control/lock reads, conditional-write retries and logical storage request/time costs need their own total budget.
+Input payload and message-evidence counters do not measure all network bytes or billed Pub/Sub traffic, and `admit_until` does not bound total elapsed execution.
+Synthetic tests cover competing reservations, restart, deadline/stop races, ambiguous outcomes, shared byte exhaustion and receipt preservation.
+CLI admission and runnable fault/recovery orchestration remain disabled pending the remaining work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Payload and restoration
 
