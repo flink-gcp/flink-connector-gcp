@@ -44,6 +44,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/evidence.py` | Row and receipt reconciliation, verified export to durable evidence and benchmark prefix release |
 | `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
 | `flink_tier3/bigquery.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
+| `flink_tier3/bigquery_plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
 | `flink_tier3/bigquery_lifecycle.py` | Internal durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier; not wired into admission |
 | `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations; not wired into admission |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
@@ -421,3 +422,6 @@ Add `--scenario generic-recovery` to render the recovery payload and both manife
 For a Cloud Tasks session, add `--scenario cloudtasks --cells-file kubernetes/lifecycle/sessions/example-wiring.toml --application-image IMAGE` with a digest-form image reference; `--expression cellManifests` prints the per-cell manifests instead of the supervisor bundle.
 A synthetic digest renders locally but never passes the live registry check that admission performs.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
+
+The render-only `bigquery-recovery` scenario is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal).
+It produces an explicitly unapproved bundle and does not extend this lifecycle's run/recovery admission.

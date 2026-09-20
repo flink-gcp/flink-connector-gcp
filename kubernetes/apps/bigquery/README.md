@@ -91,6 +91,64 @@ The package describes that transition; it does not wait for baseline observation
 Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
 A later executor must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
 
+## Offline execution proposal
+
+`flink-tier3 render --scenario bigquery-recovery` combines one trial's proposed limits, initial/upgrade applications and supervisor delivery into a JSON bundle.
+This is a render-only scenario: `lifecycle run`, `validate_approval` and the in-cluster supervisor still reject it.
+The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
+It may download pinned public CUE schema dependencies when the local cache is cold.
+
+Supply a small JSON file with exactly these fields; the following is an unapproved example:
+
+```json
+{
+  "version": 1,
+  "mode": "EO",
+  "destinations": 10,
+  "repetition": 1,
+  "query_slots": 12,
+  "maximum_bytes_billed": 4294967296,
+  "query_timeout_ms": 60000,
+  "additional_cost_usd": "5.00"
+}
+```
+
+Choose ALO or EO, 10 or 50 destinations, and repetition 1 through 3.
+One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that the other repetitions ran.
+The record count is fixed to the mode's 30-minute-equivalent input above.
+Query slots must be 1 through 12, each billed-byte limit 1 GiB through 4 GiB, and each timeout 1 through 60,000 milliseconds.
+Every visibility retry that submits a new job must consume another slot.
+The cost proposal is an explicit two-decimal USD string, at least the planning estimate and at most USD 10; it is not a billing-system cap.
+
+For example, save the input as `/tmp/bigquery-trial.json`, then render from the repository root with a synthetic image digest for local review:
+
+```sh
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
+  --scenario bigquery-recovery --trial-file /tmp/bigquery-trial.json \
+  --run-id example-1312 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:30:00Z \
+  --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
+  --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  > /tmp/bigquery-proposal.json
+```
+
+The intended window is exactly 90 minutes, reserving its last 15 minutes for cleanup; the proposed supervisor deadline leaves the final three minutes for external settlement.
+Dates must be whole-second UTC values, and the proposed start must fall within 30 days of the recorded pricing review.
+The example date and synthetic digest are illustrative, not a runnable delivery.
+The initial and upgrade manifests use the same input identity, and the only upgrade changes are the phase and restoration arguments.
+The proposal embeds the `ResourcePlan`, application/upgrade/supervisor hashes and installed runtime-source hash.
+The ConfigMap carries that same proposal as `proposal.json`, separately from the empty approval document.
+The declared revision is a requested source identity: the renderer does not prove checkout cleanliness, GitHub main ancestry, image publication/provenance, registry retention or a live namespace/Operator baseline.
+Those checks and final approval belong to the future admission path.
+
+The planning estimate charges all five Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
+The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubernetes-engine/pricing) and [BigQuery on-demand pricing](https://cloud.google.com/bigquery/pricing), checked on 2026-09-20.
+It assumes on-demand query billing and takes no free-tier, Spot or commitment discount.
+The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
+The generated observation plan records three minutes of warm-up, ten minutes each of baseline and post-recovery observation, ten-minute startup/visibility limits and a five-minute limit per recovery.
+These values are proposals, not clocks enforced by a running executor.
+Runner/supervisor coordination, authenticated handoff, creator/writer fencing, evidence accounting, final visibility checks and full cleanup must be connected and reviewed before any paid dispatch.
+
 ## Table and row identity
 
 Every destination is in the fixed `flink-gcp.flink_gcp_tier3_bigquery` dataset.

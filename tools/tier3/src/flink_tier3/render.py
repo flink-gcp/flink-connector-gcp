@@ -18,7 +18,9 @@ import argparse
 import json
 from pathlib import Path
 
+from .bigquery_plan import load_trial, prepare
 from .cloudtasks import load_session
+from .common import Failure
 from .policy import CLOUDTASKS_POLICY, FLINK_LINES
 from .workflow import render
 
@@ -31,18 +33,56 @@ def main(argv=None):
     parser.add_argument("--active-seconds", type=int, required=True)
     parser.add_argument(
         "--scenario",
-        choices=("smoke", "generic-recovery", "cloudtasks"),
+        choices=("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery"),
         default="smoke",
     )
     parser.add_argument("--cells-file", type=Path, help="cloudtasks session TOML")
     parser.add_argument("--flink-version", choices=tuple(FLINK_LINES), default="2.2.1")
     parser.add_argument(
         "--application-image",
-        help="cloudtasks application digest reference; a local render may be synthetic",
+        help="application digest reference; an offline render may be synthetic",
+    )
+    parser.add_argument(
+        "--trial-file", type=Path, help="unapproved BigQuery trial JSON"
+    )
+    parser.add_argument("--started-at", help="BigQuery proposal's absolute start time")
+    parser.add_argument(
+        "--revision", help="BigQuery proposal's intended full source revision"
     )
     parser.add_argument("--target", default=CLOUDTASKS_POLICY["target"])
     parser.add_argument("--expression", default="delivery.resources")
     args = parser.parse_args(argv)
+    if args.scenario == "bigquery-recovery":
+        if not all(
+            (args.trial_file, args.started_at, args.revision, args.application_image)
+        ):
+            parser.error(
+                "bigquery-recovery requires --trial-file, --started-at, --revision and --application-image"
+            )
+        if (
+            args.cells_file
+            or args.expression != "delivery.resources"
+            or args.flink_version != "2.2.1"
+            or args.target != CLOUDTASKS_POLICY["target"]
+        ):
+            parser.error("BigQuery proposals cannot select cells or a raw expression")
+        try:
+            bundle = prepare(
+                run_id=args.run_id,
+                nonce=args.nonce,
+                started_at=args.started_at,
+                expires_at=args.expires_at,
+                active_seconds=args.active_seconds,
+                revision=args.revision,
+                application_image=args.application_image,
+                trial=load_trial(args.trial_file),
+            )
+        except (ValueError, Failure) as error:
+            parser.error(str(error))
+        print(json.dumps(bundle, indent=2))
+        return
+    if args.trial_file or args.started_at or args.revision:
+        parser.error("trial inputs apply only to BigQuery proposals")
     tags = {}
     if args.scenario == "cloudtasks":
         if not args.cells_file or not args.application_image:
