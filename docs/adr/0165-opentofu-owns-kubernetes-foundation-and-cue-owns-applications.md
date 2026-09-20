@@ -541,6 +541,23 @@ Use retained intents to attribute ambiguous outcomes, and retain malformed decod
 The [runbook](../../kubernetes/apps/pubsub/README.md#input-publication-and-output-collection) defines the operation counts, local caps and remaining integration obligations.
 This stage adds no runnable scenario or real-service recovery claim under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
+### Pub/Sub shared traffic reservations
+
+Compose message helpers with the prepared resource controller before enabling runnable admission.
+Freeze explicit traffic limits and the digest-bound application's logical input domain in the shared record before the first data operation.
+Reserve publication calls, input messages/payload bytes, requested output deliveries, pull calls and data requests through conditional updates before the corresponding external work.
+Reserve exact serialized message-evidence bytes before every upload, across both actors; preserve all charges after failed or ambiguous outcomes.
+Process-local counters and refunds would let concurrent actors or a restarted process exceed the common budget.
+Keep the binding and counters through service cleanup and final receipt settlement.
+Latch failed evidence reservations/uploads locally and persist shared evidence failure through guarded control; if that write is unavailable, require the caller to stop both actors independently before restarting.
+
+Admission requires current ownership, prepared resources, an active run and no stop or evidence failure before its deadline.
+Permit already admitted operations to retain received evidence during cleanup until approval expiry, but treat a following ACK as new communication.
+The wrapper does not adopt prior direct-helper work, cancel in-flight requests or authenticate actor strings.
+Full execution approval, effective access, exclusive resource control, total credential/control/storage operation costs and the external quiescence barrier remain caller obligations.
+The [reservation runbook](../../kubernetes/apps/pubsub/README.md#shared-traffic-reservations) distinguishes the internal numeric ceilings from trial authorization and total service billing.
+CLI admission remains disabled.
+
 ### Pub/Sub lifecycle IAM preparation
 
 Define the persistent custom roles and project bindings in OpenTofu, and keep per-run topic/subscription policies in the guarded runtime helper.
