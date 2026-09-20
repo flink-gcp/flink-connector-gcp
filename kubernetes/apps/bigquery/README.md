@@ -104,7 +104,8 @@ Padding is deterministic pseudorandom data derived from run ID and sequence, avo
 Replay serializes the same sequence into the same bytes and table.
 The deployed query oracle must require every expected sequence in its correct table; EO additionally requires exact uniqueness, while ALO records duplicate multiplicities.
 The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
-Its deployed execution, temporary-table deletion and ownership checks still belong to the subsequent lifecycle implementation.
+The resource adapter and controller below provide internal query, ownership and deletion operations.
+Connecting those operations to an admitted deployment remains subsequent lifecycle work.
 
 ## State and observations
 
@@ -200,7 +201,7 @@ Each object in `aggregate.json` has this shape; this example shows only destinat
 
 The result collector must flatten each query-result row into these named fields using the returned schema and retain all pages.
 A raw REST `rows[].f[].v` envelope or job-metadata wrapper is not this format.
-The collector and its authorized submission/export path remain subsequent implementation.
+The internal resource adapter supplies this collector; its authorized CLI submission/export path remains subsequent implementation.
 
 The query reads exactly the run's 10 or 50 named tables and emits an aggregate even for an empty table.
 It counts every row, including rows with another run ID, null identity fields, an out-of-range sequence, or a mismatch between physical table, declared destination and sequence modulo destination count.
@@ -225,7 +226,8 @@ In particular, generating and assessing an EO trial with `--mode ALO` can permit
 Rows contain no mode field, so this check cannot discover that mistake; the executor must take the mode from the approved application configuration, and the report must be interpreted with its recorded mode.
 
 The [resource adapter](#resource-adapter) supplies table ownership/schema checks and binds a completed query job's SQL and all result pages to a trial.
-The later executor must persist its intent and query statistics as immutable evidence, enforce the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
+The internal resource controller persists intent, query slots and query evidence as described below.
+The later executor must supply the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
 The local tests execute the generated SQL unchanged on synthetic SQLite tables to exercise row, NULL, empty-table and duplicate semantics.
 Their SQLite build must provide the `MOD` math function.
 That coverage does not establish BigQuery query acceptance or streaming visibility; an authorized service run remains an acceptance gate.
@@ -264,7 +266,46 @@ It checks every page's job reference, completion, total row count and scalar sch
 It flattens the returned `f`/`v` cells using the schema, runs the offline oracle, and returns the full job metadata/statistics, rows and `scope=query-result` report for the caller to persist.
 It does not establish checkpoint provenance, table quiescence or a deployed recovery verdict.
 Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
-Supervisor handoff, immutable evidence storage, shared deadlines and final idle verification remain executor work.
+The resource controller below supplies durable intent, query evidence and a cleanup pass.
+Authenticated supervisor handoff, shared deadlines and final idle verification remain executor work.
+
+### Durable resource controller
+
+[`flink_tier3.bigquery_lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery_lifecycle.py) composes the adapter with generation-checked lifecycle records.
+It is internal preparation: no CLI command, approval validator, runner or supervisor admits a BigQuery scenario yet.
+The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
+The controller binds the plan's run ID, nonce and trial arguments to the recorded initial application hash; it does not validate a new BigQuery approval schema or the application's complete deployment policy.
+
+Initialization stores the unchanged plan in `RunRecord.bigquery`.
+Provisioning first checks absence, records a creation intent, then creates or reconciles that table and stores its creation receipt.
+A table found before its creation intent is refused even when its labels match.
+A receipt whose table disappeared or was replaced cannot authorize recreation.
+The runner reserves a named observation's slot through a conditional control update before submission; retries and process restarts retain the same slot and job ID, and exhaustion refuses another observation.
+Query submission requires all table receipts and a running, unstopped record.
+Concurrent late submission responses cannot overwrite a collected observation's state.
+The BigQuery portion of the control record is bounded at 256 KiB.
+
+Only the runner creates resources or collects results.
+Collection writes the adapter's job metadata, rows and oracle report to a create-only `runs/<run-id>/bigquery/queries/<slot>.json` object before recording its generation and SHA-256.
+An existing object must equal the freshly collected artifact when recovering a lost pointer write; changed metadata or conflicting contents fail closed.
+Once recorded, collection verifies that generation and digest and reads the retained result without querying again.
+These objects are protected against accidental overwrite by the controller, not by a bucket retention lock.
+The caller still owns the total evidence budget and preservation/export policy.
+A query-result report does not establish final visibility or absence of future writes.
+
+Cleanup first persists the component's stop flag, then requires the caller's quiescence barrier.
+That barrier must stop and join every creator and writer, settle server-side in-flight creation requests and exclude replacement throughout cleanup; merely stopping Flink Pods or setting the flag is insufficient.
+The controller does not implement or independently verify this external barrier.
+After it succeeds, cleanup requests cancellation of every possibly submitted slot and returns incomplete while any job is absent or not `DONE`.
+An absent job after an uncertain submission remains unresolved rather than proving cleanup.
+A slot recorded only as reserved has no submission intent and needs no cancellation.
+Only after these checks does cleanup reconcile lost table receipts from persisted creation intents, delete owned tables and confirm absence.
+It never enumerates or deletes unrecorded table names.
+The supervisor may perform this cleanup without collecting the runner's private query results.
+A completed pass marks only the BigQuery component clean; it does not set run success, remove Kubernetes/GCS state, release the environment lock or declare the environment idle.
+
+Synthetic tests cover conditional-update conflicts, restarts, lost responses, stop races, evidence generations, pending queries and receipt-based cleanup, including composition with the REST adapter.
+They do not establish authenticated handoff, a functioning external barrier or real-service acceptance.
 
 The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
