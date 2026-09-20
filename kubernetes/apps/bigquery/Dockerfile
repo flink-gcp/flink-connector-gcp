@@ -1,0 +1,21 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+ARG FLINK_IMAGE
+FROM ${FLINK_IMAGE}
+ARG FLINK_VERSION=2.2.1
+RUN test -f "/opt/flink/opt/flink-gs-fs-hadoop-${FLINK_VERSION}.jar"
+ENV ENABLE_BUILT_IN_PLUGINS=flink-gs-fs-hadoop-${FLINK_VERSION}.jar
+COPY --chown=flink:flink target/bigquery-recovery.jar /opt/flink/usrlib/bigquery-recovery.jar
+COPY --chown=flink:flink target/image-lib/*.jar /opt/flink/usrlib/
