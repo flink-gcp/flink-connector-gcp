@@ -321,6 +321,53 @@ Input payload and message-evidence counters do not measure all network bytes or 
 Synthetic tests cover competing reservations, restart, deadline/stop races, ambiguous outcomes, shared byte exhaustion and receipt preservation.
 CLI admission and runnable fault/recovery orchestration remain disabled pending the remaining work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
+## Actor ownership and cleanup handoff
+
+[`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub_handoff.py) wraps the resource controller and shared traffic reservations in a durable actor protocol.
+The original runner constructs it from its `PubSubTraffic` and a fresh 32-character lowercase hexadecimal process token, then calls `initialize()` before resource preparation.
+`prepare()` records one runner invocation before creating resources and initializes the traffic counters before acknowledging completion.
+After preparation and transition to `READY`, the supervisor constructs its own instance with a distinct fresh token and calls `join()` before collection; joining during `RUNNING` is also permitted while admission is open.
+The submitting process may repeat its binding call idempotently while that admission window remains open, but another process must not reconstruct or transfer its recorded token.
+A replacement supervisor may use the explicit reclamation path below without adopting the former supervisor's data authority.
+Tokens identify process ownership; authenticated identities, exclusive resource control and all operation/credential budgets remain the caller's responsibility.
+Use the wrapper from the first preparation call onward: direct calls to the underlying preparation or traffic helpers bypass its invocation records.
+
+The wrapper's `publish()` and `collect()` use the existing message helpers and shared budgets.
+Before each preparation, publication or collection, a conditional update records a fresh invocation ID under the actor's token.
+One actor cannot start another call while its marker is present; runner and supervisor calls may overlap and still share the traffic counters.
+A successful call clears only its own marker, making up to three attempts to persist the conditional completion acknowledgement without repeating the service operation.
+If the acknowledgement committed but its response was lost, the retry cannot clear a newer invocation's marker.
+A failed or ambiguous call keeps its marker; handled operation failures request shared stop, while a failed control write may prevent that stop from reaching the other actor.
+The caller must independently stop actors when shared failure/stop persistence is unavailable.
+If requesting shared stop also fails, that control error propagates with the original operation error as its Python exception context; callers that record only the outer message lose that original diagnostic.
+The marker does not expire, and a timeout does not prove the service operation has ended.
+An original process may retry a lost successful release acknowledgement with its existing token, but unresolved calls require external reclamation.
+Even one transient operation failure can therefore stop both actors and require the external proof below before cleanup; the wrapper does not retry the failed service call.
+
+`stop()` closes admission without declaring quiescence.
+Each bound actor calls `release()` to stop admission and permanently surrender its authority once it has no unresolved call.
+Normal supervisor `cleanup(quiesce)` requires all bound actors released, then requires the external barrier to prove creators, workload writers and their in-flight requests quiescent.
+A supervisor that never joined has no data authority to release; stop prevents it joining later.
+When a handoff is present, the underlying resource controller also refuses service deletion before actor release, and shared Operator shutdown/final settlement enforce the same gate.
+Older resource records without a handoff keep their existing external-barrier contract.
+
+For an abandoned or unresolved actor, an authenticated supervisor uses `reclaim(quiesce)`.
+The replacement must reconstruct the original resource and traffic bindings, including identical `TrafficLimits` and `admit_until`, from the retained approved inputs; recomputing a deadline from the replacement's current clock is not equivalent.
+Use the replacement's own fresh process token, not either recorded actor token.
+A mismatched binding refuses reclamation; a malformed handoff also blocks final settlement.
+There is no in-protocol repair or reset for corrupt control.
+Retain its evidence for investigation and a separately reviewed recovery procedure.
+The controller first stops admission; the callback then receives a copy of the frozen traffic binding, both actor tokens and their current invocation markers.
+It must independently prove all bound processes, resource creators, workload writers and in-flight service operations quiescent and keep them fenced through settlement.
+Stop flags, expired deadlines, missing Pods or successful HTTP client shutdown do not supply this proof.
+The callback must return exactly `True`; the helper records this caller-supplied assertion but performs no process or service measurement of its own.
+A changed actor snapshot during that proof refuses reclamation before any service deletion.
+Once the proof is accepted, reclamation releases both actors, preserves each unresolved marker as `fenced_call`, and invokes the existing ownership-checked resource cleanup.
+The complete handoff, traffic reservations and retained invocation identities survive into the final result receipt.
+
+Synthetic tests exercise concurrent claims, stop/release races, lost acknowledgements, partial preparation, conservative failure handling, reclamation refusal and receipt preservation.
+Deployed actor wiring, measured quiescence, full numeric execution approval and fault/recovery trials remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361); CLI admission is still disabled.
+
 ## Payload and restoration
 
 Each UTF-8 input payload is `v1|<run-id>|<input-index>|<sequence>` with canonical decimal numbers and sequence in `[0, records-per-subscription)`.

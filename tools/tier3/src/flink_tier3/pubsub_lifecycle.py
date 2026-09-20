@@ -19,6 +19,7 @@ import copy
 from .common import Failure, digest, json_bytes
 from .model import Phase
 from .pubsub import ResourcePlan, Resources
+from .pubsub_handoff import require_handoff_released
 
 MAX_CONTROL_BYTES = 256 * 1024
 
@@ -31,6 +32,8 @@ def require_pubsub_clean(record):
         or not record.stop_requested
     ):
         raise Failure("Pub/Sub resource cleanup is incomplete")
+    if record.pubsub is not None:
+        require_handoff_released(record.pubsub)
 
 
 class PubSubLifecycle:
@@ -222,6 +225,7 @@ class PubSubLifecycle:
         if quiesce() is not True:
             raise Failure("Pub/Sub creators and writers are not quiescent")
         _, state = self._read()
+        require_handoff_released(state)
         if state["creation_intent"]:
             self._resources(cleanup=True).cleanup_or_confirm_absent()
 

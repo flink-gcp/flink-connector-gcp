@@ -1205,7 +1205,7 @@ def test_cloudtasks_parallelism_sixteen_takes_the_largest_task_manager_shape(mod
     assert spec["job"]["args"][12:16] == ["--parallelism", "16", "--concurrency", "16"]
 
 
-def test_cloudtasks_configmap_for_thirty_two_cells_stays_under_768_kib(module):
+def test_cloudtasks_configmap_for_thirty_two_cells_keeps_data_headroom(module):
     cells = [{**session_cells()[0], "id": f"cell-{i:02d}"} for i in range(32)]
     result = lifecycle_export(
         module,
@@ -1217,7 +1217,13 @@ def test_cloudtasks_configmap_for_thirty_two_cells_stays_under_768_kib(module):
     assert result.returncode == 0, result.stderr
     config = json.loads(result.stdout)["config"]
     assert len(json.loads(config["data"]["application.json"])) == 32
-    assert len(json.dumps(config).encode()) < 768 * 1024
+    # Kubernetes counts UTF-8 data values, not JSON quoting and escaping.
+    # Reserve 256 KiB below its 1 MiB data ceiling; bound the wire form too.
+    assert not config.get("binaryData")
+    assert sum(len(value.encode("utf-8")) for value in config["data"].values()) < (
+        768 * 1024
+    )
+    assert len(json.dumps(config).encode("utf-8")) < 1024 * 1024
 
 
 @pytest.mark.parametrize(
