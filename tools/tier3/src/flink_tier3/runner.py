@@ -15,8 +15,8 @@
 
 import flink_tier3 as rt
 
-from .cloudtasks import admit_queue
-from .policy import CLOUDTASKS_POLICY, RECOVERY
+from .cloudtasks import admission_budget_open, admit_queue
+from .policy import RECOVERY
 
 
 class Runner:
@@ -43,12 +43,8 @@ class Runner:
             raise rt.Failure("Recovery scenario startup deadline expired")
         # Admission may spend at most one cell's startup allowance, so the
         # first cell keeps the budget the session plan reserved for it.
-        if (
-            self.cloudtasks
-            and self.env.clock()
-            >= self.env.schedule.started + CLOUDTASKS_POLICY["cell_startup_seconds"]
-        ):
-            raise rt.Failure("Session admission deadline expired")
+        if self.cloudtasks:
+            admission_budget_open(self.env)
 
     def create_application(self, application):
         if rt.digest(application) != self.env.approval.application_sha256:
