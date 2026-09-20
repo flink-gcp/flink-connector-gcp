@@ -25,6 +25,10 @@ The installed `flink-tier3` CLI is the entry point; [workspace instructions](../
 The Pod runs `python3 -m flink_tier3 supervisor` from that projected directory.
 The approval's `runtime_sha256` covers the relative paths and SHA-256 hashes of the complete package source bundle, including policy; the supervisor verifies it before cloud access.
 Adding a module automatically includes it in both the source bundle and its hash; the rendered-payload test checks completeness.
+The 32-cell fixture keeps UTF-8 ConfigMap data below 768 KiB, reserving 256 KiB below the [Kubernetes data ceiling](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/apis/core/validation/validation.go); it also keeps the serialized JSON below 1 MiB.
+The data budget counts values as Kubernetes does, excluding the extra quoting and escaping in JSON.
+Adding the Pub/Sub handoff module exceeded the former 768 KiB serialized-JSON guard: the fixture measured 737,522 data bytes and 789,286 JSON bytes.
+That prompted this change to separate data headroom from JSON overhead; the wire-form guard is now 1 MiB, while the data reserve remains 256 KiB below the API limit.
 Third-party dependencies remain preinstalled in the pinned image; package source changes need no image rebuild or startup installation.
 
 | File | Responsibility |
@@ -52,6 +56,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub_messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
 | `flink_tier3/pubsub_traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
+| `flink_tier3/pubsub_handoff.py` | Process-owned preparation/message calls, durable releases and explicit external reclamation before cleanup; no runnable admission |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.

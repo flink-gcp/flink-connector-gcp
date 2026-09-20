@@ -558,6 +558,23 @@ Full execution approval, effective access, exclusive resource control, total cre
 The [reservation runbook](../../kubernetes/apps/pubsub/README.md#shared-traffic-reservations) distinguishes the internal numeric ceilings from trial authorization and total service billing.
 CLI admission remains disabled.
 
+### Pub/Sub actor release before cleanup
+
+Bind one process token per actor before its first preparation or message call, and serialize that actor's calls through a durable invocation ID.
+The two actors may overlap while sharing the existing traffic reservations.
+A completion acknowledgement clears only the invocation it names; retries never repeat the service operation or clear a later call.
+Retain failed or ambiguous invocations rather than interpreting client timeout as service quiescence.
+Process tokens are identities in the protocol, not authentication or transferable leases.
+
+Require cooperative release of every bound actor before normal service cleanup, followed by the caller's external workload and in-flight-operation barrier.
+Apply the release gate to the resource controller and shared settlement whenever a handoff is present; preserve the prior contract for older records without one.
+A replacement supervisor cannot adopt the former actor's data authority.
+It may explicitly reclaim after an external quiescence proof for the exact actor snapshot; a concurrent change refuses that proof, and unresolved invocation identities remain in the final receipt as fenced calls.
+The helper records the caller's assertion without measuring process termination or service completion itself.
+This avoids automatic expiry or token takeover, either of which could admit cleanup while an old request still executes.
+The [handoff runbook](../../kubernetes/apps/pubsub/README.md#actor-ownership-and-cleanup-handoff) defines the required external fencing and failure-persistence obligations.
+Runnable admission and deployed recovery remain subsequent work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+
 ### Pub/Sub lifecycle IAM preparation
 
 Define the persistent custom roles and project bindings in OpenTofu, and keep per-run topic/subscription policies in the guarded runtime helper.
