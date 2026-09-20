@@ -33,6 +33,7 @@ limitations under the License.
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
 - Updated: 2026-09-20 (idle BigQuery namespace, data containers, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
+- Updated: 2026-09-20 (idle Pub/Sub namespace and workload identity)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -370,6 +371,19 @@ The GCP preparation introduces no namespace, Operator watch change, topic/subscr
 Verify its reviewed CI apply and empty refreshed plan before the bootstrap stage adds the KSA, idle quotas and namespaced RBAC.
 Application delivery, ownership-aware run lifecycle and separately approved execution remain dependent stages; this decision does not claim deployed recovery acceptance.
 
+### Pub/Sub namespace foundation
+
+Extend bootstrap to `tier3-pubsub` after the GCP preparation has applied and its refreshed plan is empty.
+The namespace retains zero Pod/PVC quotas, the `pubsub` KSA selects the prepared GSA, and the job Role grants the existing native Flink permissions only within this namespace.
+The runner and supervisor receive the existing application lifecycle Role.
+
+An administrator establishes the six importable namespace/quota/installer prerequisites and extends only the named namespace rules in the two existing bootstrap ClusterRoles.
+The [Pub/Sub procedure](../../opentofu/tier3-bootstrap/README.md#administrator-prerequisites-for-pubsub) requires approval of the concrete mutations, collision checks and preservation of existing object identities.
+CI adopts those prerequisites and creates workload/lifecycle identities through its reviewed saved plan after merge.
+Keep the common preflight and Helm watch set unchanged until successful apply, idle inventory, runner reads and an empty refreshed plan establish the new foundation.
+This preserves recovery of an interrupted apply before the new lifecycle binding is available.
+Pub/Sub service grants, application delivery and separately approved recovery execution remain subsequent stages of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+
 ### Ownership boundaries
 
 There are separate state and application boundaries for GCP infrastructure, Kubernetes bootstrap, Helm and application runs.
@@ -380,7 +394,7 @@ The earlier manual-bootstrap/CI-Helm draft split was revised because it left rou
 The three idle quotas forbid Pods and PVCs throughout the foundation stage.
 The bootstrap inventory is a preflight, not an exhaustive controller audit or lifecycle supervisor.
 Image publication, runtime pin selection and bounded lifecycle tooling are established; a generic smoke execution still requires separate approval and live validation.
-Cloud Tasks implementation/benchmarks and BigQuery-specific verification remain outside this foundation change.
+Cloud Tasks implementation/benchmarks, BigQuery-specific verification and Pub/Sub recovery trials remain outside this foundation change.
 
 ### Official Python SDK image dependencies
 

@@ -232,7 +232,8 @@ Review the PR's saved plan for exactly these additions and no unrelated changes 
 After apply, inspect the bucket policy and IAM, confirm the apply result and an empty refreshed GCP plan, and retain that evidence in the issue before advancing.
 If the apply fails, review the fresh plan in the recovery draft PR opened by tfaction rather than replaying the stale saved plan.
 
-The namespace/KSA, installer and job RBAC, zero idle quotas and Operator watch extension follow in a separate bootstrap stage after the GCP foundation is verified.
+The [Pub/Sub bootstrap stage](tier3-bootstrap/README.md#pubsub-recovery-foundation) adds the namespace/KSA, installer and job RBAC, lifecycle access and zero idle quotas after the GCP foundation is verified.
+The Operator watch extension follows only after bootstrap apply, idle inventory, runner reads and an empty refreshed plan are verified.
 Pub/Sub topic/subscription grants are deliberately deferred until the concrete application and run-owned resource design specifies the required operations.
 No Pub/Sub data, resource-administration or service-account-key permissions are introduced here.
 Application/image publication, run admission, fault injection, ownership-aware service cleanup and separately approved numeric execution ceilings remain later steps.
