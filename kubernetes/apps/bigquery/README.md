@@ -141,7 +141,8 @@ The ConfigMap carries that same proposal as `proposal.json`, separately from the
 The declared revision is a requested source identity: the renderer does not prove checkout cleanliness, GitHub main ancestry, image publication/provenance, registry retention or a live namespace/Operator baseline.
 Those checks and final approval belong to the future admission path.
 
-The planning estimate charges all five Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
+The planning estimate charges all five running Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
+It does not separately price occupancy of the shared policy's extra Operator replacement slot.
 The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubernetes-engine/pricing) and [BigQuery on-demand pricing](https://cloud.google.com/bigquery/pricing), checked on 2026-09-20.
 It assumes on-demand query billing and takes no free-tier, Spot or commitment discount.
 The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
@@ -447,15 +448,15 @@ It binds `bigquery_trial` to the same exact input schema as the offline trial fi
 The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 A valid document is not authenticated execution permission: the dispatch CLI still excludes this scenario, and the runner and supervisor reject starting it before mutating resources.
 
-The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, five Pods and no PVCs.
+The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, at most six Pods and no PVCs.
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
-The control quota covers the Operator and supervisor.
+The control quota covers the Operator, supervisor and one Operator replacement while the previous Pod terminates; five Pods run in the steady state.
 State and log limits remain 1 GiB of state, 10,000 state objects and 100 MiB of logs; the trial selects a cost ceiling from the proposal schema, subject to its planning estimate and USD 10 maximum.
 The two trial modes retain their fixed finite input sizes; the approval model derives the resource plan rather than accepting another independently editable copy.
 The resource controller refuses a plan that differs from this approval before reading or creating service resources.
 
 Common creation/adoption uses the approved application namespace.
-Inventory includes `tier3-bigquery` for BigQuery approvals, counts its Pods against the five-Pod ceiling, and verifies owner UIDs, image digests and effective resources.
+Inventory includes `tier3-bigquery` for BigQuery approvals, counts its Pods against the six-Pod ceiling, and verifies owner UIDs, image digests and effective resources.
 Recovery of version 1–3 approvals keeps the namespace scope of their saved baseline.
 State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-tier3-bigquery`; same-named objects in the smoke or evidence buckets and other BigQuery run prefixes remain outside that operation.
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
@@ -467,3 +468,36 @@ The 100 MiB evidence ceiling is a policy limit; this stage does not allocate an 
 The shared final receipt records the BigQuery scenario and approved trial, with `success: false` until its execution verdict is implemented.
 A generic recovery completion flag cannot satisfy that verdict.
 A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
+
+## Approval-bound delivery bundle
+
+`flink-tier3 bigquery-bundle` prepares the delivery from a separately supplied version 4 approval and verifies it by re-rendering against that approval.
+The checkout HEAD must match the approval SHA, with no tracked Kubernetes input changes or untracked CUE inputs, including ignored files.
+Repository checks ignore ambient `GIT_*` overrides and bound each Git invocation to 60 seconds.
+The installed package runtime hash, both application hashes and the supervisor image must also match the approval.
+It embeds the approval in the immutable ConfigMap and reduces the supervisor Job's relative deadline to the time remaining at the specified preparation instant.
+All other rendered delivery fields are retained, and the complete ConfigMap data must fit Kubernetes' 1 MiB limit.
+The original proposal stays visibly unapproved; the enclosing bundle reports `admission_enabled: false`.
+
+Run from the repository root with the managed CUE and Python tools:
+
+```sh
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery-bundle prepare \
+  --approval-file approval.json \
+  --prepared-at 2026-09-21T00:10:00Z > bundle.json
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery-bundle verify \
+  --approval-file approval.json --bundle-file bundle.json
+```
+
+The preparation instant must be a whole second between the approved start and cleanup deadline.
+It must also satisfy the common approval's pricing freshness check: no later than 30 days after `environment.pricing_reviewed` in `policy.toml`.
+The current review date is 2026-09-14T00:00:00Z, giving a preparation deadline of 2026-10-14T00:00:00Z.
+The BigQuery proposal's separate 2026-09-20 pricing review permits later trial dates, through 2026-10-20T00:00:00Z, so a valid proposal can still require a common pricing review refresh before bundle preparation.
+An installed CLI can select the checkout with `flink-tier3 --repository /path/to/checkout bigquery-bundle ...`; CUE must be on its executable path.
+Verification compares the complete bundle, including its embedded source, command, images, deadlines and trial metadata; it requires the external approval file even when the bundle already contains an approval.
+Both input files reject duplicate JSON object fields.
+The commands perform local generation and comparison, including CUE's pinned public dependency downloads when needed, and make no cluster or GCP service calls.
+A matching file does not authenticate its approval or authorize execution.
+The future executor must independently authenticate the approval, verify GitHub main ancestry and image publication/provenance/retention, prove current lock/namespace ownership, prepare for the actual admission time, and enforce absolute deadlines, actor fencing and aggregate evidence budgets.
+A previously prepared relative Job deadline is not permission to start that Job later.
+The dispatch and supervisor entrypoints remain disabled for BigQuery.

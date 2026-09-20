@@ -24,8 +24,9 @@ from pathlib import Path
 
 import pytest
 import yaml
-from flink_tier3 import bigquery_plan, workflow
+from flink_tier3 import bigquery_bundle, bigquery_plan, workflow
 from flink_tier3.bundle import package_sources
+from flink_tier3.policy import BIGQUERY_CEILINGS, GAR
 
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
@@ -2014,3 +2015,70 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         == bundle["application"]["metadata"]["annotations"]["flink-gcp.io/expires-at"]
     )
     assert json.loads(bundle["delivery"]["config"]["data"]["proposal.json"]) == proposal
+
+    approval = {
+        "version": 4,
+        "scenario": "bigquery-recovery",
+        "run_id": "proposal-1312",
+        "nonce": "a" * 32,
+        "sha": "b" * 40,
+        "started_at": proposal["started_at"],
+        "expires_at": proposal["expires_at"],
+        "cleanup_at": proposal["cleanup_at"],
+        "ceilings": {**BIGQUERY_CEILINGS, "additional_cost_usd": "5.00"},
+        "namespaces": {
+            namespace: {
+                "uid": namespace + "-uid",
+                "quota_uid": namespace + "-quota",
+                "hard": {"pods": "0", "persistentvolumeclaims": "0"},
+            }
+            for namespace in ("tier3-bigquery", "tier3-system")
+        },
+        "operator_uid": "operator-uid",
+        "baseline_uids": ["operator-uid"],
+        "runtime_sha256": proposal["runtime_sha256"],
+        "application_sha256": proposal["application_sha256"],
+        "upgrade_application_sha256": proposal["upgrade_application_sha256"],
+        "images": {
+            **proposal["images"],
+            "operator": GAR + "operator@" + SYNTHETIC_DIGEST,
+        },
+        "lock_owner": {
+            "nonce": "a" * 32,
+            "kind": "run",
+            "run_id": "proposal-1312",
+            "github_run_id": "123",
+            "attempt": "1",
+            "sha": "b" * 40,
+        },
+        "bigquery_trial": {
+            "version": 1,
+            "mode": mode,
+            "destinations": destinations,
+            "repetition": 1,
+            "query_slots": 12,
+            "maximum_bytes_billed": 4 * 1024**3,
+            "query_timeout_ms": 60000,
+            "additional_cost_usd": "5.00",
+        },
+    }
+    # The synthetic CUE module is not a Git checkout; revision checks have separate tests.
+    monkeypatch.setattr(bigquery_bundle, "_check_revision", lambda revision: None)
+    prepared = bigquery_bundle.prepare(approval, prepared_at="2026-09-21T00:10:00Z")
+    assert bigquery_bundle.validate(prepared, approval) == prepared
+    assert prepared["application"] == bundle["application"]
+    assert prepared["upgrade_application"] == bundle["upgrade_application"]
+    expected_delivery = json.loads(json.dumps(bundle["delivery"]))
+    expected_delivery["config"]["data"]["approval.json"] = prepared["delivery"][
+        "config"
+    ]["data"]["approval.json"]
+    expected_delivery["supervisor"]["spec"]["activeDeadlineSeconds"] = 4620
+    assert prepared["delivery"] == expected_delivery
+    data = prepared["delivery"]["config"]["data"]
+    assert (
+        json.loads(data["approval.json"])["bigquery_trial"]
+        == approval["bigquery_trial"]
+    )
+    assert {
+        name: data["flink_tier3_" + name] for name in package_sources()
+    } == package_sources()

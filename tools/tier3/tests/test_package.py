@@ -74,6 +74,7 @@ def test_wheel_installs_cli_policy_and_complete_source_bundle(tmp_path):
         ["render"],
         ["analyze"],
         ["bigquery"],
+        ["bigquery-bundle"],
     ):
         result = run(str(command), *arguments, "--help", cwd=tmp_path, env=environment)
         assert (

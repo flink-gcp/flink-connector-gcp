@@ -666,7 +666,8 @@ Reuse the offline proposal's exact trial schema and derive the service resource 
 The resource controller compares that whole plan before using the service adapter, so a valid but different query-slot count, byte limit, timeout or expiration cannot replace the approved one.
 Retain the recorded-intent comparison as a separate guard against a replacement approval after initialization.
 
-Require the proposal's 90-minute window, 15-minute cleanup reserve and five-Pod budget, with three equal Flink Pod shapes in `tier3-bigquery` and two control Pods in `tier3-system`.
+Require the proposal's 90-minute window and 15-minute cleanup reserve, with three equal Flink Pod shapes in `tier3-bigquery` and two running control Pods in `tier3-system`.
+The shared replacement policy raises the total ceiling to six Pods by reserving an extra Operator slot in `tier3-system` while its previous Pod terminates.
 Keep smoke and Cloud Tasks approvals and ceilings unchanged.
 Include BigQuery in shared inventory only for BigQuery approvals; preserve the original smoke, Cloud Tasks and control namespace scope for versions 1–3 so recovery can reuse their saved baselines.
 Use the BigQuery application image role and dedicated state bucket for audit and cleanup.
@@ -677,3 +678,14 @@ Keep the dispatch scenario excluded and add explicit runner/supervisor start ref
 This permits real model/environment/controller composition in synthetic tests without silently falling through the smoke execution path.
 The shared final receipt retains the BigQuery scenario and approved trial; its success remains false until the BigQuery verdict is implemented, even if a generic recovery completion flag is present.
 A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
+
+### BigQuery approval-bound delivery
+
+Generate a delivery from the version 4 approval using the existing proposal renderer.
+Require its approved repository HEAD and unchanged Kubernetes inputs, rejecting additional CUE files even when Git ignores them.
+Refuse source, application/upgrade or supervisor-image drift before embedding that approval.
+Only the embedded approval and remaining relative Job deadline change from the proposed delivery; retain its source projection, identities and immutable manifests.
+Require the ConfigMap data to remain within 1 MiB after adding the approval.
+Verify by re-rendering against an independently supplied approval rather than trusting the bundle's embedded copy.
+This is an offline binding check, not authentication, image availability, live resource admission or an absolute start fence.
+Keep both execution entrypoints disabled until the executor supplies those checks and the actor/evidence protocol.
