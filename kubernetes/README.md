@@ -32,8 +32,10 @@ kubernetes/
   pkg/smoke/application.cue      # Generic stateful smoke application contract
   pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
   pkg/cloudtasks/application.cue # Cloud Tasks measurement cell contract
+  pkg/pubsub/application.cue     # Pub/Sub DataStream recovery contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
+  apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
@@ -108,9 +110,11 @@ The package deliberately leaves image, ServiceAccount and application-specific f
 An upgrade requiring state preservation must explicitly select its upgrade mode and recovery inputs.
 
 The root supplies common project labels.
-`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-cloudtasks`, or `tier3-bigquery`) to resource metadata.
+`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-cloudtasks`, `tier3-bigquery` or `tier3-pubsub`) to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`, while in `tier3-cloudtasks` it requires the `cloudtasks-benchmark` ServiceAccount, parallelism 1, 4 or 16 and `v1_20` or `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism two and `v2_2`.
+The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one or two and `v2_2`.
+The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its delivery and independently supervised lifecycle remain subsequent work.
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
 [Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.
@@ -220,4 +224,5 @@ The first image publication predates the appender observations; updated publicat
 
 The [internal DataStream relay and output oracle](apps/pubsub/README.md) prepare [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) using the production connector and local emulator recovery tests.
 Build them with `just tier3-pubsub-verify`.
-The relay's unbounded runtime still requires image publication, resource/permission provisioning, application admission and independent lifecycle supervision before real execution.
+The [first image publication](apps/pubsub/README.md#deployment-definition) is complete.
+The relay's unbounded runtime still requires resource/permission provisioning, application admission and independent lifecycle supervision before real execution.
