@@ -614,6 +614,13 @@ Stop and release set the run-global stop flag, so they terminate admission for t
 The existing barrier still must fence writers, other creators and server-side work, and cleanup still waits for terminal query jobs.
 Declined: treating the stop flag or an expired heartbeat as proof that the submitting actor can no longer create resources.
 
-This is internal protocol preparation with synthetic interleaving tests.
-The generic runner/supervisor loops, authenticated entrypoints, BigQuery approval admission, Kubernetes workload fencing and final idle verification remain subsequent integration work.
+The common runner settlement loop now services an explicitly attached handoff while the supervisor runs, stops polling on failure or execution closure, and attempts permanent release before leaving its wait.
+The supervisor can request archived query evidence while maintaining heartbeats and resource audits; the scenario supplies observation boundaries and interprets the result.
+Common cleanup removes owned Kubernetes workloads before waiting for runner release and invoking service cleanup with a mandatory external quiescence callback.
+An expired wait or unresolved call retains the control record and lock; a replacement runner cannot impersonate the original submitting actor or the cleanup supervisor.
+Recorded BigQuery state gates Operator shutdown, shared completion transitions, idle verification and finalization even without an attached handoff.
+Retain that entire state in the final receipt and refuse a conflicting receipt or a concurrent control change before deleting the control record.
+
+These common-loop paths are covered by synthetic tests, including composition with the real handoff protocol.
+Authenticated entrypoints, BigQuery approval admission, namespace/resource policy, observation and recovery scheduling, and Kubernetes workload fencing remain subsequent integration work.
 It changes no deployed image, grants or paid-trial authorization.

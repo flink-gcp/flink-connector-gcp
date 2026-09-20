@@ -15,15 +15,19 @@
 
 import flink_tier3 as rt
 
+from .bigquery_handoff import require_bigquery_clean
 from .cloudtasks import admission_budget_open, admit_queue
 from .policy import RECOVERY
 from .pubsub_lifecycle import require_pubsub_clean
 
 
 class Runner:
-    def __init__(self, env):
+    def __init__(self, env, bigquery=None):
+        if bigquery is not None and bigquery.env is not env:
+            raise rt.Failure("BigQuery handoff belongs to another runner environment")
         self.env = env
         self.env.actor = "runner"
+        self.bigquery = bigquery
         self.cleanup = rt.Cleanup(env)
 
     @property
@@ -190,20 +194,60 @@ class Runner:
         )
 
     def settle(self, request_stop=False):
+        # The admitting runner calls this only after start() has returned.
+        # Recovery must not reconstruct another process's submitting token.
         self.env.refresh()
         if request_stop or self.env.stopping:
             self.env.records.request_stop()
         self.adopt_root("config")
         self.adopt_root("supervisor")
 
+        query_failed = False
+        released = False
+        last_release_error = None
+
+        def release_queries():
+            nonlocal released, query_failed, last_release_error
+            if self.bigquery is not None and not released:
+                try:
+                    self.bigquery.release()
+                    released = True
+                except (rt.Failure, OSError, ValueError) as error:
+                    query_failed = True
+                    cause = str(error)
+                    if cause != last_release_error:
+                        self.env.emit("bigquery-release-blocked", {"cause": cause})
+                        last_release_error = cause
+
         def completed():
+            nonlocal query_failed
             control = self.env.refresh()
             if self.env.stopping:
                 self.env.records.request_stop()
             job = self.env.root("supervisor")
-            return (
+            finished = (
                 not job or self.job_completed(job) or control.phase == rt.Phase.CLEANED
             )
+            if self.bigquery is not None and not released:
+                if (
+                    finished
+                    or query_failed
+                    or self.env.stopping
+                    or self.env.evidence_failed
+                    or control.stop_requested
+                    or control.evidence_failed
+                    or control.phase != rt.Phase.RUNNING
+                    or self.env.clock() >= self.env.schedule.cleanup_at
+                ):
+                    release_queries()
+                else:
+                    try:
+                        self.bigquery.poll()
+                    except (rt.Failure, OSError, ValueError) as error:
+                        query_failed = True
+                        self.env.emit("bigquery-query-failed", {"cause": str(error)})
+                        release_queries()
+            return finished
 
         # Waiting preserves the Job's final log when possible. It is not a
         # prerequisite for cleanup. Exercise writes target existing UIDs; the
@@ -215,6 +259,8 @@ class Runner:
             )
         except rt.Failure:
             self.env.records.request_stop()
+        finally:
+            release_queries()
         control = self.env.refresh()
         if control.application_intent and "application" not in self.env.roots:
             application, _ = self.env.store.read(
@@ -229,7 +275,7 @@ class Runner:
             self.cleanup.adopt_intended_cell(self.cleanup.inventory())
         # Reconcile actual state even after an earlier actor recorded cleanup.
         # A cleaned record alone is not a current idle observation.
-        self.cleanup.run("external settlement", control.success)
+        self.cleanup.run("external settlement", control.success and not query_failed)
 
         job = self.env.root("supervisor")
         if (
@@ -316,6 +362,7 @@ class Runner:
         rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
         control = self.env.refresh()
         require_pubsub_clean(control)
+        require_bigquery_clean(control)
         if (
             plans.get("nonce") != self.env.approval.nonce
             or plans.get("roots") != ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
@@ -379,6 +426,8 @@ class Runner:
             )
         if control.pubsub is not None:
             result["pubsub"] = control.pubsub
+        if control.bigquery is not None:
+            result["bigquery"] = control.bigquery
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)
         if previous is None:
@@ -387,7 +436,12 @@ class Runner:
             previous.get("nonce") != result["nonce"]
             or not previous.get("idle")
             or (
-                (control.pubsub is not None or previous.get("pubsub") is not None)
+                (
+                    control.pubsub is not None
+                    or previous.get("pubsub") is not None
+                    or control.bigquery is not None
+                    or previous.get("bigquery") is not None
+                )
                 and rt.json_bytes(previous) != rt.json_bytes(result)
             )
         ):
@@ -395,10 +449,13 @@ class Runner:
         if previous is not None:
             result = previous
         current, generation = self.env.records.read()
-        if (control.pubsub is not None or current.pubsub is not None) and (
-            rt.json_bytes(current.to_dict()) != rt.json_bytes(control.to_dict())
-        ):
-            raise rt.Failure("Run control changed during Pub/Sub finalization")
+        if (
+            control.pubsub is not None
+            or current.pubsub is not None
+            or control.bigquery is not None
+            or current.bigquery is not None
+        ) and (rt.json_bytes(current.to_dict()) != rt.json_bytes(control.to_dict())):
+            raise rt.Failure("Run control changed during service finalization")
         self.env.store.delete(self.env.records.path, generation)
         rt.EnvironmentLock(self.env.store).release(self.env.approval.lock_owner)
         return result["success"]

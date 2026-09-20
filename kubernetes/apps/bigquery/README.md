@@ -368,7 +368,8 @@ They do not establish authenticated handoff, a functioning external barrier or r
 ### Query requests and runner release
 
 [`flink_tier3.bigquery_handoff`](../../../tools/tier3/src/flink_tier3/bigquery_handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
-It has no production caller: the generic `Runner`, `Supervisor`, approval validator and CLI still do not admit BigQuery execution.
+The common runner settlement and supervisor cleanup paths accept this protocol through explicit constructor arguments.
+The approval validator and CLI still reject BigQuery execution; they do not construct these actor bindings.
 The caller must authenticate both actors, allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
 The token binds records; it is not an authentication credential or a lease that another process may take over.
 After initializing this protocol on an empty resource intent, all runner provisioning and query calls must use it rather than the resource controller directly.
@@ -400,6 +401,39 @@ Release does not prove Flink termination, settle unknown service operations, exc
 
 Synthetic tests interleave the two actors through shared generation-checked storage, including stop during provisioning, submission and collection, lost responses, acknowledgement failures, invocation identity, expired requests, actor roles, pending jobs, replaced evidence and byte limits.
 They do not establish authenticated handoff, workload fencing, real-service acceptance or a deployed recovery verdict.
+
+### Common lifecycle loop integration
+
+An admitting caller must initialize and provision the handoff, then pass that same process's handoff to `Runner(env, bigquery=handoff)`.
+Only after admission has returned may that runner enter `settle()`.
+While waiting for the supervisor, settlement services pending query requests until stop, evidence failure, the execution deadline or supervisor termination.
+A query failure stops further polling and prevents settlement from preserving a successful trial verdict.
+The runner attempts permanent release before leaving the wait, including on timeout; an unresolved call prevents release and leaves cleanup incomplete.
+A recovery process must not reconstruct the original submitting process's token to manufacture this acknowledgement.
+Repeated release attempts can recover a transient control failure; settlement emits a blocked-release diagnostic only when its cause changes.
+
+The supervisor receives its own environment-bound handoff and a mandatory external `quiesce` callback.
+Supplying the callback without a handoff is rejected at construction.
+Its `query(name, deadline=...)` method requests an observation and waits for archived evidence, maintaining heartbeats and auditing resources until the deadline or cancellation.
+It returns the verified result without interpreting an incomplete baseline as a failed trial or treating a query report as a deployed recovery verdict.
+The scenario still has to choose observation boundaries and acceptance criteria.
+
+Common cleanup closes run admission and removes the owned Kubernetes workload before waiting for runner release.
+Failure to persist the stop request marks evidence incomplete but does not prevent workload teardown.
+The cleanup-phase transition is attempted independently of that stop write.
+If no BigQuery intent was ever recorded, cleanup skips the attached handoff and continues ordinary settlement.
+Once released, it waits for the external quiescence callback to return exactly `true`, then invokes handoff cleanup, which rechecks that same barrier before any service deletion.
+It waits for terminal queries and table deletion within its cleanup window; a barrier that fails its recheck aborts that pass.
+Observed Pod disappearance is not a substitute for that callback's creator/writer and in-flight service guarantees described above.
+If release, the barrier or query termination does not complete, cleanup retains the control record and environment lock and does not scale down the Operator or claim idle.
+A runner without a cleanup-capable supervisor can remove the workload but cannot impersonate the supervisor to finish BigQuery cleanup.
+An intent left between the two initialization writes, without a handoff binding, remains blocked after stop; common cleanup cannot invent proof of runner release.
+Such partial initialization, standalone controller state without this binding, and unresolved creating calls require externally reviewed incident recovery rather than automatic adoption by a replacement process.
+
+Recorded BigQuery state also gates Operator shutdown, the `CLEANED` transition, settlement, idle verification and finalization, even when no handoff is attached.
+The final receipt retains the complete BigQuery control snapshot, including table receipts and query evidence pointers.
+A conflicting receipt or a concurrent control change leaves the control record and lock in place.
+These tests use synthetic actors and services; authenticated admission, namespace/resource policy, observation and recovery scheduling, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
 
 The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.

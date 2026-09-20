@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import uuid
 
@@ -62,9 +63,12 @@ class HookChain(SessionHooks):
 class Supervisor:
     """Observe the workload, run an approved exercise, and return it to idle."""
 
-    def __init__(self, env, upgrade=None, cells=None, hooks=None):
+    def __init__(
+        self, env, upgrade=None, cells=None, hooks=None, *, bigquery=None, quiesce=None
+    ):
         self.env = env
-        self.cleanup = Cleanup(env)
+        self.bigquery = bigquery
+        self.cleanup = Cleanup(env, bigquery=bigquery, quiesce=quiesce)
         self.log_bytes = 0
         self.log_since = {}
         self.log_stopped = False
@@ -78,6 +82,36 @@ class Supervisor:
             if env.approval.scenario == "cloudtasks"
             else None
         )
+
+    def query(self, name, *, deadline):
+        """Wait for runner-exported evidence while keeping the supervisor alive.
+
+        The scenario chooses observation names, deadlines and result criteria;
+        receiving a query result alone does not establish trial success.
+        Repeating a request retains its original name and deadline. An expired
+        observation aborts the trial rather than opening a new retry window.
+        """
+        if self.bigquery is None:
+            raise Failure("BigQuery observation requires an attached handoff")
+        if (
+            type(deadline) not in (int, float)
+            or not math.isfinite(deadline)
+            or deadline > self.env.schedule.cleanup_at
+        ):
+            raise Failure("BigQuery observation exceeds the execution window")
+        self.bigquery.request(name, deadline=deadline)
+        result = None
+
+        def collected():
+            nonlocal result
+            self.env.require_running("BigQuery observation has been stopped")
+            self.env.records.heartbeat()
+            self.cleanup.audit()
+            result = self.bigquery.result(name)
+            return result is not None
+
+        self.env.wait(collected, deadline)
+        return result
 
     def telemetry(self, items, pods):
         observation = [

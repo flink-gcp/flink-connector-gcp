@@ -616,3 +616,129 @@ def test_unknown_actor_cannot_stop_run(actors):
     with pytest.raises(Failure, match="Unexpected"):
         actors.runner.stop()
     assert not actors.env.refresh().stop_requested
+
+
+def test_real_handoff_is_serviced_by_runner_settlement(actors):
+    from flink_tier3.environment import Environment
+    from flink_tier3.model import Schedule
+    from flink_tier3.runner import Runner
+
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.env.stopping = a.env.evidence_failed = False
+    a.env.schedule = Schedule.for_window(NOW, NOW + 3600)
+    a.env.emit = lambda event, payload: a.env.records.evidence(event, payload, "runner")
+    job = {"status": {}}
+    a.env.root = lambda _key: job
+    a.env.wait = lambda predicate, deadline: Environment.wait(
+        a.env, predicate, deadline
+    )
+    a.env.roots = {}
+    runner = Runner(a.env, bigquery=a.runner)
+    runner.adopt_root = lambda _key: None
+    polls = 0
+
+    def advance(seconds):
+        nonlocal polls
+        a.now[0] += seconds
+        polls += 1
+        if polls == 1:
+            assert a.api.calls.count(("submit", 0)) == 1
+            a.api.jobs[0]["status"]["state"] = "DONE"
+        elif polls == 2:
+            assert a.supervisor.result("baseline")["report"]["passed"] is True
+            a.supervisor.stop()
+        else:
+            assert a.supervisor.released()
+            assert a.supervisor.cleanup(lambda: True)
+            job["status"]["succeeded"] = 1
+
+    a.env.sleep = advance
+
+    class Settled(Exception):
+        pass
+
+    def after_wait(_reason, _success):
+        from flink_tier3.bigquery_handoff import require_bigquery_clean
+
+        require_bigquery_clean(a.env.refresh())
+        raise Settled
+
+    runner.cleanup.run = after_wait
+    with pytest.raises(Settled):
+        runner.settle()
+    assert polls == 3
+    assert not a.api.tables
+    assert a.api.calls.count(("submit", 0)) == 1
+    assert a.api.calls.count(("results", 0)) == 1
+
+
+@pytest.mark.parametrize("pending", [False, 1])
+def test_common_cleanup_waits_for_real_handoff_fence(actors, pending):
+    from flink_tier3.cleanup import Cleanup
+    from flink_tier3.environment import Environment
+
+    a = actors
+    start(a)
+    a.runner.release()
+    env = a.supervisor.env
+    env.wait = lambda predicate, deadline: Environment.wait(env, predicate, deadline)
+    waits = []
+
+    def sleep(seconds):
+        assert not any(call[0] == "delete" for call in a.api.calls)
+        waits.append(seconds)
+        a.now[0] += seconds
+
+    env.sleep = sleep
+    barriers = iter([pending, True, True])
+    cleanup = Cleanup(env, bigquery=a.supervisor, quiesce=lambda: next(barriers))
+    cleanup.finish_bigquery(NOW + 60)
+    assert waits == [15]
+    assert not a.api.tables
+    assert a.env.refresh().bigquery["cleaned"]
+
+
+def test_common_cleanup_rechecks_real_external_fence_before_deletion(actors):
+    from flink_tier3.cleanup import Cleanup
+    from flink_tier3.environment import Environment
+
+    a = actors
+    start(a)
+    a.runner.release()
+    env = a.supervisor.env
+    env.wait = lambda predicate, deadline: Environment.wait(env, predicate, deadline)
+    barriers = iter([True, False])
+    cleanup = Cleanup(env, bigquery=a.supervisor, quiesce=lambda: next(barriers))
+    with pytest.raises(Failure, match="not quiescent"):
+        cleanup.finish_bigquery(NOW + 60)
+    assert len(a.api.tables) == 10
+    assert not any(call[0] == "delete" for call in a.api.calls)
+    assert not a.env.refresh().bigquery["cleaned"]
+
+
+def test_common_cleanup_skips_real_handoff_without_resource_intent(actors):
+    from flink_tier3.cleanup import Cleanup
+
+    a = actors
+    a.env.records._change(lambda r: setattr(r, "bigquery", None))
+    cleanup = Cleanup(a.supervisor.env, bigquery=a.supervisor, quiesce=lambda: True)
+    cleanup.finish_bigquery(NOW + 60)
+    assert a.api.calls == []
+    assert a.env.refresh().bigquery is None
+
+
+def test_partial_handoff_initialization_requires_external_incident_recovery(actors):
+    from flink_tier3.bigquery_handoff import require_bigquery_clean
+
+    a = actors
+    a.env.records._change(lambda r: r.bigquery.pop("handoff"))
+    a.env.records.request_stop()
+    with pytest.raises(Failure, match="Admission closed"):
+        a.runner.initialize()
+    with pytest.raises(Failure, match="actor binding"):
+        a.runner.release()
+    with pytest.raises(Failure, match="BigQuery resource cleanup"):
+        require_bigquery_clean(a.env.refresh())
+    assert a.api.calls == []
