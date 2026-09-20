@@ -20,6 +20,7 @@ import copy
 import time
 import uuid
 
+from .bigquery_handoff import require_bigquery_clean
 from .common import ApiError, Failure, json_bytes, utc
 from .model import Phase, RunRecord
 from .policy import CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
@@ -82,6 +83,8 @@ class Records:
         evidence_failed=False,
     ):
         def edit(record):
+            if phase == Phase.CLEANED:
+                require_bigquery_clean(record)
             previous = record.phase
             record.set_phase(phase)
             if reason is not None:
@@ -215,6 +218,7 @@ class Records:
 
     def settled(self, evidence_failed):
         def edit(record):
+            require_bigquery_clean(record)
             record.idle = True
             record.evidence_failed |= evidence_failed
 

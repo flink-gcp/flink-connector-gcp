@@ -23,6 +23,25 @@ import uuid
 from .common import Failure, digest, json_bytes
 
 
+def require_bigquery_clean(record):
+    """Retain shared resources and the lock until service cleanup is recorded."""
+    state = record.bigquery
+    if state is None:
+        return
+    handoff = state.get("handoff") if isinstance(state, dict) else None
+    if (
+        not record.stop_requested
+        or not isinstance(state, dict)
+        or state.get("stopped") is not True
+        or state.get("cleaned") is not True
+        or not isinstance(handoff, dict)
+        or handoff.get("released") is not True
+        or "inflight" not in handoff
+        or handoff["inflight"] is not None
+    ):
+        raise Failure("BigQuery resource cleanup or runner release is incomplete")
+
+
 class _CallIdentityChanged(Failure):
     """A completion acknowledgement encountered another invocation."""
 
@@ -289,6 +308,11 @@ class BigQueryHandoff:
             value["released"] = True
 
         self._change(release)
+
+    def released(self):
+        """Read the bound runner's durable acknowledgement, without transferring it."""
+        _, value = self._read()
+        return value["released"] is True and value["inflight"] is None
 
     def cleanup(self, quiesce):
         """Require runner release plus the caller's external workload barrier."""

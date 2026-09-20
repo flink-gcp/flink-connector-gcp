@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 
+from .bigquery_handoff import require_bigquery_clean
 from .cloudtasks import QUEUE_POLL_MASK, release_queue, transient
 from .common import (
     ApiError,
@@ -88,8 +89,19 @@ def application_resources():
 class Cleanup:
     """Ownership-checked observation and convergence toward the idle foundation."""
 
-    def __init__(self, env):
+    def __init__(self, env, *, bigquery=None, quiesce=None):
+        if bigquery is None and quiesce is not None:
+            raise Failure("A quiescence barrier requires a BigQuery handoff")
+        if bigquery is not None and (
+            bigquery.env is not env
+            or env.actor != "supervisor"
+            or not callable(quiesce)
+        ):
+            raise Failure(
+                "BigQuery cleanup needs its supervisor environment and a quiescence barrier"
+            )
         self.env = env
+        self.bigquery, self.quiesce = bigquery, quiesce
         self.last_inventory = []
         self.current_cell = None
 
@@ -181,7 +193,9 @@ class Cleanup:
             self.env.admission_open()
         else:
             self.env.assert_owner()
-            require_pubsub_clean(self.env.refresh())
+            control = self.env.refresh()
+            require_pubsub_clean(control)
+            require_bigquery_clean(control)
         # ScaleSpec omits zero replicas from its JSON representation.
         if scale["spec"].get("replicas", 0) != replicas:
             patch = [
@@ -415,6 +429,11 @@ class Cleanup:
         self.env.namespaces()
         self.env.assert_owner()
         self.env.refresh()
+        if self.env.records.cache.bigquery is not None:
+            try:
+                self.env.records.request_stop()
+            except Failure:
+                self.env.evidence_failed = True
         try:
             self.env.records.begin_cleanup(reason)
         except Failure:
@@ -507,6 +526,7 @@ class Cleanup:
             raise Failure(
                 "Owned workload remains; Operator and environment lock retained for recovery"
             )
+        self.finish_bigquery(end)
         # Evidence or storage failures must not keep paid resources alive.
         queue_clean = True
         if self.cloudtasks:
@@ -568,9 +588,26 @@ class Cleanup:
         except Failure:
             self.env.evidence_failed = True
 
+    def finish_bigquery(self, deadline):
+        """After workload teardown, wait for release and the external writer fence."""
+        if self.env.refresh().bigquery is None:
+            return
+        if self.bigquery is not None:
+            self.bigquery.stop()
+            self.env.wait(
+                lambda: (
+                    self.bigquery.released()
+                    and self.quiesce() is True
+                    and self.bigquery.cleanup(self.quiesce)
+                ),
+                deadline,
+            )
+        require_bigquery_clean(self.env.refresh())
+
 
 def verify_idle(env):
     env.namespaces()
+    require_bigquery_clean(env.refresh())
     kube, approval = env.kube, env.approval
     items = kube.inventory()
     baseline = set(approval.baseline_uids)

@@ -2948,7 +2948,7 @@ def test_pubsub_finalization_retains_control_changed_during_receipt_write(env):
     )
     plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
     with pytest.raises(
-        rt.Failure, match="Run control changed during Pub/Sub finalization"
+        rt.Failure, match="Run control changed during service finalization"
     ):
         runner.finalize(plans)
     assert runner.env.refresh().pubsub["stage"] == "cleaning"
@@ -2972,7 +2972,7 @@ def test_pubsub_retry_refuses_success_receipt_invalidated_by_evidence_failure(en
     )
     plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
     with pytest.raises(
-        rt.Failure, match="Run control changed during Pub/Sub finalization"
+        rt.Failure, match="Run control changed during service finalization"
     ):
         runner.finalize(plans)
     assert env[1].read("runs/test-1310/result.json")[0]["success"] is True
