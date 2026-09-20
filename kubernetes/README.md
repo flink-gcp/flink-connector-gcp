@@ -32,6 +32,7 @@ kubernetes/
   pkg/smoke/application.cue      # Generic stateful smoke application contract
   pkg/cloudtasks/application.cue # Cloud Tasks measurement cell contract
   apps/smoke/                    # Internal Java application and image payload
+  apps/bigquery/                 # Finite BigQuery recovery application and local tests
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
@@ -206,3 +207,6 @@ The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloud
 All four application namespaces retain zero Pod/PVC quotas until separately approved admission.
 Cloud Tasks workload admission and performance measurements remain later connector work.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
+
+The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
+Its local tests cover input restoration and emulator sink wiring; BigQuery lifecycle admission, image publication and deployed trials remain subsequent work.

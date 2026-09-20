@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery namespace, data containers, workload identity and Operator watch set)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set and finite recovery application)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
@@ -356,6 +356,23 @@ Before Operator plan/apply, the helper also requires the BigQuery job identity a
 The runner and supervisor remain trusted Operator administrators; selecting its KSA through system Jobs now reaches BigQuery Secret access and Pod creation as well.
 Existing lifecycle scenarios still admit only their own applications; the BigQuery application and runtime remain subsequent work.
 Application publication and bounded execution follow separately; these persistent grants provide no deployed BigQuery result and authorize no paid trial.
+
+### BigQuery recovery application
+
+The opt-in `tier3-bigquery` Maven profile builds an internal Flink 2.2.1 workload with the production default-stream and buffered-stream sinks.
+Keep finite checkpointed input at parallelism one and the sink at parallelism two, with fixed UIDs and no rescaling contract.
+Each record routes by sequence modulo 10 or 50 destinations in the dedicated dataset; the external runner must pre-create and prove ownership of those tables because the sink uses `CREATE_NEVER`.
+Use deterministic protobuf rows of exactly 64 KiB for ALO and 1 KiB for EO, a default offered rate of 1 MiB/s, and a finite 30-minute-equivalent input below the 2 GiB application ceiling.
+These limits count serialized input before replay and RPC framing; they neither authorize a trial nor bound billed work.
+
+Checkpointed input identity rejects another run or any changed input/mode configuration on restore.
+Log source progress, snapshot positions and checkpoint notifications, and correlate them with external checkpoint history and query oracles in the subsequent lifecycle implementation.
+Local source recovery tests use a discard sink; graph tests verify every writer reaches all destinations for both modes.
+Emulator tests cover production ALO writer wiring and routing with one sequential append per destination.
+Concurrent appends caused SQLite lock errors and repeated RPC retries in CI; parallel graph coverage therefore uses the local capture sink.
+The pinned emulator assigns buffered offsets across streams and can hang on multi-stream flush, so this application requires real-service EO validation; the connector retains its deterministic buffered-service tests.
+Neither establishes deployed exactly-once recovery or the conditional GCS grant's checkpoint/restore behavior.
+Image publication, bounded admission, query oracles and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
 

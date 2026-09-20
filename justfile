@@ -449,6 +449,10 @@ tier3-smoke-verify:
 tier3-cloudtasks-verify:
     just verify -P tier3-cloudtasks -pl kubernetes/apps/cloudtasks -am clean
 
+# Verify the internal BigQuery recovery application without GCP access.
+tier3-bigquery-verify:
+    just verify -P tier3-bigquery -pl kubernetes/apps/bigquery -am clean
+
 # Export image inputs from the same uv lock used by the lifecycle CLI and tests.
 tier3-lifecycle-requirements:
     mkdir -p kubernetes/images/lifecycle/target

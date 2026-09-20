@@ -632,6 +632,7 @@ def test_ignored_only_skips_the_build(ci_maven_args):
     assert out == {
         "run_tier3_smoke": "false",
         "run_tier3_cloudtasks": "false",
+        "run_tier3_bigquery": "false",
         "run_build": "false",
         "lanes": "[]",
         "check_notice_sources": "false",
@@ -883,3 +884,38 @@ def test_cloudtasks_application_and_its_dependencies_select_its_build(
 )
 def test_unrelated_changes_do_not_select_cloudtasks_application(ci_maven_args, path):
     assert not ci_maven_args.requires_tier3_cloudtasks([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/bigquery/pom.xml",
+        "kubernetes/apps/bigquery/src/main/java/Job.java",
+        "flink-connector-gcp-bigquery/src/main/java/Writer.java",
+        "flink-connector-gcp-base/src/main/java/Rpc.java",
+        "flink-connector-gcp-test-utils/pom.xml",
+        "pom.xml",
+        "justfile",
+        "mise.toml",
+        ".mvn/wrapper/maven-wrapper.properties",
+        ".github/workflows/verify.yaml",
+        "tools/maven/checkstyle.xml",
+    ],
+)
+def test_bigquery_application_and_its_dependencies_select_its_build(
+    ci_maven_args, path
+):
+    assert ci_maven_args.requires_tier3_bigquery([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/smoke/pom.xml",
+        "flink-connector-gcp-bigtable/src/main/java/Writer.java",
+        "opentofu/tier3-bootstrap/bigquery.tf",
+        "docs/adr/example.md",
+    ],
+)
+def test_unrelated_changes_do_not_select_bigquery_application(ci_maven_args, path):
+    assert not ci_maven_args.requires_tier3_bigquery([path])

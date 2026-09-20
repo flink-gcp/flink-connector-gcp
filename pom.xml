@@ -1133,6 +1133,12 @@ limitations under the License.
 
     <profiles>
         <profile>
+            <id>tier3-bigquery</id>
+            <modules>
+                <module>kubernetes/apps/bigquery</module>
+            </modules>
+        </profile>
+        <profile>
             <id>tier3-cloudtasks</id>
             <modules>
                 <module>kubernetes/apps/cloudtasks</module>
