@@ -432,6 +432,19 @@ jobs:
       - name: Build and test the application without GCP
         run: just tier3-pubsub-verify
 
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build the Pub/Sub image without publishing
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: kubernetes/apps/pubsub
+          platforms: linux/amd64
+          # Keep this public base aligned with FLINK_SOURCE in tier3-images.yaml.
+          build-args: |
+            FLINK_IMAGE=docker.io/library/flink@sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd
+            FLINK_VERSION=2.2.1
+          push: false
+
   # The gate rejects an unrequested skip as well as failures in either build path.
   verify_passed:
     name: Verify passed

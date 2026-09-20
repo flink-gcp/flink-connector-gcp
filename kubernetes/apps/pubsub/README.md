@@ -15,7 +15,9 @@ The opt-in `tier3-pubsub` Maven profile keeps the application outside published 
 The build produces `target/pubsub-recovery.jar` and copies runtime dependencies with their original licenses/notices into `target/image-lib/`.
 The Dockerfile adds these files to `/opt/flink/usrlib/` over the reviewed Flink image and enables its bundled GCS filesystem plugin.
 The entry point is `io.github.flink.gcp.connector.tier3.pubsub.PubSubRecoveryJob`.
-Image publication, digest pinning and application manifests remain subsequent work.
+The [image publication workflow](../../../.github/workflows/tier3-images.yaml) packages it as `pubsub-recovery` on the fixed Flink 2.2.1 / Java 17 AMD64 base.
+The application CI lane builds the Dockerfile without publishing; its context admits only the Dockerfile, application JAR and packaged runtime dependency JARs.
+An authorized publication dispatch, verified digest selection and application manifests remain subsequent work.
 
 Unit tests cover argument and input bounds, serialization, missing/foreign restored state, contradictory evidence, missing IDs and duplicate classification.
 MiniCluster tests use production source/sink RPCs against the Pub/Sub emulator, replace TaskManagers after a completed checkpoint and restore savepoints at parallelism 1→2 and 2→1.

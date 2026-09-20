@@ -78,10 +78,13 @@ jobs:
       - name: Verify the BigQuery recovery payload
         run: just tier3-bigquery-verify
 
-      - name: Read the reviewed BigQuery base
-        id: bigquery_base
+      - name: Read the reviewed BigQuery and Pub/Sub base
+        id: recovery_base
         run: |
           printf 'image=%s/flink@%s\n' "$GAR" "${FLINK_SOURCE##*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the Pub/Sub recovery payload
+        run: just tier3-pubsub-verify
 
       - name: Select the reviewed Cloud Tasks runtime
         id: cloudtasks_base
@@ -201,11 +204,29 @@ jobs:
           context: kubernetes/apps/bigquery
           platforms: linux/amd64
           build-args: |
-            FLINK_IMAGE=${{ steps.bigquery_base.outputs.image }}
+            FLINK_IMAGE=${{ steps.recovery_base.outputs.image }}
             FLINK_VERSION=2.2.1
           push: true
           tags: ${{ steps.bigquery_meta.outputs.tags }}
           labels: ${{ steps.bigquery_meta.outputs.labels }}
+
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: pubsub_meta
+        with:
+          images: ${{ env.GAR }}/pubsub-recovery
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        id: pubsub_build
+        with:
+          context: kubernetes/apps/pubsub
+          platforms: linux/amd64
+          build-args: |
+            FLINK_IMAGE=${{ steps.recovery_base.outputs.image }}
+            FLINK_VERSION=2.2.1
+          push: true
+          tags: ${{ steps.pubsub_meta.outputs.tags }}
+          labels: ${{ steps.pubsub_meta.outputs.labels }}
 
       - name: Show published image digests
         env:
@@ -213,7 +234,8 @@ jobs:
           SMOKE_DIGEST: ${{ steps.smoke_build.outputs.digest }}
           CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
           BIGQUERY_DIGEST: ${{ steps.bigquery_build.outputs.digest }}
-          BIGQUERY_BASE: ${{ steps.bigquery_base.outputs.image }}
+          RECOVERY_BASE: ${{ steps.recovery_base.outputs.image }}
+          PUBSUB_DIGEST: ${{ steps.pubsub_build.outputs.digest }}
           CLOUDTASKS_BASE: ${{ steps.cloudtasks_base.outputs.image }}
           CLOUDTASKS_PACKAGE: ${{ steps.cloudtasks_base.outputs.package }}
         run: |
@@ -226,6 +248,7 @@ jobs:
             printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST"
             printf '%s\n' "$CLOUDTASKS_BASE"
             printf '%s/%s@%s\n' "$GAR" "$CLOUDTASKS_PACKAGE" "$CLOUDTASKS_DIGEST"
-            printf '%s\n' "$BIGQUERY_BASE"
+            printf '%s\n' "$RECOVERY_BASE"
             printf '%s/bigquery-recovery@%s\n' "$GAR" "$BIGQUERY_DIGEST"
+            printf '%s/pubsub-recovery@%s\n' "$GAR" "$PUBSUB_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"

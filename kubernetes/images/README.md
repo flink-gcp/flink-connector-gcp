@@ -29,6 +29,7 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | `cloudtasks-measurement` | Reviewed Flink 2.2.1 base, the [Cloud Tasks measurement application](../apps/cloudtasks/README.md) and unmodified runtime dependency JARs | Verify the selected reactor, then build its Dockerfile for AMD64 |
 | `cloudtasks-measurement-flink120` | Reviewed Flink 1.20.4/Java 17 base and the same application compiled with the Flink 1.x compatibility source root | Select `cloudtasks_flink_version=1.20.4`; build separately from the 2.2.1 package |
 | `bigquery-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [BigQuery recovery application](../apps/bigquery/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
+| `pubsub-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Pub/Sub recovery application](../apps/pubsub/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
 | `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
@@ -51,8 +52,8 @@ mise x -- just tier3-lifecycle-requirements
 Run the export recipe before a local Docker build as well; the publication workflow runs it before cloud authentication.
 The locked export fails when dependency declarations and `uv.lock` disagree.
 Docker's setup-buildx, metadata and build-push actions build it, apply a full-commit `sha-...` tag and OCI labels, and publish it.
-The Cloud Tasks and BigQuery contexts are `kubernetes/apps/cloudtasks` and `kubernetes/apps/bigquery`; their `.dockerignore` files admit only each Dockerfile, application JAR and packaged runtime dependency JARs.
-The BigQuery CI lane also builds its Dockerfile without publishing, using the public digest that the publication workflow mirrors into GAR.
+The Cloud Tasks, BigQuery and Pub/Sub contexts are `kubernetes/apps/cloudtasks`, `kubernetes/apps/bigquery` and `kubernetes/apps/pubsub`; their `.dockerignore` files admit only each Dockerfile, application JAR and packaged runtime dependency JARs.
+The BigQuery and Pub/Sub CI lanes also build their Dockerfiles without publishing, using the public digest that the publication workflow mirrors into GAR.
 The lifecycle build context is only `kubernetes/images/lifecycle`; the smoke context is `kubernetes/apps/smoke`, with `.dockerignore` allowing only the Dockerfile and two packaged JARs.
 
 Source images retain their upstream notices, licenses and OS package metadata.
@@ -83,17 +84,18 @@ gh workflow run tier3-images.yaml --repo flink-gcp/flink-connector-gcp \
 
 The `cloudtasks_flink_version` choice defaults to `2.2.1`; select `1.20.4` in a separate dispatch for that measurement runtime.
 The selected Cloud Tasks base is a fixed official AMD64 digest, and the Dockerfile requires its matching GCS plugin.
-The 1.20.4 dispatch also mirrors that base into the `flink` package; smoke and BigQuery keep their reviewed 2.2.1 bases and payloads.
+The 1.20.4 dispatch also mirrors that base into the `flink` package; smoke, BigQuery and Pub/Sub keep their reviewed 2.2.1 bases and payloads.
 Each dispatch publishes only the selected Cloud Tasks variant, and both variants need successful publication before a two-line assessment.
 
-Every dispatch verifies smoke, BigQuery and the selected Cloud Tasks application before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all three application images with BuildKit.
-The BigQuery payload is verified before the selected Cloud Tasks build; a later Flink 1.20.4 build cleans shared dependencies but does not rewrite the already-packaged BigQuery application or its copied JARs.
-BigQuery publication requires separate approval before dispatch; adding this path does not authorize a publication or trial.
+Every dispatch verifies smoke, BigQuery, Pub/Sub and the selected Cloud Tasks application before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all four application images with BuildKit.
+The BigQuery and Pub/Sub payloads are verified before the selected Cloud Tasks build; a later Flink 1.20.4 build cleans shared dependencies but does not rewrite their already-packaged applications or copied JARs.
+BigQuery and Pub/Sub publication require separate approval before dispatch; adding this path does not authorize a publication or trial.
 It uses one standard Ubuntu runner, permits one publication at a time and has a 30-minute job timeout.
 The fixed source digests define what is transferred; there is no custom image-content inspector, capacity quota or intermediate receipt format.
 Docker's login action logs out when the job ends.
 
-A successful run lists the Operator, Flink, lifecycle tools, smoke, selected Cloud Tasks base/application and BigQuery base/application digest references in the GitHub Actions job summary.
+A successful run lists the Operator, Flink, lifecycle tools, smoke and selected Cloud Tasks base/application digest references in the GitHub Actions job summary.
+It also lists the shared BigQuery/Pub/Sub base once, followed by both recovery application digests.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
 The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
 The build action also supplies its standard build summary.
@@ -101,8 +103,9 @@ A failed run can leave already-published images in GAR; check the failed step an
 Do not adopt image pins from an incomplete run.
 The Cloud Tasks application needs its first authorized publication before a session dispatch can name its digest; that digest is a dispatch input verified live against the registry, not a pin in this package.
 The [first BigQuery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`, before the application added appender observations.
-The updated application needs another authorized publication and a separately reviewed digest before workload admission.
-Publication supplies no Cloud Tasks or BigQuery workload admission or service-measurement approval.
+The updated BigQuery application needs another authorized publication and a separately reviewed digest before workload admission.
+The Pub/Sub application needs its first authorized publication and a separately reviewed digest before workload admission.
+Publication supplies no Cloud Tasks, BigQuery or Pub/Sub workload admission or service-measurement approval.
 
 ## Retention and acceptance
 

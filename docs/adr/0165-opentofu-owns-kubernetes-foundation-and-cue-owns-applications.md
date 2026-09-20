@@ -34,6 +34,7 @@ limitations under the License.
 - Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring and appender observations)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
+- Updated: 2026-09-20 (Pub/Sub application image publication wiring)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -426,7 +427,7 @@ Application admission and service permissions remain separate from this idle sco
 The [DataStream recovery application](../../kubernetes/apps/pubsub/README.md) follows the applied namespace and idle Operator foundation for [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 Its opt-in build targets the Flink 2.2.1 / Java 17 runtime and relays two pre-created input subscriptions into one pre-created output topic with production source/sink builders and workload ADC.
 The job has no resource-administration authority; the external provisioner must record exclusive run ownership and settings before admission, and cleanup must refuse unproved ownership.
-Service permissions, image publication, CUE admission and independent lifecycle supervision remain subsequent implementation.
+Service permissions, CUE admission and independent lifecycle supervision remain subsequent implementation.
 
 Preserve four distinct identities: logical input, input Pub/Sub message, observer processing call and output Pub/Sub message.
 A fresh observation UUID per processing call distinguishes repeated input processing from repeated publication of one already serialized observation; retaining output message IDs distinguishes either from the collector's own redelivery.
@@ -437,6 +438,11 @@ The checkpointed union-state guard fixes the run and logical input domain while 
 Local emulator/MiniCluster tests exercise both DataStream RPC paths, TaskManager-loss checkpoint recovery and savepoint restoration in both directions.
 They establish neither service replay timing nor deployed recovery; a later independently observed trial must prove the fault's completed-checkpoint boundary and expected replay cohort.
 Table entry points and actual service-resource lifecycle remain separate acceptance work on the parent.
+
+The manual image workflow verifies and packages the relay as `pubsub-recovery` on the fixed Flink 2.2.1 AMD64 base, independently of the Cloud Tasks runtime selection.
+Its Docker context admits only the Dockerfile and packaged JARs; the application CI lane builds the same Dockerfile from the public base without publishing.
+The publication path uses the existing GAR-scoped publisher and reports application and base digests.
+Actual publication dispatch, verified digest selection and workload admission require subsequent authorization and validation.
 
 ### Ownership boundaries
 
