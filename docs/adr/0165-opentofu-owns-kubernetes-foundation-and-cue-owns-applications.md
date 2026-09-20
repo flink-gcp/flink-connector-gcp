@@ -37,6 +37,7 @@ limitations under the License.
 - Updated: 2026-09-20 (Pub/Sub application image publication wiring)
 - Updated: 2026-09-20 (Pub/Sub deployment package and completed publication)
 - Updated: 2026-09-20 (owned Pub/Sub resource operations and partial-creation cleanup)
+- Updated: 2026-09-20 (Pub/Sub lifecycle authority and recorded resource policies)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -494,8 +495,37 @@ The lifecycle still owns the separate active-run record and removes it only afte
 Pub/Sub deletion has no generation precondition, so this record is not a substitute for exclusive control of the resources.
 A mandatory caller guard must enforce approval, shared environment ownership and the appropriate admission or cleanup budget before each Pub/Sub request or logical storage call, with exclusive control spanning read/delete gaps.
 The caller reserves the whole storage call's request/time budget, including the shared adapter's generation-read repetitions; a guard callback is not an individual HTTP-request counter.
-The helper uses the existing authorized HTTP session without automatic retries and does not implement that cross-actor lifecycle or grant installation.
+The helper uses the existing authorized HTTP session without automatic retries and does not implement that cross-actor lifecycle.
 It remains preparation for separately approved execution; synthetic operation tests establish neither live service behavior nor deployed recovery acceptance.
+
+### Pub/Sub lifecycle IAM preparation
+
+Define the persistent custom roles and project bindings in OpenTofu, and keep per-run topic/subscription policies in the guarded runtime helper.
+The runner needs project-level creation plus topic attachment, metadata, resource policy installation/readback and deletion.
+The supervisor needs metadata, policy readback and deletion independently of runner progress.
+These project grants are not prefix- or ownership-scoped; in particular, the runner can change any Pub/Sub topic/subscription policy and grant itself data access.
+Do not describe runtime ownership checks as restricting that IAM authority.
+This trades broader authority in the trusted provisioner for narrower data access in the workload; it is not a reduction in the combined authority of all identities.
+A project-level workload publisher/consumer grant would avoid resource-policy writes, but would let a compromised job publish to or consume other runs' resources.
+The selected design confines that job's data grants and trusts the separate runner with project-wide policy administration, including the ability to expose or revoke access on unrelated Pub/Sub resources.
+This refines the Cloud Tasks lifecycle's no-IAM-write choice: its workload already has queue data grants, whereas the Pub/Sub plan installs distinct input/output grants on resources created per run.
+
+A project binding with a resource-name condition was considered.
+Google's [IAM attribute support table](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference#resource.name) lists Pub/Sub Lite for resource-name conditions, but not Pub/Sub topics/subscriptions.
+This design therefore does not rely on a name-prefix condition to constrain the runner; re-evaluate that choice only with verified service support.
+
+The ownership manifest advances to version 2 and freezes data bindings before any resource creation.
+The runner publishes to the two input topics; the workload reads metadata and consumes the input subscriptions and publishes to the output topic; the supervisor consumes the output subscription for external observation.
+Define the metadata/consume custom role persistently without binding it on the project.
+Install only on revalidated owned resources with empty explicit policies, require the returned etag on every policy write, and request policy version 3 on reads so conditional bindings cannot be silently overwritten.
+Refuse unknown policy content, matching pre-existing grants, stale ownership, missing etags and ambiguous responses; do not merge policies, retry writes or resume partial installation.
+Retain partial work for ownership-checked resource cleanup and re-read every installed policy before later admission.
+The exclusive environment control must span resource/policy read-write gaps as well as deletion gaps.
+
+The [application runbook](../../kubernetes/apps/pubsub/README.md#permissions-and-remaining-integration) records the exact grant table and API sources.
+Explicit policy readback does not establish effective access or exclude inherited privileges; identity-specific probes and propagation handling remain mandatory before separately approved execution.
+Version 1 manifests are not adopted or migrated; the earlier helper was not executed against live resources.
+This stage prepares authority and internal operations, leaving shared lifecycle integration and deployed recovery acceptance to subsequent work.
 
 ### Ownership boundaries
 

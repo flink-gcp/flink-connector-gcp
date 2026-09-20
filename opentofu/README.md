@@ -31,6 +31,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
 | `flink-gcp/tier3-pubsub.tf` | Pub/Sub recovery workload identity, one-day state bucket and lifecycle state access |
 | `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
+| `flink-gcp/pubsub-lifecycle.tf` | Project-wide Pub/Sub lifecycle control and an unbound resource consumer role |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
 | `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |
@@ -235,10 +236,29 @@ If the apply fails, review the fresh plan in the recovery draft PR opened by tfa
 The [Pub/Sub bootstrap stage](tier3-bootstrap/README.md#pubsub-recovery-foundation) adds the namespace/KSA, installer and job RBAC, lifecycle access and zero idle quotas after the GCP foundation is verified.
 The [bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan; separate reads verified the Pub/Sub identity, observed zero quotas, empty inventory and runner access.
 The common helper now inspects all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) adds `tier3-pubsub` to its watch set.
-Pub/Sub topic/subscription grants are deliberately deferred until the concrete application and run-owned resource design specifies the required operations.
-No Pub/Sub data, resource-administration or service-account-key permissions are introduced here.
+The initial foundation deferred Pub/Sub topic/subscription grants; the lifecycle authority below follows the concrete application and owned resource design.
+The initial eight-resource stage introduced no Pub/Sub data or resource-administration permissions.
 Application/image publication, run admission, fault injection, ownership-aware service cleanup and separately approved numeric execution ceilings remain later steps.
 This configuration does not create topics/subscriptions or start Kubernetes workloads, and it does not establish live Pub/Sub recovery.
+
+### Pub/Sub lifecycle authority
+
+The [IAM preparation](https://github.com/flink-gcp/flink-connector-gcp/issues/1391) adds five GCP resource instances: two lifecycle custom roles and their project bindings, plus one unbound consumer role.
+The runner role contains topic/subscription creation, metadata reads, policy reads/writes, deletion and topic attachment.
+The supervisor role contains topic/subscription metadata reads, policy reads and deletion, with no creation or policy writes.
+Neither role directly includes publishing or consumption, but the runner's policy authority allows it to grant those permissions on any project topic or subscription, to itself or other principals.
+These are trusted project-wide control identities: the grants do not enforce the `t3-` prefix, nonce labels or run ownership.
+The [resource helper](../kubernetes/apps/pubsub/README.md#permissions-and-remaining-integration) must enforce those boundaries under the shared environment lock.
+
+The third role, `tier3PubSubConsumer`, contains subscription metadata reads and consumption and has no project binding.
+At runtime the runner installs fixed policies on owned resources: input publication for itself, input consumption and output publication for the workload, and output consumption for the supervisor.
+No workload Pub/Sub project grant, service-account key, live topic or subscription is created by this configuration.
+The runner needs no project IAM write permission to install these resource policies; its custom role explicitly grants the Pub/Sub resource policy operations.
+
+Review the saved GCP plan for these five additions and no unrelated changes before merge.
+After the merge-triggered apply, verify the role permissions and bindings and an empty refreshed GCP plan before integrating runtime admission.
+Per-resource grants and identity-specific effective-access checks remain inside the future approved lifecycle; an empty infrastructure plan alone cannot validate them.
+This preparation starts no Kubernetes workload or Pub/Sub data operation.
 
 ### Operator installation follows the cluster
 

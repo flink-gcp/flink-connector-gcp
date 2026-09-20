@@ -461,7 +461,7 @@ def test_manifest_write_collision_does_not_overwrite_or_create(setup):
     assert not any(c[0] == "PUT" for c in http.calls)
 
 
-def test_manifest_version_boolean_does_not_equal_version_one(setup):
+def test_manifest_version_boolean_is_rejected(setup):
     resources, http, store, _ = setup
     resources.provision()
     store.value["version"] = True
@@ -619,3 +619,296 @@ def test_inspection_names_the_absent_resource(setup):
     with pytest.raises(Failure, match="resource is absent") as error:
         resources.inspect()
     assert sub in str(error.value)
+
+
+class FakeIamHttp(FakeHttp):
+    def __init__(self):
+        super().__init__()
+        self.policies = {}
+
+    def request(self, method, url, *, json, timeout, allow_redirects):
+        if ":" not in url.removeprefix(BASE):
+            return super().request(
+                method, url, json=json, timeout=timeout, allow_redirects=allow_redirects
+            )
+        assert timeout == HTTP_TIMEOUT and allow_redirects is False
+        name, operation = url.removeprefix(BASE).split(":", 1)
+        self.calls.append((method, name + ":" + operation, copy.deepcopy(json)))
+        self.before(method, name)
+        if name not in self.resources:
+            return reply({}, 404)
+        current = self.policies.get(name, {"etag": "initial"})
+        if method == "GET":
+            assert operation == "getIamPolicy?options.requestedPolicyVersion=3"
+            assert json is None
+            result = reply(current)
+        else:
+            assert method == "POST" and operation == "setIamPolicy"
+            assert set(json) == {"policy"}
+            if json["policy"].get("etag") != current.get("etag"):
+                return reply({}, 409)
+            self.policies[name] = {**copy.deepcopy(json["policy"]), "etag": "updated"}
+            result = reply(self.policies[name])
+        self.after(method, name)
+        return result
+
+
+@pytest.fixture
+def iam_setup():
+    http, store, guards = FakeIamHttp(), FakeStore(), []
+    resources = Resources(
+        http, store, ResourcePlan("probe", "a" * 32), lambda *args: guards.append(args)
+    )
+    resources.provision()
+    return resources, http, store, guards
+
+
+def test_iam_plan_separates_input_workload_and_output_observer(iam_setup):
+    resources, http, store, guards = iam_setup
+    grants = store.value["grants"]
+    assert store.value["version"] == 2
+    for suffix in ("in-0", "in-1", "out"):
+        topic = f"projects/flink-gcp/topics/t3-probe-{suffix}"
+        sub = topic.replace("topics", "subscriptions")
+        publisher = "tier3-pubsub" if suffix == "out" else "tier3-runner"
+        consumer = "tier3-supervisor" if suffix == "out" else "tier3-pubsub"
+        assert grants[topic] == [
+            {
+                "role": "roles/pubsub.publisher",
+                "members": [
+                    f"serviceAccount:{publisher}@flink-gcp.iam.gserviceaccount.com"
+                ],
+            }
+        ]
+        assert grants[sub] == [
+            {
+                "role": "projects/flink-gcp/roles/tier3PubSubConsumer",
+                "members": [
+                    f"serviceAccount:{consumer}@flink-gcp.iam.gserviceaccount.com"
+                ],
+            }
+        ]
+    observations = resources.install_grants()
+    assert {row["name"]: row["policy"]["bindings"] for row in observations} == grants
+    posts = [c for c in http.calls if c[0] == "POST"]
+    assert len(posts) == 6
+    assert all(c[2]["policy"]["etag"] == "initial" for c in posts)
+    assert resources.inspect_grants() == observations
+    assert len(guards) == len(http.calls) + len(store.calls)
+    assert all(("grant", method, name) in guards for method, name, _ in posts)
+    frozen = resources.plan.grants()
+    frozen.clear()
+    assert resources.plan.manifest() == store.value
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {},
+        {"bindings": []},
+        {"etag": ""},
+        {"etag": None},
+        {"etag": "initial", "version": True},
+        {"etag": "initial", "version": 2},
+        {"etag": "initial", "auditConfigs": []},
+        {
+            "etag": "initial",
+            "bindings": [{"role": "roles/pubsub.publisher", "members": ["allUsers"]}],
+        },
+        {
+            "etag": "initial",
+            "version": 3,
+            "bindings": [
+                {
+                    "role": "roles/pubsub.publisher",
+                    "members": ["allUsers"],
+                    "condition": {"expression": "false"},
+                }
+            ],
+        },
+    ],
+)
+def test_all_policies_are_preflighted_before_any_grant(iam_setup, policy):
+    resources, http, _, _ = iam_setup
+    last = resources.plan.subscriptions()[-1]["name"]
+    http.policies[last] = copy.deepcopy(policy)
+    with pytest.raises(Failure, match="policy"):
+        resources.install_grants()
+    assert not any(c[0] == "POST" for c in http.calls)
+    assert http.policies[last] == policy
+
+
+def test_existing_matching_grants_are_not_adopted_or_resumed(iam_setup):
+    resources, http, _, _ = iam_setup
+    resources.install_grants()
+    http.calls.clear()
+    with pytest.raises(Failure, match="policy"):
+        resources.install_grants()
+    assert not any(c[0] == "POST" for c in http.calls)
+
+
+@pytest.mark.parametrize("index", range(6))
+def test_ambiguous_iam_write_stops_without_retry_and_allows_cleanup(iam_setup, index):
+    resources, http, store, _ = iam_setup
+    names = list(resources.plan.grants())
+
+    def lose_reply(method, name):
+        if method == "POST" and name == names[index]:
+            raise requests.exceptions.Timeout("response lost")
+
+    http.after = lose_reply
+    with pytest.raises(TransportError):
+        resources.install_grants()
+    assert len([c for c in http.calls if c[0] == "POST"]) == index + 1
+    assert set(http.policies) == set(names[: index + 1])
+    if index < 5:
+        with pytest.raises(Failure, match="policy"):
+            resources.inspect_grants()
+    else:
+        assert len(resources.inspect_grants()) == 6
+    assert len(resources.cleanup()) == 6
+    assert not http.resources
+    assert store.value == resources.plan.manifest()
+
+
+def test_iam_etag_conflict_does_not_overwrite_concurrent_policy(iam_setup):
+    resources, http, _, _ = iam_setup
+    name = resources.plan.topics()[0]["name"]
+    foreign = {
+        "etag": "concurrent",
+        "bindings": [
+            {"role": "roles/pubsub.viewer", "members": ["user:a@example.org"]}
+        ],
+    }
+
+    def concurrent_write(method, target):
+        if method == "POST":
+            http.policies[target] = copy.deepcopy(foreign)
+
+    http.before = concurrent_write
+    with pytest.raises(ApiError):
+        resources.install_grants()
+    assert http.policies[name] == foreign
+    assert len([c for c in http.calls if c[0] == "POST"]) == 1
+
+
+@pytest.mark.parametrize("drift", ["manifest", "resource", "policy"])
+def test_rechecks_ownership_and_policy_between_grants(iam_setup, drift):
+    resources, http, store, _ = iam_setup
+    target = resources.plan.topics()[1]["name"]
+
+    def change_next(method, name):
+        if method == "POST":
+            if drift == "manifest":
+                store.value["grants"][target][0]["members"] = ["allUsers"]
+            elif drift == "resource":
+                http.resources[target]["labels"]["tier3-nonce"] = "b" * 32
+            else:
+                http.policies[target] = {
+                    "etag": "foreign",
+                    "bindings": [
+                        {"role": "roles/pubsub.publisher", "members": ["allUsers"]}
+                    ],
+                }
+
+    http.after = change_next
+    with pytest.raises(Failure):
+        resources.install_grants()
+    assert len([c for c in http.calls if c[0] == "POST"]) == 1
+
+
+def test_guard_can_stop_before_policy_write(iam_setup):
+    resources, http, _, _ = iam_setup
+
+    def refuse(phase, method, name):
+        if method == "POST":
+            assert phase == "grant" and name.endswith(":setIamPolicy")
+            raise Failure("approval expired")
+
+    resources.before_operation = refuse
+    with pytest.raises(Failure, match="approval expired"):
+        resources.install_grants()
+    assert not http.policies
+    assert not any(c[0] == "POST" for c in http.calls)
+
+
+@pytest.mark.parametrize("change", ["extra-member", "conditional", "resource-absent"])
+def test_inspect_grants_rejects_drift_after_installation(iam_setup, change):
+    resources, http, _, _ = iam_setup
+    resources.install_grants()
+    name = resources.plan.subscriptions()[-1]["name"]
+    if change == "extra-member":
+        http.policies[name]["bindings"][0]["members"].append("allUsers")
+    elif change == "conditional":
+        http.policies[name]["version"] = 3
+        http.policies[name]["bindings"][0]["condition"] = {"expression": "false"}
+    else:
+        del http.resources[name]
+    with pytest.raises(Failure):
+        resources.inspect_grants()
+
+
+def test_installation_rechecks_earlier_policies_after_the_final_write(iam_setup):
+    resources, http, _, _ = iam_setup
+    first = resources.plan.topics()[0]["name"]
+    last = resources.plan.subscriptions()[-1]["name"]
+
+    def change_earlier_policy(method, name):
+        if method == "POST" and name == last:
+            http.policies[first]["bindings"][0]["members"].append("allUsers")
+
+    http.after = change_earlier_policy
+    with pytest.raises(Failure, match="policy"):
+        resources.install_grants()
+    assert len([c for c in http.calls if c[0] == "POST"]) == 6
+
+
+@pytest.mark.parametrize("field", ["version", "topic-policy", "subscription-flag"])
+def test_manifest_refuses_python_equal_but_different_json_types(iam_setup, field):
+    resources, http, store, _ = iam_setup
+    if field == "version":
+        store.value["version"] = 2.0
+    elif field == "topic-policy":
+        store.value["topics"][0]["messageStoragePolicy"]["enforceInTransit"] = 0
+    else:
+        store.value["subscriptions"][0]["retainAckedMessages"] = 0
+    # Ordinary Python equality would silently accept every corruption above.
+    assert store.value == resources.plan.manifest()
+    http.calls.clear()
+    with pytest.raises(Failure, match="manifest"):
+        resources.cleanup()
+    assert not http.calls
+
+
+def test_version_one_manifest_is_reported_without_deleting_resources(iam_setup):
+    resources, http, store, _ = iam_setup
+    store.value["version"] = 1
+    del store.value["grants"]
+    http.calls.clear()
+    with pytest.raises(Failure, match="Unsupported Pub/Sub ownership manifest version"):
+        resources.cleanup()
+    assert not http.calls and len(http.resources) == 6
+
+
+def test_iam_helpers_fit_the_documented_operation_budgets(iam_setup):
+    resources, http, store, guards = iam_setup
+    for method, pubsub_limit, storage_limit, phase_limits in (
+        (
+            resources.install_grants,
+            42,
+            26,
+            {"inspect": 14, "grant": 42, "inspect-grants": 12},
+        ),
+        (resources.inspect_grants, 12, 7, {"inspect": 7, "inspect-grants": 12}),
+    ):
+        http.calls.clear()
+        store.calls.clear()
+        guards.clear()
+        assert len(method()) == 6
+        assert len(http.calls) <= pubsub_limit
+        assert len(store.calls) <= storage_limit
+        assert all(call[0] == "GET" for call in store.calls)
+        assert {call[0] for call in guards} <= phase_limits.keys()
+        for phase, limit in phase_limits.items():
+            assert sum(call[0] == phase for call in guards) <= limit
+        assert len(guards) == len(http.calls) + len(store.calls)
