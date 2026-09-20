@@ -1,0 +1,618 @@
+#
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Actor interleavings use shared conditional storage without threads or sleeps."""
+
+import copy
+from types import SimpleNamespace
+
+import pytest
+from flink_tier3.bigquery_handoff import BigQueryHandoff
+from flink_tier3.bigquery_lifecycle import BigQueryLifecycle
+from flink_tier3.common import ApiError, Failure, TransportError, digest, json_bytes
+from flink_tier3.model import Phase
+from flink_tier3.records import Records
+from test_bigquery_lifecycle import Resources
+from test_bigquery_lifecycle import (
+    setup as setup,  # noqa: PLC0414 - register shared pytest fixture
+)
+from test_bigquery_resources import NOW
+
+
+class QueryResources(Resources):
+    def job(self, slot):
+        self.calls.append(("job", slot))
+        return copy.deepcopy(self.jobs.get(slot))
+
+    def results(self, slot):
+        assert self.jobs[slot]["status"]["state"] == "DONE"
+        return super().results(slot)
+
+
+@pytest.fixture
+def actors(setup):
+    original, runner_env, _, app = setup
+    now = [NOW]
+    runner_env.clock = lambda: now[0]
+    supervisor_env = copy.copy(runner_env)
+    supervisor_env.actor = "supervisor"
+    supervisor_env.records = Records(
+        runner_env.store, runner_env.approval, runner_env.clock
+    )
+    api = QueryResources(original.plan)
+    binding = {
+        "runner_token": "b" * 32,
+        "evidence_bytes": 3 * 256 * 1024,
+        "query_until": NOW + 1800,
+    }
+    runner = BigQueryHandoff(BigQueryLifecycle(runner_env, api, app), **binding)
+    supervisor = BigQueryHandoff(BigQueryLifecycle(supervisor_env, api, app), **binding)
+    runner.initialize()
+    return SimpleNamespace(
+        runner=runner,
+        supervisor=supervisor,
+        env=runner_env,
+        api=api,
+        now=now,
+        binding=binding,
+    )
+
+
+def start(a):
+    a.runner.provision()
+    a.env.records.set_phase(Phase.READY)
+    a.env.records.set_phase(Phase.RUNNING)
+
+
+def complete(a, name="baseline"):
+    a.supervisor.request(name, deadline=NOW + 100)
+    assert a.runner.poll() is None
+    slot = a.runner.controller._read()["queries"][name]["slot"]
+    a.api.jobs[slot]["status"]["state"] = "DONE"
+    assert a.runner.poll() == name
+    return slot
+
+
+def test_request_submit_collect_and_read_through_distinct_actor_records(actors):
+    a = actors
+    start(a)
+    assert a.runner.poll() is None
+    before = list(a.api.calls)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    assert a.supervisor.result("baseline") is None
+    assert a.api.calls == before
+    assert a.runner.poll() is None
+    assert a.runner.poll() is None
+    assert a.api.calls.count(("submit", 0)) == 1
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    assert a.runner.poll() == "baseline"
+    before = list(a.api.calls)
+    result = a.supervisor.result("baseline")
+    assert result["report"]["passed"] is True
+    assert a.api.calls == before
+    assert a.runner.poll() is None
+    assert a.api.calls.count(("results", 0)) == 1
+    complete(a, "recovery")
+    complete(a, "final")
+    with pytest.raises(Failure, match="budget exhausted"):
+        a.supervisor.request("extra", deadline=NOW + 100)
+    assert len(a.api.jobs) == 3
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("runner_token", "c" * 32),
+        ("evidence_bytes", 12345),
+        ("query_until", NOW + 1700),
+    ],
+)
+def test_binding_cannot_change(actors, key, value):
+    binding = dict(actors.binding, **{key: value})
+    replacement = BigQueryHandoff(actors.runner.controller, **binding)
+    with pytest.raises(Failure, match="binding"):
+        replacement.initialize()
+    assert actors.api.calls == []
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("runner_token", "bad"),
+        ("evidence_bytes", True),
+        ("evidence_bytes", 0),
+        ("evidence_bytes", 2),
+        ("evidence_bytes", 100 * 1024**2 + 1),
+        ("query_until", float("nan")),
+        ("query_until", float("inf")),
+        ("query_until", True),
+        ("query_until", 0),
+        ("query_until", NOW + 4000),
+    ],
+)
+def test_binding_values_are_bounded(actors, key, value):
+    with pytest.raises(ValueError):
+        BigQueryHandoff(
+            actors.runner.controller, **dict(actors.binding, **{key: value})
+        )
+
+
+def test_initialize_refuses_resources_without_handoff(setup):
+    controller, env, _, _ = setup
+    env.clock = lambda: NOW
+    controller.provision()
+    handoff = BigQueryHandoff(
+        controller, runner_token="b" * 32, evidence_bytes=3000, query_until=NOW + 10
+    )
+    with pytest.raises(Failure, match="predate"):
+        handoff.initialize()
+
+
+def test_initialize_refuses_expired_window(actors):
+    actors.now[0] = actors.binding["query_until"]
+    with pytest.raises(Failure, match="window expired"):
+        actors.runner.initialize()
+
+
+@pytest.mark.parametrize(
+    "actor,method,args,kwargs",
+    [
+        ("supervisor", "initialize", (), {}),
+        ("supervisor", "provision", (), {}),
+        ("supervisor", "poll", (), {}),
+        ("supervisor", "release", (), {}),
+        ("runner", "request", ("x",), {"deadline": NOW + 10}),
+        ("runner", "result", ("x",), {}),
+        ("runner", "cleanup", (lambda: True,), {}),
+    ],
+)
+def test_actor_roles(actors, actor, method, args, kwargs):
+    with pytest.raises(Failure, match="actor"):
+        getattr(getattr(actors, actor), method)(*args, **kwargs)
+    assert actors.api.calls == []
+
+
+@pytest.mark.parametrize("deadline", [NOW, NOW - 1, NOW + 1801, float("nan"), True])
+def test_request_deadline(actors, deadline):
+    start(actors)
+    with pytest.raises(ValueError, match="window"):
+        actors.supervisor.request("baseline", deadline=deadline)
+    assert actors.runner.controller._read()["handoff"]["requests"] == {}
+
+
+def test_request_serialization_and_immutable_deadline(actors):
+    start(actors)
+    actors.supervisor.request("baseline", deadline=NOW + 100)
+    with pytest.raises(Failure, match="cannot be changed"):
+        actors.supervisor.request("baseline", deadline=NOW + 101)
+    with pytest.raises(Failure, match="still pending"):
+        actors.supervisor.request("recovery", deadline=NOW + 100)
+    with pytest.raises(ValueError, match="label"):
+        actors.supervisor.request("../bad", deadline=NOW + 100)
+    with pytest.raises(Failure, match="not requested"):
+        actors.supervisor.result("unknown")
+
+
+def test_stop_wins_a_request_cas_conflict(actors):
+    start(actors)
+    actors.env.store.before_write = actors.runner.stop
+    with pytest.raises(Failure, match="stopped"):
+        actors.supervisor.request("baseline", deadline=NOW + 100)
+    assert actors.env.store.conflicts == 1
+    assert actors.runner.controller._read()["handoff"]["requests"] == {}
+
+
+def test_deadline_rechecked_after_submit(actors):
+    start(actors)
+    actors.supervisor.request("baseline", deadline=NOW + 100)
+    actors.api.after_submit = lambda slot: actors.now.__setitem__(0, NOW + 100)
+    with pytest.raises(Failure, match="deadline expired"):
+        actors.runner.poll()
+    assert not any(call[0] == "job" for call in actors.api.calls)
+    actors.runner.release()
+
+
+@pytest.mark.parametrize("stage", ["provision", "submit", "collect"])
+def test_stop_during_call_cannot_release_or_delete_until_return(actors, stage):
+    a = actors
+    if stage != "provision":
+        start(a)
+        a.supervisor.request("baseline", deadline=NOW + 100)
+    if stage == "collect":
+        a.runner.poll()
+        a.api.jobs[0]["status"]["state"] = "DONE"
+
+    def stop_inside_call(*args):
+        a.supervisor.stop()
+        with pytest.raises(Failure, match="in flight"):
+            a.runner.release()
+        with pytest.raises(Failure, match="not released"):
+            a.supervisor.cleanup(lambda: True)
+        assert not any(call[0] == "delete" for call in a.api.calls)
+
+    if stage == "provision":
+        a.api.after_create = stop_inside_call
+        with pytest.raises(Failure, match="Admission closed"):
+            a.runner.provision()
+        # Provision aborted before completing every table: conservative marker.
+        assert (
+            a.runner.controller._read()["handoff"]["inflight"]["operation"]
+            == "provision"
+        )
+        return
+    if stage == "submit":
+        a.api.after_submit = stop_inside_call
+        with pytest.raises(Failure, match="stopped"):
+            a.runner.poll()
+    else:
+        a.api.on_results = stop_inside_call
+        assert a.runner.poll() == "baseline"
+        assert a.supervisor.result("baseline")["report"]["passed"]
+    assert a.runner.controller._read()["handoff"]["inflight"] is None
+    a.runner.release()
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    assert a.supervisor.cleanup(lambda: True)
+    assert not a.api.tables
+
+
+@pytest.mark.parametrize("stage", ["provision", "submit"])
+def test_ambiguous_create_survives_new_protocol_object_and_blocks_cleanup(
+    actors, stage
+):
+    a = actors
+
+    def lost(*args):
+        raise TransportError("Lost response")
+
+    if stage == "provision":
+        a.api.after_create = lost
+        action = a.runner.provision
+    else:
+        start(a)
+        a.supervisor.request("baseline", deadline=NOW + 100)
+        a.api.after_submit = lost
+        action = a.runner.poll
+    with pytest.raises(TransportError):
+        action()
+    restored = BigQueryHandoff(a.runner.controller, **a.binding)
+    calls = list(a.api.calls)
+    with pytest.raises(Failure, match="in flight"):
+        restored.release()
+    with pytest.raises(Failure, match="not released"):
+        a.supervisor.cleanup(lambda: True)
+    assert a.api.calls == calls
+    assert a.runner.controller._read()["handoff"]["inflight"] is not None
+
+
+def test_cleanup_requires_both_release_and_external_barrier(actors):
+    a = actors
+    start(a)
+    complete(a)
+    with pytest.raises(Failure, match="not released"):
+        a.supervisor.cleanup(lambda: True)
+    a.runner.release()
+    a.runner.release()
+    for barrier in (False, None, 1):
+        with pytest.raises(Failure, match="not quiescent"):
+            a.supervisor.cleanup(lambda barrier=barrier: barrier)
+    assert not any(call[0] == "delete" for call in a.api.calls)
+    assert a.supervisor.cleanup(lambda: True)
+    assert a.env.refresh().phase == Phase.RUNNING
+    assert a.env.refresh().stop_requested
+    assert a.env.refresh().bigquery["cleaned"]
+    with pytest.raises(Failure):
+        a.runner.provision()
+    with pytest.raises(Failure):
+        a.runner.poll()
+    assert a.supervisor.result("baseline")["report"]["passed"]
+
+
+def test_pending_job_blocks_delete_after_release(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.runner.poll()
+    a.runner.release()
+    assert not a.supervisor.cleanup(lambda: True)
+    assert not any(call[0] == "delete" for call in a.api.calls)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    assert a.supervisor.cleanup(lambda: True)
+
+
+def test_read_failure_clears_marker_without_repeating_submit(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    original = a.api.job
+
+    def lost(slot):
+        raise TransportError("Lost read")
+
+    a.api.job = lost
+    with pytest.raises(TransportError):
+        a.runner.poll()
+    assert a.runner.controller._read()["handoff"]["inflight"] is None
+    a.api.job = original
+    assert a.runner.poll() is None
+    assert a.api.calls.count(("submit", 0)) == 1
+    a.runner.release()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "generation",
+        "hash",
+        "intent_sha256",
+        "observation",
+        "slot",
+        "missing_result",
+        "oversized",
+    ],
+)
+def test_supervisor_refuses_replaced_or_unbound_evidence(actors, damage):
+    a = actors
+    start(a)
+    slot = complete(a)
+    path = a.runner.controller.prefix + f"queries/{slot}.json"
+    artifact, generation = a.env.store.read(path)
+    if damage in ("intent_sha256", "observation", "slot"):
+        artifact[damage] = "wrong"
+    elif damage == "missing_result":
+        del artifact["result"]
+    elif damage == "oversized":
+        artifact["padding"] = "x" * a.runner.per_query
+    elif damage == "hash":
+        artifact["result"]["report"]["passed"] = False
+    new_generation = a.env.store.write(path, artifact, generation)
+    if damage != "generation":
+
+        def pointer(state):
+            value = state["queries"]["baseline"]["evidence"]
+            value["generation"] = new_generation
+            if damage != "hash":
+                value["sha256"] = digest(artifact)
+
+        a.runner.controller._change(pointer)
+    with pytest.raises(Failure, match="evidence"):
+        a.supervisor.result("baseline")
+
+
+def test_oversized_result_is_never_written_and_can_release(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.runner.poll()
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    a.api.results = lambda slot: {"padding": "x" * a.runner.per_query}
+    with pytest.raises(Failure, match="byte budget"):
+        a.runner.poll()
+    assert a.env.store.read(a.runner.controller.prefix + "queries/0.json")[0] is None
+    assert a.supervisor.result("baseline") is None
+    a.runner.release()
+    assert a.supervisor.cleanup(lambda: True)
+
+
+def test_cached_collection_rechecks_byte_budget(actors):
+    a = actors
+    start(a)
+    complete(a)
+    artifact, _ = a.env.store.read(a.runner.controller.prefix + "queries/0.json")
+    size = len(json_bytes(artifact))
+    controller = a.runner.controller
+    assert controller.collect_query("baseline", max_bytes=size) == artifact["result"]
+    with pytest.raises(Failure, match="byte budget"):
+        controller.collect_query("baseline", max_bytes=size - 1)
+    with pytest.raises(ValueError):
+        controller.collect_query("baseline", max_bytes=True)
+
+
+def test_lost_owner_refuses_release_and_evidence_read(actors):
+    start(actors)
+    complete(actors)
+    actors.env.owner = False
+    actors.supervisor.env.owner = False
+    with pytest.raises(Failure, match="ownership"):
+        actors.runner.release()
+    with pytest.raises(Failure, match="ownership"):
+        actors.supervisor.result("baseline")
+
+
+def test_deadline_rechecked_when_request_cas_retries(actors):
+    a = actors
+    start(a)
+
+    def advance():
+        a.now[0] = NOW + 100
+        a.runner.controller._change(lambda state: None)
+
+    a.env.store.before_write = advance
+    with pytest.raises(Failure, match="deadline expired"):
+        a.supervisor.request("baseline", deadline=NOW + 100)
+    assert a.env.store.conflicts == 1
+    assert a.runner.controller._read()["handoff"]["requests"] == {}
+
+
+def test_stop_wins_call_start_cas_conflict(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.runner.controller.reserve_query("baseline")
+    a.env.store.before_write = a.supervisor.stop
+    with pytest.raises(Failure, match="stopped"):
+        a.runner.poll()
+    assert a.env.store.conflicts == 1
+    assert not any(call[0] == "submit" for call in a.api.calls)
+
+
+def test_release_cannot_race_an_already_started_query(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.runner.controller.reserve_query("baseline")
+    # An attempt to release between the old record read and call-marker write
+    # changes the generation, making admission retry against the stopped record.
+    a.env.store.before_write = a.runner.release
+    with pytest.raises(Failure, match="stopped"):
+        a.runner.poll()
+    assert a.env.store.conflicts == 1
+    assert a.runner.controller._read()["handoff"]["released"]
+    assert not any(call[0] == "submit" for call in a.api.calls)
+
+
+@pytest.mark.parametrize("extra", [0, -1])
+def test_new_collection_byte_boundary(actors, extra):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.runner.poll()
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    result = a.api.results(0)
+    artifact = {
+        "intent_sha256": digest(a.runner.controller.intent),
+        "observation": "baseline",
+        "slot": 0,
+        "result": result,
+    }
+    size = len(json_bytes(artifact))
+    if extra == 0:
+        assert a.runner.controller.collect_query("baseline", max_bytes=size) == result
+    else:
+        with pytest.raises(Failure, match="byte budget"):
+            a.runner.controller.collect_query("baseline", max_bytes=size + extra)
+        assert (
+            a.env.store.read(a.runner.controller.prefix + "queries/0.json")[0] is None
+        )
+
+
+@pytest.mark.parametrize("outcome", ["before", "after", "persistent"])
+def test_collection_finish_retries_only_the_control_acknowledgement(actors, outcome):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.runner.poll()
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    write = a.env.store.write
+    attempts = []
+
+    def flaky(name, data, *args, **kwargs):
+        current, _ = a.env.store.read(a.env.records.path)
+        marker = current["bigquery"]["handoff"]["inflight"]
+        if (
+            name == a.env.records.path
+            and marker is not None
+            and marker["operation"] == "collect:baseline"
+            and data["bigquery"]["handoff"]["inflight"] is None
+        ):
+            attempts.append(marker["id"])
+            if outcome == "after" and len(attempts) == 1:
+                write(name, data, *args, **kwargs)
+                raise Failure("Lost control acknowledgement")
+            if outcome == "persistent" or len(attempts) == 1:
+                raise ApiError(503, "POST", name)
+        return write(name, data, *args, **kwargs)
+
+    a.env.store.write = flaky
+    if outcome == "persistent":
+        with pytest.raises(ApiError):
+            a.runner.poll()
+        assert len(attempts) == 3
+        with pytest.raises(Failure, match="in flight"):
+            a.runner.release()
+    else:
+        assert a.runner.poll() == "baseline"
+        assert len(attempts) == (1 if outcome == "after" else 2)
+        a.runner.release()
+    assert len(set(attempts)) == 1
+    assert a.api.calls.count(("submit", 0)) == 1
+    assert a.api.calls.count(("results", 0)) == 1
+    assert a.supervisor.result("baseline")["report"]["passed"]
+
+
+@pytest.mark.parametrize("clears_on_retry", [False, True])
+def test_lost_clear_cannot_clear_another_invocation_of_the_same_operation(
+    actors, clears_on_retry
+):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    write = a.env.store.write
+    replacement = {"operation": "status:baseline", "id": "c" * 32}
+    read = a.env.store.read
+    foreign_reads = []
+
+    def observe_foreign(name, *args, **kwargs):
+        value, generation = read(name, *args, **kwargs)
+        if (
+            name == a.env.records.path
+            and value["bigquery"]["handoff"]["inflight"] == replacement
+        ):
+            foreign_reads.append(name)
+            if clears_on_retry and len(foreign_reads) == 2:
+                value["bigquery"]["handoff"]["inflight"] = None
+                generation = write(name, value, generation)
+        return value, generation
+
+    def replace_call(name, data, *args, **kwargs):
+        current, generation = a.env.store.read(a.env.records.path)
+        marker = current["bigquery"]["handoff"]["inflight"]
+        if (
+            name == a.env.records.path
+            and marker is not None
+            and marker["operation"] == "status:baseline"
+            and data["bigquery"]["handoff"]["inflight"] is None
+        ):
+            # Model the acknowledgement landing, then a later call claiming
+            # the cleared marker before the first caller sees a lost response.
+            a.env.store.write = write
+            write(name, data, *args, **kwargs)
+            current, generation = a.env.store.read(name)
+            current["bigquery"]["handoff"]["inflight"] = replacement
+            write(name, current, generation)
+            a.env.store.read = observe_foreign
+            raise Failure("Lost control acknowledgement")
+        return write(name, data, *args, **kwargs)
+
+    a.env.store.write = replace_call
+    with pytest.raises(Failure, match="identity changed"):
+        a.runner.poll()
+    a.env.store.read = read
+    assert len(foreign_reads) == 1
+    assert a.runner.controller._read()["handoff"]["inflight"] == replacement
+    with pytest.raises(Failure, match="in flight"):
+        a.runner.release()
+
+
+def test_expired_unreserved_request_aborts_observation_but_allows_cleanup(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("baseline", deadline=NOW + 100)
+    a.now[0] = NOW + 101
+    with pytest.raises(Failure, match="deadline expired"):
+        a.runner.poll()
+    with pytest.raises(Failure, match="still pending"):
+        a.supervisor.request("recovery", deadline=NOW + 200)
+    assert a.supervisor.result("baseline") is None
+    assert not a.api.jobs
+    a.runner.release()
+    assert a.supervisor.cleanup(lambda: True)
+    assert not a.api.tables
+
+
+def test_unknown_actor_cannot_stop_run(actors):
+    actors.env.actor = "other"
+    with pytest.raises(Failure, match="Unexpected"):
+        actors.runner.stop()
+    assert not actors.env.refresh().stop_requested
