@@ -55,7 +55,9 @@ class Runner:
         if rt.digest(application) != self.env.approval.application_sha256:
             raise rt.Failure("Application differs from the approved manifest")
         self.admission_open()
-        if self.env.kube.get("FlinkDeployment", rt.SMOKE, self.env.approval.run_id):
+        if self.env.kube.get(
+            "FlinkDeployment", self.namespace, self.env.approval.run_id
+        ):
             raise rt.Failure("Application name already exists")
         self.env.kube.create(application, dry_run=True)
         self.admission_open()
@@ -72,7 +74,9 @@ class Runner:
         self.env.namespaces()
         if not self.env.refresh().application_intent:
             raise rt.Failure("Application creation intent was not persisted")
-        obj = self.env.kube.get("FlinkDeployment", rt.SMOKE, self.env.approval.run_id)
+        obj = self.env.kube.get(
+            "FlinkDeployment", self.namespace, self.env.approval.run_id
+        )
         if not obj:
             return
         meta = obj["metadata"]
@@ -128,6 +132,8 @@ class Runner:
         self.env.remember(key, obj)
 
     def start(self, config, job, application):
+        if self.env.approval.scenario == "bigquery-recovery":
+            raise rt.Failure("BigQuery execution admission is not implemented")
         self.env.refresh()
         self.create_root("config", config)
         self.admission_open()
@@ -176,7 +182,7 @@ class Runner:
             admit_queue(self.env)
             self.env.records.operations("runner", self.env.queues.meter.snapshot())
         else:
-            self.cleanup.quota(rt.SMOKE, "run")
+            self.cleanup.quota(self.namespace, "run")
             self.create_application(application)
         self.admission_open()
         self.env.records.set_phase(rt.Phase.RUNNING)
@@ -389,13 +395,21 @@ class Runner:
                         and set(cells) == set(self.env.approval.cell_ids)
                         and all(c.get("status") == "completed" for c in cells.values())
                     )
-                    or (control.recovery or {}).get("stage") == "complete"
+                    or (
+                        self.env.approval.scenario == "generic-recovery"
+                        and (control.recovery or {}).get("stage") == "complete"
+                    )
                 )
             ),
         }
         if self.env.approval.scenario == "generic-recovery":
             result.update(
                 scenario=self.env.approval.scenario, recovery=control.recovery
+            )
+        if self.env.approval.scenario == "bigquery-recovery":
+            result.update(
+                scenario=self.env.approval.scenario,
+                bigquery_trial=self.env.approval.bigquery_trial,
             )
         if self.cloudtasks:
             result.update(
@@ -430,6 +444,17 @@ class Runner:
             result["bigquery"] = control.bigquery
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)
+        prior, expected = previous, result
+        if previous is not None and self.env.approval.scenario == "bigquery-recovery":
+            # Refreshed empty plans have a new observation time on each retry.
+            prior, expected = dict(previous), dict(result)
+            for receipt in (prior, expected):
+                if isinstance(receipt.get("plans"), dict):
+                    receipt["plans"] = {
+                        key: value
+                        for key, value in receipt["plans"].items()
+                        if key != "at"
+                    }
         if previous is None:
             self.env.store.write(path, result)
         elif (
@@ -437,12 +462,13 @@ class Runner:
             or not previous.get("idle")
             or (
                 (
-                    control.pubsub is not None
+                    self.env.approval.scenario == "bigquery-recovery"
+                    or control.pubsub is not None
                     or previous.get("pubsub") is not None
                     or control.bigquery is not None
                     or previous.get("bigquery") is not None
                 )
-                and rt.json_bytes(previous) != rt.json_bytes(result)
+                and rt.json_bytes(prior) != rt.json_bytes(expected)
             )
         ):
             raise rt.Failure("Final receipt conflicts with approval")
@@ -450,7 +476,8 @@ class Runner:
             result = previous
         current, generation = self.env.records.read()
         if (
-            control.pubsub is not None
+            self.env.approval.scenario == "bigquery-recovery"
+            or control.pubsub is not None
             or current.pubsub is not None
             or control.bigquery is not None
             or current.bigquery is not None

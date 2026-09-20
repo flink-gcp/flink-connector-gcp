@@ -24,12 +24,12 @@ from .bigquery import ROW_BYTES, Trial
 from .bigquery_resources import ResourcePlan
 from .bundle import source_digest
 from .common import Failure, digest, json_bytes, quantity, timestamp, utc
-from .model import _hourly
-from .policy import GAR, POD_RESOURCES, RUN_ID, SHA
+from .model import Schedule, _hourly
+from .policy import BIGQUERY_CEILINGS, GAR, POD_RESOURCES, RUN_ID, SHA
 from .workflow import render
 
-WINDOW_SECONDS = 5400
-ACTIVE_SECONDS = 5220
+WINDOW_SECONDS = BIGQUERY_CEILINGS["seconds"]
+ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 QUERY_SLOTS = 12
 BYTES_PER_QUERY = 4 * 1024**3
 QUERY_TIMEOUT_MS = 60000
@@ -117,6 +117,24 @@ def estimate(value):
     return compute + query + RESERVE_USD
 
 
+def resource_plan(run_id, nonce, expires_at, trial):
+    """Use one finite input and query budget for proposals and run approvals."""
+    validate_trial(trial)
+    return ResourcePlan(
+        Trial(
+            run_id,
+            trial["mode"],
+            trial["destinations"],
+            28800 if trial["mode"] == "ALO" else 1843200,
+        ),
+        nonce,
+        int(timestamp(expires_at) * 1000),
+        trial["query_slots"],
+        trial["maximum_bytes_billed"],
+        trial["query_timeout_ms"],
+    )
+
+
 def _verify_resources(pod, role):
     containers = pod.get("containers", [])
     if (
@@ -167,16 +185,8 @@ def prepare(
         )
     if not timestamp(REVIEWED_AT) <= start <= timestamp(REVIEWED_AT) + 30 * 86400:
         raise ValueError("Proposal starts outside the pricing review's 30-day window")
-    records = 28800 if trial["mode"] == "ALO" else 1843200
-    identity = Trial(run_id, trial["mode"], trial["destinations"], records)
-    resources = ResourcePlan(
-        identity,
-        nonce,
-        int(end * 1000),
-        trial["query_slots"],
-        trial["maximum_bytes_billed"],
-        trial["query_timeout_ms"],
-    )
+    resources = resource_plan(run_id, nonce, utc(end), trial)
+    identity, records = resources.trial, resources.trial.records
     tags = {
         "application_image": application_image,
         "bigquery_mode": identity.mode,
@@ -252,7 +262,7 @@ def prepare(
         "revision": revision,
         "runtime_sha256": source_digest(),
         "started_at": utc(start),
-        "cleanup_at": utc(end - 900),
+        "cleanup_at": utc(end - BIGQUERY_CEILINGS["cleanup_seconds"]),
         "expires_at": utc(end),
         "repetition": trial["repetition"],
         "resources": asdict(resources),
@@ -267,9 +277,9 @@ def prepare(
         },
         "limits": {
             "seconds": WINDOW_SECONDS,
-            "cleanup_seconds": 900,
-            "pods": 5,
-            "pvcs": 0,
+            "cleanup_seconds": BIGQUERY_CEILINGS["cleanup_seconds"],
+            "pods": BIGQUERY_CEILINGS["pods"],
+            "pvcs": BIGQUERY_CEILINGS["pvcs"],
             "input_bytes": records * ROW_BYTES[identity.mode],
             "query_bytes": trial["query_slots"] * trial["maximum_bytes_billed"],
             "additional_cost_usd": trial["additional_cost_usd"],

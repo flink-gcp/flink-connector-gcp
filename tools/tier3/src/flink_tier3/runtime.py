@@ -46,6 +46,8 @@ def supervisor_main(directory):
     if digest(application) != approval["application_sha256"]:
         raise Failure("Supervisor application differs from approval")
     approved = Approval.from_dict(approval)
+    if approved.scenario == "bigquery-recovery":
+        raise Failure("BigQuery recovery supervision is not implemented")
     upgrade, cells = None, None
     if approved.scenario == "generic-recovery":
         upgrade = json.loads((directory / "upgrade-application.json").read_text())

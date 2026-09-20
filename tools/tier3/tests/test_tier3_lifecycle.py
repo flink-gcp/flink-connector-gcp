@@ -227,9 +227,20 @@ class Kube:
     def get(self, kind, namespace, name):
         return copy.deepcopy(self.data.get((kind, namespace, name)))
 
-    def inventory(self):
+    def inventory(self, application=None):
+        from flink_tier3.policy import inventory_namespaces
+
         return copy.deepcopy(
-            [value for value in self.data.values() if value["kind"] != "ResourceQuota"]
+            [
+                value
+                for value in self.data.values()
+                if value["kind"] != "ResourceQuota"
+                and (
+                    application is None
+                    or value["metadata"]["namespace"]
+                    in inventory_namespaces(application)
+                )
+            ]
         )
 
     def items(self, kind, namespace):

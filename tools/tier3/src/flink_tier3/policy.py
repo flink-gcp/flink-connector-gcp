@@ -43,9 +43,20 @@ BENCHMARK = _policy["environment"]["benchmark"]
 CLOUDTASKS_POLICY = _policy["cloudtasks"]
 CLOUDTASKS_CEILINGS = _policy["cloudtasks_ceilings"]
 CLOUDTASKS_POD_RESOURCES = _policy["cloudtasks_pod_resources"]
+BIGQUERY = _policy["environment"]["bigquery"]
+BIGQUERY_STATE = _policy["environment"]["bigquery_state"]
+BIGQUERY_CEILINGS = _policy["bigquery_ceilings"]
 
 # Application namespaces first, then the control namespace.
-NAMESPACES = (SMOKE, CLOUDTASKS, SYSTEM)
+NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, SYSTEM)
+
+
+def inventory_namespaces(application):
+    """Preserve legacy approval baselines when adding a staged application."""
+    if application == BIGQUERY:
+        return NAMESPACES
+    return (SMOKE, CLOUDTASKS, SYSTEM)
+
 
 # Published Cloud Tasks application package and Operator flinkVersion per line.
 FLINK_LINES = {

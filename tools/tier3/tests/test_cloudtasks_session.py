@@ -1705,15 +1705,15 @@ def test_cleanup_adopts_a_cell_whose_create_landed_after_the_stop(env, monkeypat
     inventory = env[0].inventory
     landed = {"done": False}
 
-    def late_landing():
-        items = inventory()
+    def late_landing(*args):
+        items = inventory(*args)
         # Land only once cleanup has begun, after settlement's own adoption
         # read: the snapshot that starts cleanup must not contain the cell.
         if not landed["done"] and runner.env.records.cache.phase == rt.Phase.CLEANING:
             landed["done"] = True
             world.created(copy.deepcopy(manifests[0]))
             return items
-        return inventory()
+        return inventory(*args)
 
     monkeypatch.setattr(env[0], "inventory", late_landing)
     runner.settle(request_stop=True)

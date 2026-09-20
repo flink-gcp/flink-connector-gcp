@@ -37,6 +37,7 @@ class Environment:
             scenario="bigquery-recovery",
             run_id=plan.trial.run_id,
             nonce=plan.nonce,
+            bigquery_plan=plan,
             application_sha256=digest(application),
         )
         self.actor = "runner"
@@ -209,6 +210,8 @@ def test_application_identity_must_match(setup, field):
 def test_restart_cannot_change_plan(setup, field, value):
     _, env, api, app = setup
     api.plan = replace(api.plan, **{field: value})
+    # Even a matching replacement approval cannot rewrite persisted intent.
+    env.approval.bigquery_plan = api.plan
     with pytest.raises(Failure, match="replaced BigQuery resource intent"):
         BigQueryLifecycle(env, api, app).initialize()
     assert api.calls == []
