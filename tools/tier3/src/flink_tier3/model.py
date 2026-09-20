@@ -614,6 +614,7 @@ class RunRecord:
     operations: dict = field(default_factory=dict)
     exports: dict = field(default_factory=dict)
     evidence_bytes: int = 0
+    bigquery: dict | None = None
 
     @classmethod
     def from_dict(cls, value):

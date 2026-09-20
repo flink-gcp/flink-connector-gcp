@@ -44,6 +44,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/evidence.py` | Row and receipt reconciliation, verified export to durable evidence and benchmark prefix release |
 | `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
 | `flink_tier3/bigquery.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
+| `flink_tier3/bigquery_lifecycle.py` | Internal durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier; not wired into admission |
 | `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations; not wired into admission |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings readback and partial-creation cleanup; not wired into admission |
 

@@ -31,7 +31,7 @@ limitations under the License.
 - Updated: 2026-09-18 (Cloud Tasks lifecycle control grants and Operator watch set)
 - Updated: 2026-09-19 (Cloud Tasks session admission, queue lifecycle and storage-backed evidence rows)
 - Updated: 2026-09-19 (session evidence export, per-poll observations and offline analysis)
-- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle, deployment package and resource adapter)
+- Updated: 2026-09-20 (idle BigQuery foundation, Operator watch set, finite recovery application, publication wiring, observations, offline oracle, deployment package, resource adapter and durable resource controller)
 - Updated: 2026-09-20 (Pub/Sub recovery identity and isolated state storage)
 - Updated: 2026-09-20 (idle Pub/Sub namespace, workload identity and Operator watch set)
 - Updated: 2026-09-20 (Pub/Sub application image publication wiring)
@@ -410,7 +410,14 @@ REST `tables.delete` offers no documented generation precondition, so ownership 
 Job timeout and cancellation are best-effort; the executor must confirm completion and retain ownership evidence through cleanup.
 Anonymous result tables remain private to the submitting identity; supervisor query inspection/cancellation does not imply permission to collect another identity's result rows.
 Synthetic HTTP tests establish these adapter contracts, not service acceptance, metadata freshness, a cumulative cost guarantee without durable slot accounting, or deployed recovery.
-Updated image publication, digest adoption, bounded admission/query execution and cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
+Compose the adapter with generation-checked run records before enabling scenario admission.
+Persist each table creation intent before its write, retain creation receipts, and refuse adoption of a table that predates its recorded intent.
+Allocate query slots durably by observation name, retain their deterministic IDs across restarts, and store result artifacts before their generation/hash pointers.
+A stop flag closes subsequent admission but cannot fence an in-flight service request.
+Require an external barrier covering all creator/writer processes and server-side creation requests before cancellation and deletion; this component does not implement that barrier.
+Pending or unreadable submitted jobs prevent table deletion, and component cleanup does not assert whole-environment idle state.
+Synthetic generation-conflict and restart tests hold these controller contracts; BigQuery approval validation, authenticated actor integration and evidence budget enforcement remain caller work.
+Updated image publication, digest adoption, bounded admission/query execution and complete cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
 ### Pub/Sub GCP preparation
 
