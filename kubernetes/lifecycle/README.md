@@ -328,6 +328,10 @@ After temporary objects disappear, recovery waits up to three minutes for Operat
 It then changes to the read-only plan identity, checks all three refreshed infrastructure plans under the same retained lock, and changes back to the runner identity to write the immutable result and release control records.
 Any nonempty run-finalization plan retains the lock and fails the workflow.
 
+The supervisor Job allows two Pod replacements. GKE can take its Pod away in the first seconds of a run: on a node without room the scheduler places it anyway and a `system-cluster-critical` Pod then preempts it, which four Cloud Tasks dispatches lost between 23 and 31 seconds after the container started. A Pod that receives a signal before the run is admitted therefore exits without requesting a stop, leaving the run open, and the replacement claims it in the control record. A replacement may claim a run that has recorded no cell intent and no finished cell, which covers the case where admission reaches `RUNNING` while the taken Pod is still listed Running; a session that has claimed a cell belongs to the Pod that claimed it and a replacement is refused there.
+The claim also revokes the other Pod: a supervisor rechecks the record on every poll and at the end, and one that no longer holds the run stops without cleaning up, because the workload and the queue it would delete are the holder's.
+A Job between Pod attempts is not a finished Job, so the runner waits for the replacement rather than settling on the failure count, and a Pod that has reached a terminal phase holds no capacity and does not count against the four-Pod ceiling.
+
 Cancellation of the Actions runner does not cancel the supervisor Job.
 A `workflow_run` recovery starts when `Tier-3 run` or `CI` completes, including failure or cancellation.
 Completed CI recovery releases a retained plan lock after idle and fresh-plan checks, so a routine superseding PR push does not require a manual recovery dispatch.

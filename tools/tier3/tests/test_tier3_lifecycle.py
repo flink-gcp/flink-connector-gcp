@@ -2144,9 +2144,14 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
         nonlocal interrupted
         interrupted = True
         supervisor.env.stopping = True
-        with pytest.raises(rt.Failure, match="Admission unfinished"):
+        with pytest.raises(rt.Failure, match="terminated before admission"):
             supervisor.supervise(pod["metadata"]["uid"])
-        assert supervisor.env.refresh().phase == rt.Phase.READY
+        control = supervisor.env.refresh()
+        assert control.phase == rt.Phase.READY
+        # A signal before admission is the infrastructure taking the Pod, so
+        # the run stays open for the Job's replacement and this Pod cleans
+        # nothing ahead of the runner.
+        assert control.stop_requested is False
         assert not any(
             call[0] == "delete" or call == ("scale", 0) for call in env[0].calls
         )
@@ -2193,13 +2198,24 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
     monkeypatch.setattr(env[0], "patch", patched)
     monkeypatch.setattr(env[0], "request", requested)
     monkeypatch.setattr(env[0], "delete", deleted)
-    with pytest.raises(rt.Failure):
+    # The interrupted Pod no longer stops the run, so admission finishes while
+    # the Pod that was taken away is still listed Running. That is the race a
+    # replacement has to survive, and the claim below is what lets it.
+    injected = None
+    try:
         runner.start(
             obj("ConfigMap", "source", rt.SYSTEM),
             obj("Job", "supervisor", rt.SYSTEM),
             app(env),
         )
+    except rt.ApiError as error:
+        injected = error  # the conflicting write this fixture injects
     assert interrupted
+    if injected is not None:
+        assert conflict and injected.status == 409
+    else:
+        runner.env.records.claim_supervisor("replacement-pod")
+        assert runner.env.refresh().supervisor_pod == "replacement-pod"
     env[1].write("runs/test-1310/application.json", app(env))
     runner.settle(request_stop=True)
     rt.verify_idle(runner.env)

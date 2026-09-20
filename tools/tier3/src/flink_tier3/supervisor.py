@@ -64,6 +64,7 @@ class Supervisor:
 
     def __init__(self, env, upgrade=None, cells=None, hooks=None):
         self.env = env
+        self.pod_uid = None
         self.cleanup = Cleanup(env)
         self.log_bytes = 0
         self.log_since = {}
@@ -185,6 +186,16 @@ class Supervisor:
                 self.env.records.record_lineage(lineage)
                 previous = lineage
 
+    def hold(self, control):
+        """Refuse to act once another Pod holds this run.
+
+        A replacement claims the run in the control record; the Pod it
+        replaced may still be inside its grace period, and it must stop
+        before it touches a workload or a queue that is no longer its own.
+        """
+        if self.pod_uid and control.supervisor_pod not in (None, self.pod_uid):
+            raise Failure("Another supervisor Pod holds this run")
+
     def supervise(self, pod_uid):
         self.env.refresh()
         job = self.env.root("supervisor")
@@ -193,11 +204,16 @@ class Supervisor:
         own = self.cleanup.owned(self.cleanup.inventory(), ["supervisor"])
         if pod_uid not in own:
             raise Failure("Supervisor Pod is not owned by the approved Job")
+        # A replacement Pod may carry a run that has admitted nothing; the
+        # claim refuses one that arrives after admission.
+        self.env.records.claim_supervisor(pod_uid)
+        self.pod_uid = pod_uid
         reason, success = "interrupted", False
         try:
 
             def admitted():
                 control = self.env.refresh()
+                self.hold(control)
                 if (
                     self.env.stopping
                     or self.env.evidence_failed
@@ -306,12 +322,27 @@ class Supervisor:
             reason = str(error)
         finally:
             control = self.env.refresh()
+            if self.pod_uid and control.supervisor_pod not in (None, self.pod_uid):
+                # Another Pod holds this run. It is the one that may clean up,
+                # and a Pod that cleaned up here would delete the workload and
+                # the queue the holder is using.
+                raise Failure("Another supervisor Pod holds this run")
             if control.phase in (Phase.APPROVED, Phase.READY):
                 # Admission may still have an in-flight Kubernetes write. The
                 # runner settles after start returns; completed-execution
                 # recovery handles a runner that disappears before this handoff.
                 if self.env.evidence_failed:
                     self.env.records.mark_evidence_failed()
+                if self.env.stopping:
+                    # A signal before admission is the infrastructure taking
+                    # this Pod, not a verdict on the run: nothing was created
+                    # and nothing was claimed. Requesting a stop here would
+                    # spend a whole approved session on a preemption the
+                    # runner is still waiting through, so the Job's
+                    # replacement is left free to take the run over.
+                    raise Failure(
+                        "Supervisor Pod was terminated before admission: " + reason
+                    )
                 self.env.records.request_stop()
                 raise Failure(
                     "Admission unfinished; runner settlement required: " + reason
@@ -342,6 +373,7 @@ class CellSession:
         self.last_service = None
 
     def check_open(self):
+        self.supervisor.hold(self.env.refresh())
         self.env.require_running("Session has been stopped")
 
     def run(self):

@@ -16,6 +16,7 @@
 
 from .bundle import source_digest as source_digest
 from .cleanup import Cleanup as Cleanup
+from .cleanup import live_pods as live_pods
 from .cleanup import verify_idle as verify_idle
 from .cloudtasks import Ledger as Ledger
 from .cloudtasks import Meter as Meter

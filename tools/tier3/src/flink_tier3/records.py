@@ -21,7 +21,7 @@ import time
 import uuid
 
 from .common import ApiError, Failure, json_bytes, utc
-from .model import Phase, RunRecord
+from .model import Phase, RunRecord, replaceable
 from .policy import CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
 
 
@@ -108,6 +108,26 @@ class Records:
 
     def request_stop(self):
         return self._change(lambda record: setattr(record, "stop_requested", True))
+
+    def claim_supervisor(self, pod_uid):
+        """Record which supervisor Pod is supervising this run.
+
+        A Job replaces a Pod the infrastructure took away, and the replacement
+        may take over only a run that has claimed no cell. The queue belongs
+        to the runner and a fresh Pod reads the ledger, but a cell in flight
+        belongs to the Pod that claimed it, and two supervisors running cells
+        would break the one-deployment-at-a-time rule the session rests on.
+        """
+
+        def edit(record):
+            previous = record.supervisor_pod
+            if previous and previous != pod_uid and not replaceable(record):
+                raise Failure(
+                    "A replacement supervisor may not take over a claimed session"
+                )
+            record.supervisor_pod = pod_uid
+
+        return self._change(edit)
 
     def recovery_step(self, expected, value):
         """Persist a single scenario transition before its Kubernetes operation."""

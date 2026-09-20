@@ -178,10 +178,17 @@ class Runner:
 
     @staticmethod
     def job_completed(job):
+        """Whether the Job is finished, rather than between Pod attempts.
+
+        A failed attempt is not a finished Job while replacements remain: the
+        controller counts it in ``status.failed`` and starts another Pod, and
+        only a ``Complete`` or ``Failed`` condition says the Job itself is
+        over. Reading the counter as terminal would end a run on the first
+        preemption, which is the case the replacements exist for.
+        """
         status = job.get("status", {})
         return bool(
             status.get("succeeded", 0)
-            or status.get("failed", 0)
             or any(
                 c.get("status") == "True" and c.get("type") in ("Complete", "Failed")
                 for c in status.get("conditions", [])

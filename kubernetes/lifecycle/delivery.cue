@@ -162,9 +162,12 @@ delivery: resources: {
 		kind:       "Job"
 		metadata: sharedMetadata & {name: "lifecycle-\(runID)"}
 		spec: {
-			parallelism:           1
-			completions:           1
-			backoffLimit:          0
+			parallelism: 1
+			completions: 1
+			// The infrastructure can take the supervisor Pod away before it
+			// admits anything; two replacements cover that without letting a
+			// crash loop spend the approved window.
+			backoffLimit:          2
 			activeDeadlineSeconds: activeSeconds
 			template: {
 				metadata: sharedMetadata

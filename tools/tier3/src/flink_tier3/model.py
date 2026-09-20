@@ -587,6 +587,21 @@ TRANSITIONS = {
 }
 
 
+def replaceable(record):
+    """Whether a replacement supervisor Pod may take this run over.
+
+    The preemption this answers happens in the Pod's first seconds, before
+    any cell is claimed, and the runner can reach `RUNNING` during the
+    terminating Pod's grace period. A run that has recorded a cell intent or
+    a finished cell is past that window and belongs to its own supervisor.
+    """
+    return (
+        record.phase in (Phase.APPROVED, Phase.READY, Phase.RUNNING)
+        and record.cell_intent is None
+        and not record.cells
+    )
+
+
 @dataclass
 class RunRecord:
     nonce: str
@@ -607,6 +622,7 @@ class RunRecord:
     reason: str = ""
     final_log_attempted: bool = False
     recovery: dict | None = None
+    supervisor_pod: str | None = None
     queue_intent: bool = False
     queue: dict | None = None
     cells: dict = field(default_factory=dict)

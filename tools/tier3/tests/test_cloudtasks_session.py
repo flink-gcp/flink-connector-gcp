@@ -2014,3 +2014,128 @@ def test_a_queue_is_never_created_after_the_admission_deadline(env):
         ct.admit_queue(runner.env)
     assert ("create",) not in queues.calls
     assert runner.env.refresh().queue is None
+
+
+# --- a preempted supervisor is replaced, not fatal ------------------------------
+
+
+def test_a_preempted_supervisor_leaves_the_run_open_for_its_replacement(env):
+    """The measured failure: a signal in the Pod's first seconds on a full node."""
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    supervisor, pod = prepared_session(env, manifests, queues)
+    supervisor.env.records.set_phase(rt.Phase.READY)
+    supervisor.env.stopping = True  # the infrastructure took this Pod away
+    with pytest.raises(rt.Failure, match="terminated before admission"):
+        supervisor.supervise(pod["metadata"]["uid"])
+    control = supervisor.env.refresh()
+    assert control.stop_requested is False
+    assert control.phase == rt.Phase.READY
+    # The replacement Pod of the same Job may carry the run on.
+    supervisor.env.records.claim_supervisor("replacement-pod")
+    assert supervisor.env.refresh().supervisor_pod == "replacement-pod"
+
+
+def test_a_replacement_may_not_take_over_a_session_that_claimed_a_cell(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    supervisor, pod = prepared_session(env, manifests, queues)
+    supervisor.env.records.claim_supervisor(pod["metadata"]["uid"])
+    supervisor.env.records.set_phase(rt.Phase.READY)
+    supervisor.env.records.set_phase(rt.Phase.RUNNING)
+    # A cell in flight belongs to the Pod that claimed it.
+    supervisor.env.records.intend("cell", {"cell": CELL_A["id"]})
+    with pytest.raises(rt.Failure, match="may not take over"):
+        supervisor.env.records.claim_supervisor("replacement-pod")
+    assert supervisor.env.refresh().supervisor_pod == pod["metadata"]["uid"]
+
+
+def test_a_replacement_may_take_over_before_any_cell_is_claimed(env):
+    """Admission can reach RUNNING while the taken Pod still lists Running."""
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    supervisor, pod = prepared_session(env, manifests, queues)
+    supervisor.env.records.claim_supervisor(pod["metadata"]["uid"])
+    supervisor.env.records.set_phase(rt.Phase.READY)
+    supervisor.env.records.set_phase(rt.Phase.RUNNING)
+    supervisor.env.records.claim_supervisor("replacement-pod")
+    assert supervisor.env.refresh().supervisor_pod == "replacement-pod"
+
+
+def test_a_replacement_may_not_take_over_after_a_cell_has_finished(env):
+    """Between cells there is no intent, but the session is no longer fresh."""
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    supervisor, pod = prepared_session(env, manifests, queues)
+    supervisor.env.records.claim_supervisor(pod["metadata"]["uid"])
+    supervisor.env.records.set_phase(rt.Phase.READY)
+    supervisor.env.records.set_phase(rt.Phase.RUNNING)
+    supervisor.env.records.cell_done(CELL_A["id"], "completed", "finished")
+    assert supervisor.env.refresh().cell_intent is None
+    with pytest.raises(rt.Failure, match="may not take over"):
+        supervisor.env.records.claim_supervisor("replacement-pod")
+
+
+def test_a_supervisor_stands_down_when_another_pod_takes_the_run(env):
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    supervisor, pod = prepared_session(env, manifests, queues)
+    supervisor.pod_uid = pod["metadata"]["uid"]
+    supervisor.env.records.claim_supervisor(supervisor.pod_uid)
+    supervisor.hold(supervisor.env.refresh())  # still the holder
+    supervisor.env.records.claim_supervisor("replacement-pod")
+    with pytest.raises(rt.Failure, match="Another supervisor Pod holds this run"):
+        supervisor.hold(supervisor.env.refresh())
+
+
+def test_a_replaced_supervisor_cleans_nothing_of_the_holders(env, monkeypatch):
+    """The loser of a claim must not delete the winner's workload or queue."""
+    manifests = session_approval(env)
+    queues = FakeQueues(env[2]["queue"])
+    supervisor, pod = prepared_session(env, manifests, queues)
+    supervisor.env.records.set_phase(rt.Phase.READY)
+    heartbeat = supervisor.env.records.heartbeat
+
+    def replaced(*args, **kwargs):
+        # A replacement claims the run while this Pod is still polling.
+        supervisor.env.records.claim_supervisor("replacement-pod")
+        return heartbeat(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor.env.records, "heartbeat", replaced)
+    before = env[3].now
+    with pytest.raises(rt.Failure, match="Another supervisor Pod holds this run"):
+        supervisor.supervise(pod["metadata"]["uid"])
+    # It stands down on the poll that sees the new holder, rather than
+    # polling on until its bounded wait expires.
+    assert env[3].now - before < rt.CLOUDTASKS_POLICY["cell_startup_seconds"]
+    assert not any(call[0] == "delete" or call == ("scale", 0) for call in env[0].calls)
+    assert ("delete",) not in queues.calls
+    assert supervisor.env.refresh().supervisor_pod == "replacement-pod"
+
+
+def test_a_job_between_pod_attempts_is_not_finished():
+    """One preempted attempt with replacements left is not a finished Job."""
+    completed = cli.runner_api.Runner.job_completed
+    assert completed({"status": {"failed": 1}}) is False
+    assert completed({"status": {"failed": 1, "succeeded": 1}}) is True
+    assert (
+        completed(
+            {
+                "status": {
+                    "failed": 3,
+                    "conditions": [{"type": "Failed", "status": "True"}],
+                }
+            }
+        )
+        is True
+    )
+    assert completed({"status": {}}) is False
+
+
+def test_a_terminal_pod_does_not_count_against_the_live_ceiling():
+    """The ceiling bounds capacity, and a replaced attempt holds none."""
+    running = [{"status": {"phase": "Running"}} for _ in range(4)]
+    replaced = [{"status": {"phase": "Failed"}}, {"status": {"phase": "Succeeded"}}]
+    assert len(rt.live_pods(running + replaced)) == 4
+    # A Pod whose status has not been published yet is not terminal.
+    assert len(rt.live_pods([{"metadata": {"name": "pending"}}])) == 1

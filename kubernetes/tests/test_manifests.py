@@ -684,7 +684,10 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     assert config["immutable"]
     assert config["data"]["flink_tier3_runtime.py"] == package_sources()["runtime.py"]
     assert job["metadata"]["namespace"] == "tier3-system"
-    assert job["spec"]["backoffLimit"] == 0
+    # Two replacements, so a Pod the infrastructure takes away before the
+    # session claims a cell does not spend the whole approved window, while a
+    # crash loop still cannot.
+    assert job["spec"]["backoffLimit"] == 2
     assert job["spec"]["activeDeadlineSeconds"] == 3300
     pod = job["spec"]["template"]["spec"]
     mounted = {}

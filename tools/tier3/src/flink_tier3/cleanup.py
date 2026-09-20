@@ -61,6 +61,21 @@ def session_resources(approval):
     }
 
 
+TERMINAL_PHASES = ("Succeeded", "Failed")
+
+
+def live_pods(pods):
+    """The Pods that hold capacity, which is what the Pod ceiling bounds.
+
+    A supervisor attempt the infrastructure took away stays in the inventory
+    for its ownership and its logs, and holds no CPU or memory once it has
+    reached a terminal phase.
+    """
+    return [
+        pod for pod in pods if pod.get("status", {}).get("phase") not in TERMINAL_PHASES
+    ]
+
+
 class Cleanup:
     """Ownership-checked observation and convergence toward the idle foundation."""
 
@@ -246,7 +261,7 @@ class Cleanup:
                     "Unexpected object outside the baseline and run ownership graph"
                 )
         pods = [obj for obj in items if obj["kind"] == "Pod"]
-        if len(pods) > self.ceilings["pods"] or any(
+        if len(live_pods(pods)) > self.ceilings["pods"] or any(
             obj["kind"] == "PersistentVolumeClaim" for obj in items
         ):
             raise Failure("Pod/PVC count ceiling exceeded")
