@@ -59,6 +59,7 @@ class BigQueryLifecycle:
             approval.scenario != "bigquery-recovery"
             or approval.run_id != trial.run_id
             or approval.nonce != self.plan.nonce
+            or approval.bigquery_plan != self.plan
             or digest(application) != approval.application_sha256
             or application.get("metadata", {}).get("name") != trial.run_id
             or application.get("metadata", {}).get("namespace") != "tier3-bigquery"

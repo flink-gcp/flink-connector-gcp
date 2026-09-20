@@ -38,6 +38,9 @@ from .evidence import MARKER, authorized_release, cell_prefix, release_exported
 from .model import Phase, session_shapes, taskmanager_class
 from .policy import (
     BENCHMARK,
+    BIGQUERY,
+    BIGQUERY_CEILINGS,
+    BIGQUERY_STATE,
     CEILINGS,
     CLOUDTASKS_CEILINGS,
     NONCE,
@@ -111,6 +114,8 @@ class Cleanup:
 
     @property
     def ceilings(self):
+        if self.env.approval.scenario == "bigquery-recovery":
+            return BIGQUERY_CEILINGS
         return CLOUDTASKS_CEILINGS if self.cloudtasks else CEILINGS
 
     def application_keys(self):
@@ -120,6 +125,8 @@ class Cleanup:
 
     def state_prefixes(self, cell_ids=None):
         run_id = self.env.approval.run_id
+        if self.env.approval.scenario == "bigquery-recovery":
+            return [(f"runs/{run_id}/", BIGQUERY_STATE)]
         if not self.cloudtasks:
             return [(f"runs/{run_id}/", STATE)]
         if cell_ids is None:
@@ -150,6 +157,9 @@ class Cleanup:
                 resources = POD_RESOURCES["supervisor"]
             elif admission == "session":
                 resources = session_resources(self.env.approval)
+            elif namespace == BIGQUERY:
+                pods = 3
+                resources = sum_resources([POD_RESOURCES["smoke"]] * pods)
             else:
                 resources = (
                     system_resources()
@@ -221,7 +231,9 @@ class Cleanup:
     def inventory(self):
         self.env.namespaces()
         self.env.refresh()
-        self.last_inventory = self.env.kube.inventory()
+        self.last_inventory = self.env.kube.inventory(
+            self.env.approval.application_namespace
+        )
         known = ownership(
             self.last_inventory,
             set(self.env.observed) | {r["uid"] for r in self.env.roots.values()},
@@ -268,7 +280,9 @@ class Cleanup:
             "supervisor": approval.images["supervisor"],
             "operator": approval.images["operator"],
             "application": approval.images[
-                "application" if self.cloudtasks else "smoke"
+                "smoke"
+                if approval.scenario in ("smoke", "generic-recovery")
+                else "application"
             ],
         }
         names = approval.cell_ids if self.cloudtasks else approval.run_id
@@ -609,7 +623,7 @@ def verify_idle(env):
     env.namespaces()
     require_bigquery_clean(env.refresh())
     kube, approval = env.kube, env.approval
-    items = kube.inventory()
+    items = kube.inventory(approval.application_namespace)
     baseline = set(approval.baseline_uids)
     for obj in items:
         uid = obj["metadata"]["uid"]

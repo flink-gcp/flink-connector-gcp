@@ -220,6 +220,8 @@ class Supervisor:
                 previous = lineage
 
     def supervise(self, pod_uid):
+        if self.env.approval.scenario == "bigquery-recovery":
+            raise Failure("BigQuery recovery supervision is not implemented")
         self.env.refresh()
         job = self.env.root("supervisor")
         if not job:

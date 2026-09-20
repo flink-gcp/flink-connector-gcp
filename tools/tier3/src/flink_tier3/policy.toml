@@ -29,6 +29,8 @@ repository = 'flink-gcp/flink-connector-gcp'
 pricing_reviewed = '2026-09-14T00:00:00Z'
 cloudtasks = 'tier3-cloudtasks'
 benchmark = 'flink-gcp-cloudtasks-benchmark'
+bigquery = 'tier3-bigquery'
+bigquery_state = 'flink-gcp-tier3-bigquery'
 
 # Conservative normal-capacity rates, including for Spot.
 # Exceed published Iowa Autopilot prices reviewed on 2026-09-14.
@@ -52,6 +54,19 @@ additional_cost_usd = "1.00"
 cpu = "1"
 memory = "2Gi"
 ephemeral-storage = "1Gi"
+
+# One Operator, supervisor, JobManager and two TaskManagers. A trial selects
+# its cost ceiling through the reviewed proposal schema, up to USD 10.
+[bigquery_ceilings]
+seconds = 5400
+cleanup_seconds = 900
+pods = 5
+pvcs = 0
+state_bytes = 1073741824
+state_objects = 10000
+log_bytes = 104857600
+evidence_bytes = 104857600
+additional_cost_usd = "10.00"
 
 [pod_resources.operator]
 cpu = "1"

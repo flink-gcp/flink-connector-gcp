@@ -422,7 +422,7 @@ Synthetic generation-conflict and restart tests hold these controller contracts;
 Before wiring the actors, render one unapproved execution proposal from explicit trial inputs.
 Bind the resource plan, repeated-trial ordinal, fixed finite input, proposed windows/cost and initial/upgrade/supervisor hashes in the ConfigMap alongside an empty approval document.
 The CUE delivery reuses the BigQuery package for both phases and retains the phase-only savepoint transition.
-The offline renderer accepts this scenario, while lifecycle execution validation continues to reject it.
+The offline renderer accepts this scenario, while lifecycle execution entrypoints continue to reject it.
 A declared revision and digest-shaped image are inputs to later provenance checks, not publication or execution evidence.
 Keep the cost calculation a planning estimate with an explicit reserve; it cannot bound service bills or replace final resource and cost approval.
 Updated image publication, digest adoption, bounded admission/query execution and complete cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
@@ -639,5 +639,24 @@ Recorded BigQuery state gates Operator shutdown, shared completion transitions, 
 Retain that entire state in the final receipt and refuse a conflicting receipt or a concurrent control change before deleting the control record.
 
 These common-loop paths are covered by synthetic tests, including composition with the real handoff protocol.
-Authenticated entrypoints, BigQuery approval admission, namespace/resource policy, observation and recovery scheduling, and Kubernetes workload fencing remain subsequent integration work.
+Authenticated entrypoints, observation and recovery scheduling, and Kubernetes workload fencing remain subsequent integration work.
 It changes no deployed image, grants or paid-trial authorization.
+
+### BigQuery approval and shared resource policy
+
+Use approval version 4 for the internal BigQuery execution contract.
+Reuse the offline proposal's exact trial schema and derive the service resource plan from it, the approved run/nonce and table expiry.
+The resource controller compares that whole plan before using the service adapter, so a valid but different query-slot count, byte limit, timeout or expiration cannot replace the approved one.
+Retain the recorded-intent comparison as a separate guard against a replacement approval after initialization.
+
+Require the proposal's 90-minute window, 15-minute cleanup reserve and five-Pod budget, with three equal Flink Pod shapes in `tier3-bigquery` and two control Pods in `tier3-system`.
+Keep smoke and Cloud Tasks approvals and ceilings unchanged.
+Include BigQuery in shared inventory only for BigQuery approvals; preserve the original smoke, Cloud Tasks and control namespace scope for versions 1–3 so recovery can reuse their saved baselines.
+Use the BigQuery application image role and dedicated state bucket for audit and cleanup.
+Generation-checked state deletion remains confined to the approved run prefix, and pending service cleanup still blocks shared completion.
+
+Schema validation does not authenticate an approval or enable paid execution.
+Keep the dispatch scenario excluded and add explicit runner/supervisor start refusals while authenticated delivery, cumulative query-evidence accounting, recovery scheduling and external writer fencing remain incomplete.
+This permits real model/environment/controller composition in synthetic tests without silently falling through the smoke execution path.
+The shared final receipt retains the BigQuery scenario and approved trial; its success remains false until the BigQuery verdict is implemented, even if a generic recovery completion flag is present.
+A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.

@@ -46,7 +46,9 @@ class World:
         monkeypatch.setattr(
             self.kube,
             "inventory",
-            lambda: [o for o in original_inventory() if o["kind"] != "Event"],
+            lambda *args: [
+                o for o in original_inventory(*args) if o["kind"] != "Event"
+            ],
         )
         original_items = self.kube.items
         monkeypatch.setattr(

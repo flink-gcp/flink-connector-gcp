@@ -200,7 +200,7 @@ def snapshot(kube, application=rt.SMOKE):
     if image != expected_image:
         raise rt.Failure("Installed Operator image differs from the reviewed pin")
     rt.verify_pod(template, "operator", expected_image)
-    inventory = kube.inventory()
+    inventory = kube.inventory(application)
     for item in inventory:
         if item["kind"] == "ReplicaSet" and (
             item.get("spec", {}).get("replicas", 0) != 0

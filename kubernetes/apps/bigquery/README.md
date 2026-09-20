@@ -94,7 +94,7 @@ A later executor must bind the exact rendered manifests to the approved trial, p
 ## Offline execution proposal
 
 `flink-tier3 render --scenario bigquery-recovery` combines one trial's proposed limits, initial/upgrade applications and supervisor delivery into a JSON bundle.
-This is a render-only scenario: `lifecycle run`, `validate_approval` and the in-cluster supervisor still reject it.
+The dispatch CLI and in-cluster supervisor still reject this scenario; the common model accepts only its separate version 4 approval contract described below.
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
@@ -330,9 +330,10 @@ Authenticated supervisor handoff, shared deadlines and final idle verification r
 ### Durable resource controller
 
 [`flink_tier3.bigquery_lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery_lifecycle.py) composes the adapter with generation-checked lifecycle records.
-It is internal preparation: no CLI command, approval validator, runner or supervisor admits a BigQuery scenario yet.
+It is internal preparation: no CLI command, runner or supervisor starts a BigQuery scenario yet.
 The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
-The controller binds the plan's run ID, nonce and trial arguments to the recorded initial application hash; it does not validate a new BigQuery approval schema or the application's complete deployment policy.
+The controller binds the complete service plan, run ID, nonce and trial arguments to the approved initial application hash.
+The common model validates the version 4 approval; complete deployment admission remains executor work.
 
 Initialization stores the unchanged plan in `RunRecord.bigquery`.
 Provisioning first checks absence, records a creation intent, then creates or reconciles that table and stores its creation receipt.
@@ -369,7 +370,7 @@ They do not establish authenticated handoff, a functioning external barrier or r
 
 [`flink_tier3.bigquery_handoff`](../../../tools/tier3/src/flink_tier3/bigquery_handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
 The common runner settlement and supervisor cleanup paths accept this protocol through explicit constructor arguments.
-The approval validator and CLI still reject BigQuery execution; they do not construct these actor bindings.
+The common model validates BigQuery approval inputs, but the CLI still rejects execution and does not construct these actor bindings.
 The caller must authenticate both actors, allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
 The token binds records; it is not an authentication credential or a lease that another process may take over.
 After initializing this protocol on an empty resource intent, all runner provisioning and query calls must use it rather than the resource controller directly.
@@ -433,8 +434,36 @@ Such partial initialization, standalone controller state without this binding, a
 Recorded BigQuery state also gates Operator shutdown, the `CLEANED` transition, settlement, idle verification and finalization, even when no handoff is attached.
 The final receipt retains the complete BigQuery control snapshot, including table receipts and query evidence pointers.
 A conflicting receipt or a concurrent control change leaves the control record and lock in place.
-These tests use synthetic actors and services; authenticated admission, namespace/resource policy, observation and recovery scheduling, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
+These tests use synthetic actors and services; authenticated admission, observation and recovery scheduling, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
 
 The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
 The fixed dataset and namespace grants already exist, but checkpoint/savepoint restore through the conditional GCS grants remains a live acceptance gate.
+
+### Approval and shared resource policy
+
+The common model accepts a version 4 `bigquery-recovery` approval for internal integration and cleanup tests.
+It binds `bigquery_trial` to the same exact input schema as the offline trial file, including mode, destination count, repetition, query slots, per-query limits and proposed cost.
+The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
+A valid document is not authenticated execution permission: the dispatch CLI still excludes this scenario, and the runner and supervisor reject starting it before mutating resources.
+
+The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, five Pods and no PVCs.
+The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
+The control quota covers the Operator and supervisor.
+State and log limits remain 1 GiB of state, 10,000 state objects and 100 MiB of logs; the trial selects a cost ceiling from the proposal schema, subject to its planning estimate and USD 10 maximum.
+The two trial modes retain their fixed finite input sizes; the approval model derives the resource plan rather than accepting another independently editable copy.
+The resource controller refuses a plan that differs from this approval before reading or creating service resources.
+
+Common creation/adoption uses the approved application namespace.
+Inventory includes `tier3-bigquery` for BigQuery approvals, counts its Pods against the five-Pod ceiling, and verifies owner UIDs, image digests and effective resources.
+Recovery of version 1–3 approvals keeps the namespace scope of their saved baseline.
+State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-tier3-bigquery`; same-named objects in the smoke or evidence buckets and other BigQuery run prefixes remain outside that operation.
+Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
+They do not establish a functioning external quiescence barrier or live service acceptance.
+
+Authenticated approval delivery, the handoff's query-evidence allocation, recovery observations and writer fencing must be connected before enabling either execution entrypoint.
+The 100 MiB evidence ceiling is a policy limit; this stage does not allocate an additional query-artifact budget on top of the existing actor receipt budgets.
+
+The shared final receipt records the BigQuery scenario and approved trial, with `success: false` until its execution verdict is implemented.
+A generic recovery completion flag cannot satisfy that verdict.
+A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.

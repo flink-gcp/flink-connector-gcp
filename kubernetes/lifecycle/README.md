@@ -54,7 +54,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub_traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
 
 The policy file is part of the reviewed revision, with no runtime override path.
-The fixed approval phrase and existing ceiling values remain unchanged.
+The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.
 The workload remains the [source-backed generic smoke application](../apps/smoke/README.md).
 Live execution and recovery behavior still require the separately approved [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).
@@ -427,5 +427,6 @@ For a Cloud Tasks session, add `--scenario cloudtasks --cells-file kubernetes/li
 A synthetic digest renders locally but never passes the live registry check that admission performs.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
-The render-only `bigquery-recovery` scenario is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal).
+The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal).
+The internal version 4 approval and its five-Pod, dedicated-state-bucket policy are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy); execution entrypoints remain disabled.
 It produces an explicitly unapproved bundle and does not extend this lifecycle's run/recovery admission.

@@ -25,8 +25,10 @@ from enum import Enum
 from fractions import Fraction
 from typing import ClassVar
 
-from .common import Failure, quantity, timestamp
+from .common import Failure, json_bytes, quantity, timestamp
 from .policy import (
+    BIGQUERY,
+    BIGQUERY_CEILINGS,
     CEILINGS,
     CELL_ID,
     CLOUDTASKS,
@@ -308,11 +310,17 @@ def validate_approval(approval, now=None):
     if approval["operator_uid"] not in approval["baseline_uids"]:
         raise Failure("Operator must belong to the observed foundation")
     scenario = approval.get("scenario", "smoke")
-    if scenario not in ("smoke", "generic-recovery", "cloudtasks"):
+    if scenario not in ("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery"):
         raise Failure("Unknown approved scenario")
     recovery = scenario == "generic-recovery"
     cloudtasks = scenario == "cloudtasks"
-    versions = {"smoke": 1, "generic-recovery": 2, "cloudtasks": 3}
+    bigquery = scenario == "bigquery-recovery"
+    versions = {
+        "smoke": 1,
+        "generic-recovery": 2,
+        "cloudtasks": 3,
+        "bigquery-recovery": 4,
+    }
     if approval.get("version") != versions[scenario] or not RUN_ID.fullmatch(
         approval.get("run_id", "")
     ):
@@ -322,13 +330,20 @@ def validate_approval(approval, now=None):
             r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
         ):
             raise Failure("Recovery approval must pin its policy and upgrade manifest")
+    elif bigquery:
+        if approval.get("recovery_policy") or not re.fullmatch(
+            r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
+        ):
+            raise Failure("BigQuery approval must pin its own upgrade manifest")
     elif approval.get("recovery_policy") or approval.get("upgrade_application_sha256"):
         raise Failure("Ordinary smoke approval cannot authorize recovery operations")
     if not SHA.fullmatch(approval.get("sha", "")) or not re.fullmatch(
         r"[0-9a-f]{32}", approval.get("nonce", "")
     ):
         raise Failure("Approval must pin a revision and nonce")
-    if approval.get("ceilings") != CEILINGS:
+    if not bigquery and approval.get("bigquery_trial"):
+        raise Failure("Only BigQuery approvals may carry a BigQuery trial")
+    if not bigquery and approval.get("ceilings") != CEILINGS:
         raise Failure("Approval does not match the fixed resource/cost ceilings")
     start, end = timestamp(approval["started_at"]), timestamp(approval["expires_at"])
     if cloudtasks:
@@ -345,14 +360,18 @@ def validate_approval(approval, now=None):
         ):
             if approval.get(key):
                 raise Failure("Smoke approvals cannot carry Cloud Tasks session fields")
-        if (
+        if bigquery:
+            _validate_bigquery(approval, start, end)
+        elif (
             not 900 < end - start <= 3600
             or timestamp(approval["cleanup_at"]) != end - 900
         ):
             raise Failure(
                 "Approval must reserve 15 minutes of the one-hour window for cleanup"
             )
-        if estimated_cost(end - start) > Decimal(CEILINGS["additional_cost_usd"]):
+        if not bigquery and estimated_cost(end - start) > Decimal(
+            CEILINGS["additional_cost_usd"]
+        ):
             raise Failure("Estimated incremental cost exceeds approval")
     if now is not None and now > timestamp(PRICING_REVIEWED) + 30 * 86400:
         raise Failure(
@@ -362,7 +381,7 @@ def validate_approval(approval, now=None):
         now < start - 30 or now >= timestamp(approval["cleanup_at"])
     ):
         raise Failure("Approval is outside its admission window")
-    application = CLOUDTASKS if cloudtasks else SMOKE
+    application = CLOUDTASKS if cloudtasks else BIGQUERY if bigquery else SMOKE
     if set(approval["namespaces"]) != {application, SYSTEM}:
         raise Failure("Approval must name its application and control namespaces")
     for saved in approval["namespaces"].values():
@@ -378,6 +397,8 @@ def validate_approval(approval, now=None):
     roles = {"operator": "operator", "supervisor": "lifecycle-tools"}
     if cloudtasks:
         roles["application"] = FLINK_LINES[approval["flink_version"]][0]
+    elif bigquery:
+        roles["application"] = "bigquery-recovery"
     else:
         roles["smoke"] = "smoke"
     if set(approval["images"]) != set(roles):
@@ -391,6 +412,37 @@ def validate_approval(approval, now=None):
         r"[0-9a-f]{64}", approval.get("runtime_sha256", "")
     ) or not re.fullmatch(r"[0-9a-f]{64}", approval.get("application_sha256", "")):
         raise Failure("Approval must pin its runtime and application bytes")
+
+
+def _validate_bigquery(approval, start, end):
+    # Import at validation time: the offline proposal uses this module's
+    # resource cost calculation, and both paths must keep the same trial schema.
+    from .bigquery_plan import REVIEWED_AT, WINDOW_SECONDS, validate_trial
+
+    trial = approval.get("bigquery_trial")
+    if type(approval["version"]) is not int:
+        raise Failure("BigQuery approval version must be an integer")
+    try:
+        validate_trial(trial)
+    except (ValueError, TypeError) as error:
+        raise Failure("Invalid approved BigQuery trial: " + str(error)) from error
+    expected = {
+        **BIGQUERY_CEILINGS,
+        "additional_cost_usd": trial["additional_cost_usd"],
+    }
+    if json_bytes(approval["ceilings"]) != json_bytes(expected):
+        raise Failure("BigQuery approval differs from its resource and cost ceilings")
+    if (
+        start != int(start)
+        or end != int(end)
+        or end - start != WINDOW_SECONDS
+        or timestamp(approval["cleanup_at"]) != end - expected["cleanup_seconds"]
+    ):
+        raise Failure(
+            "BigQuery approval requires 90 minutes with 15 minutes for cleanup"
+        )
+    if not timestamp(REVIEWED_AT) <= start <= timestamp(REVIEWED_AT) + 30 * 86400:
+        raise Failure("BigQuery approval starts outside the pricing review window")
 
 
 def _validate_session(approval, start, end):
@@ -530,6 +582,7 @@ class Approval:
     cells: list = field(default_factory=list)
     cloudtasks_ceilings: dict = field(default_factory=dict)
     cloudtasks_pod_resources: dict = field(default_factory=dict)
+    bigquery_trial: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value, now=None):
@@ -542,7 +595,21 @@ class Approval:
 
     @property
     def application_namespace(self):
+        if self.scenario == "bigquery-recovery":
+            return BIGQUERY
         return CLOUDTASKS if self.scenario == "cloudtasks" else SMOKE
+
+    @property
+    def bigquery_plan(self):
+        """Derive the exact service plan from validated trial inputs and expiry."""
+        from .bigquery_plan import resource_plan
+
+        if self.scenario != "bigquery-recovery":
+            raise Failure("Approval does not describe a BigQuery trial")
+        validate_approval(self.to_dict())
+        return resource_plan(
+            self.run_id, self.nonce, self.expires_at, self.bigquery_trial
+        )
 
     @property
     def cell_ids(self):
@@ -556,6 +623,8 @@ class Approval:
 
     def to_dict(self):
         value = asdict(self)
+        if self.scenario != "bigquery-recovery":
+            value.pop("bigquery_trial")
         if self.scenario != "cloudtasks":
             for key in (
                 "campaign",
