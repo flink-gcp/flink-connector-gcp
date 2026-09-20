@@ -17,12 +17,47 @@ The Dockerfile adds these files to `/opt/flink/usrlib/` over the reviewed Flink 
 The entry point is `io.github.flink.gcp.connector.tier3.pubsub.PubSubRecoveryJob`.
 The [image publication workflow](../../../.github/workflows/tier3-images.yaml) packages it as `pubsub-recovery` on the fixed Flink 2.2.1 / Java 17 AMD64 base.
 The application CI lane builds the Dockerfile without publishing; its context admits only the Dockerfile, application JAR and packaged runtime dependency JARs.
-An authorized publication dispatch, verified digest selection and application manifests remain subsequent work.
+The [first publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35494622116) built main commit `cba9043faee0ceb067cba23b56fe3e0abe7f0542`; a GAR read confirmed its application digest.
+The reusable deployment definition below consumes a supplied digest; it does not select or admit an active run.
 
 Unit tests cover argument and input bounds, serialization, missing/foreign restored state, contradictory evidence, missing IDs and duplicate classification.
 MiniCluster tests use production source/sink RPCs against the Pub/Sub emulator, replace TaskManagers after a completed checkpoint and restore savepoints at parallelism 1→2 and 2→1.
 They publish new input to both subscriptions after the disruption and require output from restored attempts.
 These are local wiring and state-continuity checks; they do not measure real-service redelivery, ACK deadlines, lease expiry, ordering, GCS access, GKE scheduling or Operator reconciliation.
+
+## Deployment definition
+
+[`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the DataStream relay on Flink 2.2.1 / Java 17.
+A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription` and `parallelism` inputs.
+The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade and parallelism 1/2 combination.
+There is no committed Pub/Sub run delivery or lifecycle CLI scenario yet.
+
+The first verified image reference is:
+
+```text
+us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery@sha256:d56245c72fb69d3b1a68b05319cd4ecbdf74a3080995433ed9d5fe12d509e938
+```
+
+This records publication, not current availability.
+GAR versions become deletion-eligible seven days after creation; admission must verify existence and retention through the run and cleanup window.
+The package requires this GAR package with a lowercase SHA-256 digest and rejects tags and other application packages.
+
+The deployment uses the `tier3-pubsub/pubsub` KSA and native workload ADC.
+It retains checkpoints on cancellation and separates checkpoints, savepoints and Kubernetes HA data beneath `gs://flink-gcp-tier3-pubsub/runs/<run-id>/`.
+Objects become deletion-eligible after one day, with soft delete and versioning disabled.
+Complete recovery trials within that storage lifetime; the state bucket is not durable evidence storage.
+One JobManager and one or two single-slot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage on AMD64 Spot nodes.
+At parallelism two, the application alone therefore uses three Pods; later admission must additionally budget the Operator and independent supervisor.
+Namespace quotas remain idle until a separately approved lifecycle admits the complete workload.
+
+Savepoint upgrades preserve state and refuse unclaimed state.
+The rendered job arguments use the application's `--name=value` syntax, match Flink parallelism and require restored identity in the `upgrade` phase.
+That phase does not locate a savepoint or prove a checkpoint boundary: the later controller must retain and select recovery state, keep the run/input domain fixed and observe successful restoration.
+The logical input domain and restart count do not bound elapsed execution or billable service operations.
+
+Before deployment, implement the owned-resource provisioner and scoped service grants described below, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
+Table entry points and deployed recovery acceptance remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
 ## Run identity and service resources
 

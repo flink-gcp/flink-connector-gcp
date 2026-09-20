@@ -104,7 +104,8 @@ Do not adopt image pins from an incomplete run.
 The Cloud Tasks application needs its first authorized publication before a session dispatch can name its digest; that digest is a dispatch input verified live against the registry, not a pin in this package.
 The [first BigQuery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`, before the application added appender observations.
 The updated BigQuery application needs another authorized publication and a separately reviewed digest before workload admission.
-The Pub/Sub application needs its first authorized publication and a separately reviewed digest before workload admission.
+The [first Pub/Sub publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35494622116) built `cba9043faee0ceb067cba23b56fe3e0abe7f0542`; its [application runbook](../apps/pubsub/README.md#deployment-definition) records the GAR-verified digest.
+Workload admission must recheck that digest's availability and retention window.
 Publication supplies no Cloud Tasks, BigQuery or Pub/Sub workload admission or service-measurement approval.
 
 ## Retention and acceptance

@@ -22,7 +22,7 @@ import (
 run: {
 	id:        string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$" @tag(run_id)
 	expiresAt: time.Time                                         @tag(expires_at)
-	namespace: *"tier3-smoke" | "tier3-cloudtasks" | "tier3-bigquery"
+	namespace: *"tier3-smoke" | "tier3-cloudtasks" | "tier3-bigquery" | "tier3-pubsub"
 	image:     string @tag(image)
 }
 
@@ -38,7 +38,8 @@ delivery: resources: [string]: {
 	// Foundation resources belong to OpenTofu, never to an expiring run.
 	kind: "ConfigMap" | "Deployment" | "FlinkDeployment" | "Job" | "Service"
 	metadata: {
-		namespace: run.namespace
+		// Resolve the run default before unifying a package namespace.
+		namespace: "\(run.namespace)"
 		labels: "flink-gcp.io/run-id":          run.id
 		annotations: "flink-gcp.io/expires-at": run.expiresAt
 	}
@@ -54,6 +55,11 @@ delivery: resources: [string]: {
 			if run.namespace == "tier3-smoke" {
 				flinkVersion: "v2_2"
 				job: parallelism: >=1 & <=2
+			}
+			if run.namespace == "tier3-pubsub" {
+				flinkVersion:   "v2_2"
+				serviceAccount: "pubsub"
+				job: parallelism: 1 | 2
 			}
 			if run.namespace == "tier3-cloudtasks" {
 				flinkVersion:   "v1_20" | "v2_2"

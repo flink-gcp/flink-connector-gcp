@@ -1633,3 +1633,242 @@ def test_bigquery_namespace_policy_without_application_package(module, override)
     invalid = cue(module, "cmd", "render", path)
     assert invalid.returncode != 0, invalid.stdout
     assert not invalid.stdout.strip()
+
+
+PUBSUB_IMAGE = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery"
+
+
+def pubsub_delivery(module, **inputs):
+    run = {
+        "id": "pubsub-probe",
+        "expiresAt": "2026-09-20T12:00:00Z",
+        "image": f"{PUBSUB_IMAGE}@{SYNTHETIC_DIGEST}",
+        "phase": "initial",
+        "recordsPerSubscription": 1000,
+        "parallelism": 1,
+        **inputs,
+    }
+    path = leaf(module, "runs/pubsub", {"run": run})
+    shutil.copyfile(
+        KUBERNETES / "tests/fixtures/pubsub.cue", module / path / "application.cue"
+    )
+    return path
+
+
+@pytest.mark.parametrize("phase", ["initial", "upgrade"])
+@pytest.mark.parametrize("parallelism", [1, 2])
+@pytest.mark.parametrize("records", [1, 10000])
+def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records):
+    path = pubsub_delivery(
+        module, phase=phase, parallelism=parallelism, recordsPerSubscription=records
+    )
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    assert app["metadata"]["name"] == "pubsub-probe"
+    assert app["metadata"]["namespace"] == "tier3-pubsub"
+    assert app["metadata"]["labels"]["flink-gcp.io/run-id"] == "pubsub-probe"
+    assert app["metadata"]["annotations"]["flink-gcp.io/expires-at"] == (
+        "2026-09-20T12:00:00Z"
+    )
+    spec = app["spec"]
+    assert spec["image"] == f"{PUBSUB_IMAGE}@{SYNTHETIC_DIGEST}"
+    assert spec["flinkVersion"] == "v2_2"
+    assert spec["serviceAccount"] == "pubsub"
+    assert spec["mode"] == "native"
+    job = spec["job"]
+    assert job["parallelism"] == parallelism
+    assert job["upgradeMode"] == "savepoint"
+    assert job["allowNonRestoredState"] is False
+    assert job["jarURI"] == "local:///opt/flink/usrlib/pubsub-recovery.jar"
+    assert job["entryClass"] == (
+        "io.github.flink.gcp.connector.tier3.pubsub.PubSubRecoveryJob"
+    )
+    assert job["args"] == [
+        "--run-id=pubsub-probe",
+        f"--phase={phase}",
+        f"--records-per-subscription={records}",
+        f"--parallelism={parallelism}",
+        f"--require-restored={str(phase == 'upgrade').lower()}",
+    ]
+    config = spec["flinkConfiguration"]
+    assert config["taskmanager.numberOfTaskSlots"] == "1"
+    assert config["execution.checkpointing.interval"] == "30 s"
+    assert config["execution.checkpointing.max-concurrent-checkpoints"] == "1"
+    assert config["execution.checkpointing.storage"] == "filesystem"
+    assert config["high-availability.type"] == "kubernetes"
+    assert config["execution.checkpointing.externalized-checkpoint-retention"] == (
+        "RETAIN_ON_CANCELLATION"
+    )
+    for key, suffix in [
+        ("execution.checkpointing.dir", "checkpoints"),
+        ("execution.checkpointing.savepoint-dir", "savepoints"),
+        ("high-availability.storageDir", "ha"),
+    ]:
+        assert config[key] == f"gs://flink-gcp-tier3-pubsub/runs/pubsub-probe/{suffix}"
+    for manager, replicas in [("jobManager", 1), ("taskManager", parallelism)]:
+        assert spec[manager]["replicas"] == replicas
+        assert spec[manager]["resource"] == {"cpu": 1, "memory": "2Gi"}
+    for owner in [spec, spec["jobManager"], spec["taskManager"]]:
+        pod = owner["podTemplate"]
+        assert pod["metadata"]["labels"]["flink-gcp.io/run-id"] == "pubsub-probe"
+        assert pod["spec"]["nodeSelector"] == {
+            "kubernetes.io/arch": "amd64",
+            "cloud.google.com/gke-spot": "true",
+        }
+        [container] = pod["spec"]["containers"]
+        assert container["name"] == "flink-main-container"
+        assert container["resources"]["requests"] == container["resources"]["limits"]
+        assert container["resources"]["limits"] == {
+            "cpu": "1",
+            "memory": "2Gi",
+            "ephemeral-storage": "1Gi",
+        }
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"id": "../foreign"},
+        {"id": "x" * 41},
+        {"phase": "resume"},
+        {"recordsPerSubscription": 0},
+        {"recordsPerSubscription": 10001},
+        {"recordsPerSubscription": "1"},
+        {"parallelism": 0},
+        {"parallelism": 3},
+        {"parallelism": "1"},
+        {"image": f"{PUBSUB_IMAGE}:latest"},
+        {"image": f"{PUBSUB_IMAGE}@sha256:{'a' * 63}"},
+        {"image": f"{PUBSUB_IMAGE}@sha256:{'A' * 64}"},
+        {"image": f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"},
+        {
+            "image": f"{PUBSUB_IMAGE.replace('/flink-gcp/', '/other/')}@{SYNTHETIC_DIGEST}"
+        },
+        {"namespace": "tier3-smoke"},
+    ],
+)
+def test_pubsub_rejects_invalid_run_inputs(module, inputs):
+    path = pubsub_delivery(module, **inputs)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode != 0, result.stdout
+    assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"flinkVersion": "v1_20"},
+        {"serviceAccount": "smoke"},
+        {"mode": "standalone"},
+        {"job": {"parallelism": 2}},
+        {"job": {"upgradeMode": "stateless"}},
+        {"job": {"allowNonRestoredState": True}},
+        {"job": {"args": ["--run-id=foreign"]}},
+        {"jobManager": {"replicas": 2}},
+        {"taskManager": {"replicas": 2}},
+        {"flinkConfiguration": {"taskmanager.numberOfTaskSlots": "2"}},
+        {"flinkConfiguration": {"execution.checkpointing.dir": "gs://foreign/state"}},
+        *[
+            {manager: {"resource": {"cpu": 2}}}
+            for manager in ["jobManager", "taskManager"]
+        ],
+        *[
+            {owner: {"podTemplate": {"spec": {"nodeSelector": {key: value}}}}}
+            if owner
+            else {"podTemplate": {"spec": {"nodeSelector": {key: value}}}}
+            for owner in [None, "jobManager", "taskManager"]
+            for key, value in [
+                ("cloud.google.com/gke-spot", "false"),
+                ("kubernetes.io/arch", "arm64"),
+            ]
+        ],
+    ],
+)
+def test_pubsub_delivery_cannot_override_recovery_contract(module, override):
+    path = pubsub_delivery(module)
+    valid = cue(module, "cmd", "render", path)
+    assert valid.returncode == 0, valid.stderr
+    (module / path / "override.cue").write_text(
+        "package tier3\n"
+        + json.dumps({"delivery": {"resources": {"app": {"spec": override}}}})
+    )
+    invalid = cue(module, "cmd", "render", path)
+    assert invalid.returncode != 0, invalid.stdout
+    assert not invalid.stdout.strip()
+
+
+@pytest.mark.parametrize("parallelism", [1, 2])
+def test_pubsub_namespace_policy_without_application_package(module, parallelism):
+    document = workload()
+    document["run"]["namespace"] = "tier3-pubsub"
+    spec = document["delivery"]["resources"]["job"]["spec"]
+    spec["serviceAccount"] = "pubsub"
+    spec["job"]["parallelism"] = parallelism
+    path = leaf(module, "runs/pubsub-policy", document)
+    valid = cue(module, "cmd", "render", path)
+    assert valid.returncode == 0, valid.stderr
+    [app] = list(yaml.safe_load_all(valid.stdout))
+    assert app["metadata"]["namespace"] == "tier3-pubsub"
+    assert app["spec"]["flinkVersion"] == "v2_2"
+    for override in [
+        {"serviceAccount": "smoke"},
+        {"flinkVersion": "v1_20"},
+        {"job": {"parallelism": 3}},
+    ]:
+        leaf(
+            module,
+            "runs/pubsub-policy",
+            {
+                **document,
+                "delivery": {
+                    "resources": {
+                        "job": {
+                            **document["delivery"]["resources"]["job"],
+                            "spec": {**spec, **override},
+                        }
+                    }
+                },
+            },
+        )
+        invalid = cue(module, "cmd", "render", path)
+        assert invalid.returncode != 0, (override, invalid.stdout)
+        assert not invalid.stdout.strip()
+
+
+@pytest.mark.parametrize("explicit_namespace", [False, True])
+def test_pubsub_companion_and_application_use_the_selected_run_namespace(
+    module, explicit_namespace
+):
+    path = pubsub_delivery(module)
+    fixture = module / path / "application.cue"
+    if not explicit_namespace:
+        fixture.write_text(
+            fixture.read_text().replace('run: namespace: "tier3-pubsub"', "")
+        )
+    (module / path / "companion.cue").write_text(
+        "package tier3\n"
+        + json.dumps(
+            {
+                "delivery": {
+                    "resources": {
+                        "config": {
+                            "apiVersion": "v1",
+                            "kind": "ConfigMap",
+                            "metadata": {"name": "companion"},
+                            "data": {"value": "test"},
+                        }
+                    }
+                }
+            }
+        )
+    )
+    result = cue(module, "cmd", "render", path)
+    if explicit_namespace:
+        assert result.returncode == 0, result.stderr
+        resources = list(yaml.safe_load_all(result.stdout))
+        assert {item["kind"] for item in resources} == {"ConfigMap", "FlinkDeployment"}
+        assert {item["metadata"]["namespace"] for item in resources} == {"tier3-pubsub"}
+    else:
+        assert result.returncode != 0, result.stdout
+        assert not result.stdout.strip()
