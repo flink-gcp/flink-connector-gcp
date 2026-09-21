@@ -42,6 +42,7 @@ from .policy import (
     PRICING_REVIEWED,
     PROJECT,
     PUBSUB,
+    PUBSUB_CEILINGS,
     RECOVERY,
     REGION,
     RUN_ID,
@@ -311,16 +312,24 @@ def validate_approval(approval, now=None):
     if approval["operator_uid"] not in approval["baseline_uids"]:
         raise Failure("Operator must belong to the observed foundation")
     scenario = approval.get("scenario", "smoke")
-    if scenario not in ("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery"):
+    if scenario not in (
+        "smoke",
+        "generic-recovery",
+        "cloudtasks",
+        "bigquery-recovery",
+        "pubsub-recovery",
+    ):
         raise Failure("Unknown approved scenario")
     recovery = scenario == "generic-recovery"
     cloudtasks = scenario == "cloudtasks"
     bigquery = scenario == "bigquery-recovery"
+    pubsub = scenario == "pubsub-recovery"
     versions = {
         "smoke": 1,
         "generic-recovery": 2,
         "cloudtasks": 3,
         "bigquery-recovery": 4,
+        "pubsub-recovery": 5,
     }
     if approval.get("version") != versions[scenario] or not RUN_ID.fullmatch(
         approval.get("run_id", "")
@@ -331,11 +340,11 @@ def validate_approval(approval, now=None):
             r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
         ):
             raise Failure("Recovery approval must pin its policy and upgrade manifest")
-    elif bigquery:
+    elif bigquery or pubsub:
         if approval.get("recovery_policy") or not re.fullmatch(
             r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
         ):
-            raise Failure("BigQuery approval must pin its own upgrade manifest")
+            raise Failure("Service approval must pin its own upgrade manifest")
     elif approval.get("recovery_policy") or approval.get("upgrade_application_sha256"):
         raise Failure("Ordinary smoke approval cannot authorize recovery operations")
     if not SHA.fullmatch(approval.get("sha", "")) or not re.fullmatch(
@@ -344,7 +353,9 @@ def validate_approval(approval, now=None):
         raise Failure("Approval must pin a revision and nonce")
     if not bigquery and approval.get("bigquery_trial"):
         raise Failure("Only BigQuery approvals may carry a BigQuery trial")
-    if not bigquery and approval.get("ceilings") != CEILINGS:
+    if not pubsub and approval.get("pubsub_trial"):
+        raise Failure("Only Pub/Sub approvals may carry a Pub/Sub trial")
+    if not (bigquery or pubsub) and approval.get("ceilings") != CEILINGS:
         raise Failure("Approval does not match the fixed resource/cost ceilings")
     start, end = timestamp(approval["started_at"]), timestamp(approval["expires_at"])
     if cloudtasks:
@@ -363,6 +374,8 @@ def validate_approval(approval, now=None):
                 raise Failure("Smoke approvals cannot carry Cloud Tasks session fields")
         if bigquery:
             _validate_bigquery(approval, start, end)
+        elif pubsub:
+            _validate_pubsub(approval, start, end)
         elif (
             not 900 < end - start <= 3600
             or timestamp(approval["cleanup_at"]) != end - 900
@@ -370,7 +383,7 @@ def validate_approval(approval, now=None):
             raise Failure(
                 "Approval must reserve 15 minutes of the one-hour window for cleanup"
             )
-        if not bigquery and estimated_cost(end - start) > Decimal(
+        if not (bigquery or pubsub) and estimated_cost(end - start) > Decimal(
             CEILINGS["additional_cost_usd"]
         ):
             raise Failure("Estimated incremental cost exceeds approval")
@@ -382,7 +395,15 @@ def validate_approval(approval, now=None):
         now < start - 30 or now >= timestamp(approval["cleanup_at"])
     ):
         raise Failure("Approval is outside its admission window")
-    application = CLOUDTASKS if cloudtasks else BIGQUERY if bigquery else SMOKE
+    application = (
+        PUBSUB
+        if pubsub
+        else CLOUDTASKS
+        if cloudtasks
+        else BIGQUERY
+        if bigquery
+        else SMOKE
+    )
     if set(approval["namespaces"]) != {application, SYSTEM}:
         raise Failure("Approval must name its application and control namespaces")
     for saved in approval["namespaces"].values():
@@ -398,6 +419,8 @@ def validate_approval(approval, now=None):
     roles = {"operator": "operator", "supervisor": "lifecycle-tools"}
     if cloudtasks:
         roles["application"] = FLINK_LINES[approval["flink_version"]][0]
+    elif pubsub:
+        roles["application"] = "pubsub-recovery"
     elif bigquery:
         roles["application"] = "bigquery-recovery"
     else:
@@ -413,6 +436,30 @@ def validate_approval(approval, now=None):
         r"[0-9a-f]{64}", approval.get("runtime_sha256", "")
     ) or not re.fullmatch(r"[0-9a-f]{64}", approval.get("application_sha256", "")):
         raise Failure("Approval must pin its runtime and application bytes")
+
+
+def _validate_pubsub(approval, start, end):
+    # This internal schema binds proposed caps; it does not estimate cost or
+    # authorize execution. Runner and Supervisor still refuse this scenario.
+    from .pubsub import ResourcePlan
+    from .pubsub_plan import WINDOW_SECONDS, input_plan
+
+    if type(approval["version"]) is not int:
+        raise Failure("Pub/Sub approval version must be an integer")
+    ResourcePlan(approval["run_id"], approval["nonce"])
+    trial = approval.get("pubsub_trial")
+    input_plan(approval["run_id"], trial)
+    expected = {**PUBSUB_CEILINGS, "additional_cost_usd": trial["additional_cost_usd"]}
+    if json_bytes(approval["ceilings"]) != json_bytes(expected):
+        raise Failure(
+            "Pub/Sub approval differs from its resource and proposed cost ceilings"
+        )
+    if (
+        start != int(start)
+        or end - start != WINDOW_SECONDS
+        or timestamp(approval["cleanup_at"]) != end - expected["cleanup_seconds"]
+    ):
+        raise Failure("Pub/Sub approval requires one hour with 15 minutes for cleanup")
 
 
 def _validate_bigquery(approval, start, end):
@@ -584,6 +631,7 @@ class Approval:
     cloudtasks_ceilings: dict = field(default_factory=dict)
     cloudtasks_pod_resources: dict = field(default_factory=dict)
     bigquery_trial: dict = field(default_factory=dict)
+    pubsub_trial: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value, now=None):
@@ -615,6 +663,29 @@ class Approval:
         )
 
     @property
+    def pubsub_plan(self):
+        """Derive service identities from a validated internal Pub/Sub approval."""
+        from .pubsub import ResourcePlan
+
+        self._validate_pubsub()
+        return ResourcePlan(self.run_id, self.nonce)
+
+    @property
+    def pubsub_traffic_limits(self):
+        """Bind helper counters and their deadline to the serialized trial."""
+        from .pubsub_traffic import TrafficLimits
+
+        self._validate_pubsub()
+        return TrafficLimits(
+            **self.pubsub_trial["traffic_limits"], admit_until=self.schedule.cleanup_at
+        )
+
+    def _validate_pubsub(self):
+        if self.scenario != "pubsub-recovery":
+            raise Failure("Approval does not describe a Pub/Sub trial")
+        validate_approval(self.to_dict())
+
+    @property
     def cell_ids(self):
         return [cell["id"] for cell in self.cells]
 
@@ -626,6 +697,8 @@ class Approval:
 
     def to_dict(self):
         value = asdict(self)
+        if self.scenario != "pubsub-recovery":
+            value.pop("pubsub_trial")
         if self.scenario != "bigquery-recovery":
             value.pop("bigquery_trial")
         if self.scenario != "cloudtasks":

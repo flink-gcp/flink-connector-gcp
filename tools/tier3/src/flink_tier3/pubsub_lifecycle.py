@@ -53,7 +53,11 @@ class PubSubLifecycle:
             raise Failure("Pub/Sub lifecycle requires an operation guard")
         self.env, self.http, self.before_operation = env, http, before_operation
         approval = env.approval
-        self.plan = ResourcePlan(approval.run_id, approval.nonce)
+        self.plan = (
+            approval.pubsub_plan
+            if getattr(approval, "version", None) == 5
+            else ResourcePlan(approval.run_id, approval.nonce)
+        )
         args = application.get("spec", {}).get("job", {}).get("args", [])
         if (
             approval.scenario != "pubsub-recovery"

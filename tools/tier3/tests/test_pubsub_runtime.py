@@ -358,7 +358,7 @@ def test_namespace_and_state_routing_do_not_enable_admission(runtime):
     assert PUBSUB in inventory_namespaces(PUBSUB)
     for previous in (rt.SMOKE, "tier3-cloudtasks", BIGQUERY):
         assert PUBSUB not in inventory_namespaces(previous)
-    with pytest.raises(Failure, match="Unknown approved scenario"):
+    with pytest.raises(Failure, match="Invalid run approval identity"):
         Approval.from_dict(a.approval.to_dict())
     calls = list(a.kube.calls)
     with pytest.raises(Failure, match="admission is not implemented"):

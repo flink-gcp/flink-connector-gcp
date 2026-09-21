@@ -129,7 +129,7 @@ Terminating Pods can overlap their replacements and remain [charged to namespace
 Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and shared Spot constraint.
 `additional_cost_usd` is a proposed cap from `1.00` to `10.00`, with `estimate_usd: null`; it is neither a price estimate nor an enforced billing limit.
-A runnable approval still needs current pricing, state/log/evidence and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
+A runnable approval still needs current pricing, enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
 CLI admission, fault injection, savepoint orchestration, replay evidence and Table entry-point trials remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
@@ -263,7 +263,7 @@ The durable controller below uses this entry point; the original `cleanup()` sti
 ### Durable preparation and cleanup
 
 [`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub_lifecycle.py) connects the resource helper to the existing generation-checked active run record.
-It is an internal caller contract for `pubsub-recovery`; the CLI approval parser does not yet accept that scenario.
+It is an internal caller contract for `pubsub-recovery`; the version 5 schema below binds trial inputs but no CLI admits execution.
 The caller validates the full application contract, authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and budget/deadline guard.
 The controller additionally binds the exact approved application digest, namespace, application name and run-ID argument to the resource plan.
 The [IAM apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35504842276) succeeded; subsequent role/binding readback matched the three custom roles and two project bindings, and a local refreshed GCP plan was empty.
@@ -299,10 +299,14 @@ Missing-manifest cases with remaining resources require separate investigation; 
 The controller marks only service cleanup complete; it does not set run success, remove Flink state, shut down the Operator, delete active control or release the environment lock.
 Shared Operator shutdown and final receipt/lock release refuse a present Pub/Sub record unless its stage is `cleaned` and the shared stop is set.
 Final settlement copies the cleaned Pub/Sub control portion, including its intent and retained observations, into `runs/<run-id>/result.json` before deleting active control.
-When either active control or a prior receipt carries Pub/Sub, reuse requires equality with the complete computed result, including the Pub/Sub snapshot, success verdict and plans.
+When either active control or a prior receipt carries Pub/Sub, reuse requires equality with the complete computed result, including the Pub/Sub snapshot, success verdict and plans; a version 5 retry excludes only the refreshed plans' observation time (`plans.at`).
 A receipt invalidated by a concurrent evidence failure remains a conflict on retry; it cannot restore a stale success verdict or release the lock.
 Before deleting active control, Pub/Sub finalization compares its complete current record with the snapshot used for the receipt, then deletes against that observed generation.
 A concurrent cleanup or evidence update retains the record and lock for retry; runs with no Pub/Sub state in either snapshot keep their existing behavior.
+When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) writes a placeholder control record in place of the deleted one — the nonce, `phase: cleaned`, `idle: true`, `state_clean: false` and `success: false`, and nothing else.
+That record finalizes only a run that never reached service intent: a measured retry shows that a run whose cleaned Pub/Sub portion it omits fails the receipt comparison, reports `Final receipt conflicts with approval`, and deliberately retains both the record and the lock.
+The retry that would succeed needs the verified snapshot restored first; the receipt written before the deletion still carries that Pub/Sub portion, but no implemented path rebuilds the record from it, so admitted execution owes that procedure.
+Until it exists, an administrator investigates before any separately approved repair: editing `runs/<run-id>/result.json` discards the portion a restoration reads, and deleting the environment lock strands the placeholder record instead of clearing it, because recovery then finds no retained lock and every later run is refused for an unfinished run record.
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
 Deployed supervisor handoff, integrated message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
@@ -471,7 +475,7 @@ A replacement must use the separately proved `reclaim()` path; common cleanup ne
 Direct `Records.set_phase(CLEANED)`, `Records.settled()` and `verify_idle()` now enforce the same Pub/Sub clean-state gate as final receipt creation.
 Records without Pub/Sub state retain their prior behavior.
 Cleanup routes Pub/Sub resources to `tier3-pubsub` and temporary state to `flink-gcp-tier3-pubsub`; existing smoke, Cloud Tasks and BigQuery inventory scopes remain unchanged.
-This routing does not admit a run: serialized Pub/Sub approvals, `Runner.start()` and `Supervisor.supervise()` still refuse execution, and no workflow constructs these attachments yet.
+This routing does not admit a run: `Runner.start()` and `Supervisor.supervise()` still refuse execution, and no workflow constructs these attachments yet.
 A successful synthetic cleanup is not a recovery verdict; final Pub/Sub success criteria, full numeric approval, input/fault orchestration and deployed evidence remain under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Payload and restoration
@@ -526,3 +530,29 @@ Completeness alone does not establish recovery, exactly-once processing/output, 
 The later trial controller must retain a completed checkpoint, publish a separately identified post-checkpoint cohort, prove no later checkpoint completed before the fault, and require that cohort to reappear with preserved input message IDs and new processing observations after restore.
 It must also observe continued progress and later completed checkpoints, and retain both missing-ID and replay-population negative controls.
 Table source/sink entry points, JM replacement, real-service replay and the complete deployment/cleanup workflow remain on the parent issue.
+
+### Internal approval contract
+
+`Approval.from_dict()` accepts version 5 with `scenario: pubsub-recovery` for internal composition tests and later delivery integration.
+Its `pubsub_trial` uses the [offline proposal schema](#offline-trial-proposal), including the same run-specific check that helper limits can cover one complete input/output pass.
+The approval pins the run/nonce, source and runtime hashes, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
+It requires an integral one-hour window with fifteen minutes reserved for cleanup.
+These schema checks do not authenticate a caller, verify live provenance or establish a recovery verdict.
+
+The shared policy permits seven Pods and no PVCs: four equal Flink shapes in `tier3-pubsub` and three control shapes in `tier3-system`.
+The fourth application slot covers a replacement while its predecessor terminates; the third control slot covers an Operator replacement.
+The policy fixes state ceilings at 1 GiB and 10,000 objects, with allowances of 100 MiB each for shared logs and evidence; the helper's separate evidence cap remains at most 64 MiB.
+Shared cleanup checks the Pod and state limits and restores the recorded idle quotas.
+Complete log/evidence accounting in the runnable path remains follow-up work.
+Existing scenarios retain their own policies and namespace inventories.
+
+For a version 5 approval, `Approval.pubsub_plan` derives service names and grants from its identity, and `Approval.pubsub_traffic_limits` derives all helper counters with the cleanup deadline.
+`PubSubLifecycle` validates that approval before construction; `PubSubTraffic` rejects a different record count, counter limit or admission deadline before initialization or network calls.
+Earlier internal helper fixtures without version 5 retain their caller-supplied contract; they are not serialized Pub/Sub approvals.
+Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, compares all receipt fields on retry except the refreshed plans' observation time (`plans.at`), and keeps success false.
+The original receipt is retained; the current plans must still prove the same nonce, all three foundation roots and an empty result.
+Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
+
+The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
+Version 5 therefore does not enable an approval-generating CLI, runner admission or supervisor execution.
+Complete execution accounting, approval-bound delivery, external fault observations, a control-snapshot recovery procedure and deployed orchestration remain prerequisites to the live trials under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).

@@ -47,6 +47,8 @@ from .policy import (
     OPERATOR,
     POD_RESOURCES,
     POLL,
+    PUBSUB,
+    PUBSUB_CEILINGS,
     PUBSUB_STATE,
     STATE,
     SYSTEM,
@@ -135,6 +137,8 @@ class Cleanup:
 
     @property
     def ceilings(self):
+        if self.env.approval.scenario == "pubsub-recovery":
+            return PUBSUB_CEILINGS
         if self.env.approval.scenario == "bigquery-recovery":
             return BIGQUERY_CEILINGS
         return CLOUDTASKS_CEILINGS if self.cloudtasks else CEILINGS
@@ -179,6 +183,8 @@ class Cleanup:
                 pods, resources = 1, POD_RESOURCES["supervisor"]
             elif admission == "session":
                 pods, resources = 2, session_resources(self.env.approval)
+            elif namespace == PUBSUB:
+                pods, resources = 4, sum_resources([POD_RESOURCES["smoke"]] * 4)
             elif namespace == BIGQUERY:
                 pods, resources = 3, sum_resources([POD_RESOURCES["smoke"]] * 3)
             elif namespace == SYSTEM:

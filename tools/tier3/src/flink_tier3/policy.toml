@@ -75,6 +75,20 @@ log_bytes = 104857600
 evidence_bytes = 104857600
 additional_cost_usd = "10.00"
 
+# Pub/Sub internal approval policy: three running Flink Pods plus one
+# terminating replacement; two control Pods plus an Operator replacement.
+# The selected dollar cap is a proposal, not an estimate or billing guard.
+[pubsub_ceilings]
+seconds = 3600
+cleanup_seconds = 900
+pods = 7
+pvcs = 0
+state_bytes = 1073741824
+state_objects = 10000
+log_bytes = 104857600
+evidence_bytes = 104857600
+additional_cost_usd = "10.00"
+
 [pod_resources.operator]
 cpu = "1"
 memory = "2Gi"
