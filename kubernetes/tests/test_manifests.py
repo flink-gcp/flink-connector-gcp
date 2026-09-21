@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 import yaml
 from flink_tier3 import bigquery_bundle, bigquery_plan, pubsub_plan, workflow
-from flink_tier3.bundle import package_sources
+from flink_tier3.bundle import delivered_sources
 from flink_tier3.common import Failure, digest
 from flink_tier3.model import validate_approval
 from flink_tier3.policy import BIGQUERY_CEILINGS, GAR
@@ -94,7 +94,7 @@ def cue(module, *arguments):
     source = None
     if any(arg == "./lifecycle" or arg.startswith("./lifecycle/") for arg in arguments):
         arguments = (*arguments, "json:", "-")
-        source = json.dumps({"packageSources": package_sources()})
+        source = json.dumps({"packageSources": delivered_sources()})
     return subprocess.run(
         [CUE, "-C", str(module), *arguments],
         input=source,
@@ -732,7 +732,11 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     bundle = json.loads(result.stdout)
     config, job = bundle["config"], bundle["supervisor"]
     assert config["immutable"]
-    assert config["data"]["flink_tier3_runtime.py"] == package_sources()["runtime.py"]
+    assert config["data"]["flink_tier3_runtime.py"] == delivered_sources()["runtime.py"]
+    # The delivery is a subset, and nothing else at this layer would notice if
+    # it stopped being one: every other assertion compares it against itself.
+    assert "flink_tier3_analyze.py" not in config["data"]
+    assert "flink_tier3_protocol_1246.toml" not in config["data"]
     assert job["metadata"]["namespace"] == "tier3-system"
     assert job["spec"]["backoffLimit"] == 0
     assert job["spec"]["activeDeadlineSeconds"] == 3300
@@ -744,7 +748,7 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
         path.write_text(config["data"][item["key"]])
         mounted[item["path"]] = path
     expected = {"approval.json", "application.json"} | {
-        "flink_tier3/" + name for name in package_sources()
+        "flink_tier3/" + name for name in delivered_sources()
     }
     if scenario == "generic-recovery":
         expected.add("upgrade-application.json")
@@ -756,7 +760,8 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
             "upgrade-application.json",
         ):
             assert (
-                path.read_text() == package_sources()[name.removeprefix("flink_tier3/")]
+                path.read_text()
+                == delivered_sources()[name.removeprefix("flink_tier3/")]
             )
     # Run only the rendered payload, outside the checkout, with installed SDKs.
     result = subprocess.run(
@@ -1992,7 +1997,7 @@ def test_bigquery_proposal_delivery_binds_both_phases(
         "application.json",
         "upgrade-application.json",
         "proposal.json",
-    } | {"flink_tier3/" + name for name in package_sources()}
+    } | {"flink_tier3/" + name for name in delivered_sources()}
     assert {"key": "proposal.json", "path": "proposal.json"} in projection
     assert {
         "key": "upgrade-application.json",
@@ -2060,6 +2065,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         "operator_uid": "operator-uid",
         "baseline_uids": ["operator-uid"],
         "runtime_sha256": proposal["runtime_sha256"],
+        "delivery_sha256": proposal["delivery_sha256"],
         "application_sha256": proposal["application_sha256"],
         "upgrade_application_sha256": proposal["upgrade_application_sha256"],
         "images": {
@@ -2103,8 +2109,8 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         == approval["bigquery_trial"]
     )
     assert {
-        name: data["flink_tier3_" + name] for name in package_sources()
-    } == package_sources()
+        name: data["flink_tier3_" + name] for name in delivered_sources()
+    } == delivered_sources()
 
 
 @pytest.mark.parametrize(

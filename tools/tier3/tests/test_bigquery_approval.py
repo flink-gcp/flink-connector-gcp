@@ -23,7 +23,7 @@ from flink_tier3 import bigquery_plan as plan
 from flink_tier3 import runtime
 from flink_tier3.bigquery_handoff import BigQueryHandoff
 from flink_tier3.bigquery_lifecycle import BigQueryLifecycle
-from flink_tier3.bundle import source_digest
+from flink_tier3.bundle import delivery_digest, source_digest
 from flink_tier3.cleanup import Cleanup, verify_idle
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
@@ -374,6 +374,7 @@ def test_unimplemented_execution_refuses_before_mutation(prepared, tmp_path):
     assert environment.store.data == before
     approval = environment.approval.to_dict()
     approval["runtime_sha256"] = source_digest()
+    approval["delivery_sha256"] = delivery_digest()
     (tmp_path / "approval.json").write_text(json.dumps(approval))
     (tmp_path / "application.json").write_text(json.dumps(application))
     with pytest.raises(Failure, match="supervision is not implemented"):

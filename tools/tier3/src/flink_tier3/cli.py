@@ -18,6 +18,8 @@ import argparse
 from importlib import import_module
 from pathlib import Path
 
+from .bundle import DISPATCHED
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -40,12 +42,10 @@ def main(argv=None):
     ):
         commands.add_parser(command, add_help=False)
     args, remaining = parser.parse_known_args(argv)
+    # The delivery is computed from this same table, because a computed import
+    # is the one edge its walk cannot follow; one table keeps them in step.
     module = import_module(
-        "."
-        + {"supervisor": "runtime", "bigquery-bundle": "bigquery_bundle"}.get(
-            args.command, args.command
-        ),
-        __package__,
+        "." + DISPATCHED.get(args.command, args.command), __package__
     )
     # The supervisor runs in-cluster; offline analysis commands need no checkout.
     if args.command not in ("supervisor", "analyze", "bigquery"):

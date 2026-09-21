@@ -14,6 +14,8 @@
 # limitations under the License.
 """Shared policy and lifecycle components for the runner and supervisor."""
 
+from .bundle import delivered_sources as delivered_sources
+from .bundle import delivery_digest as delivery_digest
 from .bundle import source_digest as source_digest
 from .cleanup import Cleanup as Cleanup
 from .cleanup import verify_idle as verify_idle

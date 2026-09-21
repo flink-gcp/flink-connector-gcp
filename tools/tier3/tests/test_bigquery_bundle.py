@@ -22,7 +22,7 @@ import pytest
 from flink_tier3 import bigquery_bundle as bundles
 from flink_tier3 import bigquery_plan as plan
 from flink_tier3 import cli
-from flink_tier3.bundle import source_digest
+from flink_tier3.bundle import delivery_digest, source_digest
 from flink_tier3.common import Failure, json_bytes
 from flink_tier3.model import Approval
 from flink_tier3.policy import BIGQUERY, BIGQUERY_CEILINGS, SMOKE
@@ -46,6 +46,7 @@ def approval(env, inputs, renderer, monkeypatch):
         expires_at=proposed["expires_at"],
         cleanup_at=proposed["cleanup_at"],
         runtime_sha256=source_digest(),
+        delivery_sha256=delivery_digest(),
         application_sha256=proposed["application_sha256"],
         upgrade_application_sha256=proposed["upgrade_application_sha256"],
         ceilings={
@@ -84,6 +85,7 @@ def test_delivery_binds_approval_and_shortens_job_budget(
     "key",
     [
         "runtime_sha256",
+        "delivery_sha256",
         "application_sha256",
         "upgrade_application_sha256",
         "supervisor",

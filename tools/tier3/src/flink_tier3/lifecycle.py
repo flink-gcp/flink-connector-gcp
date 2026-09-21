@@ -181,6 +181,7 @@ def start(args, store):
         "images": images,
         "lock_owner": owner,
         "runtime_sha256": rt.source_digest(),
+        "delivery_sha256": rt.delivery_digest(),
         "application_sha256": rt.digest(application),
         "actor": os.environ["GITHUB_ACTOR"],
     }
