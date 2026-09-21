@@ -25,22 +25,23 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-runID:         string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                  @tag(run_id)
-nonce:         string & =~"^[0-9a-f]{32}$"                                        @tag(nonce)
-expires:       time.Time                                                          @tag(expires_at)
-approval:      *"{}" | string                                                     @tag(approval)
-activeSeconds: int & >0                                                           @tag(active_seconds,type=int)
-scenario:      *"smoke" | "generic-recovery" | "cloudtasks" | "bigquery-recovery" @tag(scenario)
+runID:         string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                                      @tag(run_id)
+nonce:         string & =~"^[0-9a-f]{32}$"                                                            @tag(nonce)
+expires:       time.Time                                                                              @tag(expires_at)
+approval:      *"{}" | string                                                                         @tag(approval)
+activeSeconds: int & >0                                                                               @tag(active_seconds,type=int)
+scenario:      *"smoke" | "generic-recovery" | "cloudtasks" | "bigquery-recovery" | "pubsub-recovery" @tag(scenario)
 // Cloud Tasks only: a JSON array of session cells, the runtime line, the
 // published application digest for that line and the synthetic HTTPS target.
 cells:            *"[]" | string      @tag(cells)
 flinkVersion:     *"2.2.1" | "1.20.4" @tag(flink_version)
 applicationImage: *"" | string        @tag(application_image)
 targetURL:        *"" | string        @tag(target)
-// Offline BigQuery proposal inputs; these do not extend lifecycle admission.
-bigqueryMode:         *"EO" | "ALO"  @tag(bigquery_mode)
-bigqueryDestinations: *10 | 50       @tag(bigquery_destinations,type=int)
-proposal:             *"{}" | string @tag(proposal)
+// Offline BigQuery application inputs; these do not extend lifecycle admission.
+bigqueryMode:         *"EO" | "ALO" @tag(bigquery_mode)
+bigqueryDestinations: *10 | 50      @tag(bigquery_destinations,type=int)
+// Shared offline proposal document for BigQuery and Pub/Sub.
+proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
 packageSources: {
 	"__init__.py"!:                 string
@@ -52,7 +53,7 @@ packageSources: {
 
 // A smoke run is bounded by one 60-minute approval; a measurement session by
 // its plan plus cleanup, at most 300 minutes.
-if scenario == "smoke" || scenario == "generic-recovery" {activeSeconds: <=3420}
+if scenario == "smoke" || scenario == "generic-recovery" || scenario == "pubsub-recovery" {activeSeconds: <=3420}
 if scenario == "bigquery-recovery" {activeSeconds: <=5220}
 if scenario == "cloudtasks" {activeSeconds: <=17820}
 
@@ -184,7 +185,7 @@ delivery: resources: {
 			}
 			"approval.json": approval
 			// application.json is declared by the selected scenario's body above.
-			if scenario == "generic-recovery" || scenario == "bigquery-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
+			if scenario == "generic-recovery" || scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
 		}
 	}
 	supervisor: {
@@ -236,8 +237,8 @@ delivery: resources: {
 						},
 						{key: "approval.json", path: "approval.json"},
 						{key: "application.json", path: "application.json"},
-						if scenario == "bigquery-recovery" {{key: "proposal.json", path: "proposal.json"}},
-						if scenario == "generic-recovery" || scenario == "bigquery-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
+						if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "proposal.json", path: "proposal.json"}},
+						if scenario == "generic-recovery" || scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
 					]}}]
 				}
 			}

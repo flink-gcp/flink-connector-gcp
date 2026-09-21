@@ -14,6 +14,7 @@
 
 """Exercise the CUE hierarchy with disposable manifests; never contact a cluster."""
 
+import copy
 import json
 import os
 import shutil
@@ -24,8 +25,10 @@ from pathlib import Path
 
 import pytest
 import yaml
-from flink_tier3 import bigquery_bundle, bigquery_plan, workflow
+from flink_tier3 import bigquery_bundle, bigquery_plan, pubsub_plan, workflow
 from flink_tier3.bundle import package_sources
+from flink_tier3.common import Failure, digest
+from flink_tier3.model import validate_approval
 from flink_tier3.policy import BIGQUERY_CEILINGS, GAR
 
 KUBERNETES = Path(__file__).resolve().parents[1]
@@ -2082,3 +2085,137 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
     assert {
         name: data["flink_tier3_" + name] for name in package_sources()
     } == package_sources()
+
+
+@pytest.mark.parametrize(
+    "trial,initial_parallelism,recovery_parallelism,phase",
+    [
+        ("jm-replacement", 2, 2, "initial"),
+        ("tm-replacement", 2, 2, "initial"),
+        ("rescale-out", 1, 2, "upgrade"),
+        ("rescale-in", 2, 1, "upgrade"),
+    ],
+)
+@pytest.mark.parametrize("records", [2, 1001, 10000])
+def test_pubsub_proposal_from_real_cue(
+    module,
+    monkeypatch,
+    trial,
+    initial_parallelism,
+    recovery_parallelism,
+    phase,
+    records,
+):
+    root = module.parent
+    module.rename(root / "kubernetes")
+    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setenv("GOMAXPROCS", "2")
+    inputs = {
+        "run_id": "proposal-1361",
+        "nonce": "a" * 32,
+        "started_at": "2026-09-21T00:00:00Z",
+        "expires_at": "2026-09-21T01:00:00.000Z",
+        "active_seconds": 3420,
+        "revision": "b" * 40,
+        "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        "trial": {
+            "version": 1,
+            "trial": trial,
+            "records_per_subscription": records,
+            "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
+            "total_request_limit": 100000,
+            "additional_cost_usd": "10.00",
+        },
+    }
+    bundle = pubsub_plan.prepare(**inputs)
+    proposal = bundle["proposal"]
+    initial, recovery = bundle["application"], bundle["recovery_application"]
+    assert proposal["approved"] is False
+    assert proposal["cost"] == {
+        "kind": "unestimated-proposed-cap",
+        "estimate_usd": None,
+    }
+    assert proposal["application_sha256"] == digest(initial)
+    assert proposal["recovery_application_sha256"] == digest(recovery)
+    assert proposal["supervisor_sha256"] == digest(bundle["delivery"]["supervisor"])
+    assert initial["spec"]["job"]["parallelism"] == initial_parallelism
+    assert recovery["spec"]["job"]["parallelism"] == recovery_parallelism
+    assert f"--phase={phase}" in recovery["spec"]["job"]["args"]
+    assert (initial == recovery) == trial.endswith("replacement")
+    for app in (initial, recovery):
+        assert app["metadata"]["namespace"] == "tier3-pubsub"
+        assert app["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32
+        assert (
+            app["spec"]["podTemplate"]["spec"]["nodeSelector"][
+                "cloud.google.com/gke-spot"
+            ]
+            == "true"
+        )
+        assert app["spec"]["serviceAccount"] == "pubsub"
+    assert proposal["input"]["messages"] == 2 * records
+    assert proposal["input"]["payload_bytes"] == sum(
+        len(f"v1|proposal-1361|{i}|{n}".encode())
+        for i in range(2)
+        for n in range(records)
+    )
+    cohorts = proposal["input"]["cohorts_per_subscription"]
+    before, after = cohorts["before_recovery"], cohorts["after_recovery"]
+    assert before["start"] == 0
+    assert before["count"] == after["start"]
+    assert after["start"] + after["count"] == records
+    assert min(before["count"], after["count"]) > 0
+    assert proposal["cleanup_at"] == "2026-09-21T00:45:00Z"
+    assert proposal["limits"]["pods"] == 7
+    data = bundle["delivery"]["config"]["data"]
+    assert json.loads(data["proposal.json"]) == proposal
+    assert json.loads(data["application.json"]) == initial
+    assert json.loads(data["upgrade-application.json"]) == recovery
+    assert json.loads(data["approval.json"]) == {}
+    with pytest.raises(Failure):
+        validate_approval(proposal)
+    assert len(proposal["resources"]["topics"]) == 3
+    assert len(proposal["resources"]["subscriptions"]) == 3
+    assert len(proposal["resources"]["grants"]) == 6
+
+    # Reuse actual rendered objects to probe drift, without a hand-written CUE fake.
+    rendered = [initial, recovery, bundle["delivery"]]
+    for path, value in (
+        ((0, "metadata", "namespace"), "tier3-smoke"),
+        ((1, "metadata", "annotations", "flink-gcp.io/approval"), "foreign"),
+        ((0, "spec", "taskManager", "replicas"), 3),
+        ((1, "spec", "job", "args"), []),
+        ((0, "spec", "podTemplate", "spec", "initContainers"), [{"name": "extra"}]),
+        (
+            (
+                2,
+                "supervisor",
+                "spec",
+                "template",
+                "spec",
+                "containers",
+                0,
+                "resources",
+                "requests",
+                "cpu",
+            ),
+            "2",
+        ),
+        ((2, "config", "data", "approval.json"), '{"approved":true}'),
+        ((2, "supervisor", "spec", "parallelism"), 2),
+        ((2, "supervisor", "spec", "activeDeadlineSeconds"), 3600),
+        ((2, "config", "data", "upgrade-application.json"), "{}"),
+    ):
+        changed = copy.deepcopy(rendered)
+        target = changed
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        if path[0] in (0, 1):
+            # Real CUE drift changes the standalone and embedded manifest together.
+            key = "application.json" if path[0] == 0 else "upgrade-application.json"
+            changed[2]["config"]["data"][key] = json.dumps(changed[path[0]])
+        monkeypatch.setattr(
+            pubsub_plan, "render", lambda *a, result=changed, **kw: result
+        )
+        with pytest.raises(Failure):
+            pubsub_plan.prepare(**inputs)

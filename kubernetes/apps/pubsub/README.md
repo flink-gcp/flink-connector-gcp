@@ -30,7 +30,7 @@ These are local wiring and state-continuity checks; they do not measure real-ser
 [`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the DataStream relay on Flink 2.2.1 / Java 17.
 A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription` and `parallelism` inputs.
 The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade and parallelism 1/2 combination.
-There is no committed Pub/Sub run delivery or lifecycle CLI scenario yet.
+The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal); there is no committed executable Pub/Sub run delivery or runnable admission yet.
 
 The first verified image reference is:
 
@@ -58,6 +58,80 @@ The logical input domain and restart count do not bound elapsed execution or bil
 Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
 Table entry points and deployed recovery acceptance remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
+
+## Offline trial proposal
+
+Render one unapproved DataStream trial with the existing application and lifecycle delivery packages:
+
+```bash
+cat > /tmp/pubsub-trial.json <<'JSON'
+{
+  "version": 1,
+  "trial": "rescale-out",
+  "records_per_subscription": 1000,
+  "traffic_limits": {
+    "publish_calls": 20,
+    "pull_calls": 200,
+    "input_messages": 2000,
+    "input_bytes": 256000,
+    "output_messages": 20000,
+    "pubsub_requests": 420,
+    "evidence_bytes": 67108864
+  },
+  "total_request_limit": 100000,
+  "additional_cost_usd": "10.00"
+}
+JSON
+
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
+  --scenario pubsub-recovery \
+  --run-id proposal-1361 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:00:00Z \
+  --active-seconds 3420 \
+  --revision bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+  --trial-file /tmp/pubsub-trial.json > /tmp/pubsub-proposal.json
+```
+
+Run from the repository root, or set the CLI's global `--repository` argument before `render`.
+The example uses synthetic revision/image identities and dates; rendering performs no credential lookup, image availability check or cloud operation.
+The output contains `proposal`, `application`, `recovery_application` and `delivery` (ConfigMap and supervisor Job).
+The proposal records the supplied source revision, installed runtime source digest, exact application/supervisor hashes, service settings and grants.
+It does not prove that the installed package, checkout or application image came from the supplied revision.
+`approved` is always false and the ConfigMap's `approval.json` remains empty; neither output is an execution approval.
+
+| `trial` | Initial → recovery parallelism | Planned operation |
+| --- | --- | --- |
+| `jm-replacement` | 2 → 2 | Replace the JM after an externally observed completed checkpoint |
+| `tm-replacement` | 2 → 2 | Replace an active TM after an externally observed completed checkpoint |
+| `rescale-out` | 1 → 2 | Stop with a savepoint and restore the upgrade phase |
+| `rescale-in` | 2 → 1 | Stop with a savepoint and restore the upgrade phase |
+
+JM/TM proposals keep both manifests identical: recovery is performed by the existing deployment, with no upgrade submission.
+For rescaling, `recovery_application` is also stored under the shared delivery key `upgrade-application.json` and requires restored state.
+Each plan covers one trial and two input subscriptions with 2–10,000 logical records per subscription.
+The first `floor(records / 2)` records form `before_recovery`; the remaining disjoint range forms `after_recovery`, which must wait for observed recovery before publication.
+Publish each range in ascending batches of at most 100, without crossing the range boundary.
+The output records exact logical messages, payload bytes and required publication calls.
+These ranges do not identify the processed-but-not-checkpoint-confirmed replay population: that requires a later fault-boundary protocol and external evidence.
+
+The input file requires exactly the six fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
+`traffic_limits` supplies every counter in the [shared reservation contract](#shared-traffic-reservations), within its existing ceilings.
+The renderer refuses caps too small for one complete input/output pass; extra pulls, duplicates, ambiguous calls and evidence sizes can exhaust otherwise valid proposals.
+Input bytes exclude service framing; output messages count reserved deliveries, including collector redelivery and empty-pull reservations.
+These helper counters exclude connector SDK traffic and resource/control/credential/storage operations.
+`total_request_limit` separately proposes at most 100,000 aggregate requests, including those operations and retries, and must be at least the data-helper request limit.
+No aggregate request accounting is wired into execution yet.
+
+The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
+Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowance, and the Operator, supervisor and one control-Pod replacement allowance; PVCs are zero.
+Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
+Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
+Each Flink Pod uses the existing one-vCPU, 2-GiB shape and shared Spot constraint.
+`additional_cost_usd` is a proposed cap from `1.00` to `10.00`, with `estimate_usd: null`; it is neither a price estimate nor an enforced billing limit.
+A runnable approval still needs current pricing, state/log/evidence and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
+Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
+CLI admission, fault injection, savepoint orchestration, replay evidence and Table entry-point trials remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Run identity and service resources
 

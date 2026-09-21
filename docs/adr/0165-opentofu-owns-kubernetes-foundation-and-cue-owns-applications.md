@@ -40,6 +40,7 @@ limitations under the License.
 - Updated: 2026-09-20 (Pub/Sub lifecycle authority and recorded resource policies)
 - Updated: 2026-09-20 (durable Pub/Sub preparation and service-cleanup settlement gates)
 - Updated: 2026-09-21 (Pub/Sub actor release connected to common settlement)
+- Updated: 2026-09-21 (offline Pub/Sub trial proposals)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -486,7 +487,7 @@ The [first Pub/Sub publication](https://github.com/flink-gcp/flink-connector-gcp
 The reusable `pkg/pubsub` package requires the dedicated application image by digest, namespace/KSA, native Flink 2.2 runtime and isolated checkpoint/savepoint/HA paths.
 Use one slot per TaskManager and one or two TaskManagers so rescaling and active-Pod replacement can be observed independently in the later trial.
 The initial/upgrade arguments preserve run identity and logical input bounds, with savepoint upgrades and restored-state checks.
-Synthetic deliveries exercise the package and shared run policy without committing an executable run or adding a lifecycle scenario.
+Synthetic deliveries exercise the package and shared run policy without committing an executable run; the offline proposal below adds rendering without runnable admission.
 Actual admission still requires owned service resources and grants, independent supervision, a reviewed total Pod budget, live image retention and separately approved execution limits.
 
 ### Pub/Sub owned resource preparation
@@ -594,6 +595,23 @@ Do not automatically reclaim unresolved calls, infer quiescence from workload di
 Route Pub/Sub cleanup to its existing namespace and state bucket while preserving earlier scenarios' inventory scopes.
 Keep serialized approval, runner admission and supervisor execution disabled until the separately reviewed numeric execution contract and orchestration are complete.
 The [shared settlement runbook](../../kubernetes/apps/pubsub/README.md#shared-settlement-integration) states the internal attachment and failure contracts.
+
+### Offline Pub/Sub trial proposals
+
+Before enabling runnable Pub/Sub admission, render one unapproved DataStream trial with the existing CUE application and supervisor delivery.
+Keep JM and active-TM replacement separate, with unchanged manifests at parallelism two; savepoint rescaling changes one to two or two to one and requires restored state in the upgrade phase.
+Freeze the run/nonce, supplied source/image identities, installed runtime digest, exact manifests, service settings and grants.
+Divide each subscription's finite sequence domain into disjoint pre-recovery and post-recovery cohorts, using at most 100 messages per publication.
+The cohorts define publication intent, not a measured uncheckpointed replay population.
+
+Require explicit traffic counters within the existing helper ceilings and check that they can cover at least one complete input/output pass.
+Propose a one-hour window, fifteen-minute cleanup reserve, seven total Pods and no PVCs, with separate total-request and additional-cost caps.
+Reserve four application Pods (three steady plus one replacement) and three control Pods (Operator, supervisor and one replacement); later admission must account for termination overlap within these namespace budgets.
+The request cap is at most 100,000 and the cost cap at most USD 10; neither is wired to full execution accounting, and cost has no estimate yet.
+Message-helper reservations do not include connector SDK, provisioning, control, credential or storage requests.
+Later admission must establish complete operation/state/evidence budgets, current pricing and live provenance/access before enforcing those limits.
+Keep approval empty and reject Pub/Sub serialized execution until that contract, external fault-boundary observations and independent orchestration are reviewed.
+The [offline runbook](../../kubernetes/apps/pubsub/README.md#offline-trial-proposal) records the schema, synthetic example and outstanding execution requirements.
 
 ### Pub/Sub lifecycle IAM preparation
 

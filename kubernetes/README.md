@@ -114,7 +114,7 @@ The root supplies common project labels.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`, while in `tier3-cloudtasks` it requires the `cloudtasks-benchmark` ServiceAccount, parallelism 1, 4 or 16 and `v1_20` or `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism two and `v2_2`.
 The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one or two and `v2_2`.
-The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its delivery and independently supervised lifecycle remain subsequent work.
+The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its [offline proposal](apps/pubsub/README.md#offline-trial-proposal) renders a reviewable delivery while runnable admission and independent orchestration remain subsequent work.
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
 [Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.
@@ -225,4 +225,5 @@ The first image publication predates the appender observations; updated publicat
 The [internal DataStream relay and output oracle](apps/pubsub/README.md) prepare [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) using the production connector and local emulator recovery tests.
 Build them with `just tier3-pubsub-verify`.
 The [first image publication](apps/pubsub/README.md#deployment-definition) is complete.
+The [offline trial proposal](apps/pubsub/README.md#offline-trial-proposal) freezes one JM/TM replacement or savepoint rescaling trial, with unapproved numeric limits and exact manifests.
 The relay's unbounded runtime still requires resource/permission provisioning, application admission and independent lifecycle supervision before real execution.
