@@ -148,7 +148,8 @@ It assumes on-demand query billing and takes no free-tier, Spot or commitment di
 The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
 The generated observation plan records three minutes of warm-up, ten minutes each of baseline and post-recovery observation, ten-minute startup/visibility limits and a five-minute limit per recovery.
 These values are proposals, not clocks enforced by a running executor.
-Runner/supervisor coordination, authenticated handoff, creator/writer fencing, evidence accounting, final visibility checks and full cleanup must be connected and reviewed before any paid dispatch.
+The internal runner/supervisor loops now coordinate provisioning, recovery and final queries as described below.
+Authenticated dispatch, creator/writer fencing, complete evidence accounting and live cleanup acceptance remain required before any paid dispatch.
 
 ## Table and row identity
 
@@ -164,7 +165,7 @@ Replay serializes the same sequence into the same bytes and table.
 The deployed query oracle must require every expected sequence in its correct table; EO additionally requires exact uniqueness, while ALO records duplicate multiplicities.
 The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
 The resource adapter and controller below provide internal query, ownership and deletion operations.
-Connecting those operations to an admitted deployment remains subsequent lifecycle work.
+The internal admission path connects those operations to deployment creation; authenticated production dispatch remains subsequent lifecycle work.
 
 ## State and observations
 
@@ -326,12 +327,13 @@ It flattens the returned `f`/`v` cells using the schema, runs the offline oracle
 It does not establish checkpoint provenance, table quiescence or a deployed recovery verdict.
 Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
 The resource controller below supplies durable intent, query evidence and a cleanup pass.
-Authenticated supervisor handoff, shared deadlines and final idle verification remain executor work.
+The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; authenticated actor construction and live idle verification remain executor work.
 
 ### Durable resource controller
 
 [`flink_tier3.bigquery_lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery_lifecycle.py) composes the adapter with generation-checked lifecycle records.
-It is internal preparation: no CLI command, runner or supervisor starts a BigQuery scenario yet.
+The internal runner and supervisor use this controller only with explicitly supplied handoffs.
+Neither production CLI entrypoint admits a BigQuery scenario yet.
 The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
 The controller binds the complete service plan, run ID, nonce and trial arguments to the approved initial application hash.
 The common model validates the version 4 approval; complete deployment admission remains executor work.
@@ -406,7 +408,8 @@ They do not establish authenticated handoff, workload fencing, real-service acce
 
 ### Common lifecycle loop integration
 
-An admitting caller must initialize and provision the handoff, then pass that same process's handoff to `Runner(env, bigquery=handoff)`.
+An admitting caller passes its process-local handoff to `Runner(env, bigquery=handoff)`.
+`Runner.start()` initializes and provisions it after supervisor and Operator readiness, before admitting the application.
 Only after admission has returned may that runner enter `settle()`.
 While waiting for the supervisor, settlement services pending query requests until stop, evidence failure, the execution deadline or supervisor termination.
 A query failure stops further polling and prevents settlement from preserving a successful trial verdict.
@@ -418,9 +421,11 @@ The supervisor receives its own environment-bound handoff and a mandatory extern
 Supplying the callback without a handoff is rejected at construction.
 Its `query(name, deadline=...)` method requests an observation and waits for archived evidence, maintaining heartbeats and auditing resources until the deadline or cancellation.
 It returns the verified result without interpreting an incomplete baseline as a failed trial or treating a query report as a deployed recovery verdict.
-The scenario still has to choose observation boundaries and acceptance criteria.
+The internal recovery exercise below chooses final-query boundaries and row acceptance criteria; the deployed measurement verdict remains unimplemented.
 
 Common cleanup closes run admission and removes the owned Kubernetes workload before waiting for runner release.
+For failed admission with recorded BigQuery intent, the supervisor first waits for runner release before entering common cleanup, so admission can finish recording any confirmed application creation.
+Release alone does not resolve an unknown creation outcome: settlement still has to reconcile the persisted application intent, and service deletion still requires the external creator/writer barrier.
 Failure to persist the stop request marks evidence incomplete but does not prevent workload teardown.
 The cleanup-phase transition is attempted independently of that stop write.
 If no BigQuery intent was ever recorded, cleanup skips the attached handoff and continues ordinary settlement.
@@ -435,9 +440,10 @@ Such partial initialization, standalone controller state without this binding, a
 Recorded BigQuery state also gates Operator shutdown, the `CLEANED` transition, settlement, idle verification and finalization, even when no handoff is attached.
 The final receipt retains the complete BigQuery control snapshot, including table receipts and query evidence pointers.
 A conflicting receipt or a concurrent control change leaves the control record and lock in place.
-These tests use synthetic actors and services; authenticated admission, observation and recovery scheduling, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
+These tests use synthetic actors and services; authenticated admission, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
+The internal recovery schedule is described below.
 
-The deployed exercise still needs approved manifests, updated image publication, numeric resource/cost limits, startup and recovery deadlines, a supervisor and complete cleanup.
+The deployed exercise still needs authenticated admission, updated image publication, measurement collection and complete cleanup acceptance.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
 The fixed dataset and namespace grants already exist, but checkpoint/savepoint restore through the conditional GCS grants remains a live acceptance gate.
 
@@ -446,7 +452,8 @@ The fixed dataset and namespace grants already exist, but checkpoint/savepoint r
 The common model accepts a version 4 `bigquery-recovery` approval for internal integration and cleanup tests.
 It binds `bigquery_trial` to the same exact input schema as the offline trial file, including mode, destination count, repetition, query slots, per-query limits and proposed cost.
 The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
-A valid document is not authenticated execution permission: the dispatch CLI still excludes this scenario, and the runner and supervisor reject starting it before mutating resources.
+A valid document is not authenticated execution permission: the dispatch CLI still excludes this scenario and the in-cluster entrypoint rejects it.
+Internal runner admission requires an explicit environment-bound handoff; internal supervision additionally requires the approved upgrade and a quiescence callback.
 
 The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, at most six Pods and no PVCs.
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
@@ -462,8 +469,9 @@ State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-t
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
 They do not establish a functioning external quiescence barrier or live service acceptance.
 
-Authenticated approval delivery, the handoff's query-evidence allocation, recovery observations and writer fencing must be connected before enabling either execution entrypoint.
-The 100 MiB evidence ceiling is a policy limit; this stage does not allocate an additional query-artifact budget on top of the existing actor receipt budgets.
+Authenticated approval delivery, measurement collection, complete evidence accounting and writer fencing must be connected before enabling either execution entrypoint.
+The internal loops require a fixed 10 MiB allocation for query artifacts, reducing supervisor receipts to 80 MiB and runner receipts to 8 MiB for version 4 approvals.
+Those three independently enforced budgets total 98 MiB; the future admission path must fit the remaining immutable run artifacts within the remaining 2 MiB rather than treating it as another query allowance.
 
 The shared final receipt records the BigQuery scenario and approved trial, with `success: false` until its execution verdict is implemented.
 A generic recovery completion flag cannot satisfy that verdict.
@@ -501,3 +509,38 @@ A matching file does not authenticate its approval or authorize execution.
 The future executor must independently authenticate the approval, verify GitHub main ancestry and image publication/provenance/retention, prove current lock/namespace ownership, prepare for the actual admission time, and enforce absolute deadlines, actor fencing and aggregate evidence budgets.
 A previously prepared relative Job deadline is not permission to start that Job later.
 The dispatch and supervisor entrypoints remain disabled for BigQuery.
+
+## Internal recovery execution
+
+The common `Runner.start()` and `Supervisor.supervise()` paths now support an explicitly attached BigQuery handoff.
+They are internal integration points: the caller must verify the approval-bound bundle, authenticate each actor, retain exclusive environment ownership and provide the external writer/creator quiescence barrier and appropriate HTTP operation deadlines.
+The production dispatch and in-cluster CLI entrypoints still reject BigQuery; passing these tests does not enable a paid run.
+A replacement runner must not reconstruct the submitting process's token.
+
+Admission validates the handoff's environment, approved resource plan, query-evidence allocation and absolute query deadline before any mutation.
+The deadline equals the approved cleanup start, and admission must complete within 600 seconds of the approved start.
+After the supervisor heartbeats and the Operator becomes ready, the runner initializes resource intent and provisions every table before creating the FlinkDeployment.
+Failure before that readiness handoff leaves no BigQuery resource intent.
+If workload admission subsequently fails, the supervisor requests stop and waits for the original runner to return from `start()` and acknowledge release through `settle()`.
+Only then does it inventory and remove the workload and run BigQuery cleanup; a missing release retains the control record and resources for incident recovery.
+A failed or ambiguous provisioning call prevents workload admission and retains the existing unresolved-call cleanup guard.
+
+The BigQuery exercise shares the smoke exercise's UID-scoped mutations and checkpoint/savepoint proof checks, using the BigQuery namespace, state bucket, input sizes and three-Pod topology.
+Within the initial 600-second deadline, it requires input progress, a completed checkpoint and all three running Pods before starting 180 seconds of warmup followed by a 600-second baseline window.
+It then requires a checkpoint triggered after that window and fresh, unfinished input before applying the approved upgrade.
+Each recovery has its own 300-second deadline, capped by the absolute cleanup start.
+The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint before a single JobManager deletion.
+The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
+Input completion must be observed at least 600 seconds after that second recovery proof.
+These windows schedule observations; they do not yet collect or assess the memory, GC, network, backpressure and appender measurements required by the issue.
+
+After Flink reports `FINISHED` with complete input and both recovery proofs, the supervisor requests final queries through the existing runner handoff.
+It recomputes the oracle from the archived rows and compares the archived report.
+Missing rows may consume another approved query slot, with at most 600 seconds for the whole visibility phase and no deadline extension between requests.
+Invalid routing or EO duplicates abort immediately; ALO duplicates remain reported observations.
+Query errors, slot exhaustion, cancellation or deadline expiry cannot record recovery completion.
+The `complete` recovery record includes both restore proofs and the passing query observation; common cleanup still requires runner release and the external barrier before deleting tables.
+The final receipt retains this recovery record, but its overall BigQuery `success` remains false until the complete deployed measurement verdict is implemented.
+
+Synthetic controller/service tests exercise both delivery modes and both destination counts, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved external barrier.
+They establish the internal sequencing and refusal behavior, not actual Operator recovery, BigQuery visibility latency or a working writer fence.

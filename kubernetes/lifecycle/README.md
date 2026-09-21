@@ -49,10 +49,11 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
 | `flink_tier3/bigquery.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
 | `flink_tier3/bigquery_plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
-| `flink_tier3/bigquery_lifecycle.py` | Internal durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier; not wired into admission |
+| `flink_tier3/bigquery_lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier |
 | `flink_tier3/bigquery_handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
+| `flink_tier3/bigquery_exercise.py` | Internal warmup, recovery and final query sequencing with explicit actor handoffs; production entrypoints remain disabled |
 | `flink_tier3/bigquery_bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
-| `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations; not wired into admission |
+| `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
 | `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub_messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |

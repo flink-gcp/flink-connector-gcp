@@ -61,6 +61,13 @@ def validate_manifests(initial, upgrade):
 class RecoveryExercise:
     """The supervisor advances this exercise once; recovery only cleans it up."""
 
+    namespace = SMOKE
+    state_bucket = STATE
+    records = RECOVERY["records"]
+    timing = RECOVERY
+    progress_event = "smoke-progress"
+    expected_pods = 2
+
     def __init__(self, env, upgrade):
         if (
             upgrade is None
@@ -70,7 +77,8 @@ class RecoveryExercise:
         self.env, self.upgrade = env, upgrade
         self.stage = "baseline"
         self.deadline = min(
-            env.schedule.started + RECOVERY["startup_seconds"], env.schedule.cleanup_at
+            env.schedule.started + self.timing["startup_seconds"],
+            env.schedule.cleanup_at,
         )
         self.boundary = env.schedule.started
         self.samples = {}
@@ -105,7 +113,7 @@ class RecoveryExercise:
 
     def progress(self, pod, text):
         pattern = (
-            r"event=smoke-progress run_id=(\S+) phase=(\S+) lineage=(\S+) "
+            rf"event={self.progress_event} run_id=(\S+) phase=(\S+) lineage=(\S+) "
             r"restored=(true|false) processed=([0-9]+) sequence=([0-9]+)"
         )
         for line in text.splitlines():
@@ -128,7 +136,7 @@ class RecoveryExercise:
             ):
                 raise Failure("Unexpected fresh start or unplanned initial recovery")
             processed, sequence = int(processed), int(sequence)
-            if not 0 < processed <= RECOVERY["records"] or sequence != processed - 1:
+            if not 0 < processed <= self.records or sequence != processed - 1:
                 raise Failure("Recovery progress violates the deterministic input")
             sample = {
                 "at": at,
@@ -144,7 +152,7 @@ class RecoveryExercise:
         owned = set(self.env.observed)
         new_events = []
         interrupted = False
-        for event in self.env.kube.items("Event", SMOKE):
+        for event in self.env.kube.items("Event", self.namespace):
             if event.get("involvedObject", {}).get("uid") not in owned:
                 continue
             meta = event["metadata"]
@@ -161,7 +169,7 @@ class RecoveryExercise:
                 interrupted = True
         if new_events:
             self.env.emit("scheduling-events", new_events)
-        smoke = [p for p in pods if p["metadata"]["namespace"] == SMOKE]
+        smoke = [p for p in pods if p["metadata"]["namespace"] == self.namespace]
         for pod in smoke:
             status = pod.get("status", {})
             if (
@@ -182,7 +190,7 @@ class RecoveryExercise:
         if (
             self.stable_pods is None
             and self.stage == "baseline"
-            and len(smoke) == 2
+            and len(smoke) == self.expected_pods
             and all(p.get("status", {}).get("phase") == "Running" for p in smoke)
         ):
             self.stable_pods = identities
@@ -203,7 +211,7 @@ class RecoveryExercise:
         candidates = [
             p
             for p in pods
-            if p["metadata"]["namespace"] == SMOKE
+            if p["metadata"]["namespace"] == self.namespace
             and p["metadata"].get("labels", {}).get("component") == "jobmanager"
             and not p["metadata"].get("deletionTimestamp")
             and p.get("status", {}).get("phase") == "Running"
@@ -225,7 +233,7 @@ class RecoveryExercise:
             return None
         path = cp.get("external_path", "")
         if not path.startswith(
-            f"gs://{STATE}/runs/{self.env.approval.run_id}/checkpoints/"
+            f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/checkpoints/"
         ):
             raise Failure("Completed checkpoint is outside the approved state prefix")
         return cp
@@ -239,8 +247,7 @@ class RecoveryExercise:
 
     def input_complete(self):
         return any(
-            s["processed"] == RECOVERY["records"]
-            for s in self.fresh_progress("upgrade")
+            s["processed"] == self.records for s in self.fresh_progress("upgrade")
         )
 
     def recovery_proof(self, app, rest, pods):
@@ -285,7 +292,7 @@ class RecoveryExercise:
                 or savepoint.get("triggerType") != "UPGRADE"
                 or savepoint.get("timeStamp", 0) / 1000 <= self.boundary
                 or not path.startswith(
-                    f"gs://{STATE}/runs/{self.env.approval.run_id}/savepoints/"
+                    f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/savepoints/"
                 )
             ):
                 raise Failure("Upgrade did not restore its newly completed savepoint")
@@ -295,7 +302,7 @@ class RecoveryExercise:
                 or restored.get("is_savepoint") is not False
                 or restored["id"] < self.before["checkpoint"]["id"]
                 or not restored.get("external_path", "").startswith(
-                    f"gs://{STATE}/runs/{self.env.approval.run_id}/checkpoints/"
+                    f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/checkpoints/"
                 )
             ):
                 raise Failure("JobManager did not recover the checkpointed job")
@@ -318,7 +325,8 @@ class RecoveryExercise:
         }
         self.boundary = self.env.clock()
         self.deadline = min(
-            self.boundary + RECOVERY["recovery_seconds"], self.env.schedule.cleanup_at
+            self.boundary + self.timing["recovery_seconds"],
+            self.env.schedule.cleanup_at,
         )
         self.generation = app["metadata"]["generation"] + 1
         self.persist("upgrade", before=self.before, generation=self.generation)
@@ -368,7 +376,8 @@ class RecoveryExercise:
         }
         self.boundary = self.env.clock()
         self.deadline = min(
-            self.boundary + RECOVERY["recovery_seconds"], self.env.schedule.cleanup_at
+            self.boundary + self.timing["recovery_seconds"],
+            self.env.schedule.cleanup_at,
         )
         self.persist("failover", before=self.before)
         self.check_open()
@@ -378,7 +387,7 @@ class RecoveryExercise:
         except (ApiError, TransportError) as error:
             if isinstance(error, ApiError) and error.status not in (500, 502, 503, 504):
                 raise
-            current = self.env.kube.get("Pod", SMOKE, jm["metadata"]["name"])
+            current = self.env.kube.get("Pod", self.namespace, jm["metadata"]["name"])
             if (
                 current
                 and current["metadata"]["uid"] == jm["metadata"]["uid"]
@@ -428,13 +437,13 @@ class RecoveryExercise:
                 self.retiring_pods = {
                     p["metadata"]["uid"]
                     for p in pods
-                    if p["metadata"]["namespace"] == SMOKE
+                    if p["metadata"]["namespace"] == self.namespace
                     and p["metadata"].get("deletionTimestamp")
                 }
                 self.stable_pods = {
                     p["metadata"]["uid"]
                     for p in pods
-                    if p["metadata"]["namespace"] == SMOKE
+                    if p["metadata"]["namespace"] == self.namespace
                 } - self.retiring_pods
         if status == "FINISHED":
             # Operator 1.15.0 marks the old job FINISHED after stop-with-savepoint.
@@ -449,7 +458,7 @@ class RecoveryExercise:
                 raise Failure(
                     "Finished without both recovery proofs and the complete input"
                 )
-            self.persist("complete", processed=RECOVERY["records"])
+            self.persist("complete", processed=self.records)
             return True
         return False
 

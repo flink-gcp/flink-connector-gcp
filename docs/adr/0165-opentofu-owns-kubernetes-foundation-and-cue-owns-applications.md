@@ -709,3 +709,28 @@ Require the ConfigMap data to remain within 1 MiB after adding the approval.
 Verify by re-rendering against an independently supplied approval rather than trusting the bundle's embedded copy.
 This is an offline binding check, not authentication, image availability, live resource admission or an absolute start fence.
 Keep both execution entrypoints disabled until the executor supplies those checks and the actor/evidence protocol.
+
+### BigQuery internal execution loops
+
+Connect explicitly supplied BigQuery handoffs to the common runner admission and supervisor exercise paths while keeping production CLI admission disabled.
+The caller still owns authenticated actor construction, approval-bundle verification and the external creator/writer barrier; this internal API cannot establish those facts from a token or a callback's existence.
+Initialize resource intent and provision tables only after supervisor and Operator readiness and before FlinkDeployment creation.
+On failed workload admission, keep that original supervisor available until the submitting runner returns from admission and permanently releases its handoff through settlement.
+Wait for this acknowledgement before workload inventory and teardown so admission can finish recording confirmed application creation; missing release remains an incident-recovery condition.
+The acknowledgement does not settle an unknown application creation outcome: the runner must still reconcile its persisted intent, and the external creator/writer barrier remains required before service deletion.
+A failure before readiness must not leave a BigQuery resource intent.
+Require admission within the approved start's 600-second startup window.
+A failed creating call retains its unresolved marker and requires external incident recovery under the existing protocol.
+
+Reuse the generic recovery mechanism's UID/version preconditions and restore proofs through scenario attributes for namespace, bucket, input size, progress event, timing and Pod count.
+Retain its smoke defaults.
+The BigQuery subclass adds the proposal's warmup, baseline and post-recovery windows, validates its input lineage and queries final visibility only after both recoveries and finished input.
+Recompute each archived oracle, retry missing visibility with a new approved slot under one absolute deadline, and never retry routing or EO uniqueness violations as visibility delay.
+This preserves the distinction between recovery evidence and the complete measurement verdict.
+Retain the recovery evidence in the final receipt but keep its overall BigQuery success false until measurement collection and the deployed verdict are implemented.
+
+Require the fixed 10 MiB query-artifact allocation before admission, rejecting both larger allocations and smaller ones that may be unusable.
+Reserve it by reducing version 4 supervisor and runner receipt budgets to 80 MiB and 8 MiB respectively.
+Admission and supervision reject a handoff with a different query budget, plan or environment, or a query deadline other than the approved cleanup start.
+The remaining 2 MiB under the 100 MiB policy is for immutable run artifacts; the future authenticated admission path must account for those artifacts explicitly.
+Declined: adding the query budget above the existing receipt allowances, admitting the CLI with a placeholder writer fence, or treating passing synthetic recovery as issue acceptance.

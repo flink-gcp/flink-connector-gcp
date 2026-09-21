@@ -36,6 +36,14 @@ QUERY_TIMEOUT_MS = 60000
 REVIEWED_AT = "2026-09-20T00:00:00Z"
 QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
+OBSERVATIONS = {
+    "warmup_seconds": 180,
+    "baseline_seconds": 600,
+    "post_recovery_seconds": 600,
+    "startup_seconds": 600,
+    "recovery_seconds": 300,
+    "visibility_seconds": 600,
+}
 FIELDS = {
     "version",
     "mode",
@@ -284,14 +292,7 @@ def prepare(
             "query_bytes": trial["query_slots"] * trial["maximum_bytes_billed"],
             "additional_cost_usd": trial["additional_cost_usd"],
         },
-        "observations": {
-            "warmup_seconds": 180,
-            "baseline_seconds": 600,
-            "post_recovery_seconds": 600,
-            "startup_seconds": 600,
-            "recovery_seconds": 300,
-            "visibility_seconds": 600,
-        },
+        "observations": dict(OBSERVATIONS),
         "cost": {
             "kind": "planning-estimate",
             "usd": str(estimate(trial)),
