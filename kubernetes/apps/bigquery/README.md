@@ -496,7 +496,14 @@ They do not establish a functioning external quiescence barrier or live service 
 
 Authenticated approval delivery, measurement collection, complete evidence accounting and writer fencing must be connected before enabling either execution entrypoint.
 The internal loops require a fixed 10 MiB allocation for query artifacts, reducing supervisor receipts to 80 MiB and runner receipts to 8 MiB for version 4 approvals.
-Those three independently enforced budgets total 98 MiB; the future admission path must fit the remaining immutable run artifacts within the remaining 2 MiB rather than treating it as another query allowance.
+The four allowances are now entries under `[bigquery_ceilings]` rather than literals spread across modules, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
+Those documents — the approval, the application and upgrade manifests, the image receipts, the session file and the final result — are weighed against that last allowance before each write, where previously they were written unweighed and nothing proved the run stayed inside what it was approved to retain.
+Only the documents directly under the run prefix count against it; the per-actor receipts and the query artifacts live in subdirectories and answer to their own entries.
+The count comes from a fixed roster of those document names rather than from listing the prefix: the prefix also holds every receipt, whose object count reaches the listing's twenty-thousand ceiling long before its byte ceiling, and this accounting runs when the final result is written, so a listing here would fail a run at its last step.
+
+The collected queries' billed bytes are summed into the retained control state as `billed_bytes`.
+Each query was already refused above its own `maximum_bytes_billed`, and the slot count bounds the worst case, but nothing added them up, so a finished trial could not state what it had actually spent.
+A re-collected observation returns on the evidence pointer it already holds and is not counted again, and the total is restated from each query's recorded figure rather than accumulated into, because a conflicting write re-applies the same edit against a record that already carries it.
 
 The shared final receipt records the BigQuery scenario and approved trial, with `success: false` until its execution verdict is implemented.
 A generic recovery completion flag cannot satisfy that verdict.

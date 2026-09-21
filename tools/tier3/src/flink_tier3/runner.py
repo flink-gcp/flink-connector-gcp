@@ -20,6 +20,7 @@ from .bigquery_handoff import require_bigquery_clean
 from .cloudtasks import admission_budget_open, admit_queue
 from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
 from .pubsub_lifecycle import require_pubsub_clean
+from .records import write_artifact
 
 
 class Runner:
@@ -525,7 +526,13 @@ class Runner:
                         if key != "at"
                     }
         if previous is None:
-            self.env.store.write(path, result)
+            write_artifact(
+                self.env.store,
+                self.env.approval.run_id,
+                "result.json",
+                result,
+                self.env.approval.scenario,
+            )
         elif (
             previous.get("nonce") != result["nonce"]
             or not previous.get("idle")

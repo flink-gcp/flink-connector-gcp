@@ -20,7 +20,13 @@ import uuid
 from .bigquery import assess
 from .common import Failure, utc
 from .exercise import RecoveryExercise
-from .policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, MIB, POLL
+from .policy import (
+    BIGQUERY,
+    BIGQUERY_CEILINGS,
+    BIGQUERY_OBSERVATIONS,
+    BIGQUERY_STATE,
+    POLL,
+)
 
 
 def require_handoff(env, handoff):
@@ -30,7 +36,7 @@ def require_handoff(env, handoff):
         or handoff.env is not env
         or handoff.controller.plan != env.approval.bigquery_plan
         or handoff.binding["query_until"] != env.schedule.cleanup_at
-        or handoff.binding["evidence_bytes"] != 10 * MIB
+        or handoff.binding["evidence_bytes"] != BIGQUERY_CEILINGS["query_bytes"]
     ):
         raise Failure(
             "BigQuery execution requires a bound handoff with its fixed 10 MiB query budget"

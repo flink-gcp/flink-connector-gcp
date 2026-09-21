@@ -95,5 +95,6 @@ from .policy import STATE as STATE
 from .policy import SYSTEM as SYSTEM
 from .records import EnvironmentLock as EnvironmentLock
 from .records import Records as Records
+from .records import write_artifact as write_artifact
 from .supervisor import SessionHooks as SessionHooks
 from .supervisor import Supervisor as Supervisor

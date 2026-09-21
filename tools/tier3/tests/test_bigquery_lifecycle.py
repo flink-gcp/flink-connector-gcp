@@ -588,3 +588,35 @@ def test_fifty_destinations_preserve_all_receipts_and_cleanup(setup, mode):
     assert len(env.refresh().bigquery["tables"]) == 50
     assert controller.cleanup(lambda: True)
     assert not api.tables
+
+
+def test_collected_queries_accumulate_the_bytes_the_trial_was_billed(setup):
+    """Each query is refused above its own limit; nothing summed them before."""
+    _, env, _, _ = setup
+    controller = running(setup)
+    assert env.refresh().bigquery["billed_bytes"] == 0
+    for name in ("baseline", "final"):
+        controller.reserve_query(name)
+        controller.submit_query(name)
+        controller.collect_query(name)
+    billed = env.refresh().bigquery["billed_bytes"]
+    assert billed > 0
+    # A second collection returns on the evidence pointer it already has.
+    controller.collect_query("final")
+    assert env.refresh().bigquery["billed_bytes"] == billed
+
+
+def test_a_conflicting_collection_does_not_bill_the_same_query_twice(setup):
+    """`_change` re-reads and re-applies its edit, so accumulating would double."""
+    _, env, _, _ = setup
+    controller = running(setup)
+    other = restart(setup)
+    controller.reserve_query("final")
+    controller.submit_query("final")
+    # The second collector lands between this one's read and its write, so the
+    # edit is re-applied against a record that already carries the same pointer.
+    env.store.before_write = lambda: other.collect_query("final")
+    controller.collect_query("final")
+    assert env.store.conflicts == 1
+    queries = env.refresh().bigquery["queries"]
+    assert env.refresh().bigquery["billed_bytes"] == queries["final"]["billed"]

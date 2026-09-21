@@ -64,6 +64,9 @@ def rows(trial, *, missing=False, duplicate=False, invalid=False):
     ]
 
 
+BILLED_PER_QUERY = 3 * 1024 * 1024
+
+
 class QueryResources(Resources):
     def job(self, slot):
         return copy.deepcopy(self.jobs.get(slot))
@@ -293,7 +296,16 @@ class World:
             duplicate=self.fault == "duplicates",
             invalid=self.fault == "invalid",
         )
-        return {"rows": data, "report": assess(self.plan.trial, data)}
+        # The real adapter returns the job it read, and refuses one whose
+        # billing statistics are absent, so the double carries them too.
+        return {
+            "job": {
+                "status": {"state": "DONE"},
+                "statistics": {"query": {"totalBytesBilled": str(BILLED_PER_QUERY)}},
+            },
+            "rows": data,
+            "report": assess(self.plan.trial, data),
+        }
 
     def quiesce(self):
         return self.fault != "barrier" and self.app() is None

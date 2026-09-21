@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import signal
@@ -232,13 +233,19 @@ def start(args, store):
     ):
         raise rt.Failure("Foundation changed while acquiring the environment lock")
     wf.save(args.directory / "approval.json", approval)
-    store.write(f"runs/{args.run_id}/approval.json", approval)
-    store.write(f"runs/{args.run_id}/application.json", application)
-    store.write(f"runs/{args.run_id}/images.json", receipts)
+    artifact = functools.partial(
+        rt.write_artifact,
+        store,
+        args.run_id,
+        scenario=approval.get("scenario", "smoke"),
+    )
+    artifact("approval.json", approval)
+    artifact("application.json", application)
+    artifact("images.json", receipts)
     if upgrade is not None:
-        store.write(f"runs/{args.run_id}/upgrade-application.json", upgrade)
+        artifact("upgrade-application.json", upgrade)
     if cloudtasks:
-        store.write(f"runs/{args.run_id}/session.json", session)
+        artifact("session.json", session)
     store.write(
         f"_control/runs/{args.run_id}.json",
         {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},

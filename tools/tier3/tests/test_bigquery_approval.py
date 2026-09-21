@@ -651,3 +651,22 @@ def test_final_receipt_retry_after_control_deleted_before_lock_release(
         f"runs/{environment.approval.run_id}/result.json"
     )
     assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
+
+
+def test_the_four_allowances_partition_the_approved_evidence_ceiling():
+    """Four figures in one place, summing to the ceiling they divide."""
+    from flink_tier3.policy import BIGQUERY_CEILINGS, MIB
+
+    parts = (
+        "receipt_bytes_supervisor",
+        "receipt_bytes_runner",
+        "query_bytes",
+        "artifact_bytes",
+    )
+    assert (
+        sum(BIGQUERY_CEILINGS[part] for part in parts)
+        == (BIGQUERY_CEILINGS["evidence_bytes"])
+    )
+    # The handoff and the receipts read those entries rather than literals.
+    assert BIGQUERY_CEILINGS["query_bytes"] == 10 * MIB
+    assert BIGQUERY_CEILINGS["artifact_bytes"] == 2 * MIB

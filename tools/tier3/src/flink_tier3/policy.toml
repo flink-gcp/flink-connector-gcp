@@ -73,6 +73,12 @@ state_bytes = 1073741824
 state_objects = 10000
 log_bytes = 104857600
 evidence_bytes = 104857600
+# The four allowances below partition `evidence_bytes`, so what the run may
+# retain is visible as a sum rather than as literals spread across modules.
+receipt_bytes_supervisor = 83886080
+receipt_bytes_runner = 8388608
+query_bytes = 10485760
+artifact_bytes = 2097152
 additional_cost_usd = "10.00"
 
 # Pub/Sub internal approval policy: three running Flink Pods plus one
