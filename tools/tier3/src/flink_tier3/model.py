@@ -299,6 +299,7 @@ def validate_approval(approval, now=None):
         "baseline_uids",
         "lock_owner",
         "runtime_sha256",
+        "delivery_sha256",
         "application_sha256",
     }
     if not isinstance(approval, dict) or not required <= approval.keys():
@@ -432,10 +433,11 @@ def validate_approval(approval, now=None):
             re.escape(GAR + package) + r"@sha256:[0-9a-f]{64}", approval["images"][key]
         ):
             raise Failure("Every runtime image must be an approved GAR digest")
-    if not re.fullmatch(
-        r"[0-9a-f]{64}", approval.get("runtime_sha256", "")
-    ) or not re.fullmatch(r"[0-9a-f]{64}", approval.get("application_sha256", "")):
-        raise Failure("Approval must pin its runtime and application bytes")
+    pinned = ("runtime_sha256", "delivery_sha256", "application_sha256")
+    if any(
+        not re.fullmatch(r"[0-9a-f]{64}", approval.get(name, "")) for name in pinned
+    ):
+        raise Failure("Approval must pin its runtime, delivery and application bytes")
 
 
 def _validate_pubsub(approval, start, end):
@@ -618,6 +620,7 @@ class Approval:
     baseline_uids: list
     lock_owner: dict
     runtime_sha256: str
+    delivery_sha256: str
     application_sha256: str
     actor: str = ""
     scenario: str = "smoke"

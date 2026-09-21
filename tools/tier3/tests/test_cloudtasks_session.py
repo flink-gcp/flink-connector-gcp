@@ -554,6 +554,7 @@ def test_session_cost_and_quota_shapes_stay_within_policy():
                 "baseline_uids",
                 "lock_owner",
                 "runtime_sha256",
+                "delivery_sha256",
                 "application_sha256",
             )
         },

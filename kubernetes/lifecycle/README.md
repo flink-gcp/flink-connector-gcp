@@ -21,10 +21,14 @@ Its `scenario` input selects ordinary completion (`smoke`, the default) or the f
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
 The installed `flink-tier3` CLI is the entry point; [workspace instructions](../../tools/README.md) cover building a wheel and selecting a repository checkout.
-[delivery.cue](delivery.cue) receives the installed package's Python modules and `policy.toml` as JSON on standard input and projects them through one immutable ConfigMap.
+[delivery.cue](delivery.cue) receives Python modules and `policy.toml` as JSON on standard input and projects them through one immutable ConfigMap.
 The Pod runs `python3 -m flink_tier3 supervisor` from that projected directory.
-The approval's `runtime_sha256` covers the relative paths and SHA-256 hashes of the complete package source bundle, including policy; the supervisor verifies it before cloud access.
-Adding a module automatically includes it in both the source bundle and its hash; the rendered-payload test checks completeness.
+The delivery carries the modules that entrypoint can reach, closed under their own imports, plus the package data they name — not the whole installed package, because otherwise every module any scenario adds is carried by all of them and they share the data ceiling below.
+The approval's `runtime_sha256` still covers the complete package and is verified by the runner at dispatch; its `delivery_sha256` covers exactly the delivered set, and is the pin the supervisor can check against its own mount.
+Because the set is closed under imports, the runner computes that delivery pin from its complete installation and the supervisor reproduces it from the mount, so a truncated delivery fails the comparison instead of running.
+Adding a module the entrypoint reaches includes it in both the delivery and its pin automatically; a module nothing delivered imports is in neither, and enters both as soon as a delivered module imports it.
+The rendered-payload test runs the projected directory, which catches a module missing at import time; a module reached only by a deferred import inside a function is delivered by the walk but not exercised there.
+The Pod's command is fixed by this manifest, and `bundle.POD_COMMANDS` names it, because the CLI resolves a command to its module through a computed import that no walk can follow.
 The 32-cell fixture keeps UTF-8 ConfigMap data below 768 KiB, reserving 256 KiB below the [Kubernetes data ceiling](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/apis/core/validation/validation.go); it also keeps the serialized JSON below 1 MiB.
 The data budget counts values as Kubernetes does, excluding the extra quoting and escaping in JSON.
 Adding the Pub/Sub handoff module exceeded the former 768 KiB serialized-JSON guard: the fixture measured 737,522 data bytes and 789,286 JSON bytes.
@@ -433,7 +437,7 @@ The marker is not signed, so the analysis proves the mirror matches what the ses
 A cell carries a steady-state result only when the supervisor's outcome for it was `completed`, its evidence reconciles complete and matches its marker, it did not restart, its observed window holds the required checkpoints and, when its ID names a protocol entry, its executed conditions match that entry; anything else is reported with its reason and contributes to no group verdict, capacity decision, or pacing, delay or steady-state acceptance item.
 The acceptance items about metric discovery and task-name shape ask only that the cell's evidence was exported and matches its marker, because neither reads a rate or a window.
 Calibration acceptance is reported once per campaign and Flink line, because the 1.20.4 session repeats `k01` to `k04` under the same identifiers.
-The analyzer's rules are part of the supervisor source bundle, so the approval's `runtime_sha256` covers the protocol pin and the analysis code that will judge the run.
+The analyzer's rules are part of the package `runtime_sha256` covers, so the approval still pins the protocol document and the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set that `delivery_sha256` pins.
 Synthetic validation establishes the control logic; actual WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing remain measurements for the approved #1311 exercise.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:

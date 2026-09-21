@@ -24,7 +24,7 @@ import signal
 import time
 from pathlib import Path
 
-from flink_tier3.bundle import source_digest
+from flink_tier3.bundle import delivery_digest
 from flink_tier3.cloudtasks import Ledger, Queues, load_cells
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
@@ -40,7 +40,9 @@ from flink_tier3.supervisor import HookChain, Supervisor
 
 def supervisor_main(directory):
     approval = json.loads((directory / "approval.json").read_text())
-    if source_digest() != approval["runtime_sha256"]:
+    # The mount is a subset, so the complete package's digest is not
+    # computable here; the runner verified that one at dispatch.
+    if delivery_digest() != approval["delivery_sha256"]:
         raise Failure("Supervisor source differs from approval")
     application = json.loads((directory / "application.json").read_text())
     if digest(application) != approval["application_sha256"]:

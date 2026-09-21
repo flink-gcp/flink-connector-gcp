@@ -19,7 +19,7 @@ import re
 from dataclasses import asdict
 from decimal import Decimal
 
-from .bundle import source_digest
+from .bundle import delivery_digest, source_digest
 from .common import Failure, digest, json_bytes, quantity, timestamp, utc
 from .model import Schedule
 from .policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
@@ -263,6 +263,7 @@ def prepare(
         "nonce": nonce,
         "revision": revision,
         "runtime_sha256": source_digest(),
+        "delivery_sha256": delivery_digest(),
         "started_at": utc(start),
         "cleanup_at": utc(schedule.cleanup_at),
         "expires_at": utc(end),

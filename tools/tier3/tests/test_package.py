@@ -21,7 +21,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from flink_tier3.bundle import package_sources, source_digest
+from flink_tier3 import bundle
+from flink_tier3.bundle import (
+    delivered_sources,
+    delivery_digest,
+    package_sources,
+    source_digest,
+)
+from flink_tier3.common import Failure
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -158,10 +165,82 @@ def test_repository_rejected_before_cloud_access(monkeypatch, tmp_path, capsys):
     assert "--repository" in capsys.readouterr().err
 
 
+def minimal_package(directory):
+    """The smallest delivery the supervisor entrypoint can be identified by.
+
+    The entrypoints carry real imports, including a deferred one, so the walk
+    under test is exercised rather than a package with no edges at all.
+    """
+    (directory / "__init__.py").write_bytes(b"from flink_tier3 import common\n")
+    (directory / "__main__.py").write_bytes(b"from .cli import main\n")
+    (directory / "cli.py").write_bytes(b"from importlib import import_module\n")
+    (directory / "common.py").write_bytes(b"# Reviewed source.\n")
+    (directory / "helper.py").write_bytes(b"# Reviewed source.\n")
+    (directory / "runtime.py").write_bytes(
+        b"def main():\n    from .helper import used  # noqa: F401\n"
+    )
+    (directory / "policy.toml").write_bytes(b"# Reviewed policy.\n")
+    return directory / "runtime.py"
+
+
 def test_source_identity_preserves_file_bytes(tmp_path):
-    source = tmp_path / "runtime.py"
-    source.write_bytes(b"# Reviewed source.\n")
+    source = minimal_package(tmp_path)
     original = source_digest(tmp_path)
     source.write_bytes(b"# Reviewed source.\r\n")
     assert source_digest(tmp_path) != original
     assert package_sources(tmp_path)["runtime.py"].encode() == source.read_bytes()
+
+
+def test_delivery_is_closed_under_imports_and_refuses_a_truncated_package(tmp_path):
+    minimal_package(tmp_path)
+    (tmp_path / "unused.py").write_bytes(b"# Imported by nothing.\n")
+    assert set(delivered_sources(tmp_path)) == {
+        "__init__.py",
+        "__main__.py",
+        "cli.py",
+        "common.py",
+        "helper.py",
+        "runtime.py",
+        "policy.toml",
+    }
+    # Walking a delivery reproduces itself, which is what lets the supervisor
+    # verify its mount against a digest the runner computed before the run.
+    delivery = tmp_path / "delivered"
+    delivery.mkdir()
+    for name, content in delivered_sources(tmp_path).items():
+        (delivery / name).write_text(content)
+    assert delivered_sources(delivery) == delivered_sources(tmp_path)
+    assert delivery_digest(delivery) == delivery_digest(tmp_path)
+    (delivery / "policy.toml").unlink()
+    with pytest.raises(Failure, match="missing policy.toml"):
+        delivered_sources(delivery)
+
+
+def test_delivery_follows_a_module_to_the_package_data_it_names(tmp_path):
+    minimal_package(tmp_path)
+    (tmp_path / "rules.toml").write_bytes(b"# Reviewed rules.\n")
+    (tmp_path / "reader.py").write_bytes(b'RULES = "rules.toml"\n')
+    assert "rules.toml" not in delivered_sources(tmp_path)
+    runtime = tmp_path / "runtime.py"
+    runtime.write_bytes(runtime.read_bytes() + b"from . import reader  # noqa: F401\n")
+    # Both actors would agree on a delivery whose data stayed behind, so the
+    # digest cannot catch this one; following the literal is what does.
+    assert "rules.toml" in delivered_sources(tmp_path)
+    assert "reader.py" in delivered_sources(tmp_path)
+
+
+def test_delivery_follows_the_declared_command_dispatch(tmp_path):
+    from flink_tier3 import cli
+
+    minimal_package(tmp_path)
+    # `cli` reaches the Pod's module only through a computed name, so the
+    # declared edge is the only thing that keeps it in the delivery.
+    assert "runtime.py" in delivered_sources(tmp_path)
+    assert bundle.POD_COMMANDS == ("supervisor",)
+    assert bundle.DISPATCHED["supervisor"] == "runtime"
+    # The CLI resolves the command through this same table, not a second copy.
+    assert cli.DISPATCHED is bundle.DISPATCHED
+    # And the command seeded here is the one the manifest actually runs.
+    manifest = (ROOT / "kubernetes/lifecycle/delivery.cue").read_text()
+    for command in bundle.POD_COMMANDS:
+        assert f'"flink_tier3", "{command}"' in manifest

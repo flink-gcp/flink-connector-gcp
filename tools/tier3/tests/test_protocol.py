@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 from flink_tier3 import model, protocol
-from flink_tier3.bundle import package_sources
+from flink_tier3.bundle import delivered_sources, package_sources
 from flink_tier3.common import Failure
 
 PIN = Path(protocol.__file__).parent / protocol.PROTOCOL_FILE
@@ -58,9 +58,14 @@ def test_pin_holds_the_420_preregistered_cells_and_their_rules():
     )
 
 
-def test_pin_is_part_of_the_supervisor_source_bundle():
+def test_pin_ships_with_the_package_but_not_with_the_supervisor_delivery():
     sources = package_sources()
     assert protocol.PROTOCOL_FILE in sources
+    # `runtime_sha256` still covers the pin, because it hashes the complete
+    # package; nothing the supervisor entrypoint imports reaches it, so it is
+    # not in the delivery that `delivery_sha256` pins.
+    assert protocol.PROTOCOL_FILE not in delivered_sources()
+    assert "analyze.py" not in delivered_sources()
     assert PIN.read_text().startswith("# Copyright 2026 The flink-gcp authors")
     assert len(protocol.DRAFT_SHA256) == 64
     assert len(protocol.protocol_sha256()) == 64

@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 
 import flink_tier3 as rt
-from flink_tier3.bundle import package_sources
+from flink_tier3.bundle import delivered_sources
 
 ROOT = Path(__file__).resolve().parents[2]
 RUN_ID = "contract-probe"
@@ -65,7 +65,7 @@ def render(line, session_file=None):
             "target=" + rt.CLOUDTASKS_POLICY["target"],
         ],
         cwd=ROOT / "kubernetes",
-        input=json.dumps({"packageSources": package_sources()}),
+        input=json.dumps({"packageSources": delivered_sources()}),
         capture_output=True,
         text=True,
         timeout=120,
@@ -90,6 +90,7 @@ def approval(session, line, image, manifests):
         baseline_uids=[],
         lock_owner={},
         runtime_sha256="d" * 64,
+        delivery_sha256="e" * 64,
         application_sha256=rt.digest(manifests),
         scenario="cloudtasks",
         campaign=session["campaign"],

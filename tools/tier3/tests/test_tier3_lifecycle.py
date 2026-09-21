@@ -370,6 +370,7 @@ def env():
         "namespaces": {},
         "baseline_uids": [],
         "runtime_sha256": "c" * 64,
+        "delivery_sha256": "f" * 64,
         "application_sha256": "d" * 64,
         "images": {
             key: rt.GAR + package + "@sha256:" + "e" * 64
@@ -2636,7 +2637,7 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
     assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1"
 
 
-def test_supervisor_source_identity_covers_every_module_and_policy(tmp_path):
+def test_supervisor_source_identity_covers_every_delivered_module_and_policy(tmp_path):
     import shutil
     import sys
 
@@ -2646,16 +2647,25 @@ def test_supervisor_source_identity_covers_every_module_and_policy(tmp_path):
         tmp_path / "flink_tier3",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
-    original = rt.source_digest(tmp_path / "flink_tier3")
-    cli.wf.save(tmp_path / "approval.json", {"runtime_sha256": original})
-    paths = [
-        *sorted((tmp_path / "flink_tier3").glob("*.py")),
-        tmp_path / "flink_tier3/policy.toml",
-    ]
+    original = rt.delivery_digest(tmp_path / "flink_tier3")
+    cli.wf.save(tmp_path / "approval.json", {"delivery_sha256": original})
+    package = tmp_path / "flink_tier3"
+    delivered = rt.delivered_sources(package)
+    # The loop is driven by the function under test, so a bug that shrinks
+    # the delivery would otherwise shrink this test's coverage with it.
+    assert {
+        "runtime.py",
+        "supervisor.py",
+        "cloudtasks.py",
+        "model.py",
+        "environment.py",
+        "policy.toml",
+    } <= set(delivered)
+    paths = [package / name for name in sorted(delivered)]
     for path in paths:
         contents = path.read_bytes()
         path.write_bytes(contents + b"\n# Changed after approval.\n")
-        assert rt.source_digest(tmp_path / "flink_tier3") != original, path
+        assert rt.delivery_digest(package) != original, path
         result = subprocess.run(
             [
                 sys.executable,
@@ -2676,9 +2686,23 @@ def test_supervisor_source_identity_covers_every_module_and_policy(tmp_path):
             result.stderr,
         )
         path.write_bytes(contents)
-    assert rt.source_digest(tmp_path / "flink_tier3") == original
-    (tmp_path / "flink_tier3/unreviewed.py").write_text("# Extra module.\n")
-    assert rt.source_digest(tmp_path / "flink_tier3") != original
+    assert rt.delivery_digest(package) == original
+    # The digest follows what the entrypoint can import, so a module no
+    # delivered module imports is neither covered nor delivered — and becomes
+    # both the moment a delivered module imports it, because that module moved.
+    (package / "unreviewed.py").write_text("# Extra module.\n")
+    assert rt.delivery_digest(package) == original
+    assert "unreviewed.py" not in rt.delivered_sources(package)
+    runtime = package / "runtime.py"
+    reviewed = runtime.read_bytes()
+    runtime.write_bytes(reviewed + b"\nfrom . import unreviewed  # noqa: F401\n")
+    assert rt.delivery_digest(package) != original
+    assert "unreviewed.py" in rt.delivered_sources(package)
+    runtime.write_bytes(reviewed)
+    # An undelivered module cannot change what the supervisor runs.
+    analyze = package / "analyze.py"
+    analyze.write_bytes(analyze.read_bytes() + b"\n# Changed after approval.\n")
+    assert rt.delivery_digest(package) == original
 
 
 @pytest.mark.parametrize("changed_data", [False, True])

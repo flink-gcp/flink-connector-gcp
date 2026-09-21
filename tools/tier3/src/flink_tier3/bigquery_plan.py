@@ -22,7 +22,7 @@ from decimal import Decimal
 
 from .bigquery import ROW_BYTES, Trial
 from .bigquery_resources import ResourcePlan
-from .bundle import source_digest
+from .bundle import delivery_digest, source_digest
 from .common import Failure, digest, json_bytes, quantity, timestamp, utc
 from .model import Schedule, _hourly
 from .policy import (
@@ -268,6 +268,7 @@ def prepare(
         "approved": False,
         "revision": revision,
         "runtime_sha256": source_digest(),
+        "delivery_sha256": delivery_digest(),
         "started_at": utc(start),
         "cleanup_at": utc(end - BIGQUERY_CEILINGS["cleanup_seconds"]),
         "expires_at": utc(end),

@@ -25,7 +25,7 @@ import yaml
 import flink_tier3 as rt
 
 from . import bootstrap
-from .bundle import package_sources
+from .bundle import delivered_sources
 
 ROOT = Path.cwd()
 ROOTS = ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
@@ -137,7 +137,7 @@ def render(
     result = subprocess.run(
         args,
         cwd=ROOT / "kubernetes",
-        input=json.dumps({"packageSources": package_sources()}),
+        input=json.dumps({"packageSources": delivered_sources()}),
         capture_output=True,
         text=True,
         timeout=60,

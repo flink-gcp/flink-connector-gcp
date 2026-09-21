@@ -57,5 +57,5 @@ The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/RE
 The internal [BigQuery recovery exercise](../kubernetes/apps/bigquery/README.md#internal-recovery-execution) coordinates table provisioning, state-preserving recovery and bounded final queries.
 
 The [lifecycle runbook](../kubernetes/lifecycle/README.md) defines execution approval and cleanup.
-Third-party dependencies remain installed in the pinned image, while the reviewed package source is projected through an immutable ConfigMap.
+Third-party dependencies remain installed in the pinned image, while the reviewed package source the supervisor entrypoint can import is projected through an immutable ConfigMap.
 There is no package installation during Pod startup.

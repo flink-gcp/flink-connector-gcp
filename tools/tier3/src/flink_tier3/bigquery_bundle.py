@@ -97,6 +97,7 @@ def prepare(approval, *, prepared_at):
         or digest(bundle["upgrade_application"]) != approved.upgrade_application_sha256
         or bundle["proposal"]["images"]["supervisor"] != approved.images["supervisor"]
         or bundle["proposal"]["runtime_sha256"] != approved.runtime_sha256
+        or bundle["proposal"]["delivery_sha256"] != approved.delivery_sha256
     ):
         raise Failure(
             "Rendered bundle differs from the approved manifests, images or source"

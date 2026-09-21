@@ -330,7 +330,7 @@ A truncated Pod log is therefore recorded rather than fatal for this scenario, w
 Cleanup deletes only the cells' checkpoint state under the one-day benchmark bucket and records the retained rows and receipts; exporting them to durable evidence and reconciling them against the receipts is the next change, which must run inside the same workflow execution.
 
 That next change followed: the supervisor reconciles each cell's rows against its receipts after the cell, rewrites them into the evidence bucket with per-object hashes and a marker, releases the benchmark prefix only after the marker exists, and records one observation per poll from the Flink REST API, the TaskManagers, the queue and the Pods.
-The offline analyzer and the protocol pin ship in the same source bundle, so `runtime_sha256` covers the rules that will judge a run before it starts.
+The offline analyzer and the protocol pin ship in the same installed package, so `runtime_sha256` covers the rules that will judge a run before it starts; the supervisor's own delivery does not carry them, and `delivery_sha256` accordingly does not pin them.
 The environment lock's scan of `runs/` moved from listing every object to a delimiter listing with two reads per run: a calibration session exports several hundred row parts and a large main session a few thousand, so the previous hundred-thousand-object budget would have been spent after tens of sessions rather than at a knowable point.
 Declined: exporting rows through the supervisor's own memory (parts stream through gzip and are hashed on the way; nothing is buffered whole) and a separate analysis dependency (the analysis module imports no cloud client and the command needs no checkout, although the installed package's own imports still load them).
 
@@ -790,3 +790,16 @@ Check expiry after receiving response headers and at streamed-body boundaries, i
 A late response cannot establish a successful resource operation; retain the existing unresolved-create and returned-read failure rules.
 These checks bound request admission and the timeout passed to the transport, not credential refresh, a blocked read or server-side execution by themselves.
 Authenticated transport construction and the external creator/writer barrier remain required before CLI admission or live acceptance.
+
+### Delivered package subset
+
+Deliver the modules the supervisor entrypoint can import, closed under their own imports, and `policy.toml`; not the whole installed package.
+The ConfigMap has one consumer and one fixed command, while every module any scenario adds was carried by all of them against a shared Kubernetes data ceiling that a Cloud Tasks session had reached.
+Compute the set by walking the package's own imports from the entrypoints, and declare the CLI's computed command dispatch as the one edge that walk cannot see.
+
+Keep the approval's `runtime_sha256` over the complete installed package, which the runner verifies at dispatch, and add a second pin over the delivered set, which is the only thing the supervisor can verify from its mount.
+One digest over the delivered set was declined once measured: it would have changed `runtime_sha256` for an already approved preregistration and made that document's protocol-coverage claim false, to save a field.
+Because the delivered set is closed under imports, the runner computes the delivery pin from its complete installation and the supervisor reproduces it from the mount, so a truncated delivery fails that comparison instead of running.
+A module nothing delivered imports is neither delivered nor pinned by the delivery digest, and becomes both as soon as a delivered module imports it; `runtime_sha256` covers it either way.
+Follow a delivered module to the package data it names by literal: a delivery whose data stayed behind is the one incompleteness both sides would compute the same delivery digest over, so no comparison would catch it.
+Declined: per-scenario delivery sets, which the measurement showed are not needed to clear the ceiling and would make the delivered set vary by scenario.

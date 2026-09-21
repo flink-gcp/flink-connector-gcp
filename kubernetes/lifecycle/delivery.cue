@@ -46,6 +46,7 @@ proposal: *"{}" | string @tag(proposal)
 packageSources: {
 	"__init__.py"!:                 string
 	"__main__.py"!:                 string
+	"cli.py"!:                      string
 	"runtime.py"!:                  string
 	"policy.toml"!:                 string
 	[=~"^[a-z0-9_]+[.](py|toml)$"]: string
