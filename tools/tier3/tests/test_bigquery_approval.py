@@ -357,6 +357,7 @@ def test_real_environment_and_handoff_complete_owned_cleanup(prepared):
     assert not receipt["success"]
     assert receipt["scenario"] == "bigquery-recovery"
     assert receipt["bigquery_trial"] == environment.approval.bigquery_trial
+    assert receipt["recovery"] == {"stage": "complete"}
     assert receipt["bigquery"]["cleaned"]
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None

@@ -15,7 +15,9 @@
 
 import flink_tier3 as rt
 
+from .bigquery_exercise import require_handoff
 from .bigquery_handoff import require_bigquery_clean
+from .bigquery_plan import OBSERVATIONS
 from .cloudtasks import admission_budget_open, admit_queue
 from .policy import RECOVERY
 from .pubsub_lifecycle import require_pubsub_clean
@@ -53,6 +55,12 @@ class Runner:
             >= self.env.schedule.started + RECOVERY["startup_seconds"]
         ):
             raise rt.Failure("Recovery scenario startup deadline expired")
+        if (
+            self.env.approval.scenario == "bigquery-recovery"
+            and self.env.clock()
+            >= self.env.schedule.started + OBSERVATIONS["startup_seconds"]
+        ):
+            raise rt.Failure("BigQuery startup deadline expired")
         # Admission may spend at most one cell's startup allowance, so the
         # first cell keeps the budget the session plan reserved for it.
         if self.cloudtasks:
@@ -142,7 +150,14 @@ class Runner:
         if self.env.approval.scenario == "pubsub-recovery":
             raise rt.Failure("Pub/Sub execution admission is not implemented")
         if self.env.approval.scenario == "bigquery-recovery":
-            raise rt.Failure("BigQuery execution admission is not implemented")
+            if self.bigquery is None:
+                raise rt.Failure(
+                    "BigQuery execution admission is not implemented without an explicit handoff"
+                )
+            require_handoff(self.env, self.bigquery)
+            if rt.digest(application) != self.env.approval.application_sha256:
+                raise rt.Failure("Application differs from the approved manifest")
+            self.admission_open()
         self.env.refresh()
         self.create_root("config", config)
         self.admission_open()
@@ -191,6 +206,10 @@ class Runner:
             admit_queue(self.env)
             self.env.records.operations("runner", self.env.queues.meter.snapshot())
         else:
+            if self.env.approval.scenario == "bigquery-recovery":
+                self.bigquery.initialize()
+                self.bigquery.provision()
+                self.admission_open()
             self.cleanup.quota(self.namespace, "run")
             self.create_application(application)
         self.admission_open()
@@ -448,6 +467,7 @@ class Runner:
             result.update(
                 scenario=self.env.approval.scenario,
                 bigquery_trial=self.env.approval.bigquery_trial,
+                recovery=control.recovery,
             )
         if self.cloudtasks:
             result.update(

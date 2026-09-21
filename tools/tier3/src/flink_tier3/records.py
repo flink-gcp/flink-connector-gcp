@@ -231,6 +231,8 @@ class Records:
         prefix = f"runs/{self.approval.run_id}/{actor}/"
         if self.approval.scenario == "cloudtasks":
             budget = CLOUDTASKS_CEILINGS["receipt_bytes_" + actor]
+        elif self.approval.scenario == "bigquery-recovery":
+            budget = (80 if actor == "supervisor" else 8) * MIB
         else:
             budget = (88 if actor == "supervisor" else 10) * MIB
         objects = self.store.objects(prefix)

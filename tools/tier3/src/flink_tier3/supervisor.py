@@ -20,6 +20,7 @@ import math
 import re
 import uuid
 
+from .bigquery_exercise import BigQueryExercise, require_handoff
 from .cleanup import Cleanup
 from .cloudtasks import transient, verify_queue
 from .common import ApiError, Failure, TransportError, contains, ha_metadata, utc
@@ -84,6 +85,8 @@ class Supervisor:
         self.exercise = (
             RecoveryExercise(env, upgrade)
             if env.approval.scenario == "generic-recovery"
+            else BigQueryExercise(env, upgrade)
+            if env.approval.scenario == "bigquery-recovery" and upgrade is not None
             else None
         )
         self.session = (
@@ -219,6 +222,12 @@ class Supervisor:
                 self.inspect_progress(decoded)
                 if self.exercise:
                     self.exercise.progress(pod, decoded)
+            if (
+                self.env.approval.scenario == "bigquery-recovery"
+                and self.exercise
+                and pod["metadata"]["namespace"] == self.exercise.namespace
+            ):
+                self.exercise.progress(pod, decoded)
             self.log_since[uid] = before
         listed = {pod["metadata"]["uid"] for pod in pods}
         self.pod_read_failures = {
@@ -256,7 +265,11 @@ class Supervisor:
         if self.env.approval.scenario == "pubsub-recovery":
             raise Failure("Pub/Sub recovery supervision is not implemented")
         if self.env.approval.scenario == "bigquery-recovery":
-            raise Failure("BigQuery recovery supervision is not implemented")
+            if self.exercise is None or self.bigquery is None:
+                raise Failure(
+                    "BigQuery recovery supervision is not implemented without an explicit exercise and handoff"
+                )
+            require_handoff(self.env, self.bigquery)
         self.env.refresh()
         job = self.env.root("supervisor")
         if not job:
@@ -315,7 +328,9 @@ class Supervisor:
                         r"[0-9a-f]{32}", job_id
                     ):
                         service = self.env.kube.get(
-                            "Service", SMOKE, self.env.approval.run_id + "-rest"
+                            "Service",
+                            self.env.approval.application_namespace,
+                            self.env.approval.run_id + "-rest",
                         )
                         if not service and self.exercise and self.exercise.recovering:
                             service = None
@@ -330,7 +345,7 @@ class Supervisor:
                                 "GET",
                                 self.env.kube.path(
                                     "Service",
-                                    SMOKE,
+                                    self.env.approval.application_namespace,
                                     service["metadata"]["name"] + ":8081",
                                 )
                                 + "/proxy/jobs/"
@@ -353,6 +368,8 @@ class Supervisor:
                             self.env.records.checkpoint()
                     if self.exercise:
                         if self.exercise.observe(app, rest, pods):
+                            if isinstance(self.exercise, BigQueryExercise):
+                                self.exercise.verify_rows(self)
                             success, reason = True, "recovery exercise finished"
                             break
                         self.env.sleep(POLL)
@@ -384,9 +401,17 @@ class Supervisor:
                 if self.env.evidence_failed:
                     self.env.records.mark_evidence_failed()
                 self.env.records.request_stop()
-                raise Failure(
-                    "Admission unfinished; runner settlement required: " + reason
-                )
+                if (
+                    self.env.approval.scenario != "bigquery-recovery"
+                    or self.env.refresh().bigquery is None
+                ):
+                    raise Failure(
+                        "Admission unfinished; runner settlement required: " + reason
+                    )
+                # The original runner releases only from settlement, after
+                # start() has returned. Let admission record confirmed creation
+                # before teardown; release does not settle an unknown outcome.
+                self.env.wait(self.bigquery.released, self.env.schedule.cleanup_at)
             self.cleanup.run(reason, success)
 
 
