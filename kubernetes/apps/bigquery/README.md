@@ -439,6 +439,24 @@ If no BigQuery intent was ever recorded, cleanup skips the attached handoff and 
 Once released, it waits for the external quiescence callback to return exactly `true`, then invokes handoff cleanup, which rechecks that same barrier before any service deletion.
 It waits for terminal queries and table deletion within its cleanup window; a barrier that fails its recheck aborts that pass.
 Observed Pod disappearance is not a substitute for that callback's creator/writer and in-flight service guarantees described above.
+
+## Quiescence barrier
+
+[`flink_tier3.bigquery_quiesce`](../../../tools/tier3/src/flink_tier3/bigquery_quiesce.py) builds that callback from the run's own identity, inside the authenticated supervisor factory, so no caller supplies one: a `callable` check cannot tell a proof from a constant, and `lambda: True` satisfied every check the factory previously made.
+
+On every call it lists the nine kinds that can run or restore a writer, in the application namespace alone rather than through the four-namespace inventory, and refuses while any object owned by this run's application roots is still among them.
+It is scoped on both axes: the supervisor asking the question is itself a Pod under a root in `tier3-system`, so seeding the ownership closure from every root would make it wait for itself, and `observed` is not namespace-scoped, so the namespace filter is load-bearing on its own.
+Controllers are listed before Pods, because the reverse order loses a Pod created by a controller that is collected between the two pages — absent from the Pod listing, its owner absent from the controller listing.
+That set is deliberately not the one `verify_idle` refuses after deletion: it adds `Deployment` and `ReplicaSet`, which restore a writer but which the idle check tolerates from the Operator, and it omits `PersistentVolumeClaim`, which the idle check refuses but which writes nothing.
+Re-listing rather than trusting a snapshot is what catches a Pod a controller puts back between two calls, and deletes on this path are graceful, so a Pod leaving the API means its containers terminated.
+
+A read that says nothing about the cluster — a transport error or a 408, 429, 500, 502, 503 or 504 — is retried inside the call rather than answered, bounded by a count of consecutive unreadable attempts. The cleanup window cannot bound it: `Cleanup.run` computes its own deadline through `cleanup_window(now)`, while `env.schedule.cleanup_end` is the static expiry the run has usually already reached when cleanup starts, so reading it here would spend the retry before the first attempt.
+The barrier never reports "unknown", because it cannot: the cleanup predicate asks twice per poll and the second asker turns anything but `true` into a failure that ends the pass, so a single bad response would otherwise strand the shared environment lock on the path that runs on every successful cleanup.
+A read that does say something about the cluster still raises.
+
+It does not prove that no append is still in flight server-side, and it does not prove that no buffered write stream remains open. Neither is observable: the Storage Write API has no call that lists a table's streams, this connector deliberately never finalizes them, and their server-assigned names never leave Flink's own state. Beyond the listing, exclusivity is by grant rather than by observation — the only principal holding `bigquery.tables.updateData` on the dataset is the workload service account, reachable only through the Kubernetes service account in the namespace the listing just showed empty.
+
+The measurement does not rest on this barrier. The query oracle reads only after the job reached `FINISHED` and its post-recovery window closed, which is where a settled read is established. What rests on the barrier is that cleanup does not delete a table while a Pod that could write to it is still alive, and the window between the barrier returning `true` and `tables.delete` completing remains outside what this component guarantees.
 If release, the barrier or query termination does not complete, cleanup retains the control record and environment lock and does not scale down the Operator or claim idle.
 A runner without a cleanup-capable supervisor can remove the workload but cannot impersonate the supervisor to finish BigQuery cleanup.
 An intent left between the two initialization writes, without a handoff binding, remains blocked after stop; common cleanup cannot invent proof of runner release.

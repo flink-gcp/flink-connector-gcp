@@ -78,13 +78,12 @@ def test_runner_bundle_and_supervisor_manifests_bind_distinct_authenticated_acto
         bundle["application"],
         bundle["upgrade_application"],
         runner_token=TOKEN,
-        quiesce=lambda: False,
         credentials=Credentials("supervisor"),
     ) as supervisor:
         assert isinstance(supervisor, Supervisor)
         assert supervisor.bigquery.binding == runner.bigquery.binding
         assert supervisor.bigquery.env is other
-        assert supervisor.cleanup.quiesce() is False
+        assert supervisor.cleanup.quiesce() is True
         assert other.refresh().bigquery is None
         # The supervisor authenticates as its own principal; without this the
         # whole suite stays green when its authentication is removed.
@@ -109,17 +108,12 @@ def test_runner_rejects_tampered_bundle_before_authentication(prepared, wire, fi
 
 
 @pytest.mark.parametrize(
-    "change", ["source", "upgrade", "application", "role", "fence", "token", "owner"]
+    "change", ["source", "upgrade", "application", "role", "token", "owner"]
 )
 def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, change):
     env, bundle = prepared
     env.actor = "supervisor"
-    app, upgrade, token, fence = (
-        bundle["application"],
-        bundle["upgrade_application"],
-        TOKEN,
-        lambda: True,
-    )
+    app, upgrade, token = bundle["application"], bundle["upgrade_application"], TOKEN
     if change == "source":
         env.approval = replace(env.approval, delivery_sha256="0" * 64)
     elif change == "upgrade":
@@ -128,8 +122,6 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
         app["changed"] = True
     elif change == "role":
         env.actor = "runner"
-    elif change == "fence":
-        fence = None
     elif change == "token":
         token = "invalid"
     elif change == "owner":
@@ -142,7 +134,6 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
             app,
             upgrade,
             runner_token=token,
-            quiesce=fence,
             credentials=Credentials("supervisor"),
         ),
     ):
@@ -162,7 +153,6 @@ def test_supervisor_cannot_be_constructed_inside_the_cleanup_window(prepared, wi
             bundle["application"],
             bundle["upgrade_application"],
             runner_token=TOKEN,
-            quiesce=lambda: True,
             credentials=Credentials("supervisor"),
         ),
     ):
@@ -187,7 +177,6 @@ def test_supervisor_source_check_is_the_pin_it_can_reproduce(prepared, wire):
         bundle["application"],
         bundle["upgrade_application"],
         runner_token=TOKEN,
-        quiesce=lambda: True,
         credentials=Credentials("supervisor"),
     ) as supervisor:
         assert isinstance(supervisor, Supervisor)
