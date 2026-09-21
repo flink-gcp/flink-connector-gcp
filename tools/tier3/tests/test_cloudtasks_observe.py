@@ -71,6 +71,9 @@ class FlinkRest:
         self.history = []
         self.taskmanagers = ["tm-1"]
         self.metric_ids = list(metric_ids)
+        # Listings answered in order before the vertex reports metric_ids: a
+        # real one answers nothing, then task names, then its operators'.
+        self.listings = []
         self.vertices = [
             {"id": SOURCE, "name": "Source: Measured input", "parallelism": 1},
             {
@@ -151,7 +154,8 @@ class FlinkRest:
             "/subtasks/metrics"
         ):
             if "get" not in query:
-                return [{"id": i} for i in self.metric_ids]
+                ids = self.listings.pop(0) if self.listings else self.metric_ids
+                return [{"id": i} for i in ids]
             return [
                 {"id": i, "min": 1.0, "max": 2.0, "sum": 3.0}
                 for i in query["get"][0].split(",")
@@ -293,8 +297,8 @@ def pod(cell, component):
 
 
 def test_discovery_selects_sanitised_ids_and_flags_missing_staged_gauges():
-    session = FakeSession(CELL_B)
-    session.poll(CellObserver())
+    session, observer = FakeSession(CELL_B), CellObserver()
+    drive(session, observer)
     [discovered] = session.env.of("cell-metrics-discovered")
     assert discovered["source"] == SOURCE and discovered["sink"] == SINK
     assert discovered["metrics"] == sorted(
@@ -313,30 +317,171 @@ def test_discovery_selects_sanitised_ids_and_flags_missing_staged_gauges():
         ]
     )
     assert session.env.of("metrics-unavailable") == []
-    listing = f"/jobs/{JOB_ID}/vertices/{SINK}/subtasks/metrics"
-    assert session.flink.calls.count(listing) == 2  # discovery, then the sample
-    assert "get=" not in session.flink.paths[1] and "get=" in session.flink.paths[-3]
-    # Discovery happens once per cell.
-    observer = CellObserver()
-    again = FakeSession(CELL_B)
-    again.poll(observer)
-    again.poll(observer)
-    assert len(again.env.of("cell-metrics-discovered")) == 1
+    # One listing per warm-up poll, and a values read on each of them because
+    # this vertex answered its whole set on the first.
+    assert len(listings(session.flink)) == len(WARMUP_POLLS)
+    assert len(values(session.flink)) == len(WARMUP_POLLS)
+    # Discovery is recorded once per cell, however long the cell runs.
+    session.poll(observer, WARM_END + 15)
+    assert len(session.env.of("cell-metrics-discovered")) == 1
 
     lacking = FakeSession(
         CELL_B, FlinkRest([i for i in STAGED_IDS if not i.endswith("stagedBytes")])
     )
-    lacking.poll(CellObserver())
+    drive(lacking, CellObserver())
     assert lacking.env.of("metrics-unavailable") == [
         {"cell": CELL_B["id"], "missing": ["stagedBytes"]}
     ]
     unnamed = FakeSession(CELL_A, FlinkRest(["numRecordsIn", "busyTimeMsPerSecond"]))
-    unnamed.poll(CellObserver())
+    drive(unnamed, CellObserver())
     assert unnamed.env.of("metrics-unavailable") == []
     assert unnamed.env.of("cell-metrics-discovered")[0]["metrics"] == [
         "busyTimeMsPerSecond",
         "numRecordsIn",
     ]
+
+
+def listings(rest):
+    """The sink reads that ask what exists, not the ones that ask for values."""
+    return [p for p in rest.paths if p.endswith(f"/vertices/{SINK}/subtasks/metrics")]
+
+
+def values(rest):
+    """The sink reads that ask for values. A negative index into ``paths``
+    lands on the source read instead, and shifts again when the sink defers."""
+    return [p for p in rest.paths if f"/vertices/{SINK}/subtasks/metrics?" in p]
+
+
+def selected(ids):
+    """``ids`` in the order the observer asks for them."""
+    return sorted(
+        i for i in ids if observe.metric_name(i) in observe.SELECTED_SINK_METRICS
+    )
+
+
+WARM_END = 1000.0 + CELL_B["warmup_seconds"]
+# Warm-up divided by the supervisor's poll interval, plus the poll that ends it.
+WARMUP_POLLS = [1000.0 + 15.0 * i for i in range(CELL_B["warmup_seconds"] // 15 + 1)]
+
+
+def drive(session, observer, first=0, until=WARM_END):
+    """Poll a cell from ``WARMUP_POLLS[first]`` to ``until``, inclusive."""
+    for at in WARMUP_POLLS[first:]:
+        if at > until:
+            break
+        observation = session.poll(observer, at)
+    return observation
+
+
+def test_sink_metric_ids_are_the_union_of_every_listing_taken_in_warmup():
+    # A vertex answers nothing while its tasks come up, then its task-level
+    # names, then its operators' -- and only the union holds all of them.
+    session, observer = FakeSession(CELL_B), CellObserver()
+    task_only = ["numRecordsIn", "busyTimeMsPerSecond"]
+    gauge = WRITER + "stagedBytes"
+    session.flink.listings = [[], task_only, [gauge]]
+    first = session.poll(observer, WARMUP_POLLS[0])
+    # Nothing selected yet, so the poll asks the vertex for no value at all.
+    assert first["sink"] == {"unavailable": "no metric ids selected"}
+    # Only the sink waits; the source ids are a constant, not a discovery.
+    assert [m["id"] for m in first["source"]] == list(observe.SOURCE_METRICS)
+    second = session.poll(observer, WARMUP_POLLS[1])
+    # The union so far is sampled immediately; it does not wait for warm-up.
+    assert [m["id"] for m in second["sink"]] == task_only[::-1]
+    for at in WARMUP_POLLS[2:-1]:
+        session.poll(observer, at)
+    assert session.env.of("cell-metrics-discovered") == []
+    observation = session.poll(observer, WARM_END)
+    [discovered] = session.env.of("cell-metrics-discovered")
+    assert discovered["source"] == SOURCE and discovered["sink"] == SINK
+    # The listings run out, so the last ones add every remaining selected id
+    # and the union is exactly what the vertex ever offered that is selected.
+    assert discovered["metrics"] == selected(STAGED_IDS)
+    assert set(task_only + [gauge]) <= set(discovered["metrics"])
+    assert discovered["reads"] == len(WARMUP_POLLS) == len(listings(session.flink))
+    assert [m["id"] for m in observation["sink"]] == discovered["metrics"]
+    assert session.env.of("metrics-unavailable") == []
+    # Settled ids freeze, so the window's samples ask one unchanging set.
+    session.poll(observer, WARM_END + 15)
+    assert len(listings(session.flink)) == len(WARMUP_POLLS)
+    assert len(session.env.of("cell-metrics-discovered")) == 1
+
+
+def test_a_listing_carrying_only_task_names_does_not_settle_the_staged_gauges():
+    # The defect this guards: settling on the first non-empty listing would
+    # freeze the task names and lose the gauges the staged arm exists to read.
+    session, observer = FakeSession(CELL_B), CellObserver()
+    session.flink.listings = [["numRecordsIn"]] * (len(WARMUP_POLLS) - 1)
+    drive(session, observer, until=WARMUP_POLLS[-2])
+    assert session.env.of("cell-metrics-discovered") == []
+    session.poll(observer, WARM_END)
+    [discovered] = session.env.of("cell-metrics-discovered")
+    present = {observe.metric_name(i) for i in discovered["metrics"]}
+    assert set(observe.STAGED_REQUIRED) <= present
+    assert session.env.of("metrics-unavailable") == []
+
+
+def test_sink_metric_ids_settle_empty_when_warmup_ends_without_them():
+    session, observer = FakeSession(CELL_B), CellObserver()
+    # A vertex that answers ids none of which are selected is not a cell that
+    # is still coming up; the retry is spent and the cell settles with nothing.
+    session.flink.metric_ids = ["numBytesIn", "Source__Measured_input.numRecordsOut"]
+    drive(session, observer, until=WARMUP_POLLS[-2])
+    assert session.env.of("cell-metrics-discovered") == []
+    observation = session.poll(observer, WARM_END)
+    [discovered] = session.env.of("cell-metrics-discovered")
+    assert discovered["metrics"] == [] and discovered["reads"] == len(WARMUP_POLLS)
+    assert observation["sink"] == {"unavailable": "no metric ids selected"}
+    assert session.env.of("metrics-unavailable") == [
+        {"cell": CELL_B["id"], "missing": ["stagedBytes", "stagedReplayBudgetMillis"]}
+    ]
+    # Settled is settled: the cell reports the absence once and stops asking.
+    session.poll(observer, WARM_END + 15)
+    assert len(listings(session.flink)) == len(WARMUP_POLLS)
+    assert len(session.env.of("cell-metrics-discovered")) == 1
+
+
+def test_a_failed_listing_read_is_not_a_read_and_does_not_hold_up_settling():
+    session, observer = FakeSession(CELL_B), CellObserver()
+    # Faults fire once, in request order, and the listing is the poll's first
+    # read of this vertex; the read count below is what pins it to the listing.
+    session.flink.faults = [
+        (f"/vertices/{SINK}/subtasks/metrics", TransportError("reset"))
+    ]
+    observation = session.poll(observer, WARMUP_POLLS[0])
+    assert session.env.of("cell-metrics-discovered") == []
+    assert observation["sink"] == {"unavailable": "no metric ids selected"}
+    observation = drive(session, observer, first=1)
+    [discovered] = session.env.of("cell-metrics-discovered")
+    assert discovered["reads"] == len(WARMUP_POLLS) - 1
+    assert isinstance(observation["sink"], list)
+
+
+def test_a_cell_that_ends_inside_warmup_still_records_the_ids_it_had():
+    session, observer = FakeSession(CELL_B), CellObserver()
+    session.poll(observer, WARMUP_POLLS[0])
+    assert session.env.of("cell-metrics-discovered") == []
+    observer.after_cell(session, CELL_B, "completed")
+    [discovered] = session.env.of("cell-metrics-discovered")
+    assert discovered["reads"] == 1 and discovered["metrics"]
+    # A cell that never became reachable resolved nothing and records nothing.
+    unseen, fresh = FakeSession(CELL_A), CellObserver()
+    fresh.after_cell(unseen, CELL_A, "completed")
+    assert unseen.env.of("cell-metrics-discovered") == []
+
+
+def test_a_cell_whose_job_never_answers_resolves_nothing_and_records_nothing():
+    # Polled to the end of warm-up and beyond, but the job read fails every
+    # time, so no vertex is ever resolved. A receipt naming none would say
+    # the cell discovered something; the honest record is no receipt at all.
+    session, observer = FakeSession(CELL_B), CellObserver()
+    for at in [*WARMUP_POLLS, WARM_END + 15]:
+        session.flink.faults = [(f"/jobs/{JOB_ID}", rt.ApiError(503, "GET", "job"))]
+        observation = session.poll(observer, at)
+        assert observation["sink"] == {"unavailable": "job graph not yet discovered"}
+    observer.after_cell(session, CELL_B, "completed")
+    assert session.env.of("cell-metrics-discovered") == []
+    assert session.env.of("metrics-unavailable") == []
 
 
 @pytest.mark.parametrize(
@@ -382,11 +527,10 @@ def test_each_poll_emits_exactly_one_observation_with_the_jobmanager_offset():
     assert len(session.env.of("observation")) == 3
     assert observation["restarted"] is False and "exceptions" not in observation
     assert observation["sink"] == [
-        {"id": i, "min": 1.0, "max": 2.0, "sum": 3.0}
-        for i in session.env.of("cell-metrics-discovered")[0]["metrics"]
+        {"id": i, "min": 1.0, "max": 2.0, "sum": 3.0} for i in selected(STAGED_IDS)
     ]
     assert [m["id"] for m in observation["source"]] == list(observe.SOURCE_METRICS)
-    assert "agg=min,max,sum" in session.flink.paths[-3]
+    assert "agg=min,max,sum" in values(session.flink)[-1]
     assert observation["pods"][1] == {
         "name": CELL_B["id"] + "-taskmanager",
         "namespace": rt.CLOUDTASKS,
@@ -579,8 +723,10 @@ def test_one_failed_read_marks_its_sample_unavailable_and_the_poll_still_emits()
     assert fresh.env.of("cell-metrics-discovered") == []
     observation = fresh.poll(observer, 1015.0)
     assert observation["job"]["state"] == "RUNNING"
-    assert len(fresh.env.of("cell-metrics-discovered")) == 1
     assert isinstance(observation["sink"], list)
+    assert len(fresh.env.of("cell-metrics-discovered")) == 0
+    observation = drive(fresh, observer, first=2)
+    assert len(fresh.env.of("cell-metrics-discovered")) == 1
     # A per-TM read failure is scoped to that TaskManager.
     session.flink.taskmanagers = ["tm-1", "tm-2"]
     session.flink.faults = [("/taskmanagers/tm-1/", rt.ApiError(500, "GET", "tm"))]
