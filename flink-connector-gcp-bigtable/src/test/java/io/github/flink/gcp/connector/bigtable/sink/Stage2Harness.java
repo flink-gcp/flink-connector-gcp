@@ -27,6 +27,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
+import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcherFactory;
@@ -36,6 +37,7 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -592,5 +594,40 @@ final class Stage2Harness extends LocalStagedHarness {
                 throw new UncheckedIOException(failure);
             }
         }
+    }
+
+    /**
+     * Makes every read path of a sampling client fail instead of retrying, bounded by {@code
+     * totalTimeout}. A failed sample is evidence failure, not a repeated read attempt.
+     *
+     * <p>The client refuses to build a single-row or bulk configuration whose retryable codes
+     * differ from the streaming one, so a caller must clear all three paths rather than the one it
+     * calls.
+     *
+     * <p>This configures the campaign's sustained marker sampler, which reads one row on a timer
+     * and lives outside this repository. It deliberately does not configure {@link #readback}: that
+     * pass reads the whole measured inventory once at the end of a run, where a retried read is a
+     * recovered read rather than a disputed observation.
+     */
+    static BigtableDataSettings.Builder withoutReadRetries(
+            BigtableDataSettings.Builder settings, Duration totalTimeout) {
+        EnhancedBigtableStubSettings.Builder stub = settings.stubSettings();
+        var streaming = stub.readRowsSettings();
+        streaming.setRetryableCodes(Set.of());
+        streaming.setRetrySettings(
+                streaming.getRetrySettings().toBuilder()
+                        .setTotalTimeoutDuration(totalTimeout)
+                        .build());
+        var single = stub.readRowSettings();
+        single.setRetryableCodes(Set.of());
+        single.setRetrySettings(
+                single.getRetrySettings().toBuilder()
+                        .setTotalTimeoutDuration(totalTimeout)
+                        .build());
+        var bulk = stub.bulkReadRowsSettings();
+        bulk.setRetryableCodes(Set.of());
+        bulk.setRetrySettings(
+                bulk.getRetrySettings().toBuilder().setTotalTimeoutDuration(totalTimeout).build());
+        return settings;
     }
 }
