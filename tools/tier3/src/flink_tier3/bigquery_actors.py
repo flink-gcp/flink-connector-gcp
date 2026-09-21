@@ -20,6 +20,7 @@ from . import bigquery_bundle
 from .bigquery_auth import BigQuerySession
 from .bigquery_handoff import BigQueryHandoff
 from .bigquery_lifecycle import BigQueryLifecycle
+from .bigquery_quiesce import barrier
 from .bigquery_resources import BigQueryResources
 from .bundle import delivery_digest, source_digest
 from .common import Failure, digest
@@ -85,14 +86,16 @@ def runner(env, bundle, *, runner_token, credentials=None):
 
 
 @contextmanager
-def supervisor(env, application, upgrade, *, runner_token, quiesce, credentials=None):
+def supervisor(env, application, upgrade, *, runner_token, credentials=None):
     """Bind mounted manifests/source to the caller's independent approval.
 
     This does not re-render CUE inside the runtime image or authenticate the
-    Kubernetes/storage collaborators. The external writer fence is mandatory.
+    Kubernetes/storage collaborators. The quiescence barrier is built here
+    from this run's own identity rather than accepted from the caller: a
+    `callable` check cannot tell a proof from a constant, and `lambda: True`
+    satisfied every check this module used to make.
     """
-    if not callable(quiesce):
-        raise Failure("BigQuery supervisor requires an external quiescence callback")
+    quiesce = barrier(env)
     if digest(upgrade) != env.approval.upgrade_application_sha256:
         raise Failure("BigQuery supervisor upgrade differs from approval")
     with BigQuerySession("supervisor", credentials) as http:
