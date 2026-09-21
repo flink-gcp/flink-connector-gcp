@@ -124,7 +124,7 @@ Its committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deli
 They update the same deployment sequentially; the [application runbook](apps/smoke/README.md#deployment-and-storage) records the planned window, expiry and independent render commands.
 The [BigQuery application package](apps/bigquery/README.md#deployment-definition) supplies initial and savepoint-upgrade definitions for both delivery modes and destination counts.
 Its synthetic deliveries are checked locally; a concrete approved delivery and lifecycle admission remain subsequent work.
-The common and any manager-specific Flink Pod templates select AMD64 Spot nodes and carry the run label.
+The common and manager-specific Flink Pod templates select AMD64 and carry the run label; the TaskManager template adds Spot, and the JobManager template selects no capacity class, which is how a Pod asks Autopilot for normal capacity.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
 The [lifecycle supervisor Job](lifecycle/README.md) has its own non-Spot Pod policy.

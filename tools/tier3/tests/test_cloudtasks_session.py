@@ -76,7 +76,11 @@ def manifest(cell, run_id, nonce, image=IMAGE, line="2.2.1"):
             "resource": {"cpu": int(resources["cpu"]), "memory": resources["memory"]},
             "podTemplate": {
                 "spec": {
-                    "nodeSelector": {"cloud.google.com/gke-spot": "true"},
+                    "nodeSelector": {
+                        "cloud.google.com/gke-spot": (
+                            "false" if name == "jobmanager" else "true"
+                        )
+                    },
                     "containers": [
                         {
                             "name": "flink-main-container",
@@ -325,7 +329,11 @@ class CellWorld:
             pod = obj("Pod", f"{name}-{component}", rt.CLOUDTASKS, uid)
             pod["metadata"]["labels"] = {"app": name, "component": component}
             pod["spec"] = {
-                "nodeSelector": {"cloud.google.com/gke-spot": "true"},
+                "nodeSelector": {
+                    "cloud.google.com/gke-spot": (
+                        "false" if component == "jobmanager" else "true"
+                    )
+                },
                 "containers": [
                     {
                         "name": "flink-main-container",
@@ -1253,8 +1261,13 @@ def test_application_pods_must_match_their_cell_shape_and_select_spot(env, monke
     control = supervisor.env.refresh()
     assert "Effective Pod resources" in control.reason
     assert control.phase == rt.Phase.CLEANED and not control.success
-    spot = manifests[0]["spec"]["jobManager"]["podTemplate"]["spec"]
-    assert spot["nodeSelector"] == {"cloud.google.com/gke-spot": "true"}
+    # The capacity runs on Spot; the Pod that holds the job does not, because
+    # losing it restarts the job rather than costing slots.
+    for manager, selected in (("jobManager", "false"), ("taskManager", "true")):
+        template = manifests[0]["spec"][manager]["podTemplate"]["spec"]
+        assert template["nodeSelector"] == {"cloud.google.com/gke-spot": selected}, (
+            manager
+        )
     naked = copy.deepcopy(
         env[0].get("Pod", rt.CLOUDTASKS, CELL_A["id"] + "-jobmanager")
         or obj("Pod", "x", rt.CLOUDTASKS)
@@ -1270,8 +1283,18 @@ def test_application_pods_must_match_their_cell_shape_and_select_spot(env, monke
             }
         ]
     }
+    # A TaskManager that lost its Spot selection is still refused; the same
+    # Pod passes as a JobManager, which is exactly the distinction.
     with pytest.raises(rt.Failure, match="Spot"):
-        rt.verify_pod(naked, "application", IMAGE, shape(CELL_A, "jobmanager"))
+        rt.verify_pod(
+            naked, "application", IMAGE, shape(CELL_A, "jobmanager"), spot=True
+        )
+    rt.verify_pod(naked, "application", IMAGE, shape(CELL_A, "jobmanager"), spot=False)
+    naked["spec"]["nodeSelector"] = {"cloud.google.com/gke-spot": "true"}
+    with pytest.raises(rt.Failure, match="must not opt in to Spot"):
+        rt.verify_pod(
+            naked, "application", IMAGE, shape(CELL_A, "jobmanager"), spot=False
+        )
 
 
 def test_smoke_supervisor_still_fails_on_a_truncated_log(env, monkeypatch):

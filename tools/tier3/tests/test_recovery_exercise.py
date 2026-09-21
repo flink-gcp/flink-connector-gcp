@@ -134,7 +134,11 @@ class World:
         pod = obj("Pod", name, owner=self.application()["metadata"]["uid"])
         pod["metadata"]["labels"] = {"component": component}
         pod["spec"] = {
-            "nodeSelector": {"cloud.google.com/gke-spot": "true"},
+            "nodeSelector": {
+                "cloud.google.com/gke-spot": (
+                    "false" if component == "jobmanager" else "true"
+                )
+            },
             "containers": [
                 {
                     "name": "flink-main-container",

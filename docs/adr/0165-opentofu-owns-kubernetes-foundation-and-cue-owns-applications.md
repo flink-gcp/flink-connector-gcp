@@ -118,7 +118,7 @@ Its STANDARD GCS bucket is regional, uses uniform access and public access preve
 The workload receives `roles/storage.objectUser` on that bucket, which permits obsolete checkpoint deletion without granting object IAM or retention changes.
 Checkpoint, savepoint and Kubernetes HA paths are separated beneath each run ID.
 One-day object expiry bounds retained state after explicit cleanup; it neither preserves permanent evidence nor stops Pods.
-The application definition retains Spot placement, one JM/TM with bounded resources and savepoint upgrades that reject discarded state.
+The application definition retains Spot placement for the TaskManager, one JM/TM with bounded resources and savepoint upgrades that reject discarded state.
 The committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries target the same resource sequentially and consume the published `images.smoke` digest.
 Their shared inputs select a concrete run ID and expiry; each directory renders independently without injected tags.
 The [application runbook](../../kubernetes/apps/smoke/README.md#deployment-and-storage) records the execution window and the required review of fresh inputs when execution is postponed.
@@ -216,7 +216,7 @@ Admission retries revalidate phase/stop state, and settlement reconciles actual 
 This revises the initial supervisor-only admission decision, which required a Pod claim, persisted container termination proofs and a quarantine delay.
 Those protocols are removed; Job completion is used to retain final logs when possible, not as permission to begin cleanup.
 A failed or unavailable final log remains an evidence failure while shutdown continues.
-A Job deadline requests termination independently of Spot JobManager or TaskManager survival.
+A Job deadline requests termination independently of TaskManager survival on Spot or of JobManager survival on normal capacity.
 Before foundation writes, read the Kubernetes resource version and then verify the exact lock owner; conflicts re-read both before retrying.
 
 Keep `runtime.py` as the supervisor command implementation and external admission/settlement in `runner.py`, behind the package CLI with separate Google/Kubernetes modules.

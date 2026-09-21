@@ -103,12 +103,12 @@ These checks run before temporary quota changes or Operator scale-up.
 ## Resource and cost approval
 
 Requests equal limits for every container.
-The supervisor excludes Spot through required node affinity and runs in `tier3-system`, independently of the two Spot Flink Pods.
+The supervisor excludes Spot through required node affinity and runs in `tier3-system`, independently of the Flink Pods.
 The Operator uses its tracked normal-capacity template.
 
 | Workload | Namespace | Pods running | Capacity | CPU per Pod | Memory per Pod | Ephemeral storage per Pod |
 | --- | --- | ---: | --- | ---: | ---: | ---: |
-| JobManager | tier3-smoke | 1 | Spot | 1 | 2 GiB | 1 GiB |
+| JobManager | tier3-smoke | 1 | Normal | 1 | 2 GiB | 1 GiB |
 | TaskManager | tier3-smoke | 1 | Spot | 1 | 2 GiB | 1 GiB |
 | Operator | tier3-system | 1 (+1 replacement slot) | Normal | 1 | 2 GiB | 1 GiB |
 | Supervisor | tier3-system | 1 | Normal | 1 | 2 GiB | 0.125 GiB |
@@ -171,6 +171,11 @@ The email scope lets GKE identify the impersonated service account by the email 
 The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint observations.
 The first log read retains up to 1 MiB of startup history; subsequent reads retain up to 64 KiB since the previous observation.
 Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.
+Every measurement Pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: false`.
+Autopilot's autoscaler repacks Pods off an under-used node, and the end of a cell leaves exactly that; measured on 2026-09-20, two JobManagers were replaced two and five minutes after the previous cell's Pods went away, restarting jobs that were otherwise healthy and invalidating both cells.
+The annotation is the supported way to say a Pod must not be moved for consolidation; it does not stop a `system-cluster-critical` preemption or a Spot reclamation, which no workload setting can.
+The JobManager also runs on normal capacity while the TaskManagers stay on Spot, because losing it restarts the job rather than costing slots.
+
 A Pod that went away between the inventory listing and its log read has that read retired and recorded as `retired-pod-log-unavailable`; a 404 for a Pod that is still there, under the same UID and without a deletion timestamp, still fails the run.
 Deciding that needs a second read of the Pod, so a transient status on that read is recorded as `pod-presence-unavailable` and tolerated for two consecutive polls rather than being read as proof the Pod is alive; the third fails the run, as does a refusal that answers about the caller rather than about the Pod.
 That tolerance is what lets a preempted Pod be replaced mid-run, and it is also why an application Pod deleted from outside the run is no longer detected by the log read alone.
@@ -219,7 +224,7 @@ Operator 1.15.0 also reports the old job as `FINISHED` after stopping it with a 
 It does not satisfy final completion, and terminal failure or Operator rollback still stops the trial.
 No wait extends the absolute cleanup deadline.
 
-JM/TM Pod placement remains Spot and the supervisor remains on normal capacity.
+TaskManager Pod placement remains Spot; the JobManager and the supervisor remain on normal capacity.
 The supervisor retains run-owned Kubernetes Events, Pod conditions and scheduling observations.
 Observed eviction/preemption, container restart or replacement outside a planned recovery window makes the trial inconclusive and starts cleanup.
 Exclude already-terminating Pods when recording the stable post-failover Pod set.
@@ -264,7 +269,7 @@ The measurement application is published for both lines from `339d0a90675dffee74
 | Incremental cost approval | USD 10 per session, covering compute at the policy rates, the task-creation planning bound at USD 0.40 per million and a USD 0.25 reserve |
 
 The TaskManager shape follows the cell's parallelism class: 1 CPU/4 GiB for parallelism 1, 2 CPU/8 GiB for 4 and 4 CPU/16 GiB for 16, each with one slot per parallel subtask; the JobManager is 1 CPU/2 GiB.
-Flink Pods select Spot; the session quota admits two Pods sized for the largest approved class.
+The TaskManager selects Spot and the JobManager normal capacity; the session quota admits two Pods sized for the largest approved class.
 The approval embeds the session ceilings and shapes byte for byte from `policy.toml`, the queue name, the target URL, the Flink line and every cell with the SHA-256 of its rendered manifest.
 
 The runner creates `projects/flink-gcp/locations/us-central1/queues/ct1246-RUN_ID` only after a read proves it absent, with its rate limits, retry configuration and one-hour tombstone in the create request, then pauses it and reads back `PAUSED`, the submitted configuration and zero dispatch statistics.

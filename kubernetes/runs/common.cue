@@ -27,11 +27,33 @@ run: {
 }
 
 let flinkPodPolicy = {
-	metadata: labels: "flink-gcp.io/run-id": run.id
-	spec: nodeSelector: {
-		"kubernetes.io/arch":        "amd64"
-		"cloud.google.com/gke-spot": "true"
-	}
+	metadata: labels: "flink-gcp.io/run-id":  run.id
+	spec: nodeSelector: "kubernetes.io/arch": "amd64"
+}
+
+// The TaskManagers hold the capacity, so they keep Spot.
+let flinkTaskManagerPolicy = flinkPodPolicy & {
+	spec: nodeSelector: "cloud.google.com/gke-spot": "true"
+}
+
+// Losing a TaskManager costs its slots; losing the JobManager restarts the
+// job and invalidates whatever the run was measuring, so it runs on normal
+// capacity. That is spelled by selecting no capacity class at all: only Spot
+// nodes carry `cloud.google.com/gke-spot`, so a selector demanding `"false"`
+// would match no node, which is also why the supervisor excludes Spot with
+// `NotIn` rather than a selector.
+//
+// Normal capacity is also the only place the eviction annotation does
+// anything: Autopilot implements it as an extended run time, which it refuses
+// for a Spot Pod. Putting it on a TaskManager would be decoration that still
+// costs the rendered bundle its bytes.
+let flinkJobManagerPolicy = flinkPodPolicy & {
+	metadata: annotations: "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+	// Closed so a leaf cannot add the Spot label back to this template. It
+	// can still add one to the shared template, which the operator merges in;
+	// the runtime audit refuses that Pod, because only the Pod shows what the
+	// merge produced.
+	spec: nodeSelector: close({"kubernetes.io/arch": "amd64"})
 }
 
 delivery: resources: [string]: {
@@ -73,8 +95,8 @@ delivery: resources: [string]: {
 				job: parallelism: 2
 			}
 			podTemplate: flinkPodPolicy
-			jobManager?: podTemplate?:  flinkPodPolicy
-			taskManager?: podTemplate?: flinkPodPolicy
+			jobManager?: podTemplate:  flinkJobManagerPolicy
+			taskManager?: podTemplate: flinkTaskManagerPolicy
 		}
 	}
 	if kind == "Service" {

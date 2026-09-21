@@ -46,7 +46,7 @@ The deployment uses the `tier3-pubsub/pubsub` KSA and native workload ADC.
 It retains checkpoints on cancellation and separates checkpoints, savepoints and Kubernetes HA data beneath `gs://flink-gcp-tier3-pubsub/runs/<run-id>/`.
 Objects become deletion-eligible after one day, with soft delete and versioning disabled.
 Complete recovery trials within that storage lifetime; the state bucket is not durable evidence storage.
-One JobManager and one or two single-slot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage on AMD64 Spot nodes.
+One JobManager and one or two single-slot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage on AMD64 nodes; the TaskManagers run on Spot and the JobManager on normal capacity.
 At parallelism two, the application alone therefore uses three Pods; later admission must additionally budget the Operator and independent supervisor.
 Namespace quotas remain idle until a separately approved lifecycle admits the complete workload.
 
@@ -127,7 +127,7 @@ The proposal fixes a one-hour window with the last 15 minutes reserved for clean
 Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowance, and the Operator, supervisor and one control-Pod replacement allowance; PVCs are zero.
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
 Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
-Each Flink Pod uses the existing one-vCPU, 2-GiB shape and shared Spot constraint.
+Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
 `additional_cost_usd` is a proposed cap from `1.00` to `10.00`, with `estimate_usd: null`; it is neither a price estimate nor an enforced billing limit.
 A runnable approval still needs current pricing, enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.

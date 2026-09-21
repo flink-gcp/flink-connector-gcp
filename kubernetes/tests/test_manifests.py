@@ -51,6 +51,42 @@ def module(tmp_path):
     return destination
 
 
+SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+
+
+def expected_pod_policy(manager=None):
+    """The capacity class and eviction stance of one rendered pod template.
+
+    Only Spot nodes carry `cloud.google.com/gke-spot`, so normal capacity is
+    spelled by the label's absence rather than by `"false"`, which would match
+    no node. Autopilot refuses an extended run time to a Spot Pod, so the
+    annotation belongs only where it can take effect.
+    """
+    selector = {"kubernetes.io/arch": "amd64"}
+    if manager == "taskManager":
+        selector["cloud.google.com/gke-spot"] = "true"
+    return selector, manager == "jobManager"
+
+
+def assert_pod_policy(spec):
+    """Every template the manifest declares, not only the ones it happens to.
+
+    A comprehension that skips an absent manager asserts nothing when both are
+    absent, which is how an annotation went unverified on the very templates
+    it was added to.
+    """
+    present = [m for m in ("jobManager", "taskManager") if m in spec]
+    assert present, "the manifest declares no manager template to check"
+    run_id = spec["podTemplate"]["metadata"]["labels"]["flink-gcp.io/run-id"]
+    for manager in [None, *present]:
+        template = (spec if manager is None else spec[manager])["podTemplate"]
+        selector, annotated = expected_pod_policy(manager)
+        assert template["spec"]["nodeSelector"] == selector, manager
+        assert template["metadata"]["labels"]["flink-gcp.io/run-id"] == run_id, manager
+        annotations = template["metadata"].get("annotations", {})
+        assert (annotations.get(SAFE_TO_EVICT) == "false") is annotated, manager
+
+
 def cue(module, *arguments):
     assert CUE, (
         "Run this suite through just tier3-check to select the pinned CUE binary"
@@ -120,8 +156,7 @@ def test_parent_metadata_and_run_policy_reach_the_leaf(module):
     assert job["spec"]["flinkVersion"] == "v2_2"
     assert job["spec"]["job"]["allowNonRestoredState"] is False
     assert job["spec"]["podTemplate"]["spec"]["nodeSelector"] == {
-        "kubernetes.io/arch": "amd64",
-        "cloud.google.com/gke-spot": "true",
+        "kubernetes.io/arch": "amd64"
     }
 
 
@@ -149,8 +184,20 @@ def test_parent_metadata_and_run_policy_reach_the_leaf(module):
         (("delivery", "resources", "job", "spec", "job", "upgradeMode"), "invalid"),
         (("delivery", "resources", "job", "spec", "job", "parallelism"), "1"),
         (
-            ("delivery", "resources", "job", "spec", "podTemplate"),
-            {"spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}},
+            ("delivery", "resources", "job", "spec", "taskManager"),
+            {
+                "podTemplate": {
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                }
+            },
+        ),
+        (
+            ("delivery", "resources", "job", "spec", "jobManager"),
+            {
+                "podTemplate": {
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "true"}}
+                }
+            },
         ),
     ],
 )
@@ -184,7 +231,8 @@ def test_manager_templates_cannot_override_common_pod_policy(module, manager):
     result = cue(module, "cmd", "render", valid)
     assert result.returncode == 0, result.stderr
     template = document["delivery"]["resources"]["job"]["spec"][manager]["podTemplate"]
-    template["spec"] = {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+    other = "true" if manager == "jobManager" else "false"
+    template["spec"] = {"nodeSelector": {"cloud.google.com/gke-spot": other}}
     invalid = leaf(module, "runs/invalid", document)
     assert cue(module, "cmd", "render", invalid).returncode != 0
 
@@ -425,10 +473,7 @@ def test_standard_application_defaults_and_environment_policy(module):
     }
     for manager in ("jobManager", "taskManager"):
         assert spec[manager]["resource"] == {"cpu": 1, "memory": "2Gi"}
-    assert (
-        spec["podTemplate"]["spec"]["nodeSelector"]["cloud.google.com/gke-spot"]
-        == "true"
-    )
+    assert_pod_policy(spec)
 
 
 def test_application_defaults_can_change_within_environment_policy(module):
@@ -573,8 +618,8 @@ def test_smoke_application_preserves_state_and_bounds_resources(module, phase):
     for manager in ["jobManager", "taskManager"]:
         assert spec[manager]["replicas"] == 1
         assert spec[manager]["resource"] == {"cpu": 1, "memory": "2Gi"}
+    assert_pod_policy(spec)
     pod = spec["podTemplate"]["spec"]
-    assert pod["nodeSelector"]["cloud.google.com/gke-spot"] == "true"
     [container] = pod["containers"]
     assert container["name"] == "flink-main-container"
     assert (
@@ -764,10 +809,7 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
         validate_manifests(app, json.loads(config["data"]["upgrade-application.json"]))
         assert app["spec"]["job"]["args"][5] == str(RECOVERY["records"])
     assert app["metadata"]["namespace"] == "tier3-smoke"
-    assert (
-        app["spec"]["podTemplate"]["spec"]["nodeSelector"]["cloud.google.com/gke-spot"]
-        == "true"
-    )
+    assert_pod_policy(app["spec"])
 
 
 @pytest.mark.parametrize(
@@ -879,14 +921,10 @@ def assert_example_session_manifests(manifests):
             ("high-availability.storageDir", "ha"),
         ]:
             assert config[option] == f"{storage}/{suffix}"
-        assert spec["podTemplate"]["spec"]["nodeSelector"] == {
-            "kubernetes.io/arch": "amd64",
-            "cloud.google.com/gke-spot": "true",
-        }
+        assert_pod_policy(spec)
         for manager in ("jobManager", "taskManager"):
             assert spec[manager]["replicas"] == 1
             pod = spec[manager]["podTemplate"]["spec"]
-            assert pod["nodeSelector"]["cloud.google.com/gke-spot"] == "true"
             [container] = pod["containers"]
             assert container["name"] == "flink-main-container"
             assert (
@@ -983,8 +1021,10 @@ def cloudtasks_workload(**spec):
         {"spec": {"job": {"allowNonRestoredState": True}}},
         {
             "spec": {
-                "podTemplate": {
-                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                "taskManager": {
+                    "podTemplate": {
+                        "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                    }
                 }
             }
         },
@@ -1237,22 +1277,9 @@ def test_cloudtasks_configmap_for_thirty_two_cells_keeps_data_headroom(module):
         {"spec": {"job": {"parallelism": 2}}},
         {"spec": {"serviceAccount": "smoke"}},
         {"spec": {"flinkVersion": "v1_19"}},
-        {
-            "spec": {
-                "podTemplate": {
-                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
-                }
-            }
-        },
-        {
-            "spec": {
-                "jobManager": {
-                    "podTemplate": {
-                        "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
-                    }
-                }
-            }
-        },
+        # Only the TaskManager pins a capacity class, so it is the only one a
+        # cell can relax here; a JobManager that opted into Spot is refused by
+        # the runtime audit instead, which is what sees the merged Pod.
         {
             "spec": {
                 "taskManager": {
@@ -1294,8 +1321,7 @@ def test_cloudtasks_namespace_policy_admits_both_lines_and_all_classes(
     assert job["spec"]["job"]["parallelism"] == parallelism
     assert job["spec"]["job"]["allowNonRestoredState"] is False
     assert job["spec"]["podTemplate"]["spec"]["nodeSelector"] == {
-        "kubernetes.io/arch": "amd64",
-        "cloud.google.com/gke-spot": "true",
+        "kubernetes.io/arch": "amd64"
     }
 
 
@@ -1311,11 +1337,7 @@ def test_cloudtasks_namespace_policy_admits_both_lines_and_all_classes(
         (("spec", "job", "allowNonRestoredState"), True),
         (("metadata", "namespace"), "tier3-smoke"),
         (
-            ("spec", "podTemplate"),
-            {"spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}},
-        ),
-        (
-            ("spec", "jobManager"),
+            ("spec", "taskManager"),
             {
                 "podTemplate": {
                     "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
@@ -1323,7 +1345,7 @@ def test_cloudtasks_namespace_policy_admits_both_lines_and_all_classes(
             },
         ),
         (
-            ("spec", "taskManager"),
+            ("spec", "jobManager"),
             {
                 "podTemplate": {
                     "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
@@ -1506,10 +1528,6 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
             assert (
                 template["metadata"]["labels"]["flink-gcp.io/run-id"] == "bq-contract"
             )
-            assert template["spec"]["nodeSelector"] == {
-                "kubernetes.io/arch": "amd64",
-                "cloud.google.com/gke-spot": "true",
-            }
             assert "volumes" not in template["spec"]
             [container] = template["spec"]["containers"]
             assert container["name"] == "flink-main-container"
@@ -1604,7 +1622,7 @@ def test_bigquery_rejects_invalid_trial_inputs(module, changes):
         {
             "jobManager": {
                 "podTemplate": {
-                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "true"}}
                 }
             }
         },
@@ -1734,10 +1752,6 @@ def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records
     for owner in [spec, spec["jobManager"], spec["taskManager"]]:
         pod = owner["podTemplate"]
         assert pod["metadata"]["labels"]["flink-gcp.io/run-id"] == "pubsub-probe"
-        assert pod["spec"]["nodeSelector"] == {
-            "kubernetes.io/arch": "amd64",
-            "cloud.google.com/gke-spot": "true",
-        }
         [container] = pod["spec"]["containers"]
         assert container["name"] == "flink-main-container"
         assert container["resources"]["requests"] == container["resources"]["limits"]
@@ -1795,16 +1809,22 @@ def test_pubsub_rejects_invalid_run_inputs(module, inputs):
             {manager: {"resource": {"cpu": 2}}}
             for manager in ["jobManager", "taskManager"]
         ],
+        # Architecture is pinned on every template; the capacity class is
+        # pinned only on the TaskManager, which is the one that selects one.
         *[
             {owner: {"podTemplate": {"spec": {"nodeSelector": {key: value}}}}}
             if owner
             else {"podTemplate": {"spec": {"nodeSelector": {key: value}}}}
             for owner in [None, "jobManager", "taskManager"]
-            for key, value in [
-                ("cloud.google.com/gke-spot", "false"),
-                ("kubernetes.io/arch", "arm64"),
-            ]
+            for key, value in [("kubernetes.io/arch", "arm64")]
         ],
+        {
+            "taskManager": {
+                "podTemplate": {
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
+                }
+            }
+        },
     ],
 )
 def test_pubsub_delivery_cannot_override_recovery_contract(module, override):
@@ -2145,12 +2165,7 @@ def test_pubsub_proposal_from_real_cue(
     for app in (initial, recovery):
         assert app["metadata"]["namespace"] == "tier3-pubsub"
         assert app["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32
-        assert (
-            app["spec"]["podTemplate"]["spec"]["nodeSelector"][
-                "cloud.google.com/gke-spot"
-            ]
-            == "true"
-        )
+        assert_pod_policy(app["spec"])
         assert app["spec"]["serviceAccount"] == "pubsub"
     assert proposal["input"]["messages"] == 2 * records
     assert proposal["input"]["payload_bytes"] == sum(
