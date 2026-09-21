@@ -757,6 +757,7 @@ Keep both execution entrypoints disabled until the executor supplies those check
 
 Connect explicitly supplied BigQuery handoffs to the common runner admission and supervisor exercise paths while keeping production CLI admission disabled.
 The caller still owns authenticated actor construction, approval-bundle verification and the external creator/writer barrier; this internal API cannot establish those facts from a token or a callback's existence.
+The actor factories below now supply the first two for a caller that uses them; the barrier remains outstanding.
 Initialize resource intent and provision tables only after supervisor and Operator readiness and before FlinkDeployment creation.
 On failed workload admission, keep that original supervisor available until the submitting runner returns from admission and permanently releases its handoff through settlement.
 Wait for this acknowledgement before workload inventory and teardown so admission can finish recording confirmed application creation; missing release remains an incident-recovery condition.
@@ -789,7 +790,7 @@ Keep observation timing in the shared policy module so handoff construction does
 Check expiry after receiving response headers and at streamed-body boundaries, including empty bodies and absent resources.
 A late response cannot establish a successful resource operation; retain the existing unresolved-create and returned-read failure rules.
 These checks bound request admission and the timeout passed to the transport, not credential refresh, a blocked read or server-side execution by themselves.
-Authenticated transport construction and the external creator/writer barrier remain required before CLI admission or live acceptance.
+The authenticated session below supplies credential/identity request budgets; the external creator/writer barrier and live acceptance remain required before CLI admission.
 
 ### Delivered package subset
 
@@ -803,3 +804,28 @@ Because the delivered set is closed under imports, the runner computes the deliv
 A module nothing delivered imports is neither delivered nor pinned by the delivery digest, and becomes both as soon as a delivered module imports it; `runtime_sha256` covers it either way.
 Follow a delivered module to the package data it names by literal: a delivery whose data stayed behind is the one incompleteness both sides would compute the same delivery digest over, so no comparison would catch it.
 Declined: per-scenario delivery sets, which the measurement showed are not needed to clear the ceiling and would make the delivered set vary by scenario.
+
+### BigQuery authenticated actor construction
+
+Provide internal context managers that bind a caller's independent environment approval to the runner bundle or supervisor manifests, installed source, role and current lock owner.
+The runner performs the existing full bundle verification; the in-image supervisor checks approval-bound source and manifest hashes without requiring Git or CUE.
+Check the source pin each actor can reproduce from the tree it runs on: `runtime_sha256` for the runner's complete installation, and `delivery_sha256` for the supervisor's mounted subset, which is a strict subset of what the first covers.
+Neither authenticates the approval's origin or the supplied Kubernetes/storage clients.
+Retain the caller-supplied original runner token and mandatory external supervisor barrier; a credential session cannot establish process quiescence.
+Close the session on context exit without synthesizing release or cleanup.
+
+Authenticate the exact OAuth bearer header against Google's userinfo endpoint and require the fixed role-specific service account's verified email.
+Recheck when the bearer header changes rather than trusting a credential object's configured email.
+Use a synchronous `google-auth` request adapter whose credential exchanges, identity checks and BigQuery request share the caller's remaining timeout, capped at 20 seconds.
+Refuse nonblocking refresh, redirects, identity mismatches and caller transport overrides; disable environment-derived proxy configuration and do not replay BigQuery calls after a 401.
+Credential-library retries use the same adapter budget, but synchronous discovery/code and blocked reads are not forcibly interrupted by this mechanism.
+The adapter reaches every token refresh and the in-cluster metadata path, and does not reach credential discovery that builds its own transport: in the pinned `google-auth`, `default` forwards the adapter only to its Compute Engine checker, so an external-account credential file resolves its project through a library-constructed transport carrying that library's timeout, proxy and redirect behaviour.
+The two actors do not share one identity path: the supervisor is a Kubernetes service account bound to its Google service account, while the runner authenticates through workload identity federation in CI and therefore takes the external-account path.
+Measured against the pinned library: discovery makes no request at all when the environment supplies a project, and enters the credential exchange on that library-constructed transport when it does not.
+State that limit rather than claiming a budget the discovery path does not honour.
+Keep service-account/WIF/GKE acceptance, authenticated dispatch, the actual writer fence, immutable artifact accounting and deployed measurements outstanding; synthetic SDK/HTTP tests do not establish those facts.
+
+Both factories validate the approval against the current clock, so neither actor can be constructed once the admission window closes at the cleanup start.
+The cleanup window therefore runs inside a context opened before it; replacing a supervisor inside that window is not a recovery path, and the entrypoint work owns whether to make it one.
+Keep the production entrypoints disabled and the final success verdict false until the remaining contracts are implemented and accepted.
+Declined: reusing the shared `GoogleToken` transport that Cloud Tasks, the image workflow and the Kubernetes transport already use, because its adapter timeout and its eager discovery are both fixed at construction and every one of those callers would inherit a change to either; this leaves BigQuery the one scenario with its own session, deliberately. Also declined: narrowing the session's request signature so the overrides become unexpressible, which would move the refusal out of the layer that owns the destination.

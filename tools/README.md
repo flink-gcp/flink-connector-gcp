@@ -51,6 +51,7 @@ The in-cluster `supervisor` command needs only the projected package and approva
 The offline `bigquery query` and `bigquery assess` commands also work outside the checkout and perform no cloud operations; the [BigQuery application runbook](../kubernetes/apps/bigquery/README.md#offline-query-oracle) defines their aggregate contract and evidence limits.
 The internal [BigQuery resource adapter](../kubernetes/apps/bigquery/README.md#resource-adapter) prepares owned table and bounded query operations for a future executor.
 The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after a caller-provided quiescence barrier; the internal BigQuery runner and supervisor use explicit actor handoffs, while production entrypoints remain disabled.
+The [authenticated actor factories](../kubernetes/apps/bigquery/README.md#authenticated-internal-actors) bind external approvals and role-specific BigQuery sessions to those internal loops; they do not enable production dispatch.
 The render-only [BigQuery execution proposal](../kubernetes/apps/bigquery/README.md#offline-execution-proposal) binds the resource plan and both application phases to a reviewable supervisor bundle without creating an approval.
 The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/README.md#approval-bound-delivery-bundle) prepares and verifies delivery against a separately supplied approval without admitting execution.
 
