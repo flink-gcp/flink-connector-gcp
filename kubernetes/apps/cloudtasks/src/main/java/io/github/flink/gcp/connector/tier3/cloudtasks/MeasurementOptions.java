@@ -29,6 +29,12 @@ import java.util.Set;
 final class MeasurementOptions implements Serializable {
     private static final long serialVersionUID = 1L;
 
+    /**
+     * Where a cluster session's evidence goes. It is the default because the reviewed session file
+     * carries no such field: only a rig that writes elsewhere passes {@code --evidence-root}.
+     */
+    private static final String CLUSTER_EVIDENCE_ROOT = "gs://flink-gcp-cloudtasks-benchmark/runs/";
+
     enum Arm {
         UNNAMED,
         NAMED_HASH,
@@ -57,6 +63,9 @@ final class MeasurementOptions implements Serializable {
     final int controlDelayMillis;
     final boolean emitAttempts;
 
+    /** Where the receipts and rows go. The cluster never sets it; a local rig does. */
+    final String evidenceRoot;
+
     private MeasurementOptions(Map<String, String> args) {
         Set<String> accepted =
                 Set.of(
@@ -79,7 +88,8 @@ final class MeasurementOptions implements Serializable {
                         "record-limit",
                         "attempt-limit",
                         "control-delay-millis",
-                        "emit-attempts");
+                        "emit-attempts",
+                        "evidence-root");
         for (String key : args.keySet()) {
             if (!accepted.contains(key)) {
                 throw new IllegalArgumentException("Unknown argument: --" + key);
@@ -198,6 +208,25 @@ final class MeasurementOptions implements Serializable {
             throw new IllegalArgumentException("--emit-attempts must be true or false");
         }
         emitAttempts = emit.equals("true");
+        evidenceRoot = args.getOrDefault("evidence-root", CLUSTER_EVIDENCE_ROOT);
+        if (!evidenceRoot.endsWith("/")) {
+            throw new IllegalArgumentException("--evidence-root must end with /");
+        }
+        URI root = URI.create(evidenceRoot);
+        // An opaque URI hides a query in its scheme-specific part, and a two-slash file: root
+        // silently turns its first path element into an authority and writes to the filesystem
+        // root instead.
+        if (root.getScheme() == null
+                || root.isOpaque()
+                || root.getPath() == null
+                || root.getPath().isEmpty()
+                || root.getQuery() != null
+                || root.getFragment() != null) {
+            throw new IllegalArgumentException("--evidence-root must be a plain hierarchical URI");
+        }
+        if ("file".equals(root.getScheme()) && root.getAuthority() != null) {
+            throw new IllegalArgumentException("--evidence-root file URI must name no host");
+        }
         if ((controlDelayMillis != 0 || !emitAttempts) && !windowed()) {
             throw new IllegalArgumentException("Calibration controls require window mode");
         }
@@ -213,15 +242,15 @@ final class MeasurementOptions implements Serializable {
     }
 
     String receiptPrefix() {
-        return "gs://flink-gcp-cloudtasks-benchmark/runs/"
-                + runId
-                + "/cells/"
-                + cellId
-                + "/receipts/";
+        return cellPrefix() + "receipts/";
     }
 
     String rowsPrefix() {
-        return "gs://flink-gcp-cloudtasks-benchmark/runs/" + runId + "/cells/" + cellId + "/rows/";
+        return cellPrefix() + "rows/";
+    }
+
+    private String cellPrefix() {
+        return evidenceRoot + runId + "/cells/" + cellId + "/";
     }
 
     static MeasurementOptions parse(String... args) {

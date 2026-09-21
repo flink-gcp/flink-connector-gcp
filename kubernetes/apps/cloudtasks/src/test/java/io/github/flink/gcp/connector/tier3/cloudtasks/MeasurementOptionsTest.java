@@ -93,6 +93,44 @@ class MeasurementOptionsTest {
     }
 
     @Test
+    void theDefaultEvidenceRootIsTheClusterBucketAndACellGetsItsOwnPrefix() {
+        var options = MeasurementOptions.parse(arguments());
+        assertThat(options.rowsPrefix())
+                .isEqualTo(
+                        "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/rows/");
+        assertThat(options.receiptPrefix())
+                .isEqualTo(options.rowsPrefix().replace("rows/", "receipts/"));
+    }
+
+    @Test
+    void aRigThatWritesLocallyGetsItsOwnEvidenceRoot() {
+        var options = MeasurementOptions.parse(arguments("--evidence-root", "file:///tmp/ct1246/"));
+        assertThat(options.rowsPrefix())
+                .isEqualTo("file:///tmp/ct1246/ct1246-test/cells/hash-1/rows/");
+    }
+
+    @Test
+    void anEvidenceRootThatWouldSilentlyWriteSomewhereElseIsRejected() {
+        // Each of these is accepted by string concatenation and means something else on the way
+        // out: a root without the trailing slash glues the run id onto the last path element, an
+        // opaque URI hides its path in the scheme-specific part, a two-slash file: URI turns
+        // "tmp" into a host and writes at the filesystem root, and a query or fragment survives
+        // into the middle of every object name.
+        for (String root :
+                List.of(
+                        "gs://bucket/runs",
+                        "gs:runs/",
+                        "file://tmp/ct1246/",
+                        "gs://bucket/runs?generation=1/",
+                        "gs://bucket/runs#top/",
+                        "/tmp/ct1246/")) {
+            assertThatThrownBy(() -> MeasurementOptions.parse(arguments("--evidence-root", root)))
+                    .as("root %s", root)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void budgetsTheWholeWindowAndTwoPeriodicCheckpointsBeforeEndOfInput() {
         var options =
                 MeasurementOptions.parse(
