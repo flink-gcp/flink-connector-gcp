@@ -31,6 +31,8 @@ cloudtasks = 'tier3-cloudtasks'
 benchmark = 'flink-gcp-cloudtasks-benchmark'
 bigquery = 'tier3-bigquery'
 bigquery_state = 'flink-gcp-tier3-bigquery'
+pubsub = 'tier3-pubsub'
+pubsub_state = 'flink-gcp-tier3-pubsub'
 
 # Conservative normal-capacity rates, including for Spot.
 # Exceed published Iowa Autopilot prices reviewed on 2026-09-14.

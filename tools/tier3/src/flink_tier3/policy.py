@@ -46,15 +46,19 @@ CLOUDTASKS_POD_RESOURCES = _policy["cloudtasks_pod_resources"]
 BIGQUERY = _policy["environment"]["bigquery"]
 BIGQUERY_STATE = _policy["environment"]["bigquery_state"]
 BIGQUERY_CEILINGS = _policy["bigquery_ceilings"]
+PUBSUB = _policy["environment"]["pubsub"]
+PUBSUB_STATE = _policy["environment"]["pubsub_state"]
 
 # Application namespaces first, then the control namespace.
-NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, SYSTEM)
+NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, SYSTEM)
 
 
 def inventory_namespaces(application):
     """Preserve legacy approval baselines when adding a staged application."""
-    if application == BIGQUERY:
+    if application == PUBSUB:
         return NAMESPACES
+    if application == BIGQUERY:
+        return (SMOKE, CLOUDTASKS, BIGQUERY, SYSTEM)
     return (SMOKE, CLOUDTASKS, SYSTEM)
 
 

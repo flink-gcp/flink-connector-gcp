@@ -64,11 +64,19 @@ class Supervisor:
     """Observe the workload, run an approved exercise, and return it to idle."""
 
     def __init__(
-        self, env, upgrade=None, cells=None, hooks=None, *, bigquery=None, quiesce=None
+        self,
+        env,
+        upgrade=None,
+        cells=None,
+        hooks=None,
+        *,
+        bigquery=None,
+        pubsub=None,
+        quiesce=None,
     ):
         self.env = env
         self.bigquery = bigquery
-        self.cleanup = Cleanup(env, bigquery=bigquery, quiesce=quiesce)
+        self.cleanup = Cleanup(env, bigquery=bigquery, pubsub=pubsub, quiesce=quiesce)
         self.log_bytes = 0
         self.log_since = {}
         self.pod_read_failures = {}
@@ -245,6 +253,8 @@ class Supervisor:
                 previous = lineage
 
     def supervise(self, pod_uid):
+        if self.env.approval.scenario == "pubsub-recovery":
+            raise Failure("Pub/Sub recovery supervision is not implemented")
         if self.env.approval.scenario == "bigquery-recovery":
             raise Failure("BigQuery recovery supervision is not implemented")
         self.env.refresh()

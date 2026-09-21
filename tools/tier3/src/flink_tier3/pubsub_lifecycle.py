@@ -125,20 +125,21 @@ class PubSubLifecycle:
         """Bind active run control to the approved application before service IO."""
         self._actor(runner=True)
 
-        def initialize(record):
-            self._open(record)
-            if record.pubsub is not None:
-                self._state(record)
-                return
-            record.pubsub = {
-                "intent": copy.deepcopy(self.intent),
-                "stage": "initialized",
-                "creation_intent": False,
-                "resources": None,
-                "policies": None,
-            }
+        self._change(self._initialize)
 
-        self._change(initialize)
+    def _initialize(self, record):
+        """Initialize within the caller's control update, including actor binding."""
+        self._open(record)
+        if record.pubsub is not None:
+            self._state(record)
+            return
+        record.pubsub = {
+            "intent": copy.deepcopy(self.intent),
+            "stage": "initialized",
+            "creation_intent": False,
+            "resources": None,
+            "policies": None,
+        }
 
     def _resources(self, *, cleanup=False):
         def guard(phase, method, name):

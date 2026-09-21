@@ -39,6 +39,7 @@ limitations under the License.
 - Updated: 2026-09-20 (owned Pub/Sub resource operations and partial-creation cleanup)
 - Updated: 2026-09-20 (Pub/Sub lifecycle authority and recorded resource policies)
 - Updated: 2026-09-20 (durable Pub/Sub preparation and service-cleanup settlement gates)
+- Updated: 2026-09-21 (Pub/Sub actor release connected to common settlement)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -561,6 +562,9 @@ CLI admission remains disabled.
 ### Pub/Sub actor release before cleanup
 
 Bind one process token per actor before its first preparation or message call, and serialize that actor's calls through a durable invocation ID.
+Create resource control and the runner binding in the same conditional write.
+A synthetic crash between the former two writes left resource intent without an actor binding, which neither cooperative release nor reclamation could settle.
+Atomic initialization leaves no Pub/Sub state before commit, or a complete actor binding after commit; a lost acknowledgement permits only the original token's admission-checked retry, while a dead actor requires the existing external reclamation proof.
 The two actors may overlap while sharing the existing traffic reservations.
 A completion acknowledgement clears only the invocation it names; retries never repeat the service operation or clear a later call.
 Retain failed or ambiguous invocations rather than interpreting client timeout as service quiescence.
@@ -574,6 +578,22 @@ The helper records the caller's assertion without measuring process termination 
 This avoids automatic expiry or token takeover, either of which could admit cleanup while an old request still executes.
 The [handoff runbook](../../kubernetes/apps/pubsub/README.md#actor-ownership-and-cleanup-handoff) defines the required external fencing and failure-persistence obligations.
 Runnable admission and deployed recovery remain subsequent work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+
+### Pub/Sub shared settlement
+
+Attach the original Pub/Sub runner to common settlement and the supervisor to common cleanup with an explicit external quiescence barrier.
+The caller must finish data operations by both actors, including supervisor output collection, before entering terminal settlement.
+Release the runner before waiting for the supervisor, because the supervisor's service cleanup itself waits for every bound release.
+That release closes shared admission even without an explicit stop request; waiting cannot overlap further output collection.
+Keep failed-release diagnostics and a failed outcome even when a later acknowledgement settles.
+An unbound supervisor may stop admission without fabricating a release record; a replacement cannot release a former actor.
+
+Perform service cleanup after owned workload teardown and before temporary state deletion or Operator shutdown.
+Extend the Pub/Sub clean-state gate to direct shared phase/idle observations as well as final receipt creation.
+Do not automatically reclaim unresolved calls, infer quiescence from workload disappearance or hide missing actor wiring behind the shared cleanup path.
+Route Pub/Sub cleanup to its existing namespace and state bucket while preserving earlier scenarios' inventory scopes.
+Keep serialized approval, runner admission and supervisor execution disabled until the separately reviewed numeric execution contract and orchestration are complete.
+The [shared settlement runbook](../../kubernetes/apps/pubsub/README.md#shared-settlement-integration) states the internal attachment and failure contracts.
 
 ### Pub/Sub lifecycle IAM preparation
 
