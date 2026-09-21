@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
@@ -719,5 +720,44 @@ class Stage2HarnessTest {
             closer.shutdownNow();
             assertThat(closer.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
         }
+    }
+
+    @Test
+    void aSamplingClientClearsEveryReadPathAndBoundsEachTotalTimeout() {
+        org.threeten.bp.Duration bound = org.threeten.bp.Duration.ofSeconds(30);
+        BigtableDataSettings.Builder settings =
+                BigtableDataSettings.newBuilderForEmulator("127.0.0.1", 1)
+                        .setProjectId("project")
+                        .setInstanceId("instance");
+
+        BigtableDataSettings built =
+                Stage2Harness.withoutReadRetries(settings, java.time.Duration.ofSeconds(30))
+                        .build();
+
+        var stub = built.getStubSettings();
+        assertThat(stub.readRowsSettings().getRetryableCodes()).isEmpty();
+        assertThat(stub.readRowSettings().getRetryableCodes()).isEmpty();
+        assertThat(stub.bulkReadRowsSettings().getRetryableCodes()).isEmpty();
+        assertThat(stub.readRowsSettings().getRetrySettings().getTotalTimeout()).isEqualTo(bound);
+        assertThat(stub.readRowSettings().getRetrySettings().getTotalTimeout()).isEqualTo(bound);
+        assertThat(stub.bulkReadRowsSettings().getRetrySettings().getTotalTimeout())
+                .isEqualTo(bound);
+    }
+
+    // Characterises the client precondition the helper above exists to satisfy, on an untouched
+    // builder: clearing one read path alone is refused at build time, before any endpoint is
+    // contacted. A library bump that reworded this message breaks the assertion without any
+    // regression here, which is the cost of pinning the exact refusal the sampler hit.
+    @Test
+    void theClientRefusesAConfigurationThatClearsTheStreamingReadPathAlone() {
+        BigtableDataSettings.Builder settings =
+                BigtableDataSettings.newBuilderForEmulator("127.0.0.1", 1)
+                        .setProjectId("project")
+                        .setInstanceId("instance");
+        settings.stubSettings().readRowsSettings().setRetryableCodes(java.util.Set.of());
+
+        assertThatThrownBy(settings::build)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Single ReadRow retry codes must match ReadRows retry codes");
     }
 }
