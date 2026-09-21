@@ -155,7 +155,7 @@ def ownership(items, roots):
         owned = expanded
 
 
-def verify_pod(pod, role, image, expected=None):
+def verify_pod(pod, role, image, expected=None, *, spot=None):
     spec = pod["spec"]
     if (
         spec.get("initContainers")
@@ -173,7 +173,9 @@ def verify_pod(pod, role, image, expected=None):
             quantity(actual[k]) != quantity(v) for k, v in expected.items()
         ):
             raise Failure("Effective Pod resources exceed or differ from approval")
-    if role in ("smoke", "application"):
+    if spot is None:
+        spot = role in ("smoke", "application")
+    if spot:
         if spec.get("nodeSelector", {}).get("cloud.google.com/gke-spot") != "true":
             raise Failure("Flink Pods must select Spot nodes")
     else:

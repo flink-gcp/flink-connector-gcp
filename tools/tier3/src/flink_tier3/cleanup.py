@@ -336,12 +336,17 @@ class Cleanup:
             )
             if not role:
                 raise Failure("Pod lacks a verified owner UID")
-            expected = None
+            expected, spot = None, None
             if role == "application":
                 expected = (
                     self.cell_shape(pod) if self.cloudtasks else POD_RESOURCES["smoke"]
                 )
-            verify_pod(pod, role, images[role], expected)
+                # The capacity runs on Spot; the JobManager does not, because
+                # losing it restarts the job rather than costing slots.
+                spot = (
+                    pod["metadata"].get("labels", {}).get("component") != "jobmanager"
+                )
+            verify_pod(pod, role, images[role], expected, spot=spot)
         cells = [self.current_cell] if self.cloudtasks else None
         state = self.remaining_state([] if cells == [None] else cells)
         if sum(int(obj["size"]) for obj, _ in state) > self.ceilings["state_bytes"]:

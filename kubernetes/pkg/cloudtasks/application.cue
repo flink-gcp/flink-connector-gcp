@@ -102,7 +102,7 @@ let taskManagerShapes = {
 			}
 			// JobManager and TaskManager shapes differ, so each manager carries its
 			// own container resources; runs/common.cue still applies the shared
-			// Spot/AMD64 policy to both templates.
+			// AMD64 policy to both templates, Spot to the TaskManager alone.
 			jobManager: {
 				replicas: 1
 				resource: {cpu: strconv.Atoi(jobManagerShape.cpu), memory: jobManagerShape.memory}

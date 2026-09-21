@@ -198,7 +198,9 @@ delivery: resources: {
 			backoffLimit:          0
 			activeDeadlineSeconds: activeSeconds
 			template: {
-				metadata: sharedMetadata
+				metadata: sharedMetadata & {
+					annotations: "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+				}
 				spec: {
 					serviceAccountName:            "tier3-supervisor"
 					restartPolicy:                 "Never"
