@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0166: Bigtable implementation precedes final Stage 2 acceptance
 
 - Status: Accepted
-- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19
+- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19; Stage 2 verdict recorded 2026-09-21
 - Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319), [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327)
 - Supersedes: only the implementation-start ordering in ADR-0104 and ADR-0163 for Bigtable staged writes
 - Modules: bigtable
@@ -103,7 +103,7 @@ The correctness scope reserves USD 2 for the production recovery lease and at mo
 
 Under #1319 the correctness scope is the [production recovery lease](evidence/0163-bigtable-production-recovery-service-plan.md) through both API entry points on both Flink lines and the [native-transport acceptance](evidence/0163-bigtable-native-transport-acceptance.md) through the connector's own TLS and application-default-credentials branch.
 Both passed on 2026-09-14 and are recorded in those evidence files: four lease workers with 128 identities, 388 wire attempts, one discarded response and 260 duplicates each, and the gated class with all six invocations on each Flink line.
-That correctness acceptance closes #1319; release and supported-workload claims still wait for the Stage 2 verdict under #1327.
+That correctness acceptance closes #1319; the Stage 2 verdict under #1327 then declined the mode on 2026-09-21, as the last section of this ADR records.
 The native-transport class joins the weekly gated suite; the owner accepted its recurring instance cost on 2026-09-14.
 
 The production-path integration of the timed harness, the unrestricted Stage 2 assessment, the sustained hot-row growth and physical storage measurements and the performance verdict were routed to [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) on 2026-09-14; the next section records the instrument preparation that landed there.
@@ -112,7 +112,7 @@ The [protocol](evidence/0163-bigtable-staged-performance-protocol.md) needs at l
 The execution host used so far is in Japan, and the client p95 of a conditional request from it has measured near 180 ms (a 178 ms upper bound at in-flight 4 on the 2026-09-07 lease; 194 to 206 ms at 1,000 in flight on 2026-09-05) against a server-side p95 under 6 ms, a gap no record yet attributes to network distance or to the client; the only completed pair of the [2026-09-07 lease](evidence/0163-bigtable-stage2-experiment-harness.md) measured the staged visibility p95 at 23.3 seconds, 64.1 times bulk, in one repetition that includes checkpoint waiting and an incomplete bulk warm-up.
 That record establishes the measured failure, not its cause; the owner's decision is to run the assessment from compute co-located in `us-central1`, through the Tier-3 rig or a separately approved host, so that network distance is removed as a candidate explanation before the criterion is judged.
 Its cost authorization is separate from this one and is recorded in the next section; a change to the latency criterion would still need its own amending ADR.
-Release and supported-workload claims continue to require that verdict, and user-facing documentation keeps describing the mode as experimental and not yet supported until it is recorded.
+That verdict was recorded on 2026-09-21 and declined the mode, so release and supported-workload claims stay withheld and user-facing documentation keeps describing the mode as experimental and unsupported.
 
 ## Stage 2 instrument preparation (2026-09-14)
 
@@ -132,3 +132,24 @@ The protocol, its 108 cells, three repetitions, periods, thresholds and variabil
 - A failed, empty or censored run is recorded as `FAILED` and the campaign proceeds to the next preregistered run without repeating it; the earlier stop-on-first-failure rule would have left most cells unmeasured after a checkpoint-timeout failure. A failure may be recorded after the worker's deadline, because a late checkpoint timeout is the expected failure, but only until the next supervisor heartbeat observes the expired worker; the run reservation (`runOverheadSeconds`) must therefore cover the whole failure path of checkpoint timeout, drain limit and JVM teardown, and the lean campaign reserves 300 seconds per run. The journal counts recorded failures in `failedRuns`, so a completed campaign whose runs all failed is visibly not a measured one. Ownership loss, expired supervision, an interrupted observation or an outcome that cannot be recorded still stops the campaign.
 - On a stop, the lean controller's supervisor preserves the free trial instance for the owner's decision instead of deleting it, because the trial cannot be recreated; a completed campaign still deletes it and verifies absence. The tracked `Stage2CampaignSupervisor.cleanup` path, which deletes the instance on every stop, is unchanged and is not used by that controller.
 - The owner also decided to judge the result under the unchanged latency criterion and to record the resulting verdict, expected to be a decline for most cells because staged visibility includes checkpoint waiting; a criterion change remains a separate decision with its own amending ADR.
+
+## Stage 2 verdict (2026-09-21)
+
+The campaign ran on 2026-09-20 and 2026-09-21, completed all 108 cells, and the assessment declines the mode at the ADR-0104 gate.
+Its measurements, failure modes and cost are in the [assessment record](evidence/0163-bigtable-stage2-assessment.md); this section records only the decision and what follows from it.
+
+Fifteen of the 108 cells produced three valid repetitions in both arms.
+Every one of them fails the visibility criterion, with a staged p95 between 129 and 1,546 times bulk against a constrained-opt-in limit of 4x, so no measured workload is supported.
+Throughput is not the reason: it clears the constrained bound in thirteen of those cells, although the protocol's variability rule leaves the throughput comparison itself inconclusive in twelve of the fifteen.
+The decline rests on visibility alone, and a margin of two orders of magnitude is not one that within-cell spread can close.
+In the remaining 93 cells the staged arm could not produce three valid repetitions: 244 of its 324 runs ended without an observation, 156 of them censored at the staging capacity and 78 at checkpoint expiry, while all 324 bulk runs succeeded under the same ceilings.
+
+Release and supported-workload claims therefore stay withheld, which is the state user-facing documentation already describes; what changes is that the reason is now measured rather than pending.
+The correctness acceptance recorded under #1319 is unaffected.
+Two decisions remain open: whether the mode stays in the tree as experimental or is withdrawn, and whether a future assessment amends the latency criterion to exclude checkpoint waiting, which would need its own superseding ADR under the rule this ADR already states.
+
+Both auxiliary observations ran.
+The sustained phase's marker timecourse failed inside the campaign through a defect in its sampler's client configuration, and was repeated on 2026-09-21 with the repaired sampler: one hot row accumulated 1,445,269 marker cells over thirty minutes, growing linearly with no reclamation during the run.
+Nothing of the protocol's coverage is now outstanding.
+
+The matrix ran on a Bigtable free trial and cost nothing in service charges; the assessment record holds the full cost ledger.

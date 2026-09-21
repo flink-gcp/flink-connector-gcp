@@ -160,6 +160,11 @@ Together with the trial's sample table this requires at most seven tables, condi
 The trial instance survives matrix-lease cleanup and is deleted only when the entire campaign completes, or when the owner decides so after a stop; the tracked `Stage2CampaignSupervisor.cleanup` path still deletes it on any stop and is not used by the lean controller recorded in [ADR-0166](../0166-bigtable-implementation-precedes-final-stage2-acceptance.md#lean-execution-and-recorded-failures-2026-09-19).
 These are the lifecycle requirements recorded by the plan; resource ownership checks, durable admission and outcome journaling, worker dispatch, supervision and cleanup adapters are still required before service execution.
 
+## Result
+
+The campaign this record prepared ran on 2026-09-20 and 2026-09-21, completed the matrix and declined the gate; its measurements are in the [assessment record](0163-bigtable-stage2-assessment.md).
+The conditions below were the admission conditions it satisfied, and they are retained as written.
+
 ## Remaining service admission conditions
 
 The production instrument must be reviewed and merged before final measurement; the #1319 service work and its resource cleanup finished on 2026-09-14, before this campaign starts.

@@ -1111,7 +1111,7 @@ mutation with no cell in it is not a write.
 ## Checkpoint-owned delivery
 
 Set `sink.delivery-guarantee` to `exactly-once` with `upsert`, `keep-latest` or `aggregate` to select the experimental staged runtime.
-Its production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319); its formal Stage 2 gate remains pending under [#1327]({{< param BookRepo >}}/issues/1327), and it is not yet released or supported.
+Its production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319), but the formal Stage 2 gate declined it on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327), so it is not released or supported.
 The [DataStream staged contract]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) also governs SQL recovery, visibility and marker retention.
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="staged-sink" >}}
