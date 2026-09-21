@@ -636,7 +636,7 @@ class Cleanup:
                 lambda: (
                     self.bigquery.released()
                     and self.quiesce() is True
-                    and self.bigquery.cleanup(self.quiesce)
+                    and self.bigquery.cleanup(self.quiesce, deadline=deadline)
                 ),
                 deadline,
             )

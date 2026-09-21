@@ -73,6 +73,12 @@ class BigQueryLifecycle:
         }
         self.prefix = f"runs/{trial.run_id}/bigquery/"
 
+    def with_deadline(self, deadline):
+        """Keep durable state shared while narrowing this operation's REST budget."""
+        controller = copy.copy(self)
+        controller.api = self.api.with_deadline(deadline)
+        return controller
+
     def _runner(self):
         if self.env.actor != "runner":
             raise Failure(

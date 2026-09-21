@@ -41,6 +41,7 @@ class Environment:
             application_sha256=digest(application),
         )
         self.actor = "runner"
+        self.schedule = SimpleNamespace(started=NOW)
         self.owner = True
         self.store = Store()
         self.records = Records(self.store, self.approval, lambda: NOW)
@@ -84,6 +85,12 @@ class Resources:
         self.after_submit = None
         self.after_delete = None
         self.on_results = None
+        self.deadlines = []
+
+    def with_deadline(self, deadline):
+        # This fake has no transport; composed REST tests enforce the deadline.
+        self.deadlines.append(deadline)
+        return self
 
     def table(self, destination):
         self.calls.append(("table", destination))

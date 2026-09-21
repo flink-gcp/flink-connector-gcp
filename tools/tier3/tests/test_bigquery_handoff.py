@@ -27,7 +27,7 @@ from test_bigquery_lifecycle import Resources
 from test_bigquery_lifecycle import (
     setup as setup,  # noqa: PLC0414 - register shared pytest fixture
 )
-from test_bigquery_resources import NOW
+from test_bigquery_resources import NOW, Response, client, job, page, table
 
 
 class QueryResources(Resources):
@@ -82,6 +82,146 @@ def complete(a, name="baseline"):
     a.api.jobs[slot]["status"]["state"] = "DONE"
     assert a.runner.poll() == name
     return slot
+
+
+def transport(a, *responses, supervisor=False):
+    actor = a.supervisor if supervisor else a.runner
+    api, http = client(
+        actor.controller.plan,
+        *responses,
+        deadline=NOW + 3600,
+        clock=lambda: a.now[0],
+    )
+    actor.controller.api = api
+    return api, http
+
+
+def test_provisioning_rest_calls_share_the_startup_deadline(actors):
+    a = actors
+    a.now[0] = NOW + 598
+    plan = a.runner.controller.plan
+    replies = []
+    for destination in range(plan.trial.destinations):
+        replies.extend([Response({}, 404), Response({}, 404), table(plan, destination)])
+    api, http = transport(a, *replies)
+    a.runner.provision()
+    assert len(http.calls) == 3 * plan.trial.destinations
+    assert all(call[2]["timeout"] == 2 for call in http.calls)
+    assert api.deadline == NOW + 3600
+    assert a.runner.controller._read()["handoff"]["inflight"] is None
+
+
+def test_late_provisioning_read_does_not_start_a_create_and_retains_marker(actors):
+    a = actors
+    a.now[0] = NOW + 599
+
+    class LateAbsent(Response):
+        def __enter__(self):
+            a.now[0] += 1
+            return self
+
+    response = LateAbsent({}, 404)
+    _, http = transport(a, response)
+    with pytest.raises(Failure, match="deadline"):
+        a.runner.provision()
+    assert len(http.calls) == 1
+    assert http.calls[0][0] == "GET"
+    assert response.closed
+    assert a.runner.controller._read()["tables"] == {}
+    with pytest.raises(Failure, match="in flight or unresolved"):
+        a.runner.release()
+
+
+def test_submit_status_and_paginated_collection_use_one_requested_deadline(actors):
+    a = actors
+    start(a)
+    plan = a.runner.controller.plan
+    a.supervisor.request("final", deadline=NOW + 100)
+    a.now[0] = NOW + 97
+
+    class FirstPage(Response):
+        def __exit__(self, *args):
+            super().__exit__(*args)
+            a.now[0] += 1
+
+    _, http = transport(
+        a,
+        *(table(plan, i) for i in range(plan.trial.destinations)),
+        Response({}, 404),
+        job(plan),
+        job(plan),
+        job(plan),
+        FirstPage(page(plan, 0, 5, "next")),
+        page(plan, 5),
+    )
+    assert a.runner.poll() == "final"
+    assert len(http.calls) == plan.trial.destinations + 6
+    assert [call[2]["timeout"] for call in http.calls] == [3] * (
+        len(http.calls) - 1
+    ) + [2]
+    assert a.supervisor.result("final")["report"]["verdict"] == "pass"
+
+
+def test_expired_collection_stops_pagination_without_archiving_evidence(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("final", deadline=NOW + 100)
+    a.runner.poll()
+    plan = a.runner.controller.plan
+    a.now[0] = NOW + 99
+
+    class LastPage(Response):
+        def __exit__(self, *args):
+            super().__exit__(*args)
+            a.now[0] += 1
+
+    _, http = transport(a, job(plan), job(plan), LastPage(page(plan, 0, 5, "next")))
+    with pytest.raises(Failure, match="deadline"):
+        a.runner.poll()
+    assert len(http.calls) == 3
+    state = a.runner.controller._read()
+    assert state["queries"]["final"]["evidence"] is None
+    assert state["handoff"]["inflight"] is None
+    a.runner.release()
+    assert a.supervisor.released()
+
+
+def test_cleanup_uses_its_own_deadline_after_query_window_has_closed(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("final", deadline=NOW + 100)
+    a.runner.poll()
+    a.runner.release()
+    a.now[0] = NOW + 1801
+    plan = a.supervisor.controller.plan
+    replies = [job(plan, state="RUNNING"), {"job": job(plan)}]
+    for destination in range(plan.trial.destinations):
+        replies.extend(
+            [
+                table(plan, destination),
+                table(plan, destination),
+                Response(b"", 204),
+                Response({}, 404),
+            ]
+        )
+    api, http = transport(a, *replies, supervisor=True)
+    assert a.supervisor.cleanup(lambda: True, deadline=NOW + 1803)
+    assert len(http.calls) == 2 + 4 * plan.trial.destinations
+    assert http.calls[1][0] == "POST"
+    assert http.calls[1][1].endswith("/cancel")
+    assert all(call[2]["timeout"] == 2 for call in http.calls)
+    assert api.deadline == NOW + 3600
+
+
+def test_expired_cleanup_cannot_issue_service_deletions(actors):
+    a = actors
+    start(a)
+    a.runner.release()
+    _, http = transport(a, supervisor=True)
+    with pytest.raises(Failure, match="deadline"):
+        a.supervisor.cleanup(lambda: True, deadline=NOW)
+    assert http.calls == []
+    assert not a.supervisor.controller._read()["cleaned"]
 
 
 def test_request_submit_collect_and_read_through_distinct_actor_records(actors):
@@ -175,7 +315,7 @@ def test_initialize_refuses_expired_window(actors):
         ("supervisor", "release", (), {}),
         ("runner", "request", ("x",), {"deadline": NOW + 10}),
         ("runner", "result", ("x",), {}),
-        ("runner", "cleanup", (lambda: True,), {}),
+        ("runner", "cleanup", (lambda: True,), {"deadline": NOW + 3600}),
     ],
 )
 def test_actor_roles(actors, actor, method, args, kwargs):
@@ -239,7 +379,7 @@ def test_stop_during_call_cannot_release_or_delete_until_return(actors, stage):
         with pytest.raises(Failure, match="in flight"):
             a.runner.release()
         with pytest.raises(Failure, match="not released"):
-            a.supervisor.cleanup(lambda: True)
+            a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
         assert not any(call[0] == "delete" for call in a.api.calls)
 
     if stage == "provision":
@@ -263,7 +403,7 @@ def test_stop_during_call_cannot_release_or_delete_until_return(actors, stage):
     assert a.runner.controller._read()["handoff"]["inflight"] is None
     a.runner.release()
     a.api.jobs[0]["status"]["state"] = "DONE"
-    assert a.supervisor.cleanup(lambda: True)
+    assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
     assert not a.api.tables
 
 
@@ -291,7 +431,7 @@ def test_ambiguous_create_survives_new_protocol_object_and_blocks_cleanup(
     with pytest.raises(Failure, match="in flight"):
         restored.release()
     with pytest.raises(Failure, match="not released"):
-        a.supervisor.cleanup(lambda: True)
+        a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
     assert a.api.calls == calls
     assert a.runner.controller._read()["handoff"]["inflight"] is not None
 
@@ -301,14 +441,14 @@ def test_cleanup_requires_both_release_and_external_barrier(actors):
     start(a)
     complete(a)
     with pytest.raises(Failure, match="not released"):
-        a.supervisor.cleanup(lambda: True)
+        a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
     a.runner.release()
     a.runner.release()
     for barrier in (False, None, 1):
         with pytest.raises(Failure, match="not quiescent"):
-            a.supervisor.cleanup(lambda barrier=barrier: barrier)
+            a.supervisor.cleanup(lambda barrier=barrier: barrier, deadline=NOW + 3600)
     assert not any(call[0] == "delete" for call in a.api.calls)
-    assert a.supervisor.cleanup(lambda: True)
+    assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
     assert a.env.refresh().phase == Phase.RUNNING
     assert a.env.refresh().stop_requested
     assert a.env.refresh().bigquery["cleaned"]
@@ -325,10 +465,10 @@ def test_pending_job_blocks_delete_after_release(actors):
     a.supervisor.request("baseline", deadline=NOW + 100)
     a.runner.poll()
     a.runner.release()
-    assert not a.supervisor.cleanup(lambda: True)
+    assert not a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
     assert not any(call[0] == "delete" for call in a.api.calls)
     a.api.jobs[0]["status"]["state"] = "DONE"
-    assert a.supervisor.cleanup(lambda: True)
+    assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
 
 
 def test_read_failure_clears_marker_without_repeating_submit(actors):
@@ -402,7 +542,7 @@ def test_oversized_result_is_never_written_and_can_release(actors):
     assert a.env.store.read(a.runner.controller.prefix + "queries/0.json")[0] is None
     assert a.supervisor.result("baseline") is None
     a.runner.release()
-    assert a.supervisor.cleanup(lambda: True)
+    assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
 
 
 def test_cached_collection_rechecks_byte_budget(actors):
@@ -607,7 +747,7 @@ def test_expired_unreserved_request_aborts_observation_but_allows_cleanup(actors
     assert a.supervisor.result("baseline") is None
     assert not a.api.jobs
     a.runner.release()
-    assert a.supervisor.cleanup(lambda: True)
+    assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
     assert not a.api.tables
 
 
@@ -651,7 +791,7 @@ def test_real_handoff_is_serviced_by_runner_settlement(actors):
             a.supervisor.stop()
         else:
             assert a.supervisor.released()
-            assert a.supervisor.cleanup(lambda: True)
+            assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
             job["status"]["succeeded"] = 1
 
     a.env.sleep = advance

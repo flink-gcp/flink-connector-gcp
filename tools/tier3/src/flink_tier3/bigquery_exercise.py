@@ -18,10 +18,9 @@ from __future__ import annotations
 import uuid
 
 from .bigquery import assess
-from .bigquery_plan import OBSERVATIONS
 from .common import Failure, utc
 from .exercise import RecoveryExercise
-from .policy import BIGQUERY, BIGQUERY_STATE, MIB, POLL
+from .policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, MIB, POLL
 
 
 def require_handoff(env, handoff):
@@ -47,7 +46,7 @@ class BigQueryExercise(RecoveryExercise):
 
     namespace = BIGQUERY
     state_bucket = BIGQUERY_STATE
-    timing = OBSERVATIONS
+    timing = BIGQUERY_OBSERVATIONS
     progress_event = "bigquery-progress"
     expected_pods = 3
 

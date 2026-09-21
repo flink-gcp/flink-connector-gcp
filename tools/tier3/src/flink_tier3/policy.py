@@ -49,6 +49,15 @@ BIGQUERY_CEILINGS = _policy["bigquery_ceilings"]
 PUBSUB = _policy["environment"]["pubsub"]
 PUBSUB_STATE = _policy["environment"]["pubsub_state"]
 
+BIGQUERY_OBSERVATIONS = {
+    "warmup_seconds": 180,
+    "baseline_seconds": 600,
+    "post_recovery_seconds": 600,
+    "startup_seconds": 600,
+    "recovery_seconds": 300,
+    "visibility_seconds": 600,
+}
+
 # Application namespaces first, then the control namespace.
 NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, SYSTEM)
 
