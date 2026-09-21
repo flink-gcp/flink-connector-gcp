@@ -46,6 +46,7 @@ CLOUDTASKS_POD_RESOURCES = _policy["cloudtasks_pod_resources"]
 BIGQUERY = _policy["environment"]["bigquery"]
 BIGQUERY_STATE = _policy["environment"]["bigquery_state"]
 BIGQUERY_CEILINGS = _policy["bigquery_ceilings"]
+PUBSUB_CEILINGS = _policy["pubsub_ceilings"]
 PUBSUB = _policy["environment"]["pubsub"]
 PUBSUB_STATE = _policy["environment"]["pubsub_state"]
 

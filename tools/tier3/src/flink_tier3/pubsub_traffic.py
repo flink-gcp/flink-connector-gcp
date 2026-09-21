@@ -94,6 +94,14 @@ class PubSubTraffic:
                 "Pub/Sub traffic requires the application's exact input domain"
             )
         self.records = int(values[0].split("=", 1)[1])
+        if getattr(self.env.approval, "version", None) == 5:
+            approved = self.env.approval.pubsub_traffic_limits
+            if (
+                limits != approved
+                or self.records
+                != self.env.approval.pubsub_trial["records_per_subscription"]
+            ):
+                raise Failure("Pub/Sub traffic differs from the serialized trial")
         self.limits = limits
         self.binding = {
             "version": 1,

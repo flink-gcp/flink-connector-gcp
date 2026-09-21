@@ -462,6 +462,12 @@ class Runner:
             result.update(
                 scenario=self.env.approval.scenario, recovery=control.recovery
             )
+        if self.env.approval.scenario == "pubsub-recovery":
+            result.update(
+                scenario=self.env.approval.scenario,
+                pubsub_trial=self.env.approval.pubsub_trial,
+                recovery=control.recovery,
+            )
         if self.env.approval.scenario == "bigquery-recovery":
             result.update(
                 scenario=self.env.approval.scenario,
@@ -502,7 +508,13 @@ class Runner:
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)
         prior, expected = previous, result
-        if previous is not None and self.env.approval.scenario == "bigquery-recovery":
+        if previous is not None and (
+            self.env.approval.scenario == "bigquery-recovery"
+            or (
+                self.env.approval.scenario == "pubsub-recovery"
+                and self.env.approval.version == 5
+            )
+        ):
             # Refreshed empty plans have a new observation time on each retry.
             prior, expected = dict(previous), dict(result)
             for receipt in (prior, expected):
@@ -519,7 +531,8 @@ class Runner:
             or not previous.get("idle")
             or (
                 (
-                    self.env.approval.scenario == "bigquery-recovery"
+                    self.env.approval.scenario
+                    in ("bigquery-recovery", "pubsub-recovery")
                     or control.pubsub is not None
                     or previous.get("pubsub") is not None
                     or control.bigquery is not None
@@ -533,7 +546,7 @@ class Runner:
             result = previous
         current, generation = self.env.records.read()
         if (
-            self.env.approval.scenario == "bigquery-recovery"
+            self.env.approval.scenario in ("bigquery-recovery", "pubsub-recovery")
             or control.pubsub is not None
             or current.pubsub is not None
             or control.bigquery is not None

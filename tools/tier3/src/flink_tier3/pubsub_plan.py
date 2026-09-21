@@ -22,7 +22,7 @@ from decimal import Decimal
 from .bundle import source_digest
 from .common import Failure, digest, json_bytes, quantity, timestamp, utc
 from .model import Schedule
-from .policy import GAR, POD_RESOURCES, SHA
+from .policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
 from .pubsub import ResourcePlan
 from .pubsub_messages import MAX_BATCH
 from .pubsub_traffic import COUNTER_CEILINGS, TrafficLimits
@@ -109,6 +109,48 @@ def _pod(pod, role):
             raise Failure("Rendered Pod differs from the Pub/Sub resource proposal")
 
 
+def input_plan(run_id, trial):
+    """Validate one feasible pass and derive its exact logical input domain."""
+    validate_trial(trial)
+    records = trial["records_per_subscription"]
+    boundary = records // 2
+    cohorts = {
+        "before_recovery": {"start": 0, "count": boundary},
+        "after_recovery": {"start": boundary, "count": records - boundary},
+    }
+    # The helper's payload has no attributes; this excludes service framing.
+    input_bytes = sum(
+        len(f"v1|{run_id}|{i}|{n}".encode()) for i in range(2) for n in range(records)
+    )
+    publish_calls = 2 * sum(
+        (c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
+    )
+    minimum_pulls = sum(
+        (2 * c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
+    )
+    limits = TrafficLimits(**trial["traffic_limits"], admit_until=1)
+    if (
+        limits.input_messages < 2 * records
+        or limits.input_bytes < input_bytes
+        or limits.publish_calls < publish_calls
+        or limits.output_messages < 2 * records
+        or limits.pull_calls < minimum_pulls
+        or limits.pubsub_requests < publish_calls + 2 * minimum_pulls
+    ):
+        raise Failure(
+            "Traffic proposal cannot cover even one complete input/output pass"
+        )
+    return {
+        "subscriptions": 2,
+        "records_per_subscription": records,
+        "cohorts_per_subscription": cohorts,
+        "batch_size": MAX_BATCH,
+        "publish_calls": publish_calls,
+        "messages": 2 * records,
+        "payload_bytes": input_bytes,
+    }
+
+
 def prepare(
     *,
     run_id,
@@ -141,34 +183,9 @@ def prepare(
             "Pub/Sub proposal requires a one-hour window and 3420 supervisor seconds"
         )
     schedule = Schedule.for_window(start, end)
+    planned_input = input_plan(run_id, trial)
     records = trial["records_per_subscription"]
-    boundary = records // 2
-    cohorts = {
-        "before_recovery": {"start": 0, "count": boundary},
-        "after_recovery": {"start": boundary, "count": records - boundary},
-    }
-    # The helper's payload has no attributes; this excludes service framing.
-    input_bytes = sum(
-        len(f"v1|{run_id}|{i}|{n}".encode()) for i in range(2) for n in range(records)
-    )
-    publish_calls = 2 * sum(
-        (c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
-    )
-    minimum_pulls = sum(
-        (2 * c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
-    )
     limits = TrafficLimits(**trial["traffic_limits"], admit_until=schedule.cleanup_at)
-    if (
-        limits.input_messages < 2 * records
-        or limits.input_bytes < input_bytes
-        or limits.publish_calls < publish_calls
-        or limits.output_messages < 2 * records
-        or limits.pull_calls < minimum_pulls
-        or limits.pubsub_requests < publish_calls + 2 * minimum_pulls
-    ):
-        raise Failure(
-            "Traffic proposal cannot cover even one complete input/output pass"
-        )
     initial, recovery, delivery = render(
         run_id,
         nonce,
@@ -254,20 +271,12 @@ def prepare(
         "application_sha256": digest(initial),
         "recovery_application_sha256": digest(recovery),
         "supervisor_sha256": digest(delivery["supervisor"]),
-        "input": {
-            "subscriptions": 2,
-            "records_per_subscription": records,
-            "cohorts_per_subscription": cohorts,
-            "batch_size": MAX_BATCH,
-            "publish_calls": publish_calls,
-            "messages": 2 * records,
-            "payload_bytes": input_bytes,
-        },
+        "input": planned_input,
         "traffic_limits": asdict(limits),
         "limits": {
             "seconds": WINDOW_SECONDS,
             "cleanup_seconds": 900,
-            "pods": 7,
+            "pods": PUBSUB_CEILINGS["pods"],
             "pvcs": 0,
             "total_requests": trial["total_request_limit"],
             "additional_cost_usd": trial["additional_cost_usd"],

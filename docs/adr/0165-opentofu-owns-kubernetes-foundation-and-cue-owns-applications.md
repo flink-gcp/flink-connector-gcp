@@ -519,7 +519,7 @@ The resource helper owns this branch through `cleanup_or_confirm_absent()`; stri
 A replaced manifest still refuses cleanup.
 
 Keep the active record when cleanup is uncertain, and guard Operator shutdown and final settlement until recorded Pub/Sub service cleanup is complete and the shared stop is set.
-Final settlement preserves cleaned Pub/Sub intent and observations in the result receipt; when either snapshot carries Pub/Sub, reuse requires the complete computed result to match, including its success verdict and plans.
+Final settlement preserves cleaned Pub/Sub intent and observations in the result receipt; when either snapshot carries Pub/Sub, reuse requires the complete computed result to match, including its success verdict and plans, except the refreshed plans' observation time for version 5.
 This refuses presence/absence mismatches and stale success receipts after concurrent evidence failures.
 A fresh cleanup attempt returns to `cleaning` even after prior success, so uncertain rechecks close settlement again.
 Before deleting active Pub/Sub control, compare the complete current record with the receipt snapshot and use its observed generation; concurrent changes retain control and the lock.
@@ -593,7 +593,8 @@ Perform service cleanup after owned workload teardown and before temporary state
 Extend the Pub/Sub clean-state gate to direct shared phase/idle observations as well as final receipt creation.
 Do not automatically reclaim unresolved calls, infer quiescence from workload disappearance or hide missing actor wiring behind the shared cleanup path.
 Route Pub/Sub cleanup to its existing namespace and state bucket while preserving earlier scenarios' inventory scopes.
-Keep serialized approval, runner admission and supervisor execution disabled until the separately reviewed numeric execution contract and orchestration are complete.
+Keep runner admission and supervisor execution disabled until the separately reviewed numeric execution contract and orchestration are complete.
+The internal version 5 schema below refines the initial serialized-approval refusal without enabling execution.
 The [shared settlement runbook](../../kubernetes/apps/pubsub/README.md#shared-settlement-integration) states the internal attachment and failure contracts.
 
 ### Offline Pub/Sub trial proposals
@@ -610,8 +611,32 @@ Reserve four application Pods (three steady plus one replacement) and three cont
 The request cap is at most 100,000 and the cost cap at most USD 10; neither is wired to full execution accounting, and cost has no estimate yet.
 Message-helper reservations do not include connector SDK, provisioning, control, credential or storage requests.
 Later admission must establish complete operation/state/evidence budgets, current pricing and live provenance/access before enforcing those limits.
-Keep approval empty and reject Pub/Sub serialized execution until that contract, external fault-boundary observations and independent orchestration are reviewed.
+Keep the offline delivery approval empty and reject Pub/Sub execution until that contract, external fault-boundary observations and independent orchestration are reviewed.
 The [offline runbook](../../kubernetes/apps/pubsub/README.md#offline-trial-proposal) records the schema, synthetic example and outstanding execution requirements.
+
+### Pub/Sub internal approval and shared resource policy
+
+Use approval version 5 to serialize one Pub/Sub trial for internal lifecycle composition.
+Reuse the offline trial schema and input feasibility calculation, then derive resource identities and helper counters from the validated approval.
+Version 5 controllers validate the serialized trial; traffic construction must match its record count, all counters and cleanup deadline.
+Retain the earlier caller-owned low-level contract for internal fixtures without version 5, without accepting them as serialized approvals.
+
+Require the proposal's integral one-hour window, fifteen-minute cleanup reserve, fixed shared state/log/evidence limits, exact application/control namespace identities and digest-pinned runtime image roles.
+Use seven shared Pod slots with a four-Pod application quota and three-Pod control quota so a terminating Flink or Operator Pod does not consume its own replacement's slot.
+The per-namespace quotas carry the matching resource sums and restore the recorded idle values.
+Preserve earlier scenarios' ceilings and inventory scopes.
+Include the trial and recovery observations in final receipts, including runs stopped before service initialization; compare the receipt and current control snapshot before deleting active control.
+For version 5, a finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires current empty plans for the same nonce and all three foundation roots.
+A local injected control-deletion failure reproduced refusal of a valid retry when only that timestamp changed; the repaired tests cover failures before control deletion and after deletion but before lock release.
+Recovery's placeholder control record finalizes a run that never reached service intent, and a measured retry proves it cannot finalize one whose cleaned Pub/Sub portion it does not carry.
+That run's retry needs the verified snapshot restored first, which no implemented path rebuilds from the receipt that still carries it.
+Earlier internal Pub/Sub fixtures keep their strict full-receipt contract.
+Keep the Pub/Sub success verdict false until fault/recovery evidence and its oracle are implemented.
+
+This refines the previous blanket refusal to deserialize Pub/Sub, not the prohibition on paid execution.
+The selected dollar cap remains unestimated, the total-request cap is not an aggregate meter, and shared schema validation does not authenticate approval.
+Keep runner and supervisor entrypoints disabled and the offline delivery approval empty until complete accounting, approval-bound delivery, external fault observations, a control-snapshot recovery procedure and independent orchestration are reviewed.
+The [internal approval runbook](../../kubernetes/apps/pubsub/README.md#internal-approval-contract) records the exact limits and remaining boundaries.
 
 ### Pub/Sub lifecycle IAM preparation
 
