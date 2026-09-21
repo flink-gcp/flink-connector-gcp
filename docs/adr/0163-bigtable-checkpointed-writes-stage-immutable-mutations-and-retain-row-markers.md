@@ -24,7 +24,7 @@ limitations under the License.
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
 The staged runtime and both API surfaces are implemented under [ADR-0166](0166-bigtable-implementation-precedes-final-stage2-acceptance.md), which moves final Stage 2 acceptance after implementation.
-Production-service correctness acceptance was recorded under [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) on 2026-09-14; the full Stage 2 evaluation and release remain pending under [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327).
+Production-service correctness acceptance was recorded under [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) on 2026-09-14; the Stage 2 evaluation under [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) declined the performance gate on 2026-09-21 and withheld release, as the [assessment record](evidence/0163-bigtable-stage2-assessment.md) sets out.
 
 ## Context
 
@@ -185,7 +185,7 @@ The [native-transport acceptance](evidence/0163-bigtable-native-transport-accept
 1. Preserve the accepted protocol and historical diagnostic evidence.
 2. Close the implementation issue #1211 after the merged runtime, DataStream/Table APIs and local verification are delivered and remaining acceptance is tracked in [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) under ADR-0166.
 3. Under #1319, reconcile the existing aggregate cost authorization, freeze the reviewed production source and service plan, then perform actual-factory recovery acceptance on both Flink lines and native-transport acceptance.
-4. Under [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327), run the unchanged formal Stage 2 evaluation from compute co-located with the instance, then record the verdict, supported workload limits and verified cleanup before release.
+4. Done: under [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) the unchanged formal Stage 2 evaluation ran from compute co-located with the instance on 2026-09-20 and 2026-09-21, completed the matrix and declined the mode, so release is withheld and no supported workload is claimed; the [assessment record](evidence/0163-bigtable-stage2-assessment.md) holds the measurements.
 
 ## Alternatives declined
 

@@ -17,7 +17,7 @@ limitations under the License.
 # Bigtable staged-write Stage 2 protocol
 
 This is the preregistered experimental design for [ADR-0163](../0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md) and the implementation in [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211).
-The outstanding assessment is tracked in [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327).
+The assessment ran under [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) and declined the mode; the [assessment record](0163-bigtable-stage2-assessment.md) holds its measurements.
 It does not authorize a service run or record a result.
 The local sizing probe is separate; it neither runs this benchmark nor measures Bigtable capacity.
 The [local MiniCluster harness](0163-bigtable-local-staged-harness.md) adds fake and emulator preparation without creating service resources; its fixed-input observations are not this protocol's service result.
@@ -25,7 +25,7 @@ The [local MiniCluster harness](0163-bigtable-local-staged-harness.md) adds fake
 ## Question and controlled conditions
 
 Measure the complete staged path's sustainable throughput, record visibility latency, checkpoint and recovery cost against the existing at-least-once bulk path.
-Use a Flink test application with the staged writer/committer protocol and real single-row clients; implementation ordering now follows Accepted ADR-0166, while this assessment remains a release/support condition.
+Use a Flink test application with the staged writer/committer protocol and real single-row clients; implementation ordering follows Accepted ADR-0166, and this assessment was the release and support condition the mode failed.
 Run both arms with the repository-pinned BOM and Flink versions, identical node resources, source data, serializer and TaskManager resources.
 Freeze the source SHA, complete runtime flags, checkpoint storage, heap and client-channel configuration before execution.
 Generate distinct deterministic payloads and fixed millisecond timestamps; one record writes one data cell plus, in the candidate, its replay marker.
@@ -113,3 +113,9 @@ The [production preparation record](0163-bigtable-production-stage2-preparation.
 It also records the owner's additional USD 20 ceiling and preference for a single retained free-trial instance with bounded worker leases.
 That lifecycle requires its own reviewed execution package; the existing per-instance lease commands do not implement it.
 The matrix, observation periods and acceptance thresholds above remain unchanged, and no service performance result is recorded by that preparation.
+
+## Result (2026-09-21)
+
+The [assessment record](0163-bigtable-stage2-assessment.md) holds the service measurements this design asked for.
+The campaign completed all 108 cells and both auxiliary observations, and declined the gate on the visibility criterion in every cell it measured in both arms; the matrix, periods, thresholds and variability rule above were unchanged throughout.
+The sustained phase's marker timecourse was repeated separately after a defect in its sampler, which the assessment record describes.

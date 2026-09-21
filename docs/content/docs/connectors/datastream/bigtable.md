@@ -58,7 +58,8 @@ ADR-0093 records the measurement and decision.
 ## Checkpoint-owned writes
 
 `BigtableDeliveryGuarantee.EXACTLY_ONCE` selects the experimental staged runtime.
-Production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319); the formal Stage 2 performance assessment is pending under [#1327]({{< param BookRepo >}}/issues/1327), and this mode is not yet released or supported.
+Production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319), but the formal Stage 2 assessment declined the performance gate on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327), so this mode is not released or supported.
+It measured a staged visibility p95 between 129 and 1,546 times the bulk figure in every cell it compared, against a limit of four, because a staged write becomes visible only after its checkpoint completes and the conditional commits that completion releases have drained.
 The at-least-once path remains the default.
 
 Provision a dedicated raw marker family with no GC rule and an explicit application profile using single-cluster routing with transactional writes enabled.
@@ -91,7 +92,7 @@ The writer limits one interval to 100,000 entries and 64 MiB of serialized reque
 Exceeding either cap fails synchronously so the task does not wait for a barrier it is preventing.
 These charges are not a Java heap bound: the committer can retain multiple pending intervals and snapshot copies.
 Size the checkpoint interval, heap and timeout for the complete work accumulated before a completion notification, including older checkpoint collections.
-Retained markers grow with the number of envelopes; hot-row growth and storage costs remain part of the pending Stage 2 assessment ([#1327]({{< param BookRepo >}}/issues/1327)).
+Retained markers grow with the number of envelopes, and nothing reclaims them while a job runs: the Stage 2 assessment observed one hot row accumulate 1,445,269 marker cells in thirty minutes, growing linearly throughout ([#1327]({{< param BookRepo >}}/issues/1327)).
 
 ## Credential file deployment
 
