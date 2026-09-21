@@ -320,7 +320,7 @@ The [REST job configuration](https://docs.cloud.google.com/bigquery/docs/referen
 The adapter checks the caller's absolute deadline before requests, after response headers and at streamed-body boundaries, caps each response at 1 MiB and bounds request timeouts by the remaining time.
 An operation-specific adapter view shares the session, plan and clock while taking the earlier of the operation deadline and the original adapter deadline; it never mutates or extends the original deadline.
 These checks do not establish a hard wall-clock stop or cancel an already submitted job.
-Credential refresh and a blocked socket read still depend on the supplied transport; authenticated actor construction must configure those timeouts too.
+The authenticated session described below also budgets credential HTTP exchanges and identity checks; it cannot forcibly interrupt synchronous credential code or a blocked socket read.
 Cleanup can request cancellation only after validating that slot's job, and must poll its status separately until `DONE` before treating cancellation as complete.
 
 Result collection requires a successful `DONE` job and billed-byte statistics within its limit.
@@ -329,7 +329,7 @@ It flattens the returned `f`/`v` cells using the schema, runs the offline oracle
 It does not establish checkpoint provenance, table quiescence or a deployed recovery verdict.
 Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
 The resource controller below supplies durable intent, query evidence and a cleanup pass.
-The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; authenticated actor construction and live idle verification remain executor work.
+The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; actor construction below supplies the BigQuery session, while production dispatch and live idle verification remain executor work.
 Provisioning passes the earlier of the approved start plus 600 seconds and the query window's end to all of its REST operations.
 Query submission, job status and every result page share the requested observation's fixed deadline.
 Common cleanup passes its cleanup deadline separately, allowing cancellation and table deletion after the query window closes without reusing an expired query deadline.
@@ -551,3 +551,40 @@ The final receipt retains this recovery record, but its overall BigQuery `succes
 
 Synthetic controller/service tests exercise both delivery modes and both destination counts, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved external barrier.
 They establish the internal sequencing and refusal behavior, not actual Operator recovery, BigQuery visibility latency or a working writer fence.
+
+## Authenticated internal actors
+
+[`flink_tier3.bigquery_actors`](../../../tools/tier3/src/flink_tier3/bigquery_actors.py) constructs internal actors with a role-specific BigQuery HTTP session.
+Its `runner` context manager compares the complete bundle with the independently supplied environment approval, including local source, Git revision and CUE rendering checks.
+Its `supervisor` context manager instead binds the initial and upgrade manifests and installed source to that environment approval; it does not run Git or CUE inside the runtime image.
+Both validate the approval, current environment lock and actor role before Google authentication, then recheck ownership before returning the actor.
+Each checks the source pin it can reproduce: the runner compares `runtime_sha256` against its complete installation, and the supervisor compares `delivery_sha256` against the mounted subset it actually runs, which is all it has.
+The runner also checks admission before and after authentication, including its 600-second startup limit.
+The handoff uses the approved resource plan, cleanup start as the query deadline and the fixed 10 MiB query-evidence budget.
+The caller supplies the original process token and keeps the context open through admission and settlement, or supervision and cleanup.
+Because both factories validate the approval against the current clock, neither actor can be constructed once admission closes at the cleanup start, so the cleanup window runs inside a context opened before it.
+Replacing a supervisor inside that window is therefore not a recovery path; whether to make it one belongs to the entrypoint work, not to construction.
+Exiting closes the HTTP session; it does not acknowledge runner release or initiate cleanup automatically.
+
+[`BigQuerySession`](../../../tools/tier3/src/flink_tier3/bigquery_auth.py) uses `google-auth` application default credentials, requesting `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials with suitable scopes.
+Before the first BigQuery request with each distinct bearer header, it calls Google's [OAuth2 userinfo endpoint](https://developers.google.com/resources/api-libraries/documentation/oauth2/v2/python/latest/oauth2_v2.userinfo.html) using that same header.
+It requires a verified email equal to `tier3-runner@flink-gcp.iam.gserviceaccount.com` or `tier3-supervisor@flink-gcp.iam.gserviceaccount.com`, according to the actor role.
+It does not infer the authenticated principal from credential configuration or email metadata.
+The identity response is capped at 16 KiB; malformed, unverified, mismatched and unsuccessful responses refuse the actor or resource request.
+
+Credential HTTP requests made through the supplied auth adapter, identity checks and the resource request share one monotonic budget capped at 20 seconds and the caller's remaining operation time.
+Each subsequent request receives the remaining budget; a shorter credential-supplied timeout is preserved.
+Nonblocking credential refresh is rejected, redirects and environment-derived proxies are disabled, and BigQuery/identity requests are not retried or replayed on 401.
+Credential-library retries may still occur within that library, but each HTTP attempt through the adapter must fit the remaining budget.
+The adapter covers every token refresh and the in-cluster metadata credential; it does not cover credential discovery that builds its own transport.
+The pinned `google-auth` forwards the caller's request object only to its Compute Engine checker, so an external-account credential file resolves its project with that library's own timeout, proxy handling and redirect policy rather than this session's.
+The two actors reach Google differently: the supervisor runs as `tier3-system/tier3-supervisor` bound to its Google service account, and the runner authenticates through workload identity federation in CI, which is the external-account form.
+Measured against the pinned library, discovery issues no request when the environment supplies a project and enters the credential exchange on the library's own transport when it does not; that part of construction is then bounded by the caller's deadline check rather than by this budget.
+These checks do not forcibly interrupt credential discovery, synchronous credential code, blocked reads or server-side execution.
+The resource adapter still enforces the absolute operation deadline while consuming BigQuery responses.
+
+The factories do not authenticate the supplied Kubernetes/storage collaborators or the approval's origin, establish GitHub main ancestry or image provenance, fence another creator/writer, or implement the immutable artifact allowance.
+The supervisor still requires an explicit external quiescence callback; constructing a session does not prove that callback works.
+Synthetic tests exercise the pinned Google auth request adapter, token refresh and rotation, identity refusal, shared time budgets, approval binding and lock loss.
+Acceptance of the deployed WIF/GKE credentials by userinfo remains unmeasured, as do live IAM access, fencing and full recovery/cleanup.
+Both production entrypoints remain disabled, and the overall BigQuery receipt still cannot report success.
