@@ -17,9 +17,8 @@ import flink_tier3 as rt
 
 from .bigquery_exercise import require_handoff
 from .bigquery_handoff import require_bigquery_clean
-from .bigquery_plan import OBSERVATIONS
 from .cloudtasks import admission_budget_open, admit_queue
-from .policy import RECOVERY
+from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
 from .pubsub_lifecycle import require_pubsub_clean
 
 
@@ -58,7 +57,7 @@ class Runner:
         if (
             self.env.approval.scenario == "bigquery-recovery"
             and self.env.clock()
-            >= self.env.schedule.started + OBSERVATIONS["startup_seconds"]
+            >= self.env.schedule.started + BIGQUERY_OBSERVATIONS["startup_seconds"]
         ):
             raise rt.Failure("BigQuery startup deadline expired")
         # Admission may spend at most one cell's startup allowance, so the

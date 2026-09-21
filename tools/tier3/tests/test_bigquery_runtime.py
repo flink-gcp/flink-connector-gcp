@@ -56,8 +56,9 @@ class Handoff:
         state = self.env.refresh().bigquery["handoff"]
         return state["released"] and state["inflight"] is None
 
-    def cleanup(self, quiesce):
+    def cleanup(self, quiesce, *, deadline):
         assert self.released()
+        assert deadline > self.env.clock()
         self.calls.append("cleanup")
         if quiesce() is not True:
             raise rt.Failure("BigQuery creators and writers are not quiescent")

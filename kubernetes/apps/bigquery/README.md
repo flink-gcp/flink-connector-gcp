@@ -317,8 +317,10 @@ Submission checks an existing job or reconciles a create conflict against the ex
 There are no automatic retries, fresh retry IDs or polling loops in the adapter.
 A new visibility observation must consume another durably reserved slot; reusing a slot reads the same job's result.
 The [REST job configuration](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfiguration) bounds billed query bytes, but `jobTimeoutMs` is a best-effort service cancellation request.
-The adapter checks the caller's absolute deadline before requests and between streamed response chunks, caps each response at 1 MiB and bounds request timeouts by the remaining time.
+The adapter checks the caller's absolute deadline before requests, after response headers and at streamed-body boundaries, caps each response at 1 MiB and bounds request timeouts by the remaining time.
+An operation-specific adapter view shares the session, plan and clock while taking the earlier of the operation deadline and the original adapter deadline; it never mutates or extends the original deadline.
 These checks do not establish a hard wall-clock stop or cancel an already submitted job.
+Credential refresh and a blocked socket read still depend on the supplied transport; authenticated actor construction must configure those timeouts too.
 Cleanup can request cancellation only after validating that slot's job, and must poll its status separately until `DONE` before treating cancellation as complete.
 
 Result collection requires a successful `DONE` job and billed-byte statistics within its limit.
@@ -328,6 +330,11 @@ It does not establish checkpoint provenance, table quiescence or a deployed reco
 Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
 The resource controller below supplies durable intent, query evidence and a cleanup pass.
 The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; authenticated actor construction and live idle verification remain executor work.
+Provisioning passes the earlier of the approved start plus 600 seconds and the query window's end to all of its REST operations.
+Query submission, job status and every result page share the requested observation's fixed deadline.
+Common cleanup passes its cleanup deadline separately, allowing cancellation and table deletion after the query window closes without reusing an expired query deadline.
+An earlier original adapter deadline still wins, so each actor's adapter must cover its intended operation window.
+Expiry rejects late responses, including a 404 or an empty successful body; a failed creating operation retains its unresolved handoff marker, while a returned read/collection failure can release its marker under the existing protocol.
 
 ### Durable resource controller
 

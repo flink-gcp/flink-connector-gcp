@@ -752,3 +752,16 @@ Reserve it by reducing version 4 supervisor and runner receipt budgets to 80 MiB
 Admission and supervision reject a handoff with a different query budget, plan or environment, or a query deadline other than the approved cleanup start.
 The remaining 2 MiB under the 100 MiB policy is for immutable run artifacts; the future authenticated admission path must account for those artifacts explicitly.
 Declined: adding the query budget above the existing receipt allowances, admitting the CLI with a placeholder writer fence, or treating passing synthetic recovery as issue acceptance.
+
+### BigQuery operation deadlines
+
+Carry the lifecycle operation's deadline through the handoff and controller to the REST adapter.
+Provisioning uses the earlier of the approved start plus 600 seconds and the query window's end; submission, status and result pagination use the requested observation deadline.
+Cleanup receives its own deadline from the common cleanup window, so it can cancel queries and delete tables after query admission closes.
+Use separate adapter views over the same session, plan and clock, capped by the original adapter deadline, rather than mutating that shared deadline or resetting a timeout for each page.
+Keep observation timing in the shared policy module so handoff construction does not import the offline rendering workflow.
+
+Check expiry after receiving response headers and at streamed-body boundaries, including empty bodies and absent resources.
+A late response cannot establish a successful resource operation; retain the existing unresolved-create and returned-read failure rules.
+These checks bound request admission and the timeout passed to the transport, not credential refresh, a blocked read or server-side execution by themselves.
+Authenticated transport construction and the external creator/writer barrier remain required before CLI admission or live acceptance.

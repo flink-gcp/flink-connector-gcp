@@ -151,6 +151,14 @@ class BigQueryResources:
             raise ValueError("deadline must be a finite UTC timestamp")
         self.http, self.plan, self.deadline, self.clock = http, plan, deadline, clock
 
+    def with_deadline(self, deadline):
+        """Share the transport with an operation deadline that cannot extend this one."""
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            raise ValueError("deadline must be a finite UTC timestamp")
+        return BigQueryResources(
+            self.http, self.plan, min(self.deadline, deadline), self.clock
+        )
+
     def _remaining(self):
         remaining = self.deadline - self.clock()
         if remaining <= 0:
@@ -169,6 +177,7 @@ class BigQueryResources:
                 allow_redirects=False,
                 stream=True,
             ) as response:
+                self._remaining()
                 if absent and response.status_code == 404:
                     return None
                 if not 200 <= response.status_code < 300:
@@ -179,6 +188,7 @@ class BigQueryResources:
                     data.extend(chunk)
                     if len(data) > MAX_RESPONSE_BYTES:
                         raise Failure("BigQuery response exceeds 1 MiB")
+                self._remaining()
                 result = json.loads(data) if data else {}
                 if not isinstance(result, dict):
                     raise Failure("BigQuery response must be an object")

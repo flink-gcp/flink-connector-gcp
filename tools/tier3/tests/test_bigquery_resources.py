@@ -498,6 +498,60 @@ def test_transport_is_bounded_and_does_not_follow_redirects_or_retry(plan):
     assert not http.calls
 
 
+def test_operation_views_preserve_the_original_deadline_and_transport(plan):
+    api, http = client(plan, table(plan), table(plan), table(plan))
+    short = api.with_deadline(NOW + 2)
+    short.table(0)
+    short.with_deadline(NOW + 900).table(0)
+    api.table(0)
+    assert [call[2]["timeout"] for call in http.calls] == [2, 2, 20]
+    assert short.plan is api.plan
+    assert short.http is api.http
+    assert short.clock is api.clock
+    assert api.deadline == NOW + 120
+
+
+@pytest.mark.parametrize("deadline", [True, None, "later", float("nan"), float("inf")])
+def test_operation_views_refuse_invalid_deadlines(plan, deadline):
+    api, http = client(plan)
+    with pytest.raises(ValueError, match="deadline"):
+        api.with_deadline(deadline)
+    assert not http.calls
+
+
+@pytest.mark.parametrize("status", [200, 204, 404, 503])
+def test_late_headers_are_not_accepted_even_for_absence_or_empty_body(plan, status):
+    now = [NOW]
+
+    class Late(Response):
+        def __enter__(self):
+            now[0] += 2
+            return self
+
+    response = Late(b"", status)
+    api, http = client(plan, response, clock=lambda: now[0])
+    with pytest.raises(Failure, match="deadline"):
+        api.with_deadline(NOW + 2).table(0)
+    assert len(http.calls) == 1
+    assert response.closed
+
+
+def test_deadline_is_checked_after_empty_stream_finishes(plan):
+    now = [NOW]
+
+    class LateEnd(Response):
+        def iter_content(self, size):
+            yield from ()
+            now[0] += 2
+
+    response = LateEnd(b"", 204)
+    api, http = client(plan, table(plan), response, clock=lambda: now[0])
+    with pytest.raises(Failure, match="deadline"):
+        api.with_deadline(NOW + 2).delete_table(0, table(plan))
+    assert [call[0] for call in http.calls] == ["GET", "DELETE"]
+    assert response.closed
+
+
 @pytest.mark.parametrize("raw", [b"[]", b"not-json", b"\xff"])
 def test_invalid_response_closed(plan, raw):
     response = Response(raw)

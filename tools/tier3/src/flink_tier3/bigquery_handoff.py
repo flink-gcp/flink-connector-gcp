@@ -21,6 +21,7 @@ import re
 import uuid
 
 from .common import Failure, digest, json_bytes
+from .policy import BIGQUERY_OBSERVATIONS
 
 
 def require_bigquery_clean(record):
@@ -128,14 +129,14 @@ class BigQueryHandoff:
 
         self.controller._change(initialize, open_only=True)
 
-    def _call(self, operation, callback, *, creates=False, deadline=None):
+    def _call(self, operation, callback, *, deadline, creates=False):
         """Serialize calls through CAS; retain ambiguous creation outcomes."""
         self._role("runner")
 
         marker = {"operation": operation, "id": uuid.uuid4().hex}
 
         def begin(value):
-            if deadline is not None and self.env.clock() >= deadline:
+            if self.env.clock() >= deadline:
                 raise Failure("BigQuery observation deadline expired")
             if value["inflight"] is not None:
                 raise Failure("BigQuery runner call is in flight or unresolved")
@@ -144,7 +145,7 @@ class BigQueryHandoff:
         self._change(begin, open_only=True)
         completed = False
         try:
-            result = callback()
+            result = callback(self.controller.with_deadline(deadline))
             completed = True
             return result
         finally:
@@ -176,7 +177,15 @@ class BigQueryHandoff:
 
     def provision(self):
         """Provision through the submitting runner, retaining a failed-call marker."""
-        return self._call("provision", self.controller.provision, creates=True)
+        return self._call(
+            "provision",
+            lambda controller: controller.provision(),
+            creates=True,
+            deadline=min(
+                self.env.schedule.started + BIGQUERY_OBSERVATIONS["startup_seconds"],
+                self.binding["query_until"],
+            ),
+        )
 
     def request(self, name, *, deadline):
         """Request one serial observation; another snapshot requires a new name."""
@@ -235,13 +244,13 @@ class BigQueryHandoff:
             if saved["stage"] in ("reserved", "submitting"):
                 self._call(
                     "submit:" + name,
-                    lambda name=name: self.controller.submit_query(name),
+                    lambda controller, name=name: controller.submit_query(name),
                     creates=True,
                     deadline=request["deadline"],
                 )
             job = self._call(
                 "status:" + name,
-                lambda slot=saved["slot"]: self.controller.api.job(slot),
+                lambda controller, slot=saved["slot"]: controller.api.job(slot),
                 deadline=request["deadline"],
             )
             if job is None:
@@ -252,7 +261,7 @@ class BigQueryHandoff:
                 raise Failure("BigQuery observation deadline expired")
             self._call(
                 "collect:" + name,
-                lambda name=name: self.controller.collect_query(
+                lambda controller, name=name: controller.collect_query(
                     name, max_bytes=self.per_query
                 ),
                 deadline=request["deadline"],
@@ -314,7 +323,7 @@ class BigQueryHandoff:
         _, value = self._read()
         return value["released"] is True and value["inflight"] is None
 
-    def cleanup(self, quiesce):
+    def cleanup(self, quiesce, *, deadline):
         """Require runner release plus the caller's external workload barrier."""
         self._role("supervisor")
         self.stop()
@@ -325,4 +334,4 @@ class BigQueryHandoff:
                 raise Failure("BigQuery submitting runner has not released authority")
             return quiesce()
 
-        return self.controller.cleanup(barrier)
+        return self.controller.with_deadline(deadline).cleanup(barrier)

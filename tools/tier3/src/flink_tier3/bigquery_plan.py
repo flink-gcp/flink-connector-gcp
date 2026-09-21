@@ -25,7 +25,14 @@ from .bigquery_resources import ResourcePlan
 from .bundle import source_digest
 from .common import Failure, digest, json_bytes, quantity, timestamp, utc
 from .model import Schedule, _hourly
-from .policy import BIGQUERY_CEILINGS, GAR, POD_RESOURCES, RUN_ID, SHA
+from .policy import (
+    BIGQUERY_CEILINGS,
+    BIGQUERY_OBSERVATIONS,
+    GAR,
+    POD_RESOURCES,
+    RUN_ID,
+    SHA,
+)
 from .workflow import render
 
 WINDOW_SECONDS = BIGQUERY_CEILINGS["seconds"]
@@ -36,14 +43,6 @@ QUERY_TIMEOUT_MS = 60000
 REVIEWED_AT = "2026-09-20T00:00:00Z"
 QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
-OBSERVATIONS = {
-    "warmup_seconds": 180,
-    "baseline_seconds": 600,
-    "post_recovery_seconds": 600,
-    "startup_seconds": 600,
-    "recovery_seconds": 300,
-    "visibility_seconds": 600,
-}
 FIELDS = {
     "version",
     "mode",
@@ -292,7 +291,7 @@ def prepare(
             "query_bytes": trial["query_slots"] * trial["maximum_bytes_billed"],
             "additional_cost_usd": trial["additional_cost_usd"],
         },
-        "observations": dict(OBSERVATIONS),
+        "observations": dict(BIGQUERY_OBSERVATIONS),
         "cost": {
             "kind": "planning-estimate",
             "usd": str(estimate(trial)),
