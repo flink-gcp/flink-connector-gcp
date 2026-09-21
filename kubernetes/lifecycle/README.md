@@ -51,6 +51,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery_plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
 | `flink_tier3/bigquery_lifecycle.py` | Internal durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier; not wired into admission |
 | `flink_tier3/bigquery_handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
+| `flink_tier3/bigquery_bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
 | `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations; not wired into admission |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
 | `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
@@ -442,5 +443,5 @@ A synthetic digest renders locally but never passes the live registry check that
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal).
-The internal version 4 approval and its five-Pod, dedicated-state-bucket policy are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy); execution entrypoints remain disabled.
+The internal version 4 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy); execution entrypoints remain disabled.
 It produces an explicitly unapproved bundle and does not extend this lifecycle's run/recovery admission.

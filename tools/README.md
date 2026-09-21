@@ -52,6 +52,7 @@ The offline `bigquery query` and `bigquery assess` commands also work outside th
 The internal [BigQuery resource adapter](../kubernetes/apps/bigquery/README.md#resource-adapter) prepares owned table and bounded query operations for a future executor.
 The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after a caller-provided quiescence barrier; no lifecycle execution scenario invokes either component yet.
 The render-only [BigQuery execution proposal](../kubernetes/apps/bigquery/README.md#offline-execution-proposal) binds the resource plan and both application phases to a reviewable supervisor bundle without creating an approval.
+The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/README.md#approval-bound-delivery-bundle) prepares and verifies delivery against a separately supplied approval without admitting execution.
 
 The [lifecycle runbook](../kubernetes/lifecycle/README.md) defines execution approval and cleanup.
 Third-party dependencies remain installed in the pinned image, while the reviewed package source is projected through an immutable ConfigMap.
