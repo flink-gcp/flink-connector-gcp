@@ -498,7 +498,7 @@ def test_blocked_release_reports_once_but_retries_transient_control_failure(env)
 
 def test_barrier_without_handoff_is_rejected_at_construction(env):
     environment = lifecycle(env).env
-    with pytest.raises(rt.Failure, match="barrier requires a BigQuery handoff"):
+    with pytest.raises(rt.Failure, match="barrier requires a service handoff"):
         rt.Supervisor(environment, quiesce=lambda: True)
 
 

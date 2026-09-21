@@ -47,6 +47,7 @@ from .policy import (
     OPERATOR,
     POD_RESOURCES,
     POLL,
+    PUBSUB_STATE,
     STATE,
     SYSTEM,
 )
@@ -101,9 +102,20 @@ def application_resources():
 class Cleanup:
     """Ownership-checked observation and convergence toward the idle foundation."""
 
-    def __init__(self, env, *, bigquery=None, quiesce=None):
-        if bigquery is None and quiesce is not None:
-            raise Failure("A quiescence barrier requires a BigQuery handoff")
+    def __init__(self, env, *, bigquery=None, pubsub=None, quiesce=None):
+        if bigquery is not None and pubsub is not None:
+            raise Failure("Cleanup accepts only one service handoff")
+        if pubsub is not None and (
+            pubsub.env is not env
+            or env.actor != "supervisor"
+            or env.approval.scenario != "pubsub-recovery"
+            or not callable(quiesce)
+        ):
+            raise Failure(
+                "Pub/Sub cleanup needs its supervisor environment and a quiescence barrier"
+            )
+        if bigquery is None and pubsub is None and quiesce is not None:
+            raise Failure("A quiescence barrier requires a service handoff")
         if bigquery is not None and (
             bigquery.env is not env
             or env.actor != "supervisor"
@@ -113,7 +125,7 @@ class Cleanup:
                 "BigQuery cleanup needs its supervisor environment and a quiescence barrier"
             )
         self.env = env
-        self.bigquery, self.quiesce = bigquery, quiesce
+        self.bigquery, self.pubsub, self.quiesce = bigquery, pubsub, quiesce
         self.last_inventory = []
         self.current_cell = None
 
@@ -134,6 +146,8 @@ class Cleanup:
 
     def state_prefixes(self, cell_ids=None):
         run_id = self.env.approval.run_id
+        if self.env.approval.scenario == "pubsub-recovery":
+            return [(f"runs/{run_id}/", PUBSUB_STATE)]
         if self.env.approval.scenario == "bigquery-recovery":
             return [(f"runs/{run_id}/", BIGQUERY_STATE)]
         if not self.cloudtasks:
@@ -449,7 +463,10 @@ class Cleanup:
         self.env.namespaces()
         self.env.assert_owner()
         self.env.refresh()
-        if self.env.records.cache.bigquery is not None:
+        if (
+            self.env.records.cache.bigquery is not None
+            or self.env.records.cache.pubsub is not None
+        ):
             try:
                 self.env.records.request_stop()
             except Failure:
@@ -547,6 +564,7 @@ class Cleanup:
                 "Owned workload remains; Operator and environment lock retained for recovery"
             )
         self.finish_bigquery(end)
+        self.finish_pubsub(end)
         # Evidence or storage failures must not keep paid resources alive.
         queue_clean = True
         if self.cloudtasks:
@@ -624,10 +642,28 @@ class Cleanup:
             )
         require_bigquery_clean(self.env.refresh())
 
+    def finish_pubsub(self, deadline):
+        """After workload teardown, release this actor and require the external fence."""
+        if self.env.refresh().pubsub is None:
+            return
+        if self.pubsub is not None:
+            self.pubsub.release()
+            self.env.wait(
+                lambda: (
+                    self.pubsub.released()
+                    and self.quiesce() is True
+                    and self.pubsub.cleanup(self.quiesce)
+                ),
+                deadline,
+            )
+        require_pubsub_clean(self.env.refresh())
+
 
 def verify_idle(env):
     env.namespaces()
-    require_bigquery_clean(env.refresh())
+    control = env.refresh()
+    require_bigquery_clean(control)
+    require_pubsub_clean(control)
     kube, approval = env.kube, env.approval
     items = kube.inventory(approval.application_namespace)
     baseline = set(approval.baseline_uids)

@@ -142,10 +142,11 @@ class PubSubHandoff:
     def initialize(self):
         """Bind the runner before resource creation or message admission."""
         self._role("runner")
-        self.controller.initialize()
 
         def initialize(record):
-            self.controller._open(record)
+            # Publish resource intent and its runner authority in the same CAS.
+            # A lost acknowledgement must never leave an unbound resource record.
+            self.controller._initialize(record)
             state = self.controller._state(record)
             if (
                 self.env.stopping
@@ -287,12 +288,25 @@ class PubSubHandoff:
         self.stop()
 
         def release(record):
+            # A supervisor stopped before join has no data authority to release.
+            # The shared stop above prevents it from claiming that authority later.
+            if self._state(record)["actors"][self.env.actor] is None:
+                return
             actor = self._owned(record)
             if actor["inflight"] is not None:
                 raise Failure("Pub/Sub actor call is in flight or unresolved")
             actor["released"] = True
 
         self.controller._change(release)
+
+    def released(self):
+        """Observe all bound releases; this is not an external quiescence proof."""
+        self._role()
+        record, _ = self.controller._read()
+        return all(
+            actor is None or actor["released"]
+            for actor in self._state(record)["actors"].values()
+        )
 
     def cleanup(self, quiesce):
         """Require cooperative actor releases and the external workload barrier."""

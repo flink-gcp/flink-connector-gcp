@@ -22,12 +22,19 @@ from .pubsub_lifecycle import require_pubsub_clean
 
 
 class Runner:
-    def __init__(self, env, bigquery=None):
+    def __init__(self, env, bigquery=None, *, pubsub=None):
         if bigquery is not None and bigquery.env is not env:
             raise rt.Failure("BigQuery handoff belongs to another runner environment")
+        if pubsub is not None and (
+            bigquery is not None
+            or pubsub.env is not env
+            or env.actor != "runner"
+            or env.approval.scenario != "pubsub-recovery"
+        ):
+            raise rt.Failure("Pub/Sub handoff requires its original runner environment")
         self.env = env
         self.env.actor = "runner"
-        self.bigquery = bigquery
+        self.bigquery, self.pubsub = bigquery, pubsub
         self.cleanup = rt.Cleanup(env)
 
     @property
@@ -132,6 +139,8 @@ class Runner:
         self.env.remember(key, obj)
 
     def start(self, config, job, application):
+        if self.env.approval.scenario == "pubsub-recovery":
+            raise rt.Failure("Pub/Sub execution admission is not implemented")
         if self.env.approval.scenario == "bigquery-recovery":
             raise rt.Failure("BigQuery execution admission is not implemented")
         self.env.refresh()
@@ -202,6 +211,30 @@ class Runner:
     def settle(self, request_stop=False):
         # The admitting runner calls this only after start() has returned.
         # Recovery must not reconstruct another process's submitting token.
+        pubsub_released = False
+        pubsub_failed = False
+        last_pubsub_error = None
+
+        def release_pubsub():
+            nonlocal pubsub_released, pubsub_failed, last_pubsub_error
+            if self.pubsub is None or pubsub_released:
+                return
+            try:
+                if self.env.refresh().pubsub is not None:
+                    self.pubsub.release()
+                pubsub_released = True
+            except (rt.Failure, OSError, ValueError) as error:
+                self.env.stopping = True
+                pubsub_failed = True
+                cause = str(error)
+                if cause != last_pubsub_error:
+                    self.env.emit("pubsub-release-blocked", {"cause": cause})
+                    last_pubsub_error = cause
+
+        # Both actors have finished data operations before terminal settlement.
+        # Release stops shared admission, including supervisor collection, before
+        # waiting for the supervisor's cleanup to observe this actor's release.
+        release_pubsub()
         self.env.refresh()
         if request_stop or self.env.stopping:
             self.env.records.request_stop()
@@ -227,6 +260,7 @@ class Runner:
 
         def completed():
             nonlocal query_failed
+            release_pubsub()
             control = self.env.refresh()
             if self.env.stopping:
                 self.env.records.request_stop()
@@ -267,6 +301,7 @@ class Runner:
             self.env.records.request_stop()
         finally:
             release_queries()
+            release_pubsub()
         control = self.env.refresh()
         if control.application_intent and "application" not in self.env.roots:
             application, _ = self.env.store.read(
@@ -281,7 +316,10 @@ class Runner:
             self.cleanup.adopt_intended_cell(self.cleanup.inventory())
         # Reconcile actual state even after an earlier actor recorded cleanup.
         # A cleaned record alone is not a current idle observation.
-        self.cleanup.run("external settlement", control.success and not query_failed)
+        self.cleanup.run(
+            "external settlement",
+            control.success and not query_failed and not pubsub_failed,
+        )
 
         job = self.env.root("supervisor")
         if (

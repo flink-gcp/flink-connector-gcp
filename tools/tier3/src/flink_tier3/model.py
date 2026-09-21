@@ -41,6 +41,7 @@ from .policy import (
     POD_RESOURCES,
     PRICING_REVIEWED,
     PROJECT,
+    PUBSUB,
     RECOVERY,
     REGION,
     RUN_ID,
@@ -595,6 +596,8 @@ class Approval:
 
     @property
     def application_namespace(self):
+        if self.scenario == "pubsub-recovery":
+            return PUBSUB
         if self.scenario == "bigquery-recovery":
             return BIGQUERY
         return CLOUDTASKS if self.scenario == "cloudtasks" else SMOKE

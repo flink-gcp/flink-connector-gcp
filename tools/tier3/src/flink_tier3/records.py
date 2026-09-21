@@ -24,6 +24,7 @@ from .bigquery_handoff import require_bigquery_clean
 from .common import ApiError, Failure, json_bytes, utc
 from .model import Phase, RunRecord
 from .policy import CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
+from .pubsub_lifecycle import require_pubsub_clean
 
 
 def conditional_update(store, path, read, edit, serialize=lambda value: value):
@@ -85,6 +86,7 @@ class Records:
         def edit(record):
             if phase == Phase.CLEANED:
                 require_bigquery_clean(record)
+                require_pubsub_clean(record)
             previous = record.phase
             record.set_phase(phase)
             if reason is not None:
@@ -219,6 +221,7 @@ class Records:
     def settled(self, evidence_failed):
         def edit(record):
             require_bigquery_clean(record)
+            require_pubsub_clean(record)
             record.idle = True
             record.evidence_failed |= evidence_failed
 

@@ -325,12 +325,17 @@ CLI admission and runnable fault/recovery orchestration remain disabled pending 
 
 [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub_handoff.py) wraps the resource controller and shared traffic reservations in a durable actor protocol.
 The original runner constructs it from its `PubSubTraffic` and a fresh 32-character lowercase hexadecimal process token, then calls `initialize()` before resource preparation.
+Initialize through `PubSubHandoff.initialize()` without first calling the underlying resource controller's initializer.
+This handoff entry point writes resource intent and runner authority together in one generation-checked control update; a crash cannot commit resource intent without its actor binding.
+If the write did not commit, common cleanup sees no Pub/Sub state; if it committed but the acknowledgement was lost, the original process may repeat initialization with its same token while admission remains open.
+If that process died, a replacement uses the external reclamation proof below for the recorded actor before common cleanup can finish.
+Competing initializations and shared stop are rechecked after a generation conflict; neither a retry nor cleanup adopts a different runner token.
 `prepare()` records one runner invocation before creating resources and initializes the traffic counters before acknowledging completion.
 After preparation and transition to `READY`, the supervisor constructs its own instance with a distinct fresh token and calls `join()` before collection; joining during `RUNNING` is also permitted while admission is open.
 The submitting process may repeat its binding call idempotently while that admission window remains open, but another process must not reconstruct or transfer its recorded token.
 A replacement supervisor may use the explicit reclamation path below without adopting the former supervisor's data authority.
 Tokens identify process ownership; authenticated identities, exclusive resource control and all operation/credential budgets remain the caller's responsibility.
-Use the wrapper from the first preparation call onward: direct calls to the underlying preparation or traffic helpers bypass its invocation records.
+Use the wrapper from the first initialization call onward: direct resource initialization bypasses atomic actor binding, and direct preparation or traffic calls bypass its invocation records.
 
 The wrapper's `publish()` and `collect()` use the existing message helpers and shared budgets.
 Before each preparation, publication or collection, a conditional update records a fresh invocation ID under the actor's token.
@@ -347,7 +352,8 @@ Even one transient operation failure can therefore stop both actors and require 
 `stop()` closes admission without declaring quiescence.
 Each bound actor calls `release()` to stop admission and permanently surrender its authority once it has no unresolved call.
 Normal supervisor `cleanup(quiesce)` requires all bound actors released, then requires the external barrier to prove creators, workload writers and their in-flight requests quiescent.
-A supervisor that never joined has no data authority to release; stop prevents it joining later.
+A supervisor that never joined may call `release()` to stop admission without recording a fictitious actor release; it has no data authority, and stop prevents it joining later.
+`released()` observes whether every bound actor has released, without proving external quiescence.
 When a handoff is present, the underlying resource controller also refuses service deletion before actor release, and shared Operator shutdown/final settlement enforce the same gate.
 Older resource records without a handoff keep their existing external-barrier contract.
 
@@ -367,6 +373,32 @@ The complete handoff, traffic reservations and retained invocation identities su
 
 Synthetic tests exercise concurrent claims, stop/release races, lost acknowledgements, partial preparation, conservative failure handling, reclamation refusal and receipt preservation.
 Deployed actor wiring, measured quiescence, full numeric execution approval and fault/recovery trials remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361); CLI admission is still disabled.
+
+## Shared settlement integration
+
+The internal caller may attach its original runner handoff with `Runner(env, pubsub=handoff)` and its supervisor handoff with `Supervisor(env, pubsub=handoff, quiesce=barrier)`.
+Each handoff must belong to that exact actor environment; a supervisor attachment requires the external barrier, and a lifecycle cannot attach both BigQuery and Pub/Sub handoffs.
+The caller still initializes, prepares, joins and drives the message operations through `PubSubHandoff` before settlement.
+Before entering `Runner.settle()`, the caller must coordinate completion of both runner publication and supervisor output collection and stop concurrent data calls from either process.
+For Pub/Sub, settlement is terminal: even with `request_stop=False`, the runner release closes shared admission, so the supervisor cannot collect further output while the runner waits for cleanup.
+
+The runner attempts its release before waiting for supervisor completion, avoiding a circular wait with the supervisor's cleanup.
+It retries an unsuccessful release during subsequent settlement polls and once after the wait, with every attempt subject to the existing caller-owned control guard.
+`pubsub-release-blocked` records each changed failure cause; a release failure latches local stop and prevents that runner's settlement from recording success even if a later acknowledgement succeeds.
+No retry repeats publication or reclaims an unresolved invocation.
+Failure to persist stop or evidence still requires the independent stop path described above.
+
+Common cleanup first stops admission and removes the owned Flink workload while the Operator is running.
+It then releases the supervisor, waits for all bound releases and an exactly-`True` external barrier, and rechecks the barrier inside resource cleanup before deletion.
+Only recorded service cleanup permits checkpoint/state deletion, Operator shutdown and shared completion.
+While service cleanup is unfinished, an unresolved call, missing supervisor attachment or failed service deletion keeps common cleanup from deleting temporary state or stopping the Operator.
+A replacement must use the separately proved `reclaim()` path; common cleanup never takes over an actor or supplies that proof.
+
+Direct `Records.set_phase(CLEANED)`, `Records.settled()` and `verify_idle()` now enforce the same Pub/Sub clean-state gate as final receipt creation.
+Records without Pub/Sub state retain their prior behavior.
+Cleanup routes Pub/Sub resources to `tier3-pubsub` and temporary state to `flink-gcp-tier3-pubsub`; existing smoke, Cloud Tasks and BigQuery inventory scopes remain unchanged.
+This routing does not admit a run: serialized Pub/Sub approvals, `Runner.start()` and `Supervisor.supervise()` still refuse execution, and no workflow constructs these attachments yet.
+A successful synthetic cleanup is not a recovery verdict; final Pub/Sub success criteria, full numeric approval, input/fault orchestration and deployed evidence remain under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Payload and restoration
 
