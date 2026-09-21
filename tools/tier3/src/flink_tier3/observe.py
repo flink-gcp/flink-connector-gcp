@@ -123,6 +123,20 @@ def metric_name(metric_id):
     return metric_id.rsplit(".", 1)[-1]
 
 
+def job_vertices(job):
+    """The one source and the one sink of a measurement job's graph."""
+    vertices = job.get("vertices") or []
+    sources = [
+        v
+        for v in vertices
+        if v.get("parallelism") == 1 and str(v.get("name", "")).startswith("Source:")
+    ]
+    sinks = [v for v in vertices if v not in sources]
+    if len(sources) != 1 or len(sinks) != 1:
+        raise Failure("Unexpected job graph")
+    return {"source": sources[0]["id"], "sink": sinks[0]["id"]}
+
+
 def is_interrupt_control(cell):
     return cell.get("kind") == INTERRUPT_KIND or cell["id"].endswith(INTERRUPT_SUFFIX)
 
@@ -146,7 +160,9 @@ class CellObserver(SessionHooks):
                 "start": None,
                 "source": None,
                 "sink": None,
-                "sink_metrics": [],
+                "sink_seen": set(),
+                "sink_reads": 0,
+                "sink_settled": False,
                 "seen": set(),
                 "restarting": 0,
                 "interrupted": False,
@@ -170,8 +186,8 @@ class CellObserver(SessionHooks):
         if state["start"] is None:
             state["start"] = at
         job = self.sample(lambda: session.rest(service, ""))
-        if state["sink"] is None and not unavailable(job):
-            self.discover(session, service, cell, state, job)
+        if not state["sink_settled"] and not unavailable(job):
+            self.discover(session, service, cell, state, job, at)
         observation = {"at": at, "cell": cell["id"], "job_id": session.job_id}
         if unavailable(job):
             observation.update(job=job, jm_offset_seconds=None, restarted=False)
@@ -192,7 +208,7 @@ class CellObserver(SessionHooks):
             observation.update(sink=pending, source=pending)
         else:
             observation["sink"] = self.metrics(
-                session, service, state["sink"], state["sink_metrics"]
+                session, service, state["sink"], sorted(state["sink_seen"])
             )
             observation["source"] = self.metrics(
                 session, service, state["source"], SOURCE_METRICS
@@ -213,39 +229,51 @@ class CellObserver(SessionHooks):
         ):
             self.interrupt(session, cell, state, pods, at)
 
-    def discover(self, session, service, cell, state, job):
-        vertices = job.get("vertices") or []
-        sources = [
-            v
-            for v in vertices
-            if v.get("parallelism") == 1
-            and str(v.get("name", "")).startswith("Source:")
-        ]
-        sinks = [v for v in vertices if v not in sources]
-        if len(sources) != 1 or len(sinks) != 1:
-            raise Failure("Unexpected job graph")
-        source, sink = sources[0]["id"], sinks[0]["id"]
+    def discover(self, session, service, cell, state, job, at):
+        """Resolve the sink vertex once, then its metric ids over warm-up.
+
+        The ids arrive in pieces: a task registers its metrics when it deploys
+        and the sink's operators theirs when they open, so one listing can hold
+        the task names, none of the connector gauges, or nothing at all. Every
+        listing adds to what a poll samples, and the end of warm-up settles it.
+        The set only grows, so no poll loses an id an earlier one had.
+        """
+        if state["sink"] is None:
+            state.update(**job_vertices(job))
         listing = self.sample(
-            lambda: session.rest(service, f"/vertices/{sink}/subtasks/metrics")
+            lambda: session.rest(service, f"/vertices/{state['sink']}/subtasks/metrics")
         )
-        if unavailable(listing):
-            # Discovery repeats on the next poll; the observation still emits.
-            return
-        ids = sorted(
-            m["id"]
-            for m in listing
-            if isinstance(m.get("id"), str)
-            and metric_name(m["id"]) in SELECTED_SINK_METRICS
-        )
-        state.update(source=source, sink=sink, sink_metrics=ids)
+        if not unavailable(listing):
+            state["sink_reads"] += 1
+            state["sink_seen"].update(
+                m["id"]
+                for m in listing
+                if isinstance(m, dict)
+                and isinstance(m.get("id"), str)
+                and metric_name(m["id"]) in SELECTED_SINK_METRICS
+            )
+        if at >= state["start"] + cell["warmup_seconds"]:
+            self.settle(session, cell, state)
+
+    def after_cell(self, session, cell, outcome):
+        """A cell that resolved its graph records what it had; one that
+        never reached its job resolved nothing."""
+        state = self.cells.get(cell["id"])
+        if state and state["sink"] is not None and not state["sink_settled"]:
+            self.settle(session, cell, state)
+
+    def settle(self, session, cell, state):
+        """Freeze the ids the cell samples and record what it resolved."""
+        ids = sorted(state["sink_seen"])
         session.env.emit(
             "cell-metrics-discovered",
             {
                 "cell": cell["id"],
                 "job_id": session.job_id,
-                "source": source,
-                "sink": sink,
+                "source": state["source"],
+                "sink": state["sink"],
                 "metrics": ids,
+                "reads": state["sink_reads"],
             },
         )
         if cell.get("arm", "").startswith("STAGED_"):
@@ -255,6 +283,9 @@ class CellObserver(SessionHooks):
                 session.env.emit(
                     "metrics-unavailable", {"cell": cell["id"], "missing": missing}
                 )
+        # Last for the order of events, not for a retry: ``emit`` never
+        # raises, and the supervisor fails the run on the next poll.
+        state["sink_settled"] = True
 
     def checkpoints(self, session, service, state):
         summary = self.sample(lambda: session.rest(service, "/checkpoints"))
