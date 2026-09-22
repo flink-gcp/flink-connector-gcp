@@ -23,14 +23,7 @@ import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.junit5.MiniClusterExtension;
 
-import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
-import io.grpc.MethodDescriptor;
-import io.grpc.Server;
-import io.grpc.ServerServiceDefinition;
-import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
-import io.grpc.protobuf.ProtoUtils;
-import io.grpc.stub.ServerCalls;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,13 +36,10 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,57 +61,9 @@ class MeasurementJobITCase {
     @ParameterizedTest
     @EnumSource(MeasurementOptions.Arm.class)
     void actualJobUsesTheObservedProductionRpcPath(MeasurementOptions.Arm arm) throws Exception {
-        Map<Long, Task> accepted = new ConcurrentHashMap<>();
-        Set<String> acceptedNames = ConcurrentHashMap.newKeySet();
-        MethodDescriptor<CreateTaskRequest, Task> method =
-                MethodDescriptor.<CreateTaskRequest, Task>newBuilder()
-                        .setType(MethodDescriptor.MethodType.UNARY)
-                        .setFullMethodName("google.cloud.tasks.v2.CloudTasks/CreateTask")
-                        .setRequestMarshaller(
-                                ProtoUtils.marshaller(CreateTaskRequest.getDefaultInstance()))
-                        .setResponseMarshaller(ProtoUtils.marshaller(Task.getDefaultInstance()))
-                        .build();
-        Server server =
-                NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
-                        .addService(
-                                ServerServiceDefinition.builder("google.cloud.tasks.v2.CloudTasks")
-                                        .addMethod(
-                                                method,
-                                                ServerCalls.asyncUnaryCall(
-                                                        (request, response) -> {
-                                                            var origin =
-                                                                    MeasurementPayload.read(
-                                                                            request.getTask()
-                                                                                    .getHttpRequest()
-                                                                                    .getBody());
-                                                            Task task = request.getTask();
-                                                            if (task.getName().isEmpty()) {
-                                                                task =
-                                                                        task.toBuilder()
-                                                                                .setName(
-                                                                                        request
-                                                                                                        .getParent()
-                                                                                                + "/tasks/"
-                                                                                                + UUID
-                                                                                                        .randomUUID())
-                                                                                .build();
-                                                            }
-                                                            if (!acceptedNames.add(
-                                                                    task.getName())) {
-                                                                response.onError(
-                                                                        io.grpc.Status
-                                                                                .ALREADY_EXISTS
-                                                                                .asRuntimeException());
-                                                                return;
-                                                            }
-                                                            accepted.putIfAbsent(
-                                                                    origin.sequence(), task);
-                                                            response.onNext(task);
-                                                            response.onCompleted();
-                                                        }))
-                                        .build())
-                        .build()
-                        .start();
+        FakeCloudTasks server = new FakeCloudTasks();
+        Map<Long, Task> accepted = server.accepted();
+        Set<String> acceptedNames = server.names();
         ByteArrayOutputStream evidence = new ByteArrayOutputStream();
         PrintStream original = System.out;
         System.setOut(new PrintStream(evidence, true, StandardCharsets.UTF_8));
@@ -135,8 +77,7 @@ class MeasurementJobITCase {
                     temporary.resolve("checkpoints").toUri().toString());
             config.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
             var environment = StreamExecutionEnvironment.getExecutionEnvironment(config);
-            CloudTasksMeasurementJob.configure(
-                    environment, options, "127.0.0.1:" + server.getPort());
+            CloudTasksMeasurementJob.configure(environment, options, server.endpoint());
             var job = environment.executeAsync("measurement-path-" + arm);
             try {
                 job.getJobExecutionResult().get(45, TimeUnit.SECONDS);
@@ -172,8 +113,7 @@ class MeasurementJobITCase {
             }
         } finally {
             System.setOut(original);
-            server.shutdownNow();
-            assertThat(server.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+            server.close();
         }
     }
 }

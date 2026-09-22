@@ -61,6 +61,7 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 | `--attempt-limit` | Window mode: explicitly approved per-creator ceiling, from 1 through three times the generated record count |
 | `--control-delay-millis` | Window calibration only: 0 (default) or 100; a nonzero value requires `UNNAMED`, parallelism/concurrency 1 and CSV output |
 | `--emit-attempts` | `true` (default), or `false` for a window calibration that measures accounting without CSV formatting/output |
+| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Defaults to `gs://flink-gcp-cloudtasks-benchmark/runs/`, which is what a cluster session uses and never passes; a rig that writes elsewhere passes its own |
 
 Record-count mode remains available for finite wiring checks.
 Window mode requires all four window arguments and rejects `--records` and `--warmup-records`.
@@ -104,7 +105,7 @@ Named failures retain the requested name so deduplicated replay can be reconcile
 It does not establish the reason for cancellation; an RPC reporting `DEADLINE_EXCEEDED` retains that status.
 The row describes the RPC future, whereas the committer classifies its local expiry as `DEADLINE_EXCEEDED` in connector error-class metrics; those two observations need not carry the same status.
 
-Window mode writes the rows through the installed Flink GCS filesystem plugin as gzip-compressed CSV parts under `gs://flink-gcp-cloudtasks-benchmark/runs/<run>/cells/<cell>/rows/<incarnation>-<NNNNNN>.csv.gz`.
+Window mode writes the rows through the installed Flink filesystem plugin as gzip-compressed CSV parts under `<evidence root><run>/cells/<cell>/rows/<incarnation>-<NNNNNN>.csv.gz`, which is `gs://flink-gcp-cloudtasks-benchmark/runs/` unless `--evidence-root` names another.
 Part indices start at `000001` and are contiguous within a creator incarnation.
 Each part is created with `NO_OVERWRITE`, so a repeated incarnation fails instead of replacing evidence.
 A part is opened by its first row and rolled before the next row once it holds 8 MiB of uncompressed rows or has been open for 60 seconds.
@@ -146,7 +147,7 @@ Controls and receipt export still need execution-host validation; the local chec
 
 ## Independent receipt files
 
-Window mode writes small JSON receipts through the installed Flink GCS filesystem plugin under `gs://flink-gcp-cloudtasks-benchmark/runs/<run>/cells/<cell>/receipts/`.
+Window mode writes small JSON receipts through the installed Flink filesystem plugin under `<evidence root><run>/cells/<cell>/receipts/`.
 Record-count mode performs no receipt-storage access.
 The input generator registers a fresh source incarnation before its first mapped sequence and records the final mapping separately.
 A restored source can start above sequence zero; these receipts report mapping boundaries, not downstream delivery, checkpoint completion or task creation.
