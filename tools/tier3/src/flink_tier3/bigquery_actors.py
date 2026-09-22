@@ -25,7 +25,7 @@ from .bigquery_resources import BigQueryResources
 from .bundle import delivery_digest, source_digest
 from .common import Failure, digest
 from .model import validate_approval
-from .policy import BIGQUERY_OBSERVATIONS, HTTP_TIMEOUT, MIB
+from .policy import BIGQUERY_CEILINGS, BIGQUERY_OBSERVATIONS, HTTP_TIMEOUT
 from .runner import Runner
 from .supervisor import Supervisor
 
@@ -49,7 +49,7 @@ def _handoff(env, application, runner_token, http, role):
     return BigQueryHandoff(
         BigQueryLifecycle(env, resources, application),
         runner_token=runner_token,
-        evidence_bytes=10 * MIB,
+        evidence_bytes=BIGQUERY_CEILINGS["query_bytes"],
         query_until=env.schedule.cleanup_at,
     )
 

@@ -20,10 +20,23 @@ import copy
 import re
 from dataclasses import asdict
 
+from .bigquery import integer
 from .common import ApiError, Failure, digest, json_bytes
 from .model import Phase
 
 MAX_CONTROL_BYTES = 256 * 1024
+
+
+def billed_bytes(result):
+    """The bytes a collected query was billed for, from its retained job."""
+    statistics = result.get("job", {}).get("statistics", {})
+    query = statistics.get("query") if isinstance(statistics, dict) else None
+    if not isinstance(query, dict):
+        raise Failure("BigQuery query billing evidence is missing")
+    try:
+        return integer(query.get("totalBytesBilled"), "totalBytesBilled")
+    except ValueError as error:
+        raise Failure("BigQuery query billing evidence is missing") from error
 
 
 class BigQueryLifecycle:
@@ -133,6 +146,7 @@ class BigQueryLifecycle:
                 "stopped": False,
                 "tables": {},
                 "queries": {},
+                "billed_bytes": 0,
                 "cleaned": False,
             }
 
@@ -292,11 +306,21 @@ class BigQueryLifecycle:
                 ) from error
         pointer = {"generation": generation, "sha256": digest(artifact)}
 
+        billed = billed_bytes(result)
+
         def remember(state):
             item = state["queries"][name]
             if item["evidence"] not in (None, pointer):
                 raise Failure("BigQuery query evidence pointer cannot be replaced")
-            item.update(stage="collected", evidence=pointer)
+            # Each query is already refused above its own byte limit, but until
+            # now nothing summed them, so a finished trial could not say what
+            # it had spent. Record the observation's own figure and restate the
+            # total: a conflicting write re-reads and re-applies this edit, so
+            # accumulating here would bill the same query once per attempt.
+            item.update(stage="collected", evidence=pointer, billed=billed)
+            state["billed_bytes"] = sum(
+                query.get("billed", 0) for query in state["queries"].values()
+            )
 
         self._change(remember)
         return result

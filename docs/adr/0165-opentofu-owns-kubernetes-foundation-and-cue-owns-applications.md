@@ -843,3 +843,16 @@ The Storage Write API exposes no call that lists a table's streams, the connecto
 Rest exclusivity beyond the listing on the grant instead: the sole principal holding `bigquery.tables.updateData` is the workload service account, reachable only through the service account in the namespace just shown empty.
 Keep the measurement independent of it — the query oracle already reads after the job reached `FINISHED` and its post-recovery window closed — so the barrier's job is that cleanup does not delete a table while a Pod that could write to it is alive, and the window to `tables.delete` remains recorded as outside this component.
 Declined: inferring quiescence from Pod disappearance alone, which the runbook already forbids; reading `streamingBuffer`, `numRows` or `numBytes` as an idleness signal, all eventually consistent and, for the buffered path, blind to the unflushed tail by construction; treating appender logs as proof, since they are best-effort and unreadable once the Pod is gone; and revoking the writer's grant, which no lifecycle actor is granted and whose propagation would not prove an in-flight token had stopped.
+
+### BigQuery evidence partition and query spend
+
+Hold the four allowances that divide the BigQuery evidence ceiling as policy entries rather than as literals in the modules that enforce them, so the partition is visible as a sum: supervisor receipts, runner receipts, query artifacts and the immutable run documents.
+Weigh each immutable document against its own allowance before writing it, counting only the documents directly under the run prefix; the receipts and query artifacts live below it and answer to their own entries.
+Count from a fixed roster of document names rather than by listing that prefix, which also holds every receipt: the listing refuses past twenty thousand objects, a supervisor's receipts reach that long before their byte ceiling, and this runs as the final result is written.
+A run that would exceed the allowance fails at the write rather than retaining more than it was approved to.
+
+Sum the collected queries' billed bytes into the retained state.
+Each query is already refused above its own byte limit and the slot count bounds the worst case, but a bound is not a measurement: without the sum a finished trial cannot state what it spent, which the preregistration's cost row is meant to be checked against.
+Record each observation's own figure and restate the total from them, rather than accumulating into it.
+A conflicting write re-reads and re-applies the same edit, so accumulation would bill one query once per attempt; assignment is the idiom the rest of this controller already uses for exactly that reason.
+Declined: deriving the cost from the plan's ceiling rather than the jobs' reported bytes, which would restate the approval instead of measuring the run.

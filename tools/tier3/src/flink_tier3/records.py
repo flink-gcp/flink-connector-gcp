@@ -23,7 +23,7 @@ import uuid
 from .bigquery_handoff import require_bigquery_clean
 from .common import ApiError, Failure, json_bytes, utc
 from .model import Phase, RunRecord
-from .policy import CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
+from .policy import BIGQUERY_CEILINGS, CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
 from .pubsub_lifecycle import require_pubsub_clean
 
 
@@ -39,6 +39,48 @@ def conditional_update(store, path, read, edit, serialize=lambda value: value):
             if error.status not in (409, 412):
                 raise
     raise Failure("Concurrent control updates did not settle")
+
+
+# The documents a run retains directly under its prefix. A fixed roster
+# rather than a listing: the prefix also holds every receipt and query
+# artifact, and `objects` refuses past twenty thousand of them, which a
+# supervisor's receipts can reach well before the byte ceiling does. This
+# accounting runs when the final result is written, so a listing here would
+# fail the run at its last step.
+RUN_ARTIFACTS = (
+    "approval.json",
+    "application.json",
+    "images.json",
+    "upgrade-application.json",
+    "session.json",
+    "result.json",
+)
+
+
+def write_artifact(store, run_id, name, value, scenario):
+    """Write one immutable run document, weighed against its own allowance.
+
+    The receipts, the query evidence and these documents partition one
+    approved evidence ceiling. The first two have counted themselves since
+    they existed; these were written unweighed, so nothing proved the run
+    stayed inside what it was approved to retain.
+    """
+    if name not in RUN_ARTIFACTS:
+        raise ValueError("Unknown run artifact: " + name)
+    budget = (
+        BIGQUERY_CEILINGS["artifact_bytes"] if scenario == "bigquery-recovery" else None
+    )
+    if budget is not None:
+        retained = 0
+        for other in RUN_ARTIFACTS:
+            if other == name:
+                continue
+            written, _ = store.read(f"runs/{run_id}/{other}")
+            if written is not None:
+                retained += len(json_bytes(written))
+        if retained + len(json_bytes(value)) > budget:
+            raise Failure("Run artifact ceiling reached")
+    return store.write(f"runs/{run_id}/{name}", value)
 
 
 class Records:
@@ -232,7 +274,7 @@ class Records:
         if self.approval.scenario == "cloudtasks":
             budget = CLOUDTASKS_CEILINGS["receipt_bytes_" + actor]
         elif self.approval.scenario == "bigquery-recovery":
-            budget = (80 if actor == "supervisor" else 8) * MIB
+            budget = BIGQUERY_CEILINGS["receipt_bytes_" + actor]
         else:
             budget = (88 if actor == "supervisor" else 10) * MIB
         objects = self.store.objects(prefix)
