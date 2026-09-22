@@ -856,3 +856,14 @@ Each query is already refused above its own byte limit and the slot count bounds
 Record each observation's own figure and restate the total from them, rather than accumulating into it.
 A conflicting write re-reads and re-applies the same edit, so accumulation would bill one query once per attempt; assignment is the idiom the rest of this controller already uses for exactly that reason.
 Declined: deriving the cost from the plan's ceiling rather than the jobs' reported bytes, which would restate the approval instead of measuring the run.
+
+### BigQuery deployed measurements
+
+Sample the sink from inside the exercise's existing observation windows, at its own interval rather than once per poll — one sample is six REST reads, and at the transport's timeout a slow endpoint would otherwise spend a large part of a window — through the REST service the recovery loop has already resolved and proved owned; an exercise that resolved its own could disagree with that proof, so the loop hands it over through a generic seam rather than the BigQuery exercise reaching for it.
+Read what the issue's second acceptance item names and what nothing in this repository collected: TaskManager memory beyond the heap, because this sink appends through native buffers; the task-level buffer-pool and byte-rate metrics, so throughput can be read against whether the network was the limit; and the connector's own gauges, which are what "active writers" means here.
+Discover the sink's metric ids by listing and union them across samples rather than freezing the first answer: a task registers its metrics at deploy and the sink's operators theirs at open, so a listing taken between those moments holds the task names and none of the connector gauges, and freezing it would drop the active-writer observation silently.
+Identify the source vertex by name rather than by position, and report a plan that does not hold one of each rather than guessing.
+Take no sample on a poll where the loop resolved no Service: a reading through the previous one would be attributed to a job that is not the one running.
+Record an absent reading as unavailable with its cause instead of dropping it: a missing sample and a zero reading answer the question differently.
+Keep the shared metric primitives in their own module, so a second scenario can sample without importing the Cloud Tasks session observer, which imports the supervisor.
+Declined: extending the cell-shaped session hooks to a scenario that has no cells, and re-resolving the REST service inside the exercise.

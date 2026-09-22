@@ -57,6 +57,11 @@ BIGQUERY_OBSERVATIONS = {
     "startup_seconds": 600,
     "recovery_seconds": 300,
     "visibility_seconds": 600,
+    # One measurement per this many seconds, not per poll. Six REST reads at
+    # the transport's timeout would otherwise let a slow endpoint spend two
+    # minutes of a window that is three, and a memory or GC trend does not
+    # need a sample every fifteen seconds to be readable.
+    "measure_seconds": 60,
 }
 
 # Application namespaces first, then the control namespace.

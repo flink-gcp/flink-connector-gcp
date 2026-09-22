@@ -17,6 +17,14 @@
 from __future__ import annotations
 
 from .common import ApiError, Failure, TransportError
+from .metrics import (
+    AGGREGATES,
+    JVM_METRICS,
+    metric_name,
+    sample,
+    subset,
+    unavailable,
+)
 from .policy import CLOUDTASKS, MIB
 from .supervisor import SessionHooks
 
@@ -59,16 +67,8 @@ SOURCE_METRICS = (
     "numRecordsOutPerSecond",
     "backPressuredTimeMsPerSecond",
 )
-JVM_METRICS = (
-    "Status.JVM.Memory.Heap.Used",
-    "Status.JVM.Memory.Heap.Max",
-    "Status.JVM.GarbageCollector.All.Time",
-    "Status.JVM.GarbageCollector.All.Count",
-    "Status.JVM.CPU.Load",
-)
 # A staged arm without these two gauges cannot answer the staging questions.
 STAGED_REQUIRED = ("stagedBytes", "stagedReplayBudgetMillis")
-AGGREGATES = "min,max,sum"
 COMPLETED_FIELDS = (
     "id",
     "trigger_timestamp",
@@ -108,19 +108,6 @@ def rest_root(session, service, path, limit=MIB):
         + path,
         limit=limit,
     )
-
-
-def unavailable(sample):
-    return isinstance(sample, dict) and "unavailable" in sample
-
-
-def subset(value, fields):
-    value = value or {}
-    return {k: value[k] for k in fields if k in value}
-
-
-def metric_name(metric_id):
-    return metric_id.rsplit(".", 1)[-1]
 
 
 def job_vertices(job):
@@ -169,12 +156,7 @@ class CellObserver(SessionHooks):
             },
         )
 
-    @staticmethod
-    def sample(read):
-        try:
-            return read()
-        except (ApiError, TransportError) as error:
-            return {"unavailable": str(error)}
+    sample = staticmethod(sample)
 
     def poll(self, session, cell, app, pods):
         service = session.last_service

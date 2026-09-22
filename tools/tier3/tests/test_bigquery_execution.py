@@ -110,7 +110,10 @@ class World:
         )
         app = copy.deepcopy(initial)
         app["metadata"].update(uid="app-uid", resourceVersion="1", generation=1)
-        app["status"] = {"jobStatus": {"state": "RUNNING", "jobId": "1" * 32}}
+        # A freshly created deployment is not running yet, which is the first
+        # poll the supervisor takes and the one where no Service exists.
+        app["status"] = {"jobStatus": {"state": "CREATED", "jobId": ""}}
+        self.restarting = True
         self.kube.put(app)
         self.env.remember("application", app)
         self.env.records.set_phase(Phase.READY)
@@ -189,6 +192,27 @@ class World:
         return self.original_delete(value, force)
 
     def request(self, method, path, *args, **kwargs):
+        # The measurement collector reads the job plan, the sink's metric ids
+        # and the TaskManagers; the real service answers all three through the
+        # same proxy, so the double does too.
+        if "/proxy/jobs/" in path and "/" not in path.split("/proxy/jobs/")[1]:
+            return {
+                "vertices": [
+                    {"id": "source-vertex", "name": "Source: datagen"},
+                    {"id": "sink-vertex", "name": "Sink: bigquery"},
+                ]
+            }
+        if path.endswith("/subtasks/metrics"):
+            return [
+                {"id": "Sink__Writer.openDestinations"},
+                {"id": "busyTimeMsPerSecond"},
+            ]
+        if "/subtasks/metrics?" in path:
+            return [{"id": "openDestinations", "sum": "7"}]
+        if path.endswith("/taskmanagers"):
+            return {"taskmanagers": [{"id": "tm-0"}]}
+        if "/taskmanagers/" in path and "/metrics?" in path:
+            return [{"id": "Status.JVM.Memory.Direct.MemoryUsed", "value": "1024"}]
         if not path.endswith("/checkpoints"):
             return self.original_request(method, path, *args, **kwargs)
         assert BIGQUERY in path and rt.SMOKE not in path
@@ -221,6 +245,10 @@ class World:
         app = self.app()
         if not app:
             return
+        if app["status"]["jobStatus"]["state"] == "CREATED":
+            app["status"]["jobStatus"].update(state="RUNNING", jobId="1" * 32)
+            self.kube.put(app)
+            return
         now, elapsed = self.clock(), self.clock() - self.changed
         if self.phase != "initial" and elapsed >= 30:
             old_name = "jm-initial" if self.phase == "upgrade" else "jm-upgrade"
@@ -231,6 +259,13 @@ class World:
             app["status"].update(
                 observedGeneration=2, reconciliationStatus={"state": "DEPLOYED"}
             )
+            if self.restarting:
+                # The Operator has replaced the deployment but the job has not
+                # come back yet: the loop resolves no Service on this poll.
+                self.restarting = False
+                app["status"]["jobStatus"].update(state="RECONCILING", jobId="")
+                self.kube.put(app)
+                return
             app["status"]["jobStatus"].update(state="RUNNING", jobId="2" * 32)
             path = f"gs://{BIGQUERY_STATE}/runs/{self.approval.run_id}/"
             app["status"]["jobStatus"]["savepointInfo"] = {
@@ -307,6 +342,15 @@ class World:
             "report": assess(self.plan.trial, data),
         }
 
+    def measurements(self):
+        return [
+            value
+            for (bucket, name), (value, _generation) in self.store.data.items()
+            if bucket == rt.EVIDENCE
+            and "/supervisor/" in name
+            and value["event"] == "bigquery-measurement"
+        ]
+
     def quiesce(self):
         return self.fault != "barrier" and self.app() is None
 
@@ -329,6 +373,18 @@ def test_bigquery_recovery_and_query_then_cleanup(
     assert record.recovery["stage"] == "complete"
     assert set(record.recovery["outcomes"]) == {"upgrade", "failover", "query"}
     assert [name for name, _ in world.calls] == ["upgrade", "failover"]
+    # The deployed measurements the issue asks for: sampled through the run's
+    # own windows, with every reading named even when it is absent.
+    samples = world.measurements()
+    assert len(samples) > 1
+    assert {sample["payload"]["stage"] for sample in samples} >= {"baseline"}
+    readings = [s["payload"]["sink"] for s in samples if "sink" in s["payload"]]
+    assert readings, "no sample carried a sink reading"
+    # A sample taken when the plan could not be read says so rather than
+    # reporting an empty measurement.
+    for sample in samples:
+        assert "sink" in sample["payload"] or "vertices" in sample["payload"]
+    assert any(s["payload"].get("taskmanagers") for s in samples)
     assert world.upgrade_at - world.start >= 180 + 600
     assert world.query_calls[0][1] - world.failover_at >= 600
     assert record.phase == Phase.CLEANED

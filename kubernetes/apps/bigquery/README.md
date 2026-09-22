@@ -564,7 +564,14 @@ Each recovery has its own 300-second deadline, capped by the absolute cleanup st
 The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint before a single JobManager deletion.
 The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
 Input completion must be observed at least 600 seconds after that second recovery proof.
-These windows schedule observations; they do not yet collect or assess the memory, GC, network, backpressure and appender measurements required by the issue.
+Inside those windows the sink is sampled through the job's own REST service, at most once per `measure_seconds` rather than once per poll, and the samples are emitted as `bigquery-measurement` records carrying the stage they were taken in. One sample is six REST reads, and at the transport's timeout that would let a slow endpoint spend two minutes of a window that is three; a memory or GC trend does not need a reading every fifteen seconds to be readable.
+What is read: the sink and source vertices' task metrics — throughput, backpressure, busy and idle time, and the buffer-pool and byte-rate metrics that say whether the network was the limit; every TaskManager's memory, including non-heap, direct, mapped and Flink managed memory rather than heap alone, because this sink appends through native buffers; and the connector's own gauges, which are the active-writer observation — open destinations, in-flight appends and batches, append retries, destination activations and commit durations.
+A connector metric's id carries its operator name, so the ids are discovered and then asked for by id; the discovered set is unioned across samples rather than frozen on the first answer, because a task registers its own metrics when it deploys and the sink's operators theirs when they open — freezing a listing taken between those two moments would silently drop the active-writer gauges for the rest of the job's life.
+The source vertex is identified by its name rather than by its position in the plan, and a plan that does not hold exactly one of each is reported unavailable rather than guessed at.
+No sample is taken on a poll where the loop resolved no Service: the job is between states, and a reading taken through the last one would be attributed to a job that is not the one running.
+An absent reading is recorded as `unavailable` with its cause rather than dropped: a missing sample and a zero reading mean opposite things when the question is whether the sink was the limit.
+Checkpoint duration and state come from the checkpoints the recovery loop already reads.
+These are collected, not assessed: the verdict that reads them is separate work.
 
 After Flink reports `FINISHED` with complete input and both recovery proofs, the supervisor requests final queries through the existing runner handoff.
 It recomputes the oracle from the archived rows and compares the archived report.
