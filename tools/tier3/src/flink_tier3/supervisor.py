@@ -323,7 +323,7 @@ class Supervisor:
                         raise Failure("Application disappeared before completion")
                     status = app.get("status", {}).get("jobStatus", {}).get("state", "")
                     job_id = app.get("status", {}).get("jobStatus", {}).get("jobId", "")
-                    rest = {}
+                    rest, service = {}, None
                     if status in ("RUNNING", "FINISHED") and re.fullmatch(
                         r"[0-9a-f]{32}", job_id
                     ):
@@ -367,6 +367,7 @@ class Supervisor:
                         if rest.get("counts", {}).get("completed", 0) > 0:
                             self.env.records.checkpoint()
                     if self.exercise:
+                        self.exercise.attach_rest(service, job_id)
                         if self.exercise.observe(app, rest, pods):
                             if isinstance(self.exercise, BigQueryExercise):
                                 self.exercise.verify_rows(self)

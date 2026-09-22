@@ -18,6 +18,7 @@ from __future__ import annotations
 import uuid
 
 from .bigquery import assess
+from .bigquery_observe import FlinkRest, observation, vertices
 from .common import Failure, utc
 from .exercise import RecoveryExercise
 from .policy import (
@@ -60,6 +61,7 @@ class BigQueryExercise(RecoveryExercise):
         if env.approval.scenario != "bigquery-recovery":
             raise Failure("BigQuery exercise requires a BigQuery approval")
         self.trial = env.approval.bigquery_plan.trial
+        self.rest, self.vertices, self.measured_at = None, None, None
         self.records = self.trial.records
         super().__init__(env, upgrade)
         self.baseline_until = None
@@ -130,7 +132,43 @@ class BigQueryExercise(RecoveryExercise):
             stage = "visibility"
         super().persist(stage, **details)
 
+    def attach_rest(self, service, job_id):
+        # No service resolved means the job is between states; measuring
+        # against the last one would attribute a reading to a job that is not
+        # the one running.
+        if service is None:
+            self.rest, self.vertices = None, None
+            return
+        if self.rest is None or self.rest.job_id != job_id:
+            self.rest = FlinkRest(self.env, service, job_id)
+            self.vertices = None
+        self.rest.service = service
+
+    def measure(self):
+        """Sample the sink once, inside the window the exercise is already in.
+
+        Discovery is repeated only when it has not succeeded: a connector
+        metric's id carries its operator name, so it cannot be predicted, and
+        re-discovering every poll would spend reads on an answer that does not
+        change while the job runs.
+        """
+        if self.rest is None:
+            return
+        now = self.env.clock()
+        if (
+            self.measured_at is not None
+            and now - self.measured_at < self.timing["measure_seconds"]
+        ):
+            return
+        self.measured_at = now
+        self.vertices = vertices(self.rest, self.vertices)
+        self.env.emit(
+            "bigquery-measurement",
+            {"stage": self.stage, **observation(self.rest, self.vertices)},
+        )
+
     def observe(self, app, rest, pods):
+        self.measure()
         state = app.get("status", {}).get("jobStatus", {}).get("state")
         if self.stage == "finishing" and state == "FINISHED":
             completed = [

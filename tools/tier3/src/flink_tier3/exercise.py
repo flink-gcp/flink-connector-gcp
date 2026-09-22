@@ -397,6 +397,13 @@ class RecoveryExercise:
                     "JM delete response lost without a verified outcome"
                 ) from error
 
+    def attach_rest(self, service, job_id):
+        """Hand over the Service the loop verified, for exercises that read more.
+
+        The loop resolves it and proves its workload ownership once per poll;
+        an exercise that resolved its own could disagree with that proof.
+        """
+
     def observe(self, app, rest, pods):
         self.check_open()
         if not self.initialized:
