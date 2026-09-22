@@ -456,6 +456,18 @@ class Runner:
                         self.env.approval.scenario == "generic-recovery"
                         and (control.recovery or {}).get("stage") == "complete"
                     )
+                    or (
+                        self.env.approval.scenario == "bigquery-recovery"
+                        # The exercise decided this when it completed, from the
+                        # recoveries, the oracle and the observation coverage.
+                        # A completed recovery alone is not the claim here.
+                        # `recovery` is durable JSON that nothing types on the
+                        # way in, so a malformed record must read as not-usable
+                        # rather than raise: this runs inside `finalize`, which
+                        # releases the environment lock only at its end.
+                        and isinstance(control.recovery, dict)
+                        and control.recovery.get("verdict") == rt.USABLE
+                    )
                 )
             ),
         }

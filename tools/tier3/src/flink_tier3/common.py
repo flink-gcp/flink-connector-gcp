@@ -39,6 +39,21 @@ class TransportError(Failure):
     """A Kubernetes transport failure, distinct from an invariant violation."""
 
 
+# A measurement that can carry its claim, and one that cannot. Shared because
+# the analyzer reads them offline and a scenario decides them in the Pod, and
+# the analyzer itself is not part of what the supervisor mounts.
+USABLE = "usable"
+INCONCLUSIVE = "inconclusive"
+# Evidence problems rather than measurements: excluded everywhere. One of these
+# is not a result that came out badly, it is a result nobody may read. They are
+# named rather than positional because a caller that reaches into the tuple
+# re-labels every record when the order changes, with nothing to fail.
+UNEXPORTED = "unexported"
+TAMPERED = "tampered"
+INCONSISTENT = "inconsistent"
+EXCLUDED = (UNEXPORTED, TAMPERED, INCONSISTENT)
+
+
 class ApiError(Failure):
     def __init__(self, status, method, path):
         self.status = status

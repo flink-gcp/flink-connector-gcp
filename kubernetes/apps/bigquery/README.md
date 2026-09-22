@@ -428,7 +428,7 @@ The supervisor receives its own environment-bound handoff and a mandatory extern
 Supplying the callback without a handoff is rejected at construction.
 Its `query(name, deadline=...)` method requests an observation and waits for archived evidence, maintaining heartbeats and auditing resources until the deadline or cancellation.
 It returns the verified result without interpreting an incomplete baseline as a failed trial or treating a query report as a deployed recovery verdict.
-The internal recovery exercise below chooses final-query boundaries and row acceptance criteria; the deployed measurement verdict remains unimplemented.
+The internal recovery exercise below chooses final-query boundaries and row acceptance criteria, and decides the deployed measurement verdict from them together with the observation coverage.
 
 Common cleanup closes run admission and removes the owned Kubernetes workload before waiting for runner release.
 For failed admission with recorded BigQuery intent, the supervisor first waits for runner release before entering common cleanup, so admission can finish recording any confirmed application creation.
@@ -505,7 +505,7 @@ The collected queries' billed bytes are summed into the retained control state a
 Each query was already refused above its own `maximum_bytes_billed`, and the slot count bounds the worst case, but nothing added them up, so a finished trial could not state what it had actually spent.
 A re-collected observation returns on the evidence pointer it already holds and is not counted again, and the total is restated from each query's recorded figure rather than accumulated into, because a conflicting write re-applies the same edit against a record that already carries it.
 
-The shared final receipt records the BigQuery scenario and approved trial, with `success: false` until its execution verdict is implemented.
+The shared final receipt records the BigQuery scenario and approved trial, with `success` taken from the execution verdict under *Deployed verdict* below.
 A generic recovery completion flag cannot satisfy that verdict.
 A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
 
@@ -571,7 +571,7 @@ The source vertex is identified by its name rather than by its position in the p
 No sample is taken on a poll where the loop resolved no Service: the job is between states, and a reading taken through the last one would be attributed to a job that is not the one running.
 An absent reading is recorded as `unavailable` with its cause rather than dropped: a missing sample and a zero reading mean opposite things when the question is whether the sink was the limit.
 Checkpoint duration and state come from the checkpoints the recovery loop already reads.
-These are collected, not assessed: the verdict that reads them is separate work.
+What the verdict below reads from these is whether each was obtained, never what it read.
 
 After Flink reports `FINISHED` with complete input and both recovery proofs, the supervisor requests final queries through the existing runner handoff.
 It recomputes the oracle from the archived rows and compares the archived report.
@@ -579,7 +579,33 @@ Missing rows may consume another approved query slot, with at most 600 seconds f
 Invalid routing or EO duplicates abort immediately; ALO duplicates remain reported observations.
 Query errors, slot exhaustion, cancellation or deadline expiry cannot record recovery completion.
 The `complete` recovery record includes both restore proofs and the passing query observation; common cleanup still requires runner release and the external barrier before deleting tables.
-The final receipt retains this recovery record, but its overall BigQuery `success` remains false until the complete deployed measurement verdict is implemented.
+The final receipt retains this recovery record, and its overall BigQuery `success` is the verdict the exercise decided when it completed — not the generic completion flag, which a trial must not be authorized by.
+
+## Deployed verdict
+
+A run is `usable` when the instrument worked: both recoveries proved, the query oracle passed, and each observation family read in the `baseline` window and again in the `finishing` window — the sink's task metrics, the network metrics, the connector's own gauges and the TaskManager memory.
+Anything short of that is `inconclusive`, the same distinction the Cloud Tasks analyzer draws: a run that happened and cannot carry the claim.
+The verdict carries its reasons, naming the family and the window it was missing from, so an inconclusive run says what it lacked.
+
+Each window is required on its own, because a post-recovery figure with no baseline beside it is not the comparison the measurement exists to make, and a reading credited to the baseline that was actually taken mid-failover is not a steady state.
+Coverage is recorded against the stage the sample was taken in, so the `baseline` window is the warm-up and steady stage together and the `finishing` window is the stage after the second recovery; the recovery stages hold their own coverage and satisfy neither.
+Coverage within a window is monotonic: a family read in one baseline sample stays read when a later baseline sample loses it to a restart, because the question is whether that window observed it at all.
+A window that recorded no sample observed nothing, whatever its coverage claims.
+A family counts as observed only where a reading returned it. Discovery lists a metric id once and never drops it, so a request naming a gauge the operator no longer publishes still succeeds with that gauge simply absent from the answer, and crediting the request would report a name as a measurement.
+
+It reports no measured value, and it must not. A throughput or a memory figure from this trial is a finding to publish, not a threshold to pass; #1312 forbids reusing component throughput as a production target, and a verdict that encoded one would be exactly that.
+The verdict is decided and written with the transition that completes the run, so it reaches the `recovery-complete` evidence record and not only the final receipt.
+
+`just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` then recomputes it offline from the exported evidence rather than reading the receipt's answer, and reports each run's status, verdict, reasons, sample count and problems.
+It rebuilds the coverage from the readings themselves. Each sample was exported as its own record beside the completed one, so the same fold the Pod ran is run again over those readings, and the verdict is decided over what they support rather than over the `coverage` the record claims — recomputing from a field the same hand could edit would only restate the record to itself.
+Only a claim the evidence denies is `tampered`: a record claiming an attempt or a family its readings do not support, a verdict of `usable` they do not support, or a receipt claiming `success`, which the runner computes from a usable verdict and nothing else. The claim can be made in either document, so both are read. Every other disagreement is `inconsistent` — a receipt at odds with the evidence beside it, a completed record accounting for fewer readings than the run emitted, a stored verdict more conservative than the readings warrant, or two completion records. Under-reporting is not forgery.
+An evidence set missing the run's account of itself is `unexported`, and so is one holding a sample record the fold cannot read or place, or one whose record says the run completed with no completion evidence beside it — an absent object is named only by the record it should have accompanied.
+That last shape is also what a wholly fabricated receipt looks like, and the two are told apart only by the readings: a missing object on its own is `unexported` and re-fetchable, while the same record or receipt claiming coverage, a verdict or a success the readings do not support stays `tampered`. Where the readings are gone too, nothing distinguishes a truncated export from a fabrication, and the severe label is reported; fetch the evidence again and ask once more. That is a truncated download, not a dishonest run: the lost reading lowers the rebuilt coverage, so continuing would report the record as claiming more than its readings support. Fetch the evidence again.
+
+What this does not do is make the evidence unforgeable. The readings are files like any other, so a forger who fabricates one per window alongside the edited record still passes; what the rebuild removes is the single-field edit, and what it costs is one file per sample instead.
+Those are the excluded statuses the Cloud Tasks analysis uses and none of them is a measurement — but a run that simply did not complete is not one of them: it exported its account of itself, and that account is `inconclusive`.
+The receipt's `success` is checked in one direction only. It is a conjunction the runner may refuse for reasons of its own, so `false` beside a usable verdict is the runner obeying its rules; `true` beside a verdict that is not usable is the forgery.
+The recomputation uses the rule set as it stands, so evidence re-analyzed after the required families or the sampled windows change can disagree with its own stored verdict for that reason alone; archived evidence is read with the revision that produced it.
 
 Synthetic controller/service tests exercise both delivery modes and both destination counts, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved external barrier.
 They establish the internal sequencing and refusal behavior, not actual Operator recovery, BigQuery visibility latency or a working writer fence.

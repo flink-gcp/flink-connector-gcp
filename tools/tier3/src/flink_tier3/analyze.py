@@ -45,7 +45,9 @@ from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
 
-from .common import Failure
+from .bigquery_analyze import assess_runs, render
+from .bigquery_analyze import counts as bigquery_counts
+from .common import EXCLUDED, INCONCLUSIVE, USABLE, Failure
 from .evidence import (
     MARKER,
     RECEIPT,
@@ -101,11 +103,6 @@ BUSY_TIME = "busyTimeMsPerSecond"
 SOURCE_OUT = "numRecordsOut"
 SINK_IN = "numRecordsIn"
 HEX = re.compile(r"[0-9a-f]+\Z")
-USABLE = "usable"
-# A cell that produced evidence but cannot carry a steady-state claim.
-INCONCLUSIVE = "inconclusive"
-# Evidence problems rather than measurements: excluded everywhere.
-EXCLUDED = ("unexported", "tampered", "inconsistent")
 LABEL_ORDER = (INCONCLUSIVE, "decline", "constrained", "general")
 
 
@@ -189,6 +186,7 @@ class Run:
             raise Failure("Not a run directory: " + str(directory))
         self.run_id = str(self.approval["run_id"])
         self.campaign = str(self.approval.get("campaign", ""))
+        self.scenario = str(self.approval.get("scenario", ""))
         self.flink = str(self.approval.get("flink_version", ""))
         self.session = read_json(self.directory / "session.json")
         self.result = read_json(self.directory / "result.json")
@@ -1488,16 +1486,26 @@ def show(value, digits=3):
 
 def render_markdown(report):
     lines = [
-        "# Cloud Tasks evidence analysis",
+        # The title and the preregistration below belong to the cells. A
+        # directory holding only a deployed run has neither.
+        "# Cloud Tasks evidence analysis"
+        if report["cells"]
+        else "# Tier-3 evidence analysis",
         "",
         (
             f"The analyzer read {len(report['runs'])} run directories holding "
             f"{len(report['cells'])} cells."
         ),
-        (
-            "Verdict labels follow the preregistration in "
-            "docs/adr/evidence/0162-cloudtasks-assessment-1246.md and state no "
-            "support or release decision."
+        *(
+            [
+                (
+                    "Cell verdict labels follow the preregistration in "
+                    "docs/adr/evidence/0162-cloudtasks-assessment-1246.md and "
+                    "state no support or release decision."
+                )
+            ]
+            if report["cells"]
+            else []
         ),
         "",
         "## Cells",
@@ -1569,7 +1577,7 @@ def render_markdown(report):
                     f"detected with throughput {show(delay['throughput'])} and p95 "
                     f"{show(delay['p95_nanos'])} ns."
                 )
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + render(report.get("bigquery") or [])
 
 
 def analyze(evidence, protocol_path=None, kind=None):
@@ -1605,6 +1613,9 @@ def analyze(evidence, protocol_path=None, kind=None):
         "groups": groups,
         "unmatched_cells": unmatched,
         "calibration": calibration(calibration_cells, runs),
+        # Recomputed from the exported evidence; empty unless the directory
+        # holds a deployed BigQuery run.
+        "bigquery": assess_runs(runs),
     }
 
 
@@ -1625,7 +1636,13 @@ def summary_line(report, out):
     status = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
     return (
         f"analyzed {len(report['cells'])} cells in {len(report['runs'])} runs "
-        f"({status or 'none'}); {len(report['groups'])} groups; reports in {out}"
+        f"({status or 'none'}); {len(report['groups'])} groups"
+        + (
+            f"; bigquery runs: {bigquery}"
+            if (bigquery := bigquery_counts(report.get("bigquery") or []))
+            else ""
+        )
+        + f"; reports in {out}"
     )
 
 

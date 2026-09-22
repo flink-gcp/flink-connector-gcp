@@ -25,7 +25,7 @@ from flink_tier3.bigquery_handoff import BigQueryHandoff
 from flink_tier3.bigquery_lifecycle import BigQueryLifecycle
 from flink_tier3.bundle import delivery_digest, source_digest
 from flink_tier3.cleanup import Cleanup, verify_idle
-from flink_tier3.common import Failure, digest
+from flink_tier3.common import INCONCLUSIVE, Failure, digest
 from flink_tier3.environment import Environment
 from flink_tier3.model import Approval, Phase
 from flink_tier3.policy import (
@@ -296,7 +296,20 @@ def test_resource_controller_cannot_substitute_plan(prepared, field, value):
     assert api.calls == []
 
 
-def test_real_environment_and_handoff_complete_owned_cleanup(prepared):
+# The verdict the exercise left behind, including none at all and a record
+# that is not one: `recovery` is durable JSON that nothing types on the way in,
+# and this runs inside the finalizer that releases the environment lock.
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"stage": "complete"},
+        {"stage": "complete", "verdict": INCONCLUSIVE},
+        {"stage": "complete", "verdict": rt.USABLE},
+        ["complete"],
+        "complete",
+    ],
+)
+def test_real_environment_and_handoff_complete_owned_cleanup(prepared, stored):
     environment, application, *_ = prepared
     runner = Runner(environment)
     api = Resources(environment.approval.bigquery_plan)
@@ -313,7 +326,7 @@ def test_real_environment_and_handoff_complete_owned_cleanup(prepared):
     environment.records.set_phase(Phase.READY)
     environment.records.set_phase(Phase.RUNNING, success=True)
     control, generation = environment.records.read()
-    control.recovery = {"stage": "complete"}
+    control.recovery = stored
     environment.store.write(environment.records.path, control.to_dict(), generation)
     handoff.release()
     supervisor = Environment(
@@ -354,10 +367,14 @@ def test_real_environment_and_handoff_complete_owned_cleanup(prepared):
         f"runs/{environment.approval.run_id}/result.json"
     )
     assert receipt["idle"]
-    assert not receipt["success"]
+    # A completion flag alone is not the claim; the exercise's verdict is, and
+    # a record that is not a record reads as not usable rather than raising.
+    usable = isinstance(stored, dict) and stored.get("verdict") == rt.USABLE
+    assert receipt["success"] is usable
     assert receipt["scenario"] == "bigquery-recovery"
     assert receipt["bigquery_trial"] == environment.approval.bigquery_trial
-    assert receipt["recovery"] == {"stage": "complete"}
+    assert receipt["recovery"] == stored
+
     assert receipt["bigquery"]["cleaned"]
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
