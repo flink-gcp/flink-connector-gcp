@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Construct authenticated internal actors without enabling production admission."""
+"""Construct the authenticated BigQuery actors the production entrypoints run."""
 
 from contextlib import contextmanager
 
@@ -86,7 +86,7 @@ def runner(env, bundle, *, runner_token, credentials=None):
 
 
 @contextmanager
-def supervisor(env, application, upgrade, *, runner_token, credentials=None):
+def supervisor(env, application, upgrade, *, credentials=None):
     """Bind mounted manifests/source to the caller's independent approval.
 
     This does not re-render CUE inside the runtime image or authenticate the
@@ -94,12 +94,15 @@ def supervisor(env, application, upgrade, *, runner_token, credentials=None):
     from this run's own identity rather than accepted from the caller: a
     `callable` check cannot tell a proof from a constant, and `lambda: True`
     satisfied every check this module used to make.
+
+    It takes no runner token. The supervisor starts before the runner writes
+    the binding, and the handoff adopts the token on its first read.
     """
     quiesce = barrier(env)
     if digest(upgrade) != env.approval.upgrade_application_sha256:
         raise Failure("BigQuery supervisor upgrade differs from approval")
     with BigQuerySession("supervisor", credentials) as http:
-        handoff = _handoff(env, application, runner_token, http, "supervisor")
+        handoff = _handoff(env, application, None, http, "supervisor")
         actor = Supervisor(env, upgrade, bigquery=handoff, quiesce=quiesce)
         _authenticate(env, http, env.schedule.cleanup_at)
         yield actor

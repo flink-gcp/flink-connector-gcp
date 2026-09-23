@@ -267,7 +267,7 @@ class Supervisor:
         if self.env.approval.scenario == "bigquery-recovery":
             if self.exercise is None or self.bigquery is None:
                 raise Failure(
-                    "BigQuery recovery supervision is not implemented without an explicit exercise and handoff"
+                    "BigQuery recovery supervision requires its authenticated exercise and handoff"
                 )
             require_handoff(self.env, self.bigquery)
         self.env.refresh()

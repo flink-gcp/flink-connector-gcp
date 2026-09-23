@@ -47,18 +47,35 @@ class _CallIdentityChanged(Failure):
     """A completion acknowledgement encountered another invocation."""
 
 
+_TOKEN = re.compile(r"[0-9a-f]{32}")
+
+
 class BigQueryHandoff:
     """Internal actor protocol; callers still own authentication and workload fencing.
 
     One submitting process owns the runner token. Never transfer it to another
     process or call the resource controller directly after initializing this
-    protocol. No production lifecycle entrypoint admits this protocol yet.
+    protocol.
+
+    The supervisor is constructed without it. Its Pod starts before the runner
+    writes the binding, and no delivery channel carries the token to it: the
+    recovery workflow builds its actors from the approval and reads the
+    ConfigMap, so a token in either would let it match the binding without
+    meaning to, and act as the runner whose release lets cleanup delete tables.
+    The token guards against that accidental match, not a deliberate one: the
+    binding sits in the control record, readable by anything that can read the
+    evidence bucket. The supervisor binds the fields its own approval fixes,
+    and adopts the token the first time the binding is read.
+    That is exactly the submitting runner's token, because `initialize` writes
+    the binding once and refuses a different one thereafter; from then on a
+    replaced binding is refused like any other.
     """
 
     def __init__(self, controller, *, runner_token, evidence_bytes, query_until):
-        if not isinstance(runner_token, str) or not re.fullmatch(
-            r"[0-9a-f]{32}", runner_token
-        ):
+        if runner_token is None:
+            if controller.env.actor != "supervisor":
+                raise ValueError("Only the supervisor binds without a runner token")
+        elif not isinstance(runner_token, str) or not _TOKEN.fullmatch(runner_token):
             raise ValueError("Runner token must be 32 lowercase hexadecimal characters")
         if type(evidence_bytes) is not int or not 0 < evidence_bytes <= 100 * 1024**2:
             raise ValueError(
@@ -87,7 +104,20 @@ class BigQueryHandoff:
 
     def _state(self, state):
         value = state.get("handoff")
-        if not isinstance(value, dict) or value.get("binding") != self.binding:
+        binding = value.get("binding") if isinstance(value, dict) else None
+        if not isinstance(binding, dict):
+            raise Failure("Missing or replaced BigQuery actor binding")
+        if self.binding["runner_token"] is None:
+            # Adopted, never inferred: the fields this actor's approval fixes
+            # must match first, so a binding for another budget or window is
+            # refused rather than learned.
+            token = binding.get("runner_token")
+            if {**binding, "runner_token": None} != self.binding or not (
+                isinstance(token, str) and _TOKEN.fullmatch(token)
+            ):
+                raise Failure("Missing or replaced BigQuery actor binding")
+            self.binding["runner_token"] = token
+        if binding != self.binding:
             raise Failure("Missing or replaced BigQuery actor binding")
         return value
 
@@ -110,22 +140,23 @@ class BigQueryHandoff:
         self.env.admission_open()
         if self.env.clock() >= self.binding["query_until"]:
             raise Failure("BigQuery query window expired")
-        self.controller.initialize()
+        handoff = {
+            "binding": dict(self.binding),
+            "released": False,
+            "inflight": None,
+            "requests": {},
+        }
+        # One record change, so release always has a binding to clear. The
+        # check below meets an intent an earlier call wrote, and never adopts
+        # one written without a binding.
+        self.controller.initialize(handoff)
 
         def initialize(state):
-            if state.get("handoff") is not None:
-                value = self._state(state)
-                if value["released"]:
-                    raise Failure("BigQuery runner has released its authority")
-                return
-            if state["tables"] or state["queries"]:
-                raise Failure("Resources predate the BigQuery actor binding")
-            state["handoff"] = {
-                "binding": dict(self.binding),
-                "released": False,
-                "inflight": None,
-                "requests": {},
-            }
+            if state.get("handoff") is None:
+                raise Failure("BigQuery resource intent predates its actor binding")
+            value = self._state(state)
+            if value["released"]:
+                raise Failure("BigQuery runner has released its authority")
 
         self.controller._change(initialize, open_only=True)
 

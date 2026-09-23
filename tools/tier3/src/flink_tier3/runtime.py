@@ -24,6 +24,7 @@ import signal
 import time
 from pathlib import Path
 
+from flink_tier3 import bigquery_actors
 from flink_tier3.bundle import delivery_digest
 from flink_tier3.cloudtasks import Ledger, Queues, load_cells
 from flink_tier3.common import Failure, digest
@@ -38,26 +39,46 @@ from flink_tier3.policy import SYSTEM
 from flink_tier3.supervisor import HookChain, Supervisor
 
 
-def supervisor_main(directory):
-    approval = json.loads((directory / "approval.json").read_text())
+def mounted(directory, name):
+    """One delivered document, refused by name when the delivery lacks it."""
+    try:
+        return json.loads((directory / name).read_text())
+    except FileNotFoundError as error:
+        raise Failure("Supervisor delivery is missing " + name) from error
+
+
+def verify_delivery(directory):
+    """The mounted delivery, checked against its own approval before anything runs.
+
+    Pure: it reads only the mount, so a test can prove a delivery is admitted
+    as well as that a bad one is refused.
+    """
+    approval = mounted(directory, "approval.json")
     # The mount is a subset, so the complete package's digest is not
     # computable here; the runner verified that one at dispatch.
     if delivery_digest() != approval["delivery_sha256"]:
         raise Failure("Supervisor source differs from approval")
-    application = json.loads((directory / "application.json").read_text())
+    application = mounted(directory, "application.json")
     if digest(application) != approval["application_sha256"]:
         raise Failure("Supervisor application differs from approval")
     approved = Approval.from_dict(approval)
-    if approved.scenario == "bigquery-recovery":
-        raise Failure("BigQuery recovery supervision is not implemented")
     upgrade, cells = None, None
-    if approved.scenario == "generic-recovery":
-        upgrade = json.loads((directory / "upgrade-application.json").read_text())
+    if approved.scenario in ("generic-recovery", "bigquery-recovery"):
+        upgrade = mounted(directory, "upgrade-application.json")
         if digest(upgrade) != approved.upgrade_application_sha256:
             raise Failure("Supervisor upgrade differs from approval")
+    if approved.scenario == "generic-recovery":
+        # The generic payload's fixed arguments. A BigQuery application has
+        # its own, which `bigquery_plan.prepare` checked when it rendered the
+        # manifests these two digests pin; this check would refuse every one.
         validate_manifests(application, upgrade)
     elif approved.scenario == "cloudtasks":
         cells = load_cells(directory, approved)
+    return approval, approved, application, upgrade, cells
+
+
+def supervisor_main(directory):
+    approval, approved, application, upgrade, cells = verify_delivery(directory)
     account = Path("/var/run/secrets/kubernetes.io/serviceaccount")
     if (account / "namespace").read_text().strip() != SYSTEM:
         raise Failure("Supervisor must run in tier3-system")
@@ -89,7 +110,6 @@ def supervisor_main(directory):
     if cells is not None:
         # Observe every poll, then collect and export each cell's evidence.
         hooks = HookChain(CellObserver(), Collector(env, store))
-    supervisor = Supervisor(env, upgrade, cells, hooks)
 
     def stop(_number, _frame):
         env.stopping = True
@@ -100,7 +120,14 @@ def supervisor_main(directory):
         lambda: bool(env.refresh().roots.get("supervisor")),
         min(time.time() + 90, env.schedule.cleanup_at),
     )
-    supervisor.supervise(os.environ["POD_UID"])
+    if approved.scenario == "bigquery-recovery":
+        # The authenticated actor, the approval-bound handoff, the quiescence
+        # barrier and the exercise are built together and held open for the
+        # whole supervision: the session must outlive every query it serves.
+        with bigquery_actors.supervisor(env, application, upgrade) as supervisor:
+            supervisor.supervise(os.environ["POD_UID"])
+        return
+    Supervisor(env, upgrade, cells, hooks).supervise(os.environ["POD_UID"])
 
 
 def main(argv=None):

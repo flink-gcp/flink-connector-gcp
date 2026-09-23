@@ -57,7 +57,13 @@ def actors(setup):
         "query_until": NOW + 1800,
     }
     runner = BigQueryHandoff(BigQueryLifecycle(runner_env, api, app), **binding)
-    supervisor = BigQueryHandoff(BigQueryLifecycle(supervisor_env, api, app), **binding)
+    # The fixture's bare controller wrote an intent; a real run starts without.
+    runner_env.records._change(lambda record: setattr(record, "bigquery", None))
+    # Constructed as production constructs it: before the runner has written a
+    # binding, and without its token.
+    supervisor = BigQueryHandoff(
+        BigQueryLifecycle(supervisor_env, api, app), **dict(binding, runner_token=None)
+    )
     runner.initialize()
     return SimpleNamespace(
         runner=runner,
@@ -289,6 +295,79 @@ def test_binding_values_are_bounded(actors, key, value):
         )
 
 
+def rewrite(a, **binding):
+    """Replace the durable binding, as a second runner or a forger would."""
+
+    def edit(state):
+        state["handoff"]["binding"] = dict(state["handoff"]["binding"], **binding)
+
+    a.runner.controller._change(edit)
+
+
+def test_the_supervisor_adopts_the_token_the_runner_wrote(actors):
+    assert actors.supervisor.binding["runner_token"] is None
+    assert actors.supervisor.released() is False
+    assert actors.supervisor.binding == actors.runner.binding
+
+
+def test_the_supervisor_cannot_be_bound_before_the_runner_writes(setup):
+    """Its Pod starts first; until the runner initializes there is nothing to adopt."""
+    controller, env, _, app = setup
+    env.clock = lambda: NOW
+    # The runner has created the resource intent but not yet its binding.
+    controller.initialize()
+    observer = copy.copy(env)
+    observer.actor = "supervisor"
+    observer.records = Records(env.store, env.approval, env.clock)
+    supervisor = BigQueryHandoff(
+        BigQueryLifecycle(observer, controller.api, app),
+        runner_token=None,
+        evidence_bytes=3000,
+        query_until=NOW + 10,
+    )
+    with pytest.raises(Failure, match="Missing or replaced"):
+        supervisor.released()
+    assert supervisor.binding["runner_token"] is None
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("evidence_bytes", 12345), ("query_until", NOW + 1700), ("version", 2)],
+)
+def test_the_supervisor_refuses_a_binding_its_approval_does_not_fix(
+    actors, field, value
+):
+    """Adopted, never inferred: another budget or window is refused, not learned."""
+    rewrite(actors, **{field: value})
+    with pytest.raises(Failure, match="Missing or replaced"):
+        actors.supervisor.released()
+    assert actors.supervisor.binding["runner_token"] is None
+
+
+@pytest.mark.parametrize("token", ["bad", None, 7, "B" * 32, "b" * 33, "b" * 31])
+def test_the_supervisor_refuses_a_token_that_is_not_one(actors, token):
+    rewrite(actors, runner_token=token)
+    with pytest.raises(Failure, match="Missing or replaced"):
+        actors.supervisor.released()
+    assert actors.supervisor.binding["runner_token"] is None
+
+
+def test_the_supervisor_refuses_a_replacement_once_it_has_adopted(actors):
+    """The first read pins it; a second runner's binding is refused thereafter."""
+    actors.supervisor.released()
+    rewrite(actors, runner_token="c" * 32)
+    with pytest.raises(Failure, match="Missing or replaced"):
+        actors.supervisor.released()
+    assert actors.supervisor.binding["runner_token"] == "b" * 32
+
+
+def test_only_the_supervisor_may_be_bound_without_a_token(actors):
+    with pytest.raises(ValueError, match="Only the supervisor"):
+        BigQueryHandoff(
+            actors.runner.controller, **dict(actors.binding, runner_token=None)
+        )
+
+
 def test_initialize_refuses_resources_without_handoff(setup):
     controller, env, _, _ = setup
     env.clock = lambda: NOW
@@ -298,6 +377,64 @@ def test_initialize_refuses_resources_without_handoff(setup):
     )
     with pytest.raises(Failure, match="predate"):
         handoff.initialize()
+
+
+def test_the_intent_is_never_written_without_its_binding(setup, monkeypatch):
+    """One write: a stop or crash cannot leave an intent release cannot clear."""
+    controller, env, _, _ = setup
+    env.clock = lambda: NOW
+    # The fixture's bare controller wrote an intent; a real run starts without.
+    env.records._change(lambda record: setattr(record, "bigquery", None))
+    handoff = BigQueryHandoff(
+        controller, runner_token="b" * 32, evidence_bytes=3000, query_until=NOW + 10
+    )
+    written = []
+    change = env.records._change
+
+    def recording(edit):
+        result = change(edit)
+        written.append(copy.deepcopy(env.refresh().bigquery))
+        return result
+
+    monkeypatch.setattr(env.records, "_change", recording)
+    handoff.initialize()
+    first = next(state for state in written if state is not None)
+    assert first.get("handoff", {}).get("binding") == handoff.binding
+
+
+def test_a_stop_straight_after_the_intent_leaves_a_releasable_run(setup, monkeypatch):
+    """The moment two writes would have split is still one the runner releases."""
+    controller, env, _, _ = setup
+    env.clock = lambda: NOW
+    env.records._change(lambda record: setattr(record, "bigquery", None))
+    handoff = BigQueryHandoff(
+        controller, runner_token="b" * 32, evidence_bytes=3000, query_until=NOW + 10
+    )
+    change = env.records._change
+
+    def stopping(edit):
+        result = change(edit)
+        if env.refresh().bigquery is not None and not env.refresh().stop_requested:
+            env.records.request_stop()
+        return result
+
+    monkeypatch.setattr(env.records, "_change", stopping)
+    with pytest.raises(Failure, match="admission has stopped"):
+        handoff.initialize()
+    monkeypatch.setattr(env.records, "_change", change)
+    handoff.release()
+    assert handoff.released() is True
+
+
+def test_initialize_never_adopts_an_intent_written_without_a_binding(setup):
+    controller, env, _, _ = setup
+    env.clock = lambda: NOW
+    handoff = BigQueryHandoff(
+        controller, runner_token="b" * 32, evidence_bytes=3000, query_until=NOW + 10
+    )
+    with pytest.raises(Failure, match="predates its actor binding"):
+        handoff.initialize()
+    assert "handoff" not in env.refresh().bigquery
 
 
 def test_initialize_refuses_expired_window(actors):
@@ -869,7 +1006,8 @@ def test_common_cleanup_skips_real_handoff_without_resource_intent(actors):
     assert a.env.refresh().bigquery is None
 
 
-def test_partial_handoff_initialization_requires_external_incident_recovery(actors):
+def test_an_intent_without_a_binding_requires_external_incident_recovery(actors):
+    """Only a bare controller writes one now; initialization writes both at once."""
     from flink_tier3.bigquery_handoff import require_bigquery_clean
 
     a = actors

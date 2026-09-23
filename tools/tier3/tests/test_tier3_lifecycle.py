@@ -2178,19 +2178,24 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     schedule = rt.Approval.from_dict(env[2]).schedule
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     timeout = workflow["jobs"]["lifecycle"]["timeout-minutes"]
-    # The workflow selects a longer timeout only for Cloud Tasks sessions.
+    # The workflow selects a longer timeout for Cloud Tasks sessions and for
+    # BigQuery trials; a timeout shorter than a window kills the job mid-run.
     match = re.fullmatch(
-        r"\$\{\{ inputs\.scenario == 'cloudtasks' && (\d+) \|\| (\d+) \}\}",
+        r"\$\{\{ inputs\.scenario == 'cloudtasks' && (\d+) "
+        r"\|\| inputs\.scenario == 'bigquery-recovery' && (\d+) \|\| (\d+) \}\}",
         str(timeout),
     )
-    session_minutes, smoke_minutes = (
-        (int(match[1]), int(match[2])) if match else (int(timeout), int(timeout))
-    )
+    assert match, timeout
+    session_minutes, trial_minutes, smoke_minutes = (int(m) for m in match.groups())
     assert schedule.serial_budget <= smoke_minutes * 60
     longest = rt.Schedule.for_window(
         env[3](), env[3]() + rt.CLOUDTASKS_CEILINGS["session_seconds"]
     )
     assert longest.serial_budget <= session_minutes * 60
+    from flink_tier3.policy import BIGQUERY_CEILINGS
+
+    trial = rt.Schedule.for_window(env[3](), env[3]() + BIGQUERY_CEILINGS["seconds"])
+    assert trial.serial_budget <= trial_minutes * 60
     assert schedule.cleanup_at == schedule.expires_at - 900
     assert schedule.active_seconds(env[3]()) == 3420
     late = schedule.cleanup_window(schedule.expires_at + 60)

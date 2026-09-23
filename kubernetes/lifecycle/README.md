@@ -55,7 +55,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery_plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
 | `flink_tier3/bigquery_lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier |
 | `flink_tier3/bigquery_handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
-| `flink_tier3/bigquery_exercise.py` | Internal warmup, recovery and final query sequencing with explicit actor handoffs; production entrypoints remain disabled |
+| `flink_tier3/bigquery_exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
 | `flink_tier3/bigquery_bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
 | `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
@@ -455,7 +455,7 @@ For a Cloud Tasks session, add `--scenario cloudtasks --cells-file kubernetes/li
 A synthetic digest renders locally but never passes the live registry check that admission performs.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
-The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal).
+The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub execution admission remains disabled.
-The internal version 4 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy); execution entrypoints remain disabled.
-It produces an explicitly unapproved bundle and does not extend this lifecycle's run/recovery admission.
+The version 4 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
+A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes a reviewed trial file under `kubernetes/lifecycle/trials`, the published application digest, an expiry 90 to 100 minutes ahead and a phrase naming the trial's own cost, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
