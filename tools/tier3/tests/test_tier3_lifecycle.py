@@ -917,6 +917,121 @@ def test_pod_capacity_and_effective_resources_match_approval(env):
         rt.verify_pod(pod, "supervisor", container["image"])
 
 
+# The two terms the audit log recorded on the pilot's supervisor Pod
+# (tier3-system/lifecycle-bq1312-alo-10-a1-8dcb6, 2026-09-23T15:41:51Z): the
+# delivery's own, and the one Autopilot adds for the safe-to-evict annotation.
+PILOT_SUPERVISOR_TERMS = [
+    {
+        "matchExpressions": [
+            {
+                "key": "cloud.google.com/gke-spot",
+                "operator": "NotIn",
+                "values": ["true"],
+            }
+        ]
+    },
+    {
+        "matchExpressions": [
+            {
+                "key": "cloud.google.com/extended-duration-pods",
+                "operator": "In",
+                "values": ["1", "X"],
+            }
+        ]
+    },
+]
+
+
+def audited_supervisor(terms):
+    container = {
+        "image": rt.GAR + "lifecycle-tools@sha256:" + "a" * 64,
+        "resources": {
+            "requests": dict(rt.POD_RESOURCES["supervisor"]),
+            "limits": dict(rt.POD_RESOURCES["supervisor"]),
+        },
+    }
+    pod = {
+        "spec": {
+            "containers": [container],
+            "affinity": {
+                "nodeAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": copy.deepcopy(terms)
+                    }
+                }
+            },
+        }
+    }
+    return pod, container["image"]
+
+
+def test_the_supervisor_audit_accepts_the_pod_autopilot_admitted():
+    pod, image = audited_supervisor(PILOT_SUPERVISOR_TERMS)
+    rt.verify_pod(pod, "supervisor", image)
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        # Another label, or the same label used to widen rather than narrow.
+        {
+            "matchExpressions": [
+                {"key": "kubernetes.io/arch", "operator": "In", "values": ["amd64"]}
+            ]
+        },
+        {
+            "matchExpressions": [
+                {
+                    "key": "cloud.google.com/extended-duration-pods",
+                    "operator": "NotIn",
+                    "values": ["1"],
+                }
+            ]
+        },
+        {
+            "matchExpressions": [
+                {
+                    "key": "cloud.google.com/extended-duration-pods",
+                    "operator": "In",
+                    "values": [],
+                }
+            ]
+        },
+        # Bundled with something else, the term is no longer Autopilot's alone.
+        {
+            "matchExpressions": [
+                {
+                    "key": "cloud.google.com/extended-duration-pods",
+                    "operator": "In",
+                    "values": ["1"],
+                },
+                {
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "In",
+                    "values": ["true"],
+                },
+            ]
+        },
+        {"matchExpressions": []},
+        {},
+    ],
+)
+def test_the_supervisor_audit_refuses_any_other_term_that_may_select_spot(term):
+    pod, image = audited_supervisor([PILOT_SUPERVISOR_TERMS[0], term])
+    with pytest.raises(rt.Failure, match="every term"):
+        rt.verify_pod(pod, "supervisor", image)
+
+
+def test_the_audit_accepts_autopilots_term_as_an_alternative_on_its_own():
+    """Each term is an alternative, so this one is accepted without the other.
+
+    That it selects no Spot node is GKE's documented premise — an extended run
+    time is refused to Spot Pods — not something a fabricated Pod can show.
+    """
+    pod, image = audited_supervisor([PILOT_SUPERVISOR_TERMS[1]])
+    rt.verify_pod(pod, "supervisor", image)
+
+
 class SdkAdapter(requests.adapters.BaseAdapter):
     def __init__(self, replies):
         self.replies = iter(replies)

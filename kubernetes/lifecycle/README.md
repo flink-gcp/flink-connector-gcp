@@ -109,6 +109,7 @@ These checks run before temporary quota changes or Operator scale-up.
 
 Requests equal limits for every container.
 The supervisor excludes Spot through required node affinity and runs in `tier3-system`, independently of the Flink Pods.
+Autopilot implements the supervisor's `safe-to-evict` annotation as an extended run time by adding a second node-selector term, `cloud.google.com/extended-duration-pods In [...]`; extended run time is refused to Spot Pods, so the runtime audit accepts that term, and only that one, beside the Spot exclusion.
 The Operator uses its tracked normal-capacity template.
 
 | Workload | Namespace | Pods running | Capacity | CPU per Pod | Memory per Pod | Ephemeral storage per Pod |

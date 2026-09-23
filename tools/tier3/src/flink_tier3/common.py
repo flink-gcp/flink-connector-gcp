@@ -214,9 +214,25 @@ def verify_pod(pod, role, image, expected=None, *, spot=None):
                 "operator": "NotIn",
                 "values": ["true"],
             }
-            if not terms or not all(
-                exclusion in term.get("matchExpressions", []) for term in terms
-            ):
+
+            def excludes_spot(term):
+                expressions = term.get("matchExpressions", [])
+                if exclusion in expressions:
+                    return True
+                # Autopilot adds this term for the delivery's safe-to-evict
+                # annotation, which it implements as an extended run time and
+                # refuses to Spot Pods, so it selects normal capacity only.
+                if len(expressions) != 1:
+                    return False
+                [only] = expressions
+                return (
+                    set(only) == {"key", "operator", "values"}
+                    and only["key"] == "cloud.google.com/extended-duration-pods"
+                    and only["operator"] == "In"
+                    and bool(only["values"])
+                )
+
+            if not terms or not all(excludes_spot(term) for term in terms):
                 raise Failure("Supervisor affinity must exclude Spot in every term")
 
 
