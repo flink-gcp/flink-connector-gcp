@@ -18,8 +18,8 @@ package images
 // Recheck availability: every GAR version becomes deletion-eligible after seven days.
 flink: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink@sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd"
 
-// Cloud Tasks measurement publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488.
-lifecycleTools: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/lifecycle-tools@sha256:690af5521255e5d57fcad677585734fba427c0d42fac00256b8462440ff1ddf3"
+// BigQuery trial publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35869627208.
+lifecycleTools: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/lifecycle-tools@sha256:107e3096d0a4d09f625b8ce61eeae1f961297db2848a5650957739af538940ca"
 
-// Cloud Tasks measurement publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488.
-smoke: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@sha256:fd22dea063435e0cd4ee25b8c722e52c70a12b60897cae6ed4ad74b006a948a3"
+// BigQuery trial publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35869627208.
+smoke: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@sha256:8e4803c7330b68a80326fdb2542721f40859ee85bcba0450560ad5ccb99ffe45"
