@@ -16,7 +16,9 @@
 This is the part of the campaign that ADR-0162 keeps under review: take the
 next run from the journal, fork the probe, keep the claim alive while it runs,
 stop it when it outlives its reservation, and turn what it printed into an
-outcome. It runs on the campaign's host. What is specific to that host is not
+outcome. It also names where the probe writes its receipts and rows: inside
+the run's own directory, so the digests recorded with the outcome cover them.
+It runs on the campaign's host. What is specific to that host is not
 here: the VM and the classpath are in place before a controller starts, and
 the per-run work — the queue a run writes to, moving its evidence off the
 machine — arrives through the ``prepare`` and ``settle`` hooks, whose source
@@ -79,8 +81,19 @@ STDERR = "stderr.log"
 #: What the probe writes that is scratch rather than evidence.
 SCRATCH = ("checkpoints",)
 
+#: The probe option naming where its receipts and rows go. The controller
+#: sets it, because only the controller knows the run's directory.
+EVIDENCE_ROOT = "--evidence-root"
+#: Where the probe's receipts and rows go, below its own directory.
+EVIDENCE_DIRECTORY = "evidence"
+
 _PROBE_OUTCOMES = {"OBSERVATION": OBSERVED, "FAILED": FAILED}
 _COUNT = re.compile(r"[0-9]+\Z")
+#: What a campaign's absolute path may hold. The probe checks its evidence root
+#: with java.net.URI, which refuses a space or a '#', and Flink's Path quotes
+#: a '%' again, so an encoded root would name another directory; a path that
+#: needs neither is taken as it is.
+_PLAIN_PATH = re.compile(r"/[A-Za-z0-9._/-]*\Z")
 
 
 class Unrecordable(Exception):
@@ -157,6 +170,17 @@ def option(arguments, name):
         if argument == name:
             return arguments[index + 1]
     return None
+
+
+def evidence_root(probe):
+    """Where a run's probe writes its receipts and rows: inside the run.
+
+    Inside the run's own directory, so the digests recorded with its outcome
+    cover them and the run is collected as one directory. The probe appends
+    ``<run id>/cells/<cell id>/`` to this root, the layout ``evidence``
+    reads below ``runs/``.
+    """
+    return f"file://{probe}/{EVIDENCE_DIRECTORY}/runs/"
 
 
 def parse(stdout, run_id, cell_id):
@@ -251,12 +275,20 @@ def _sha256(path):
     return sha.hexdigest()
 
 
-def _files(directory):
-    return {
-        str(path.relative_to(directory)): _sha256(path)
-        for path in sorted(Path(directory).rglob("*"))
-        if path.is_file()
-    }
+def files(directory, tick=None):
+    """Each file below ``directory`` by relative name, with its SHA-256.
+
+    ``tick`` is called after each file. A run's rows are inside its
+    directory, so hashing it can outlast a claim's expiry on a slow disk, and
+    the controller refreshes the claim from here rather than around the call.
+    """
+    digests = {}
+    for path in sorted(Path(directory).rglob("*")):
+        if path.is_file():
+            digests[str(path.relative_to(directory))] = _sha256(path)
+            if tick is not None:
+                tick()
+    return digests
 
 
 def _write_json(path, payload):
@@ -270,12 +302,13 @@ def _write_json(path, payload):
     os.replace(temporary, path)
 
 
-def _evidence(directory, order, cell_id):
+def run_directory(directory, order, cell_id):
+    """Where a run's record and evidence live, below its campaign."""
     return Path(directory) / RUNS / f"{order:03d}-{cell_id}"
 
 
 def _owes_nothing(directory, run):
-    _write_json(_evidence(directory, run["order"], run["cellId"]) / SETTLED, {})
+    _write_json(run_directory(directory, run["order"], run["cellId"]) / SETTLED, {})
 
 
 class Controller:
@@ -297,7 +330,9 @@ class Controller:
     before it was called at all — leaves the run owed, and the next
     controller settles it before claiming anything. So ``settle`` must
     tolerate running twice for one run, and ``settle(run, None)`` may follow
-    a ``prepare`` that a crash cut short or never started.
+    a ``prepare`` that a crash cut short or never started. It must not write
+    into the run's directory: an analyzer reads every file there against the
+    digests in ``outcome.json``, and only ``settled.json`` follows them.
     """
 
     def __init__(
@@ -319,6 +354,11 @@ class Controller:
         ):
             raise Failure("Campaign inputs carry no launcher")
         self.directory = Path(directory)
+        if not _PLAIN_PATH.match(str(self.directory.absolute())):
+            raise Failure(
+                "Campaign directory path must be plain: letters, digits, '.', '_', "
+                "'-' and '/'"
+            )
         self.launcher = launcher
         self.endpoint = inputs.get("endpoint", "-")
         self.prepare = prepare
@@ -331,6 +371,12 @@ class Controller:
         # Opening supervises: a claim whose owner is gone stops the campaign.
         self.journal = Journal(self.directory, inputs, clock=time.time, alive=alive)
         self.orphans = self._reap_orphans()
+        # A plan cannot know where a run's evidence goes: a successor carries
+        # its predecessor's arguments into runs with new orders in a new
+        # directory. Refused before any claim, so no cell is spent on it.
+        for run in self.journal.plan:
+            if EVIDENCE_ROOT in (run.get("arguments") or []):
+                raise Failure(f"Run {run['order']} names its own {EVIDENCE_ROOT}")
 
     def _reap_orphans(self):
         """Stops runs a dead controller left running, and names them.
@@ -361,7 +407,7 @@ class Controller:
                 raise Failure(
                     f"Campaign is driven by process {owner['pid']} on {owner['host']}"
                 )
-            evidence = _evidence(self.directory, order, cells[order])
+            evidence = run_directory(self.directory, order, cells[order])
             record = evidence / WORKER
             if not record.exists():
                 continue
@@ -449,7 +495,7 @@ class Controller:
         run_id = option(arguments, "--run-id")
         if run_id is None:
             self._stop(order, "names no --run-id")
-        evidence = _evidence(self.directory, order, run["cellId"])
+        evidence = run_directory(self.directory, order, run["cellId"])
         try:
             evidence.mkdir(parents=True)
         except FileExistsError:
@@ -510,7 +556,7 @@ class Controller:
                 )
         failures = []
         for run in self.journal.plan:
-            evidence = _evidence(self.directory, run["order"], run["cellId"])
+            evidence = run_directory(self.directory, run["order"], run["cellId"])
             if not evidence.is_dir() or (evidence / SETTLED).exists():
                 continue
             lost = run["order"] in claimed or not (evidence / OUTCOME).exists()
@@ -529,7 +575,15 @@ class Controller:
     def _observe(self, run, run_id, evidence, begun):
         order = run["order"]
         deadline = begun + run["reserves"]["seconds"]
-        argv = [*self.launcher, str(evidence / PROBE), self.endpoint, *run["arguments"]]
+        probe = (evidence / PROBE).absolute()
+        argv = [
+            *self.launcher,
+            str(probe),
+            self.endpoint,
+            *run["arguments"],
+            EVIDENCE_ROOT,
+            evidence_root(probe),
+        ]
         with (
             open(evidence / STDOUT, "wb") as stdout,
             open(evidence / STDERR, "wb") as stderr,
@@ -581,7 +635,7 @@ class Controller:
         except Unrecordable as reason:
             if not killed:
                 record["unrecordable"] = str(reason)
-                self._record(evidence, record)
+                self._record(evidence, record, order)
                 self._stop(order, str(reason))
             outcome, fields = FAILED, None
             text = f"outlived its reservation of {run['reserves']['seconds']} seconds"
@@ -594,7 +648,7 @@ class Controller:
                 # a lost measurement.
                 text += "; did not exit before its reservation"
         record["outcome"] = outcome
-        self._record(evidence, record)
+        self._record(evidence, record, order)
         self.journal.heartbeat(order, self.owner)
         consumed = {
             "bytes": _size(evidence),
@@ -655,8 +709,10 @@ class Controller:
         except Failure:
             pass
 
-    def _record(self, evidence, record):
-        record["files"] = _files(evidence)
+    def _record(self, evidence, record, order):
+        record["files"] = files(
+            evidence, tick=lambda: self.journal.heartbeat(order, self.owner)
+        )
         _write_json(evidence / OUTCOME, record)
 
     def _stop(self, order, reason):

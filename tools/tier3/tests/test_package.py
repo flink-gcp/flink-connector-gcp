@@ -80,6 +80,7 @@ def test_wheel_installs_cli_policy_and_complete_source_bundle(tmp_path):
         ["supervisor"],
         ["render"],
         ["analyze"],
+        ["vm-analyze"],
         ["bigquery"],
         ["bigquery-bundle"],
     ):

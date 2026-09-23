@@ -583,6 +583,8 @@ session ceilings, read that runbook's session section, `kubernetes/apps/cloudtas
 ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks.py` and
 `policy.toml` in agreement. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
 offline; it never contacts a cluster or a bucket.
+`just tier3-vm-analyze <out> <campaign>...` does the same for single-host campaign directories
+(`flink_tier3.vmanalyze`, ADR-0162).
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
 dedicated kubeconfig; GKE API discovery verifies that endpoint.

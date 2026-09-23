@@ -502,6 +502,11 @@ tier3-schemas mode='check':
 tier3-analyze directory:
     mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 analyze --evidence "$1"
 
+# Offline analysis of collected single-host campaign directories; contacts nothing.
+[positional-arguments]
+tier3-vm-analyze out +campaigns:
+    mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 vm-analyze --out "$@"
+
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.
 # Reusable as-is by every flink-sql-connector-gcp-* module; both take the module

@@ -28,7 +28,11 @@ from .common import Failure
 ENTRYPOINTS = ("__main__", "__init__", "cli")
 # `cli` dispatches by name through `import_module`, which no import walk can
 # follow, so `cli` reads this table rather than keeping its own copy.
-DISPATCHED = {"supervisor": "runtime", "bigquery-bundle": "bigquery_bundle"}
+DISPATCHED = {
+    "supervisor": "runtime",
+    "bigquery-bundle": "bigquery_bundle",
+    "vm-analyze": "vmanalyze",
+}
 # The Pod's command is fixed by the manifest. Only its module seeds the walk;
 # naming a command the Pod never runs would carry that command's modules into
 # every delivery, which is what this selection exists to stop.
