@@ -17,8 +17,7 @@ The Dockerfile places these JARs in `/opt/flink/usrlib/` over the reviewed Flink
 The entry point is `io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob`; the job URI is `local:///opt/flink/usrlib/bigquery-recovery.jar`.
 No dependency download is needed at Pod startup.
 The [manual publication workflow](../../../.github/workflows/tier3-images.yaml) verifies and builds this payload as the `bigquery-recovery` GAR package.
-The [first publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built commit `116f2b8d9f992ecca7282d6320468db2b4a5c196` before appender observations were added.
-This changed payload needs another reviewed publication and digest before workload admission.
+The [trial publication](../../images/README.md#bigquery-trial-publication) built commit `8bfe56d5154d40b2ccef81f16129ea873ead43a5` with the appender observations, as `sha256:6fd22da4a44de73d2d5c15e3383c2a7b106987731b569bfb0fa73cfdcb4e6c2d`, deletion-eligible from 2026-09-30T14:03:04Z; dispatch names it through `application_digest` and verifies it live, and it is not pinned.
 The application CI lane builds the Dockerfile against the same public Flink 2.2.1 digest without publishing or using GCP credentials.
 
 Unit tests cover argument bounds, destination identities, serialized row sizes, Java serialization, input gaps and checkpoint state incompatibility.
@@ -549,7 +548,7 @@ The in-cluster entrypoint verifies the mounted approval, application and upgrade
 It is constructed without the runner token and adopts it from the binding, as [Query requests and runner release](#query-requests-and-runner-release) describes.
 
 The workflow job runs for up to 120 minutes for this scenario, because the 90-minute window's serial budget is 114 minutes.
-The published application image predates the appender observations; enabling the scenario does not approve a run.
+Enabling the scenario does not approve a run.
 
 ## Internal recovery execution
 

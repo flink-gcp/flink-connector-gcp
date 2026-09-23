@@ -102,8 +102,7 @@ The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
 The Cloud Tasks application needs its first authorized publication before a session dispatch can name its digest; that digest is a dispatch input verified live against the registry, not a pin in this package.
-The [first BigQuery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`, before the application added appender observations.
-The updated BigQuery application needs another authorized publication and a separately reviewed digest before workload admission.
+The [first BigQuery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`, before the application added appender observations; the [BigQuery trial publication](#bigquery-trial-publication) below supersedes it.
 The [first Pub/Sub publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35494622116) built `cba9043faee0ceb067cba23b56fe3e0abe7f0542`; its [application runbook](../apps/pubsub/README.md#deployment-definition) records the GAR-verified digest.
 Workload admission must recheck that digest's availability and retention window.
 Publication supplies no Cloud Tasks, BigQuery or Pub/Sub workload admission or service-measurement approval.
@@ -133,9 +132,27 @@ This lifecycle-tools adoption retains the Operator, Flink and smoke pins.
 
 The Cloud Tasks measurement publication built main commit `339d0a90675dffee74305cebe021093c6a1f9b4b` on 2026-09-19 UTC, once for [the 2.2.1 line](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474382654) and once for [the 1.20.4 line](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488).
 Each run also republishes the smoke and lifecycle-tools images, so the same commit produced two equivalent builds of each; the pins take the later pair, which is what the commit's tag now resolves to.
-GAR reads confirmed all four digests against that tag, and the seven-day eligibility clock restarted at 2026-09-19T23:07Z for the lifecycle-tools and smoke pins.
+GAR reads confirmed all four digests against that tag, and the seven-day eligibility clock restarted at 2026-09-19T23:07Z for the lifecycle-tools and smoke pins, which [pins.cue](pins.cue) selected until the [BigQuery trial publication](#bigquery-trial-publication) below.
 The application digests stay out of this file: they are dispatch inputs verified live, so the two measurement packages are never pinned.
 This adoption retains the Operator and Flink pins.
+
+### BigQuery trial publication
+
+The [BigQuery trial publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35869627208) built main commit `8bfe56d5154d40b2ccef81f16129ea873ead43a5` on 2026-09-23 for the trials [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427) dispatches.
+It supersedes two earlier `bigquery-recovery` publications from 2026-09-20 UTC: 04:54Z from `116f2b8d9`, before the application's appender observations, and 06:50Z from `cba9043fa` by the [first Pub/Sub publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35494622116), which carried them but was never adopted; both become deletion-eligible on 2026-09-27, before a campaign could finish.
+Before it ran, the `operator` version `sha256:2c667a1c…` created 2026-09-20T03:52Z was deleted by hand: the workflow copies that same digest from Docker Hub, and a copy of a digest the registry still holds keeps its creation time, so without the deletion the mirror would have become deletion-eligible three days into the campaign.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78` | 2026-09-23T14:02:14Z | 2026-09-30T14:02:14Z |
+| `lifecycle-tools` | `sha256:107e3096d0a4d09f625b8ce61eeae1f961297db2848a5650957739af538940ca` | 2026-09-23T14:02:34Z | 2026-09-30T14:02:34Z |
+| `smoke` | `sha256:8e4803c7330b68a80326fdb2542721f40859ee85bcba0450560ad5ccb99ffe45` | 2026-09-23T14:02:49Z | 2026-09-30T14:02:49Z |
+| `bigquery-recovery` | `sha256:6fd22da4a44de73d2d5c15e3383c2a7b106987731b569bfb0fa73cfdcb4e6c2d` | 2026-09-23T14:03:04Z | 2026-09-30T14:03:04Z |
+
+The digests are the ones the `sha-8bfe56d5…` tag resolves to, and `operator` the one its `1.15.0` tag resolves to, read from GAR after the run; the Operator digest is unchanged, so its Helm pin stands.
+[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests; the `bigquery-recovery` digest stays out of it as a dispatch input verified live, like the other scenario packages.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so the last BigQuery trial window from this publication must end before 2026-09-29T14:02:14Z, and it starts at most 90 minutes earlier.
+The `flink` base mirror kept its 2026-09-20 creation time; a trial does not pull it, and a later build recopies it once cleanup has removed it.
 
 For a shell or Docker build argument, read a pin with:
 
