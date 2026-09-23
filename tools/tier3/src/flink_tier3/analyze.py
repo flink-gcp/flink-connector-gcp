@@ -1619,13 +1619,13 @@ def analyze(evidence, protocol_path=None, kind=None):
     }
 
 
-def write_reports(report, out):
+def write_reports(report, out, markdown=render_markdown):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_bytes(
         (json.dumps(plain(report), sort_keys=True, indent=2) + "\n").encode()
     )
-    (out / "report.md").write_bytes(render_markdown(report).encode())
+    (out / "report.md").write_bytes(markdown(report).encode())
     return out
 
 

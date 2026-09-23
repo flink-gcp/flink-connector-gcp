@@ -37,6 +37,7 @@ def main(argv=None):
         "supervisor",
         "render",
         "analyze",
+        "vm-analyze",
         "bigquery",
         "bigquery-bundle",
     ):
@@ -48,7 +49,7 @@ def main(argv=None):
         "." + DISPATCHED.get(args.command, args.command), __package__
     )
     # The supervisor runs in-cluster; offline analysis commands need no checkout.
-    if args.command not in ("supervisor", "analyze", "bigquery"):
+    if args.command not in ("supervisor", "analyze", "vm-analyze", "bigquery"):
         from . import bootstrap, lifecycle, schemas, workflow
 
         root = args.repository.resolve()

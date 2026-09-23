@@ -61,7 +61,7 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 | `--attempt-limit` | Window mode: explicitly approved per-creator ceiling, from 1 through three times the generated record count |
 | `--control-delay-millis` | Window calibration only: 0 (default) or 100; a nonzero value requires `UNNAMED`, parallelism/concurrency 1 and CSV output |
 | `--emit-attempts` | `true` (default), or `false` for a window calibration that measures accounting without CSV formatting/output |
-| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Defaults to `gs://flink-gcp-cloudtasks-benchmark/runs/`, which is what a cluster session uses and never passes; a rig that writes elsewhere passes its own |
+| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Defaults to `gs://flink-gcp-cloudtasks-benchmark/runs/`, which is what a cluster session uses and never passes; a rig that writes elsewhere passes its own, and the single-host controller passes one inside each run's directory |
 
 Record-count mode remains available for finite wiring checks.
 Window mode requires all four window arguments and rejects `--records` and `--warmup-records`.
@@ -173,6 +173,7 @@ Receipts carry schema version 1, run/cell/arm identity, role, incarnation, proce
 They contain no task body, target URL or exception text.
 Wall/monotonic samples do not prove synchronized clocks across hosts.
 The offline analyzer establishes the observation window from the checkpoints the supervisor observed and the source receipts, and records which clock each instant belongs to, preserving the cross-JVM latency exclusion above.
+On the single-host rig, `flink_tier3.vmanalyze` applies the same window rule to checkpoint completions the probe is to record in its own clock; the probe does not record them yet, so such a run has no window ([ADR-0162](../../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md)).
 The worker writes receipts to temporary benchmark storage; the lifecycle collector exports them to retained evidence, verified by hash, before the run prefix is released.
 Receipt writes and their failure/overhead behavior still require execution-host calibration.
 

@@ -248,12 +248,47 @@ def test_the_evidence_directory_carries_the_record_of_the_run(tmp_path, worker):
     assert record["argv"][:2] == inputs(worker)["launcher"]
     # The endpoint is a frozen input too, and "-" means the real service.
     assert record["argv"][3] == "-"
+    # The evidence goes inside the run, under a root the controller names.
+    probe = (directory / vmcampaign.RUNS / "001-k01" / vmcampaign.PROBE).absolute()
+    assert record["argv"][2] == str(probe)
+    assert record["argv"][-2:] == [
+        "--evidence-root",
+        probe.as_uri() + "/evidence/runs/",
+    ]
     assert set(record["files"]) == {
         "probe/samples.jsonl",
         "stderr.log",
         "stdout.log",
         "worker.json",
     }
+
+
+def test_a_plan_that_names_the_evidence_root_is_refused_before_a_claim(
+    tmp_path, worker
+):
+    # A successor carries its predecessor's arguments into new run directories,
+    # so a root in the plan would point every successor run somewhere else.
+    directory = planned(
+        tmp_path / "c",
+        worker,
+        run(1, "observe", **{"evidence-root": "file:///elsewhere/"}),
+    )
+
+    with pytest.raises(Failure, match="Run 1 names its own --evidence-root"):
+        controller(directory, worker)
+
+    assert state(directory)["runs"]["1"]["state"] == campaign.PENDING
+    assert not (directory / vmcampaign.RUNS).exists()
+
+
+@pytest.mark.parametrize("name", ["with space", "hash#mark", "per%20cent"])
+def test_a_campaign_path_the_probe_cannot_name_is_refused(tmp_path, worker, name):
+    directory = planned(tmp_path / name, worker, run(1, "observe"))
+
+    with pytest.raises(Failure, match="Campaign directory path must be plain"):
+        controller(directory, worker)
+
+    assert state(directory)["runs"]["1"]["state"] == campaign.PENDING
 
 
 def test_a_run_past_its_reservation_is_stopped_and_recorded_failed(tmp_path, worker):
@@ -745,18 +780,39 @@ def test_recording_a_large_run_keeps_its_claim(tmp_path, worker, monkeypatch):
     def slow(function, times=None):
         calls = [0]
 
-        def call(*args):
+        def call(*args, **kwargs):
             calls[0] += 1
             if times is None or calls[0] <= times:
                 skew[0] += 1.2
-            return function(*args)
+            return function(*args, **kwargs)
 
         return call
 
     # The straggler check runs once, before the first heartbeat of recording.
     monkeypatch.setattr(vmcampaign, "_group_gone", slow(vmcampaign._group_gone, 1))
-    monkeypatch.setattr(vmcampaign, "_files", slow(vmcampaign._files))
+    monkeypatch.setattr(vmcampaign, "files", slow(vmcampaign.files))
     monkeypatch.setattr(vmcampaign, "_size", slow(vmcampaign._size))
+
+    driving.drive()
+
+    assert state(directory)["runs"]["1"]["state"] == campaign.OBSERVED
+
+
+def test_hashing_a_run_heartbeats_between_its_files(tmp_path, worker, monkeypatch):
+    # A run's rows are inside its directory, so one call that hashes them can
+    # outlast the expiry; every file here takes most of it.
+    monkeypatch.setattr(campaign, "HEARTBEAT_EXPIRY_SECONDS", 2)
+    directory = planned(tmp_path / "c", worker, run(1, "observe"))
+    driving = controller(directory, worker)
+    skew = [0.0]
+    driving.journal._clock = lambda: time.time() + skew[0]
+    real = vmcampaign._sha256
+
+    def slow(path):
+        skew[0] += 1.2
+        return real(path)
+
+    monkeypatch.setattr(vmcampaign, "_sha256", slow)
 
     driving.drive()
 
