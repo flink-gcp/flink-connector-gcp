@@ -132,7 +132,7 @@ What a replacement costs the measurement is scenario-specific; for a Cloud Tasks
 | Pods | Five total: two in each namespace, and one slot a replacement occupies while the Pod it replaces terminates |
 | PVCs | Zero throughout admission and cleanup |
 | State | Stop on observed usage above 1 GiB or 10,000 objects in the run prefix |
-| Logs | Stop at 100 MiB collected; stop if the initial 1 MiB or a later 64 KiB read would truncate |
+| Logs | Stop at 100 MiB collected; stop if any 1 MiB read would truncate |
 | Durable evidence | 100 MiB per run; supervisor 88 MiB, runner 10 MiB, 2 MiB reserved for approval/manifests/final receipts |
 | Cost estimate | USD 0.81 for a full hour, approved before dispatch |
 
@@ -177,7 +177,7 @@ The external runner uses ADC/WIF against the verified DNS endpoint; Kubernetes s
 The Google SDK requests both `cloud-platform` and `userinfo.email` OAuth scopes, matching the [GKE authentication plugin](https://github.com/kubernetes/cloud-provider-gcp/blob/master/cmd/gke-gcloud-auth-plugin/default_credentials_token_provider.go).
 The email scope lets GKE identify the impersonated service account by the email bound in Kubernetes RBAC; without it, the numeric account ID can produce a `403` even when kubectl preflight succeeds.
 The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint observations.
-The first log read retains up to 1 MiB of startup history; subsequent reads retain up to 64 KiB since the previous observation.
+Every log read retains up to 1 MiB: the first the startup history, later ones what arrived since the previous observation, which can still be a whole startup when the first read came before the container printed it.
 Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.
 Every measurement Pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: false`.
 Autopilot's autoscaler repacks Pods off an under-used node, and the end of a cell leaves exactly that; measured on 2026-09-20, two JobManagers were replaced two and five minutes after the previous cell's Pods went away, restarting jobs that were otherwise healthy and invalidating both cells.

@@ -202,7 +202,9 @@ class Kubernetes:
         return True
 
     def logs(self, pod, since=None):
-        limit = 65536 if since else MIB
+        # One limit for every read: a first read can land before a container
+        # has printed its startup output, which then arrives in a later one.
+        limit = MIB
         query = {
             "timestamps": "true",
             "limitBytes": limit,

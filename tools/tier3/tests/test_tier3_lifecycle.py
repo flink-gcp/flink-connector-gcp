@@ -1766,17 +1766,22 @@ def test_unrelated_completion_does_not_recover_current_lock(
     assert env[1].read(rt.ENVIRONMENT)[0] == env[2]["lock_owner"]
 
 
-def test_initial_startup_log_is_retained_before_incremental_ceiling(env, monkeypatch):
+def test_a_later_read_may_carry_a_startup_burst_and_a_full_one_still_stops(
+    env, monkeypatch
+):
+    """The 2026-09-23 BigQuery pilot's JobManager printed 365 bytes before its
+    first read and its whole startup output before the next one."""
     supervisor, pod = prepared_supervisor(env)
-    limits = []
+    limits, replies = [], iter([b"x" * 365, b"x" * 70000, b"x" * rt.MIB])
     monkeypatch.setattr(
-        env[0], "logs", lambda _pod, since=None: limits.append(since) or b"x" * 70000
+        env[0], "logs", lambda _pod, since=None: limits.append(since) or next(replies)
     )
     supervisor.telemetry([], [pod])
-    assert supervisor.log_bytes == 70000
+    supervisor.telemetry([], [pod])
+    assert supervisor.log_bytes == 70365
     with pytest.raises(rt.Failure, match="Log collection ceiling"):
         supervisor.telemetry([], [pod])
-    assert limits[0] is None and limits[1] is not None
+    assert limits[0] is None and limits[1] is not None and limits[2] is not None
     assert any(
         b"x" * 70000 in rt.json_bytes(value)
         for (bucket, path), (value, _gen) in env[1].data.items()
@@ -1799,7 +1804,7 @@ def test_log_request_keeps_initial_history_and_bounds_both_reads():
     kube.logs(pod, "2026-09-15T00:00:00Z")
     assert calls[0][1]["limit"] == rt.MIB
     assert "limitBytes=1048576" in calls[0][0][1] and "sinceTime" not in calls[0][0][1]
-    assert calls[1][1]["limit"] == 65536 and "sinceTime=" in calls[1][0][1]
+    assert calls[1][1]["limit"] == rt.MIB and "sinceTime=" in calls[1][0][1]
 
 
 def test_plan_timeout_preserves_partial_output_and_exact_lock(
