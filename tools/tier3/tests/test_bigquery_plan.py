@@ -29,16 +29,7 @@ from flink_tier3.model import validate_approval
 
 @pytest.fixture
 def trial():
-    return {
-        "version": 1,
-        "mode": "EO",
-        "destinations": 10,
-        "repetition": 1,
-        "query_slots": 12,
-        "maximum_bytes_billed": 4 * 1024**3,
-        "query_timeout_ms": 60000,
-        "additional_cost_usd": "5.00",
-    }
+    return plan.trial("eo-10")
 
 
 @pytest.fixture
@@ -190,24 +181,14 @@ def test_complete_identity_and_budget_bindings(
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("version", True),
         ("version", 2),
         ("mode", "wrong"),
         ("destinations", True),
+        ("destinations", 10.0),
         ("destinations", 11),
-        ("repetition", 0),
-        ("repetition", 4),
-        ("query_slots", 0),
-        ("query_slots", 13),
-        ("query_slots", 1.0),
-        ("maximum_bytes_billed", 1024**3 - 1),
-        ("maximum_bytes_billed", 4 * 1024**3 + 1),
-        ("query_timeout_ms", 0),
-        ("query_timeout_ms", 60001),
-        ("additional_cost_usd", "NaN"),
-        ("additional_cost_usd", 5),
-        ("additional_cost_usd", "10.01"),
-        ("additional_cost_usd", "1.00"),
+        # The query budget is the scenario's; a trial cannot carry one.
+        ("query_slots", 12),
+        ("additional_cost_usd", "5.00"),
         ("extra", "unsupported"),
     ],
 )
@@ -240,10 +221,11 @@ def test_invalid_delivery_identity_refused_before_render(
     assert renderer == []
 
 
-def test_stale_pricing_and_fractional_times_refused(inputs, renderer):
-    inputs.update(started_at="2026-11-21T00:00:00Z", expires_at="2026-11-21T01:30:00Z")
-    with pytest.raises(ValueError, match="pricing review"):
-        plan.prepare(**inputs)
+def test_a_late_start_renders_and_a_fractional_one_does_not(inputs, renderer):
+    """The rates' age informs the estimate; it no longer closes the proposal."""
+    inputs.update(started_at="2027-01-21T00:00:00Z", expires_at="2027-01-21T01:30:00Z")
+    assert plan.prepare(**inputs)["proposal"]["started_at"] == inputs["started_at"]
+    renderer.clear()
     inputs.update(
         started_at="2026-09-21T00:00:00.5Z", expires_at="2026-09-21T01:30:00.5Z"
     )
@@ -252,35 +234,29 @@ def test_stale_pricing_and_fractional_times_refused(inputs, renderer):
     assert renderer == []
 
 
-def test_planning_cost_tracks_query_budget(trial):
-    expensive = plan.estimate(trial)
-    trial["query_slots"] = 1
-    assert expensive - plan.estimate(trial) == Decimal(44) / 1024 * Decimal("6.25")
+@pytest.mark.parametrize("destinations", [10.0, True, "10"])
+def test_a_trial_is_one_of_the_four_by_type_as_well_as_value(destinations):
+    """An approval is JSON read back; `10.0` compares equal to `10` in Python."""
+    with pytest.raises(ValueError, match="ALO/EO and 10/50"):
+        plan.validate_trial({"mode": "EO", "destinations": destinations})
+    plan.validate_trial({"mode": "EO", "destinations": 10})
 
 
-@pytest.mark.parametrize(
-    "raw,match",
-    [
-        ('{"version":1,"version":1}', "Duplicate trial field"),
-        ("[]", "fields"),
-        ("{}", "fields"),
-        ("{", "Invalid BigQuery"),
-    ],
-)
-def test_trial_json_refusals(tmp_path, raw, match):
-    path = tmp_path / "trial.json"
-    path.write_text(raw)
-    with pytest.raises(Failure, match=match):
-        plan.load_trial(path)
+def test_the_estimate_charges_the_whole_query_budget():
+    # 12 slots of 4 GiB at USD 6.25 per TiB, on top of the Pods and the reserve.
+    query = Decimal(48) / 1024 * Decimal("6.25")
+    assert plan.estimate() - query - plan.RESERVE_USD > 0
+    assert plan.estimate().quantize(Decimal("0.01")) == Decimal("2.35")
 
 
-def test_input_size_guard_isolated_from_schema(tmp_path, trial):
-    path = tmp_path / "trial.json"
-    path.write_text(json.dumps(trial) + " " * 8192)
-    with pytest.raises(Failure, match="exceeds 8 KiB"):
-        plan.load_trial(path)
-    path.write_text(json.dumps(trial))
-    assert plan.load_trial(path) == trial
+def test_the_four_trials_are_each_mode_at_each_destination_count():
+    assert {name: plan.trial(name) for name in plan.TRIALS} == {
+        f"{mode.lower()}-{count}": {"mode": mode, "destinations": count}
+        for mode in ("ALO", "EO")
+        for count in (10, 50)
+    }
+    with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50"):
+        plan.trial("none")
 
 
 @pytest.mark.parametrize(
@@ -315,10 +291,10 @@ def test_renderer_drift_does_not_produce_bound_proposal(
 
 
 def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
-    tmp_path, trial, renderer, capsys
+    tmp_path, renderer, capsys
 ):
     path = tmp_path / "trial.json"
-    path.write_text(json.dumps(trial))
+    path.write_text("{}")
     args = [
         "--scenario",
         "bigquery-recovery",
@@ -336,8 +312,8 @@ def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
         "b" * 40,
         "--application-image",
         plan.GAR + "bigquery-recovery@sha256:" + "c" * 64,
-        "--trial-file",
-        str(path),
+        "--trial",
+        "eo-10",
     ]
     command.main(args)
     assert json.loads(capsys.readouterr().out)["proposal"]["approved"] is False
@@ -346,6 +322,8 @@ def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
         ["--flink-version", "1.20.4"],
         ["--expression", "application"],
         ["--target", "wrong"],
+        # A trial is named; the file form belongs to Pub/Sub proposals.
+        ["--trial-file", str(path)],
     ):
         with pytest.raises(SystemExit) as error:
             command.main(args + option)

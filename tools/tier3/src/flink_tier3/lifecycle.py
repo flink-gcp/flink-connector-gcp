@@ -46,9 +46,13 @@ from .policy import (
 )
 
 ROOT = Path.cwd()
-APPROVAL = "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1"
+APPROVAL = "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES"
 CLOUDTASKS_APPROVAL = (
-    "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES"
+    "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES"
+)
+BIGQUERY_APPROVAL = (
+    f"APPROVE ONE BIGQUERY TRIAL: {BIGQUERY_CEILINGS['pods']} PODS, "
+    f"{BIGQUERY_CEILINGS['seconds'] // 60} MINUTES"
 )
 SCENARIOS = ("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery")
 # How far the operator's typed expiry may lie beyond the run's own end. The
@@ -58,28 +62,11 @@ SCENARIOS = ("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery")
 BIGQUERY_EXPIRY_SLACK_SECONDS = 600
 
 
-def bigquery_phrase(trial):
-    """The phrase that approves this trial, including the cost it may spend.
-
-    The cost is the trial's own ceiling rather than the scenario's maximum, so
-    the operator types the number that will bind the run.
-    """
-    return (
-        f"APPROVE ONE BIGQUERY TRIAL: {BIGQUERY_CEILINGS['pods']} PODS, "
-        f"{BIGQUERY_CEILINGS['seconds'] // 60} MINUTES, "
-        f"USD {trial['additional_cost_usd']}"
-    )
-
-
 def trial_inputs(args):
-    """Resolve the reviewed trial file and the live application digest."""
-    if not rt.RUN_ID.fullmatch(args.trial or ""):
-        raise rt.Failure("BigQuery trials need a reviewed --trial name")
+    """Resolve the named trial and the live application digest."""
+    trial = bigquery_plan.trial(args.trial)
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure("BigQuery trials need a sha256 --application-digest")
-    trial = bigquery_plan.load_trial(
-        ROOT / "kubernetes/lifecycle/trials" / (args.trial + ".json")
-    )
     return trial, rt.GAR + "bigquery-recovery@" + args.application_digest
 
 
@@ -129,10 +116,7 @@ def bigquery_approval(
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "ceilings": {
-            **BIGQUERY_CEILINGS,
-            "additional_cost_usd": trial["additional_cost_usd"],
-        },
+        "ceilings": dict(BIGQUERY_CEILINGS),
         "bigquery_trial": copy.deepcopy(trial),
         "namespaces": namespaces,
         "operator_uid": operator_uid,
@@ -199,7 +183,7 @@ def start_bigquery(args, store):
     the supervisor adopts it from that binding.
     """
     trial, application_image = trial_inputs(args)
-    refuse_before_admission(args, store, bigquery_phrase(trial))
+    refuse_before_admission(args, store, BIGQUERY_APPROVAL)
     started, end = bigquery_window(time.time(), args.expires_at)
     nonce = uuid.uuid4().hex
     owner = wf.execution("run", nonce) | {"run_id": args.run_id}
@@ -675,7 +659,9 @@ def main(argv=None):
     run.add_argument("--session")
     run.add_argument("--flink-version", choices=tuple(FLINK_LINES))
     run.add_argument("--application-digest")
-    run.add_argument("--trial")
+    run.add_argument(
+        "--trial", help="BigQuery trial: " + ", ".join(bigquery_plan.TRIALS)
+    )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)
     sub.add_parser("plans")

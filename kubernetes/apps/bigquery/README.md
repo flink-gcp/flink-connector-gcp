@@ -98,33 +98,17 @@ A proposal is not an approval: dispatch admits this scenario only through the [p
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
-Supply a small JSON file with exactly these fields; the following is an unapproved example:
-
-```json
-{
-  "version": 1,
-  "mode": "EO",
-  "destinations": 10,
-  "repetition": 1,
-  "query_slots": 12,
-  "maximum_bytes_billed": 4294967296,
-  "query_timeout_ms": 60000,
-  "additional_cost_usd": "5.00"
-}
-```
-
-Choose ALO or EO, 10 or 50 destinations, and repetition 1 through 3.
-One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that the other repetitions ran.
+Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50` or `eo-50`, one delivery method at one destination count.
+One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the mode's 30-minute-equivalent input above.
-Query slots must be 1 through 12, each billed-byte limit 1 GiB through 4 GiB, and each timeout 1 through 60,000 milliseconds.
+Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
 Every visibility retry that submits a new job must consume another slot.
-The cost proposal is an explicit two-decimal USD string, at least the planning estimate and at most USD 10; it is not a billing-system cap.
 
-For example, save the input as `/tmp/bigquery-trial.json`, then render from the repository root with a synthetic image digest for local review:
+For example, render from the repository root with a synthetic image digest for local review:
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
-  --scenario bigquery-recovery --trial-file /tmp/bigquery-trial.json \
+  --scenario bigquery-recovery --trial eo-10 \
   --run-id example-1312 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
@@ -133,7 +117,7 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 ```
 
 The intended window is exactly 90 minutes, reserving its last 15 minutes for cleanup; the proposed supervisor deadline leaves the final three minutes for external settlement.
-Dates must be whole-second UTC values, and the proposed start must fall within 30 days of the recorded pricing review.
+Dates must be whole-second UTC values.
 The example date and synthetic digest are illustrative, not a runnable delivery.
 The initial and upgrade manifests use the same input identity, and the only upgrade changes are the phase and restoration arguments.
 The proposal embeds the `ResourcePlan`, application/upgrade/supervisor hashes and installed runtime-source hash.
@@ -141,9 +125,10 @@ The ConfigMap carries that same proposal as `proposal.json`, separately from the
 The declared revision is a requested source identity: the renderer does not prove checkout cleanliness, GitHub main ancestry, image publication/provenance, registry retention or a live namespace/Operator baseline.
 Those checks and final approval belong to [production dispatch](#production-dispatch).
 
-The planning estimate charges all five running Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
+The planning estimate, USD 2.35 for every trial, is what the owner approves before a dispatch; nothing at run time compares spend against it.
+It charges all five running Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
 It does not separately price occupancy of the shared policy's extra Operator replacement slot.
-The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubernetes-engine/pricing) and [BigQuery on-demand pricing](https://cloud.google.com/bigquery/pricing), checked on 2026-09-20.
+The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubernetes-engine/pricing) and [BigQuery on-demand pricing](https://cloud.google.com/bigquery/pricing), checked on 2026-09-20; the proposal records that date as the estimate's basis.
 It assumes on-demand query billing and takes no free-tier, Spot or commitment discount.
 The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
 The generated observation plan records three minutes of warm-up, ten minutes each of baseline and post-recovery observation, ten-minute startup/visibility limits and a five-minute limit per recovery.
@@ -476,7 +461,7 @@ The fixed dataset and namespace grants already exist, but checkpoint/savepoint r
 ### Approval and shared resource policy
 
 The common model accepts a version 4 `bigquery-recovery` approval, which [production dispatch](#production-dispatch) builds and the internal integration and cleanup tests construct directly.
-It binds `bigquery_trial` to the same exact input schema as the offline trial file, including mode, destination count, repetition, query slots, per-query limits and proposed cost.
+It binds `bigquery_trial` to the trial's delivery method and destination count, the only fields a trial chooses.
 The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 A valid document is not authenticated execution permission on its own: dispatch still requires the typed phrase, the environment lock and a verified bundle, and the in-cluster entrypoint builds its supervisor only through the authenticated actor factory.
 Internal runner admission requires an explicit environment-bound handoff; internal supervision additionally requires the approved upgrade and a quiescence callback.
@@ -484,7 +469,7 @@ Internal runner admission requires an explicit environment-bound handoff; intern
 The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, at most six Pods and no PVCs.
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
 The control quota covers the Operator, supervisor and one Operator replacement while the previous Pod terminates; five Pods run in the steady state.
-State and log limits remain 1 GiB of state, 10,000 state objects and 100 MiB of logs; the trial selects a cost ceiling from the proposal schema, subject to its planning estimate and USD 10 maximum.
+State and log limits remain 1 GiB of state, 10,000 state objects and 100 MiB of logs; the approval carries no cost ceiling, because spend is approved from the estimate before dispatch.
 The two trial modes retain their fixed finite input sizes; the approval model derives the resource plan rather than accepting another independently editable copy.
 The resource controller refuses a plan that differs from this approval before reading or creating service resources.
 
@@ -531,9 +516,6 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigq
 ```
 
 The preparation instant must be a whole second between the approved start and cleanup deadline.
-It must also satisfy the common approval's pricing freshness check: no later than 30 days after `environment.pricing_reviewed` in `policy.toml`.
-The current review date is 2026-09-14T00:00:00Z, giving a preparation deadline of 2026-10-14T00:00:00Z.
-The BigQuery proposal's separate 2026-09-20 pricing review permits later trial dates, through 2026-10-20T00:00:00Z, so a valid proposal can still require a common pricing review refresh before bundle preparation.
 An installed CLI can select the checkout with `flink-tier3 --repository /path/to/checkout bigquery-bundle ...`; CUE must be on its executable path.
 Verification compares the complete bundle, including its embedded source, command, images, deadlines and trial metadata; it requires the external approval file even when the bundle already contains an approval.
 Both input files reject duplicate JSON object fields.
@@ -549,14 +531,13 @@ The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-r
 
 | Input | Contract |
 | --- | --- |
-| `trial` | A reviewed trial file name under `kubernetes/lifecycle/trials`, without `.json`; it uses the same schema as the offline proposal |
+| `trial` | `alo-10`, `eo-10`, `alo-50` or `eo-50`; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 | `expires_at` | 90 to 100 minutes ahead; the latest the run may end |
-| `approval` | `APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD <cost>`, where `<cost>` is the trial file's own `additional_cost_usd` rather than the scenario maximum |
+| `approval` | `APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES`; it confirms the run, and spend is approved beforehand from the estimate |
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget.
 The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
-The approval model also requires the start within 30 days of both pricing reviews, the environment's `pricing_reviewed` in `policy.toml` and the trial's `bigquery_plan.REVIEWED_AT`.
 
 The checks that need neither the cluster nor the lock run first: the trial and digest, the phrase, the exact main commit, the run ID, an existing run's evidence and the window.
 Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the version 4 approval and prepares the bundle with the approval embedded, so a bundle refusal also arrives before the lock.
@@ -567,7 +548,7 @@ The in-cluster entrypoint verifies the mounted approval, application and upgrade
 It is constructed without the runner token and adopts it from the binding, as [Query requests and runner release](#query-requests-and-runner-release) describes.
 
 The workflow job runs for up to 120 minutes for this scenario, because the 90-minute window's serial budget is 114 minutes.
-No trial file is reviewed yet, and the published application image predates the appender observations; enabling the scenario does not approve a run.
+The published application image predates the appender observations; enabling the scenario does not approve a run.
 
 ## Internal recovery execution
 

@@ -830,13 +830,19 @@ def test_inventory_observations_survive_parent_disappearance(env):
     assert not env[0].get("Pod", rt.SMOKE, pod["metadata"]["name"])
 
 
-def test_estimated_cost_and_pricing_staleness(env):
+def test_estimated_cost_and_the_rates_age(env):
     # The supervisor shape carries the headroom that keeps it off a busy
-    # node; an hour of smoke still costs well under its USD 1 ceiling.
+    # node; an hour of smoke is estimated well under a dollar.
     assert rt.estimated_cost(3600) == Decimal("0.813125")
+    # The review date is the estimate's basis, not an admission deadline.
     env[3].now = rt.timestamp(rt.PRICING_REVIEWED) + 31 * 86400
-    with pytest.raises(rt.Failure, match="Pricing review"):
-        rt.validate_approval(env[2], env[3]())
+    later = dict(
+        env[2],
+        started_at=rt.utc(env[3].now),
+        expires_at=rt.utc(env[3].now + 3600),
+        cleanup_at=rt.utc(env[3].now + 2700),
+    )
+    rt.validate_approval(later, env[3]())
 
 
 def test_admission_quotas_cover_the_pods_each_namespace_will_hold(env):
@@ -2203,6 +2209,21 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     assert late.force_at <= schedule.expires_at + 60
 
 
+def test_the_workflow_offers_exactly_what_dispatch_accepts():
+    """Its inputs are a second copy of these values; drift would strand one."""
+    import yaml
+    from flink_tier3 import bigquery_plan
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["trial"]["options"] == ["none", *bigquery_plan.TRIALS]
+    assert inputs["trial"]["default"] == "none"
+    assert inputs["approval"]["description"] == (
+        f"Type {cli.APPROVAL}, or {cli.CLOUDTASKS_APPROVAL}, or "
+        f"{cli.BIGQUERY_APPROVAL}; spend is approved beforehand from the estimate"
+    )
+
+
 def test_record_phase_transitions_and_wire_round_trip():
     record = rt.RunRecord("nonce")
     for phase in (
@@ -2627,7 +2648,6 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
         "state_objects": 10000,
         "log_bytes": 104857600,
         "evidence_bytes": 104857600,
-        "additional_cost_usd": "1.00",
     }
     assert rt.COST_RATES == {
         "cpu": Decimal("0.10"),
@@ -2639,7 +2659,7 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
         "operator": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
         "supervisor": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "128Mi"},
     }
-    assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1"
+    assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES"
 
 
 def test_supervisor_source_identity_covers_every_delivered_module_and_policy(tmp_path):

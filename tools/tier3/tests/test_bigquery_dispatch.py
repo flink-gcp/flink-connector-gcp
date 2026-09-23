@@ -46,12 +46,8 @@ ENVIRONMENT_LOCK = cli.rt.EnvironmentLock
 
 
 @pytest.fixture
-def reviewed(tmp_path, monkeypatch, trial):
-    """A checkout holding one reviewed trial file, as the workflow checks it out."""
-    trials = tmp_path / "kubernetes/lifecycle/trials"
-    trials.mkdir(parents=True)
-    (trials / "eo-10.json").write_text(json.dumps(trial))
-    monkeypatch.setattr(cli, "ROOT", tmp_path)
+def reviewed(trial):
+    """The trial `args` names, as dispatch resolves it."""
     return trial
 
 
@@ -87,19 +83,11 @@ def args(tmp_path, **overrides):
     return SimpleNamespace(**value)
 
 
-def test_the_phrase_binds_the_trials_own_cost(trial):
-    assert (
-        cli.bigquery_phrase(trial)
-        == "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD 5.00"
-    )
-    assert cli.bigquery_phrase(dict(trial, additional_cost_usd="7.50")).endswith(
-        "USD 7.50"
-    )
+def test_the_phrase_names_the_run_and_no_amount():
+    assert cli.BIGQUERY_APPROVAL == "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES"
 
 
-def test_the_trial_resolves_from_its_reviewed_file_and_the_live_digest(
-    reviewed, tmp_path
-):
+def test_the_trial_resolves_from_its_name_and_the_live_digest(reviewed, tmp_path):
     trial, image = cli.trial_inputs(args(tmp_path))
     assert trial == reviewed
     assert image == cli.rt.GAR + "bigquery-recovery@" + DIGEST
@@ -108,9 +96,9 @@ def test_the_trial_resolves_from_its_reviewed_file_and_the_live_digest(
 @pytest.mark.parametrize(
     "change, match",
     [
-        ({"trial": None}, "reviewed --trial name"),
-        ({"trial": "../eo-10"}, "reviewed --trial name"),
-        ({"trial": "absent"}, "Invalid BigQuery trial proposal"),
+        ({"trial": None}, "one of alo-10"),
+        ({"trial": "none"}, "one of alo-10"),
+        ({"trial": "eo-10.json"}, "one of alo-10"),
         ({"application_digest": None}, "sha256 --application-digest"),
         ({"application_digest": "latest"}, "sha256 --application-digest"),
     ],
@@ -140,15 +128,15 @@ def test_an_expiry_that_would_not_bound_the_run_is_refused(slack):
     [
         ({"approve": cli.APPROVAL}, {}, "explicitly approve"),
         ({"approve": cli.CLOUDTASKS_APPROVAL}, {}, "explicitly approve"),
-        # The maximum is not the trial's ceiling: typing it approves nothing.
+        # The old phrase carried an amount; it no longer approves anything.
         (
-            {"approve": "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD 10.00"},
+            {"approve": "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD 3.00"},
             {},
             "explicitly approve",
         ),
         ({"sha": "f" * 40}, {}, "explicitly approve"),
         ({}, {"GITHUB_REF": "refs/heads/feature"}, "explicitly approve"),
-        ({"trial": "absent"}, {}, "Invalid BigQuery trial proposal"),
+        ({"trial": "none"}, {}, "one of alo-10"),
         ({"run_id": "Not A Run"}, {}, "Invalid run ID"),
         ({"expires_at": cli.rt.utc(NOW + WINDOW - 1)}, {}, "90 to 100 minutes"),
     ],
@@ -160,7 +148,7 @@ def test_a_dispatch_is_refused_before_it_touches_the_cluster_or_the_store(
     for key, value in env_change.items():
         monkeypatch.setenv(key, value)
     before = copy.deepcopy(store.data)
-    value = args(tmp_path, approve=cli.bigquery_phrase(reviewed))
+    value = args(tmp_path, approve=cli.BIGQUERY_APPROVAL)
     for key, item in change.items():
         setattr(value, key, item)
     with pytest.raises(Failure, match=match):
@@ -177,7 +165,7 @@ def test_a_reused_run_id_is_refused_before_it_touches_the_cluster(
     _, store, *_ = env
     store.write("runs/bq-1424-0001/approval.json", {"old": True})
     with pytest.raises(Failure, match="already has immutable"):
-        cli.start(args(tmp_path, approve=cli.bigquery_phrase(reviewed)), store)
+        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), store)
     assert dispatching == []
 
 
@@ -265,7 +253,7 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
     cluster, reviewed, tmp_path, monkeypatch
 ):
     seen = install(monkeypatch)
-    cli.start(args(tmp_path, approve=cli.bigquery_phrase(reviewed)), cluster.store)
+    cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
     approval = seen["env"].approval
     validate_approval(approval.to_dict(), NOW)
     assert seen["env"].actor == "runner"
@@ -314,7 +302,7 @@ def test_a_failed_start_still_settles_with_a_stop(
 ):
     seen = install(monkeypatch, fail="admission broke")
     with pytest.raises(Failure, match="admission broke"):
-        cli.start(args(tmp_path, approve=cli.bigquery_phrase(reviewed)), cluster.store)
+        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
     assert seen["runner"].calls[-1] == ("settle", True)
     assert cluster.fallback == []
 
@@ -327,7 +315,7 @@ def test_a_runner_that_cannot_be_built_after_the_lock_is_settled_by_a_plain_one(
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     install(monkeypatch, enter="authentication refused")
     with pytest.raises(Failure, match="authentication refused"):
-        cli.start(args(tmp_path, approve=cli.bigquery_phrase(reviewed)), cluster.store)
+        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
     assert len(cluster.locks) == 1
     assert cluster.fallback == [True]
     # Idle is what gates the workflow's plan proof and finalization, the only
@@ -356,7 +344,7 @@ def test_the_plain_fallback_leaves_a_run_the_workflow_finalizes(
     )
     install(monkeypatch, enter="authentication refused")
     with pytest.raises(Failure, match="authentication refused"):
-        cli.start(args(tmp_path, approve=cli.bigquery_phrase(reviewed)), cluster.store)
+        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
     approval = json.loads((tmp_path / "approval.json").read_text())
     assert cluster.store.read(cli.rt.ENVIRONMENT)[0] == approval["lock_owner"]
     plans = {"nonce": approval["nonce"], "roots": list(cli.wf.ROOTS), "empty": True}
@@ -376,7 +364,7 @@ def test_a_bundle_that_refuses_does_so_before_the_lock(
 
     monkeypatch.setattr(bundles, "_check_revision", refuse)
     with pytest.raises(Failure, match="revision differs"):
-        cli.start(args(tmp_path, approve=cli.bigquery_phrase(reviewed)), cluster.store)
+        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
     assert cluster.locks == []
     assert cluster.store.data == before
 

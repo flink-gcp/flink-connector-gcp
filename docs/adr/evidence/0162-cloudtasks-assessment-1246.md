@@ -34,7 +34,7 @@ The main assessment has its own later approval; the scale estimate at the end is
 | Restart strategy | fixed delay, three attempts, ten seconds; checkpoint state retained on cancellation under the cell's benchmark prefix |
 | Reviewed revision | the `main` commit named at dispatch. The images above were built from `339d0a90675dffee74305cebe021093c6a1f9b4b`, whose supervisor source bundle hashes to `runtime_sha256` `fdf3a4d046fe9d1c7c07c5db5508bf87ec77416cd6df4bf2702e0c54470ba1f1`; a dispatch from a later commit that leaves `flink_tier3/` untouched carries the same bundle hash |
 | Protocol pin | `flink_tier3/protocol_1246.toml`, converted field for field from the private draft, whose own SHA-256 is `32122ff01527f4e17a1eac7377c0f11430d71fabba2bce65b4c011afb5b07354`; the pin is part of the package source bundle, so `runtime_sha256` covers it; it is not part of the smaller set the supervisor mounts and `delivery_sha256` pins |
-| Pricing basis | the reviewed Autopilot rates in `policy.toml` and USD 0.40 per million Cloud Tasks operations; both are re-checked at approval, and admission refuses a pricing review older than 30 days |
+| Pricing basis | the reviewed Autopilot rates in `policy.toml` and USD 0.40 per million Cloud Tasks operations; both are re-checked when the owner approves the estimate; since 2026-09-23 admission no longer refuses an older review (ADR-0165, spend is approved before dispatch) |
 
 The staged arms keep the application's fixed options: one-hour name retention, one-minute clock-skew allowance, a 20-second request timeout, `recoveryMaxAttempts` 3 and `notFoundRecoveryMaxAttempts` 1.
 These are experiment inputs, not recommended production values.
@@ -107,7 +107,7 @@ The read estimate, the queue writes, the dispatch count and the evidence sizes a
 | Replacement slot | `tier3-system` only; the Spot namespaces keep exact quotas, because a replacement TaskManager of the largest approved class would nearly double what the session quota enforces, and the restart accompanying one already invalidates the cell it was measuring. A Pod stuck `Terminating` can hold the slot for as long as its node stays unreachable, which the cost model does not charge: USD 0.141 per hour, taking the session from USD 8.66 to USD 9.13 at the planning bound if it were held throughout | 5 Pods |
 | Session plan | 11,018 s; approved window 11,918 s to 12,518 s | 18,000 s |
 | Durable evidence | rows about 80 to 120 MB compressed, receipts and observations under 60 MB | 4 GiB session, 256 MiB supervisor receipts |
-| Incremental cost | USD 8.66 at the planning bound; about USD 4.81 at the expected creation count | USD 10.00 |
+| Incremental cost | USD 8.66 at the planning bound; about USD 4.81 at the expected creation count | approved from the estimate; USD 10.00 until 2026-09-23 |
 
 The Flink 1.20.4 repeat needs 4,110 s of plan, 236,800 planning-bound creations and USD 1.44 at its own window's lower bound of 5,010 seconds, USD 1.57 at the upper bound.
 The planning bound assumes one JobMaster's restart budget; a JobManager failover resets it, so the cell deadline and the paused queue, not the bound, cap what a misbehaving cell can spend.

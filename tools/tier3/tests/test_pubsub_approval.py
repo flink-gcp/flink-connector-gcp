@@ -58,10 +58,7 @@ def prepared(env, trial):
         version=5,
         scenario="pubsub-recovery",
         pubsub_trial=copy.deepcopy(trial),
-        ceilings={
-            **PUBSUB_CEILINGS,
-            "additional_cost_usd": trial["additional_cost_usd"],
-        },
+        ceilings=dict(PUBSUB_CEILINGS),
         application_sha256=digest(application),
         upgrade_application_sha256="f" * 64,
     )
@@ -123,7 +120,7 @@ def test_incompatible_approval_refused(prepared, key, value):
         ("records_per_subscription", 10001),
         ("traffic_limits", {}),
         ("total_request_limit", 29999),
-        ("additional_cost_usd", "10.01"),
+        ("additional_cost_usd", "10.00"),
         ("unreviewed", 1),
     ],
 )
@@ -168,7 +165,7 @@ def test_serialized_trial_requires_one_feasible_pass(prepared, counter, value):
 def test_fixed_ceiling_types_and_values(prepared, key, value):
     data = prepared[0].approval.to_dict()
     data["ceilings"][key] = value
-    with pytest.raises(Failure, match="resource and proposed cost ceilings"):
+    with pytest.raises(Failure, match="resource ceilings"):
         Approval.from_dict(data)
 
 
