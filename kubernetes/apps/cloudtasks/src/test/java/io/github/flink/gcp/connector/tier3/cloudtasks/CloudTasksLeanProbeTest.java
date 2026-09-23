@@ -22,6 +22,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
+import java.io.StringWriter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +32,90 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** The probe's pure decisions, which the integration case exercises but does not pin. */
 class CloudTasksLeanProbeTest {
+
+    private static final long SAMPLE_NANOS = 1_000_000_000L;
+
+    private static Map<String, SinkGaugeReporter.Reading> reading(String name, long value) {
+        return Map.of(name, SinkGaugeReporter.Reading.of(List.of(value)));
+    }
+
+    @Test
+    void aPollThatWritesNoLineStillReachesTheExtremes() throws IOException {
+        // The defect this pins: the gauges a staged arm publishes are live for part of each
+        // checkpoint interval, and a reader that folded only when it wrote a line held one phase
+        // against the drain for a whole run. Here the live reading arrives on a poll that is not
+        // a line's turn, which is exactly the poll the old loop threw away.
+        Map<String, Long> extremes = new LinkedHashMap<>();
+        var cost = new CloudTasksLeanProbe.Cost();
+        StringWriter file = new StringWriter();
+        long next = 1_000_000_000L;
+
+        long after =
+                CloudTasksLeanProbe.tick(
+                        extremes,
+                        cost,
+                        file,
+                        reading(CloudTasksMetricNames.STAGED_TASKS, 47),
+                        0,
+                        next - 1,
+                        next);
+
+        assertThat(extremes).containsEntry(CloudTasksMetricNames.STAGED_TASKS, 47L);
+        // The line's turn has not come, so nothing was written and nothing was counted.
+        assertThat(after).isEqualTo(next);
+        assertThat(file.toString()).isEmpty();
+        assertThat(cost.samples).isZero();
+    }
+
+    @Test
+    void aPollThatWritesALineFoldsTheSameReadingItRenders() throws IOException {
+        Map<String, Long> extremes = new LinkedHashMap<>();
+        var cost = new CloudTasksLeanProbe.Cost();
+        StringWriter file = new StringWriter();
+
+        long after =
+                CloudTasksLeanProbe.tick(
+                        extremes,
+                        cost,
+                        file,
+                        reading(CloudTasksMetricNames.STAGED_TASKS, 12),
+                        5,
+                        1_000L,
+                        0L);
+
+        assertThat(extremes).containsEntry(CloudTasksMetricNames.STAGED_TASKS, 12L);
+        assertThat(cost.samples).isOne();
+        assertThat(file.toString())
+                .contains("\"" + CloudTasksMetricNames.STAGED_TASKS + "\":")
+                .contains("\"sum\":12")
+                .contains("\"elapsedNanos\":5")
+                .endsWith("\n");
+        // Advanced from the schedule, so a slow poll does not stretch the period.
+        assertThat(after).isEqualTo(SAMPLE_NANOS);
+    }
+
+    @Test
+    void aLineDueLongAgoIsResynchronisedRatherThanEmittedAsABacklog() throws IOException {
+        Map<String, Long> extremes = new LinkedHashMap<>();
+        var cost = new CloudTasksLeanProbe.Cost();
+        StringWriter file = new StringWriter();
+        // A pause of several periods: the schedule is behind by more than one line.
+        long now = 10 * SAMPLE_NANOS;
+
+        long after =
+                CloudTasksLeanProbe.tick(
+                        extremes,
+                        cost,
+                        file,
+                        reading(CloudTasksMetricNames.STAGED_TASKS, 1),
+                        now,
+                        now,
+                        SAMPLE_NANOS);
+
+        assertThat(cost.samples).isOne();
+        assertThat(after).isEqualTo(now);
+    }
+
     @ParameterizedTest
     @EnumSource(MeasurementOptions.Arm.class)
     void anArmOnlyRequiresTheGaugesItsOwnWriterRegisters(MeasurementOptions.Arm arm) {

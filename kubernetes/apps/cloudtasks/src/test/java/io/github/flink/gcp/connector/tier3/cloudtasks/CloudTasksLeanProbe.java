@@ -26,6 +26,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import io.github.flink.gcp.connector.cloudtasks.CloudTasksMetricNames;
 
+import java.io.IOException;
 import java.io.Writer;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
@@ -51,8 +52,10 @@ import java.util.stream.Stream;
  * because those are different facts and only the first is a defect.
  *
  * <p>Two artefacts come out. {@code samples.jsonl} carries one line per second with each gauge's
- * sum, minimum and maximum across subtasks beside the heap and the collector. The summary line
- * carries thirteen comma-separated fields, in order:
+ * sum, minimum and maximum across subtasks beside the heap and the collector. The summary's
+ * extremes are folded from every poll rather than from those lines alone, because a gauge that is
+ * live for part of each checkpoint interval would otherwise be read in a fixed phase against the
+ * commit that clears it. The summary line carries thirteen comma-separated fields, in order:
  *
  * <ol>
  *   <li>{@link #PREFIX}
@@ -251,12 +254,15 @@ final class CloudTasksLeanProbe {
                 if (now >= expiry) {
                     throw new TimeoutException("Cell exceeded " + deadline.toSeconds() + "s");
                 }
-                if (now >= next) {
-                    file.write(sample(extremes, cost, now - started) + "\n");
-                    // Advanced from the schedule so a slow poll does not stretch the period, but
-                    // resynchronised after a long pause rather than emitting the backlog at once.
-                    next = Math.max(next + SAMPLE.toNanos(), now);
-                }
+                next =
+                        tick(
+                                extremes,
+                                cost,
+                                file,
+                                SinkGaugeReporter.read(),
+                                now - started,
+                                now,
+                                next);
                 try {
                     result.get(POLL.toMillis(), TimeUnit.MILLISECONDS);
                 } catch (TimeoutException waiting) {
@@ -297,9 +303,48 @@ final class CloudTasksLeanProbe {
         return env.executeAsync("Cloud Tasks probe " + options.runId + "/" + options.cellId);
     }
 
-    private static String sample(Map<String, Long> extremes, Cost cost, long elapsed) {
-        Map<String, SinkGaugeReporter.Reading> readings = SinkGaugeReporter.read();
+    /**
+     * Fold one poll's readings, and write a line when this poll is a line's turn.
+     *
+     * <p>Every poll is folded, not only the polls that write a line. A staged arm's buffer is
+     * filled by the writer and emptied by the commit its checkpoint triggers, so those gauges are
+     * live for part of each checkpoint interval and report the idle sentinel for the rest. A reader
+     * whose period is that interval holds a fixed phase against the drain for a whole run, and
+     * reports gauges the sink was publishing all along as never observed. A line is written once a
+     * second, this probe's own cell checkpoints once a second, and so do forty-eight of the staged
+     * cells the protocol preregisters — the rest checkpoint every ten or sixty seconds, where a
+     * one-second reader sees the live phase many times over. Folding every poll removes the
+     * coincidence rather than relying on it.
+     *
+     * @return when the next line is due
+     */
+    static long tick(
+            Map<String, Long> extremes,
+            Cost cost,
+            Writer file,
+            Map<String, SinkGaugeReporter.Reading> readings,
+            long elapsed,
+            long now,
+            long next)
+            throws IOException {
         readings.forEach((name, reading) -> keep(extremes, name, reading));
+        if (now < next) {
+            return next;
+        }
+        file.write(sample(readings, cost, elapsed) + "\n");
+        // Advanced from the schedule so a slow poll does not stretch the period, but
+        // resynchronised after a long pause rather than emitting the backlog at once.
+        return Math.max(next + SAMPLE.toNanos(), now);
+    }
+
+    /**
+     * One line of {@code samples.jsonl}, from readings the caller has already folded.
+     *
+     * <p>It takes them rather than reading again so that the line and the extremes describe the
+     * same instant, and so that the extremes may be folded more often than a line is written.
+     */
+    private static String sample(
+            Map<String, SinkGaugeReporter.Reading> readings, Cost cost, long elapsed) {
         var heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
         cost.samples++;
         cost.heapPeak = Math.max(cost.heapPeak, heap.getUsed());
@@ -423,8 +468,8 @@ final class CloudTasksLeanProbe {
      * took: a summary claiming zero samples beside a {@code samples.jsonl} holding two hundred
      * lines is the kind of contradiction this rig exists to stop producing.
      */
-    private static final class Cost {
-        private long samples;
+    static final class Cost {
+        long samples;
         private long heapPeak;
         private long gcAtStart;
     }

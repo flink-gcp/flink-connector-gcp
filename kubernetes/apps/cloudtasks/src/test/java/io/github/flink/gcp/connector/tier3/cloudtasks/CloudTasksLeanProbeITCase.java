@@ -50,8 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class CloudTasksLeanProbeITCase {
     /**
      * The gauges the committer sets when a commit starts and clears in that commit's {@code
-     * finally}, so a reader on a one-second period may see only the {@code -1} they report when
-     * idle. Missing one of these is not a defect; missing any of the others is.
+     * finally}. A commit of this cell's size may be shorter than the reader's poll, so even a
+     * reader that folds every poll can see only the {@code -1} they report when idle. Missing one
+     * of these is not a defect; missing any of the others is, because the rest stay live for most
+     * of each checkpoint interval whatever that interval is.
      */
     private static final List<String> COMMIT_SCOPED =
             List.of(
@@ -108,8 +110,9 @@ final class CloudTasksLeanProbeITCase {
                 assertThat(extreme)
                         .as("%s in extremes xor unobserved, in %s", gauge, line)
                         .isNotEqualTo(unobserved);
-                // A commit-scoped gauge is live only inside a commit, which a one-second reader
-                // legitimately misses. The continuously live ones have no such excuse.
+                // A commit-scoped gauge is live only inside a commit, which a reader polling
+                // ten times a second still legitimately misses. The ones that stay live across a
+                // checkpoint interval have no such excuse.
                 if (!COMMIT_SCOPED.contains(gauge)) {
                     assertThat(extreme).as("%s has an extreme in %s", gauge, line).isTrue();
                 }
@@ -117,9 +120,27 @@ final class CloudTasksLeanProbeITCase {
             List<String> samples =
                     Files.readAllLines(temporary.resolve(cell).resolve("samples.jsonl"));
             assertThat(samples).hasSizeGreaterThanOrEqualTo(2);
-            assertThat(samples.get(samples.size() - 1))
-                    .contains("\"heapUsed\":")
-                    .contains(CloudTasksLeanProbe.required(arm).get(0));
+            // Every line carries the process figures, which have no lifetime of their own. The
+            // gauges are asserted across the file rather than on the last line: a line written
+            // between the job finishing and the loop noticing is taken after the operators have
+            // closed and unregistered, and carries an empty `gauges` object through no fault of
+            // the reader.
+            // Matched as the rendered key, not as a bare substring: a future metric whose name
+            // contains this one would otherwise satisfy it.
+            String named = "\"" + CloudTasksLeanProbe.required(arm).get(0) + "\":";
+            assertThat(samples).allMatch(sample -> sample.contains("\"heapUsed\":"));
+            // `anyMatch` rather than a share of the lines, deliberately: the first line is written
+            // before the operators are deployed and one or more trailing lines after they close,
+            // so neither end is reliably gauge-bearing and any threshold would be a new race. That
+            // a real value was caught is asserted far more strictly above, where each required
+            // gauge must hold an extreme.
+            //
+            // Holding an extreme no longer implies appearing on a line, now that the fold runs ten
+            // times per line. This gauge is safe from that: each arm's first required name is a
+            // count -- staged or in-flight tasks -- which is never the idle sentinel the reader
+            // drops, so it is in every reading taken while the writer is registered, and the run
+            // is several lines long.
+            assertThat(samples).anyMatch(sample -> sample.contains(named));
             assertThat(server.accepted()).isNotEmpty();
         }
     }
