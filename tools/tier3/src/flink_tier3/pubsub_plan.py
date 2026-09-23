@@ -17,7 +17,6 @@ import copy
 import json
 import re
 from dataclasses import asdict
-from decimal import Decimal
 
 from .bundle import delivery_digest, source_digest
 from .common import Failure, digest, json_bytes, quantity, timestamp, utc
@@ -37,16 +36,15 @@ FIELDS = {
     "records_per_subscription",
     "traffic_limits",
     "total_request_limit",
-    "additional_cost_usd",
 }
 
 
 def validate_trial(value):
     """Validate proposed caps, without asserting feasibility or bill enforcement."""
     if not isinstance(value, dict) or set(value) != FIELDS:
-        raise Failure("Pub/Sub trial fields must match the version 1 schema")
+        raise Failure("Pub/Sub trial fields must match the version 2 schema")
     for key, low, high in (
-        ("version", 1, 1),
+        ("version", 2, 2),
         ("records_per_subscription", 2, 10000),
         ("total_request_limit", 1, 100000),
     ):
@@ -60,13 +58,6 @@ def validate_trial(value):
     TrafficLimits(**limits, admit_until=1)
     if value["total_request_limit"] < limits["pubsub_requests"]:
         raise Failure("Total request proposal is below the data request limit")
-    cost = value["additional_cost_usd"]
-    if (
-        not isinstance(cost, str)
-        or not re.fullmatch(r"(?:[1-9]|10)\.[0-9]{2}", cost)
-        or Decimal(cost) > 10
-    ):
-        raise Failure("Cost proposal must be a USD string between 1.00 and 10.00")
 
 
 def load_trial(path):
@@ -280,9 +271,8 @@ def prepare(
             "pods": PUBSUB_CEILINGS["pods"],
             "pvcs": 0,
             "total_requests": trial["total_request_limit"],
-            "additional_cost_usd": trial["additional_cost_usd"],
         },
-        "cost": {"kind": "unestimated-proposed-cap", "estimate_usd": None},
+        "cost": {"kind": "unestimated"},
     }
     data["proposal.json"] = json_bytes(proposal).decode()
     return {

@@ -39,7 +39,6 @@ from .policy import (
     FLINK_LINES,
     GAR,
     POD_RESOURCES,
-    PRICING_REVIEWED,
     PROJECT,
     PUBSUB,
     PUBSUB_CEILINGS,
@@ -357,7 +356,7 @@ def validate_approval(approval, now=None):
     if not pubsub and approval.get("pubsub_trial"):
         raise Failure("Only Pub/Sub approvals may carry a Pub/Sub trial")
     if not (bigquery or pubsub) and approval.get("ceilings") != CEILINGS:
-        raise Failure("Approval does not match the fixed resource/cost ceilings")
+        raise Failure("Approval does not match the fixed resource ceilings")
     start, end = timestamp(approval["started_at"]), timestamp(approval["expires_at"])
     if cloudtasks:
         _validate_session(approval, start, end)
@@ -384,14 +383,6 @@ def validate_approval(approval, now=None):
             raise Failure(
                 "Approval must reserve 15 minutes of the one-hour window for cleanup"
             )
-        if not (bigquery or pubsub) and estimated_cost(end - start) > Decimal(
-            CEILINGS["additional_cost_usd"]
-        ):
-            raise Failure("Estimated incremental cost exceeds approval")
-    if now is not None and now > timestamp(PRICING_REVIEWED) + 30 * 86400:
-        raise Failure(
-            "Pricing review is older than 30 days; refresh rates before admission"
-        )
     if now is not None and (
         now < start - 30 or now >= timestamp(approval["cleanup_at"])
     ):
@@ -451,11 +442,9 @@ def _validate_pubsub(approval, start, end):
     ResourcePlan(approval["run_id"], approval["nonce"])
     trial = approval.get("pubsub_trial")
     input_plan(approval["run_id"], trial)
-    expected = {**PUBSUB_CEILINGS, "additional_cost_usd": trial["additional_cost_usd"]}
+    expected = PUBSUB_CEILINGS
     if json_bytes(approval["ceilings"]) != json_bytes(expected):
-        raise Failure(
-            "Pub/Sub approval differs from its resource and proposed cost ceilings"
-        )
+        raise Failure("Pub/Sub approval differs from its resource ceilings")
     if (
         start != int(start)
         or end - start != WINDOW_SECONDS
@@ -467,7 +456,7 @@ def _validate_pubsub(approval, start, end):
 def _validate_bigquery(approval, start, end):
     # Import at validation time: the offline proposal uses this module's
     # resource cost calculation, and both paths must keep the same trial schema.
-    from .bigquery_plan import REVIEWED_AT, WINDOW_SECONDS, validate_trial
+    from .bigquery_plan import WINDOW_SECONDS, validate_trial
 
     trial = approval.get("bigquery_trial")
     if type(approval["version"]) is not int:
@@ -476,12 +465,9 @@ def _validate_bigquery(approval, start, end):
         validate_trial(trial)
     except (ValueError, TypeError) as error:
         raise Failure("Invalid approved BigQuery trial: " + str(error)) from error
-    expected = {
-        **BIGQUERY_CEILINGS,
-        "additional_cost_usd": trial["additional_cost_usd"],
-    }
+    expected = BIGQUERY_CEILINGS
     if json_bytes(approval["ceilings"]) != json_bytes(expected):
-        raise Failure("BigQuery approval differs from its resource and cost ceilings")
+        raise Failure("BigQuery approval differs from its resource ceilings")
     if (
         start != int(start)
         or end != int(end)
@@ -491,8 +477,6 @@ def _validate_bigquery(approval, start, end):
         raise Failure(
             "BigQuery approval requires 90 minutes with 15 minutes for cleanup"
         )
-    if not timestamp(REVIEWED_AT) <= start <= timestamp(REVIEWED_AT) + 30 * 86400:
-        raise Failure("BigQuery approval starts outside the pricing review window")
 
 
 def _validate_session(approval, start, end):
@@ -527,10 +511,6 @@ def _validate_session(approval, start, end):
         raise Failure(
             "Session window must cover the cell plan plus cleanup without over-reservation"
         )
-    if estimated_session_cost(window, approval["cells"]) > Decimal(
-        ceilings["additional_cost_usd"]
-    ):
-        raise Failure("Estimated session cost exceeds approval")
 
 
 @dataclass(frozen=True)

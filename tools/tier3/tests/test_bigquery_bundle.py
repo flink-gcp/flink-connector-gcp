@@ -49,10 +49,7 @@ def approval(env, inputs, renderer, monkeypatch):
         delivery_sha256=delivery_digest(),
         application_sha256=proposed["application_sha256"],
         upgrade_application_sha256=proposed["upgrade_application_sha256"],
-        ceilings={
-            **BIGQUERY_CEILINGS,
-            "additional_cost_usd": inputs["trial"]["additional_cost_usd"],
-        },
+        ceilings=dict(BIGQUERY_CEILINGS),
         bigquery_trial=copy.deepcopy(inputs["trial"]),
     )
     value["namespaces"][BIGQUERY] = value["namespaces"].pop(SMOKE)
@@ -131,7 +128,7 @@ def test_preparation_stays_in_the_approved_window(approval, at):
 def test_verification_uses_external_approval_and_complete_rendering(approval, change):
     value = bundles.prepare(approval, prepared_at=approval["started_at"])
     if change == "approval":
-        value["approval"]["bigquery_trial"]["repetition"] = 2
+        value["approval"]["bigquery_trial"]["destinations"] = 50
         value["delivery"]["config"]["data"]["approval.json"] = json.dumps(
             value["approval"]
         )
@@ -324,17 +321,6 @@ def test_git_failures_are_bounded_and_reported(monkeypatch, failure):
         bundles._check_revision("b" * 40)
 
 
-def test_proposal_window_does_not_bypass_common_pricing_freshness(approval):
-    approval.update(
-        started_at="2026-10-15T00:00:00Z",
-        cleanup_at="2026-10-15T01:15:00Z",
-        expires_at="2026-10-15T01:30:00Z",
-    )
-    Approval.from_dict(approval)
-    with pytest.raises(Failure, match="Pricing review is older than 30 days"):
-        bundles.prepare(approval, prepared_at=approval["started_at"])
-
-
 @pytest.mark.parametrize("duplicate", ["approval", "bundle"])
 def test_cli_refuses_duplicate_json_fields(approval, tmp_path, capsys, duplicate):
     approved, artifact = tmp_path / "approval.json", tmp_path / "bundle.json"
@@ -360,7 +346,8 @@ def test_cli_refuses_duplicate_json_fields(approval, tmp_path, capsys, duplicate
 
 def test_an_internally_consistent_bundle_cannot_supply_its_own_approval(approval):
     other = copy.deepcopy(approval)
-    other["bigquery_trial"]["repetition"] = 2
+    # A field the rendering does not read, so only the approval tells them apart.
+    other["actor"] = "another-actor"
     value = bundles.prepare(other, prepared_at=other["started_at"])
     assert bundles.validate(value, other) == value
     with pytest.raises(Failure, match="separately supplied approval"):

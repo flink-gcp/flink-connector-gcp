@@ -66,7 +66,7 @@ Render one unapproved DataStream trial with the existing application and lifecyc
 ```bash
 cat > /tmp/pubsub-trial.json <<'JSON'
 {
-  "version": 1,
+  "version": 2,
   "trial": "rescale-out",
   "records_per_subscription": 1000,
   "traffic_limits": {
@@ -78,8 +78,7 @@ cat > /tmp/pubsub-trial.json <<'JSON'
     "pubsub_requests": 420,
     "evidence_bytes": 67108864
   },
-  "total_request_limit": 100000,
-  "additional_cost_usd": "10.00"
+  "total_request_limit": 100000
 }
 JSON
 
@@ -128,8 +127,8 @@ Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowan
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
 Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-`additional_cost_usd` is a proposed cap from `1.00` to `10.00`, with `estimate_usd: null`; it is neither a price estimate nor an enforced billing limit.
-A runnable approval still needs current pricing, enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
+The proposal's `cost` is `unestimated`: spend is approved from an estimate before dispatch, and a runnable trial still needs one.
+A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
 CLI admission, fault injection, savepoint orchestration, replay evidence and Table entry-point trials remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 

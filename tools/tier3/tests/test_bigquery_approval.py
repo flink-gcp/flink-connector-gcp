@@ -69,10 +69,7 @@ def prepared(env, inputs, renderer):
         started_at=proposal["started_at"],
         expires_at=proposal["expires_at"],
         cleanup_at=proposal["cleanup_at"],
-        ceilings={
-            **BIGQUERY_CEILINGS,
-            "additional_cost_usd": inputs["trial"]["additional_cost_usd"],
-        },
+        ceilings=dict(BIGQUERY_CEILINGS),
         bigquery_trial=copy.deepcopy(inputs["trial"]),
         application_sha256=digest(application),
         upgrade_application_sha256=digest(upgrade),
@@ -113,8 +110,8 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
         approval.schedule.started
     )
     assert Approval.from_dict(approval.to_dict()) == approval
-    value["bigquery_trial"]["query_slots"] = 1
-    assert approval.bigquery_plan.query_slots == 12
+    value["bigquery_trial"]["mode"] = "EO" if mode == "ALO" else "ALO"
+    assert approval.bigquery_plan.trial.mode == mode
 
 
 @pytest.mark.parametrize(
@@ -146,12 +143,9 @@ def test_inconsistent_approval_is_rejected(prepared, key, value):
     [
         ("mode", "FILE_LOADS"),
         ("destinations", 11),
-        ("repetition", 4),
-        ("query_slots", 13),
-        ("maximum_bytes_billed", 4 * 1024**3 + 1),
-        ("query_timeout_ms", 60001),
-        ("additional_cost_usd", "1.00"),
-        ("additional_cost_usd", "10.01"),
+        ("version", 1),
+        ("query_slots", 1),
+        ("additional_cost_usd", "10.00"),
         ("records", 1),
     ],
 )
@@ -177,7 +171,7 @@ def test_unreviewed_trial_is_rejected(prepared, key, value):
 def test_ceiling_drift_is_rejected(prepared, key, value):
     approval = prepared[0].approval.to_dict()
     approval["ceilings"][key] = value
-    with pytest.raises(Failure, match="resource and cost ceilings"):
+    with pytest.raises(Failure, match="resource ceilings"):
         Approval.from_dict(approval)
 
 
@@ -200,19 +194,21 @@ def test_old_approval_cannot_smuggle_bigquery_fields(env, trial):
         Approval.from_dict(env[2])
 
 
-def test_admission_window_and_pricing_review_are_enforced(prepared):
+def test_admission_window_is_enforced_and_the_rates_age_is_not(prepared):
     environment, *_ = prepared
     value = environment.approval.to_dict()
     for now in (environment.schedule.started - 31, environment.schedule.cleanup_at):
         with pytest.raises(Failure, match="admission window"):
             Approval.from_dict(value, now)
+    # Spend is approved from the estimate before dispatch; a run long after
+    # the rates were reviewed is admitted like any other.
     value.update(
-        started_at="2026-11-21T00:00:00Z",
-        expires_at="2026-11-21T01:30:00Z",
-        cleanup_at="2026-11-21T01:15:00Z",
+        started_at="2027-01-21T00:00:00Z",
+        expires_at="2027-01-21T01:30:00Z",
+        cleanup_at="2027-01-21T01:15:00Z",
     )
-    with pytest.raises(Failure, match="pricing review"):
-        Approval.from_dict(value)
+    late = rt.timestamp(value["started_at"])
+    assert Approval.from_dict(value, late).started_at == value["started_at"]
 
 
 def test_three_application_pods_and_the_control_pods_fit_their_quotas(prepared):
@@ -651,7 +647,7 @@ def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, chang
     if change == "scenario":
         receipt.pop("scenario")
     elif change == "bigquery_trial":
-        receipt["bigquery_trial"]["repetition"] = 3
+        receipt["bigquery_trial"]["destinations"] = 50
     elif change == "success":
         receipt["success"] = True
     elif change == "plans":

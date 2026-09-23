@@ -25,12 +25,11 @@ from flink_tier3.model import validate_approval
 @pytest.fixture
 def trial():
     return {
-        "version": 1,
+        "version": 2,
         "trial": "rescale-out",
         "records_per_subscription": 1000,
         "traffic_limits": dict(plan.COUNTER_CEILINGS),
         "total_request_limit": 100000,
-        "additional_cost_usd": "10.00",
     }
 
 
@@ -55,7 +54,7 @@ def inputs(trial, monkeypatch):
     "field,value",
     [
         ("version", True),
-        ("version", 2),
+        ("version", 1),
         ("trial", "combined"),
         ("trial", None),
         ("records_per_subscription", 1),
@@ -67,11 +66,8 @@ def inputs(trial, monkeypatch):
         ("total_request_limit", 29999),
         ("total_request_limit", 100001),
         ("total_request_limit", True),
-        ("additional_cost_usd", "0.99"),
-        ("additional_cost_usd", "10.01"),
-        ("additional_cost_usd", 10),
-        ("additional_cost_usd", "NaN"),
-        ("additional_cost_usd", "5"),
+        # Spend is approved from the estimate before dispatch, not proposed here.
+        ("additional_cost_usd", "10.00"),
     ],
 )
 def test_invalid_trial_refused_before_render(inputs, field, value):

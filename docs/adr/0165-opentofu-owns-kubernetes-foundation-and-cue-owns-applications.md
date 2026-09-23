@@ -41,6 +41,7 @@ limitations under the License.
 - Updated: 2026-09-20 (durable Pub/Sub preparation and service-cleanup settlement gates)
 - Updated: 2026-09-21 (Pub/Sub actor release connected to common settlement)
 - Updated: 2026-09-21 (offline Pub/Sub trial proposals)
+- Updated: 2026-09-23 (spend approved from the pre-run estimate; run-time cost gates removed)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -905,3 +906,19 @@ Declined: deriving the start from the typed expiry, which the approval's exact 9
 Bind the approval phrase to the trial file's own cost rather than the scenario's maximum, so the operator types the number that will bind the run.
 Give the workflow job a 120-minute timeout for this scenario: the 90-minute window's serial budget is 114 minutes, and the 85 minutes it would otherwise have fallen into would kill the job mid-trial; a test holds the budget against the timeout.
 Keep the bare `Runner` and `Supervisor` refusing without their authenticated handoff, so the only path in is the actor factories.
+
+### Spend is approved before dispatch
+
+The owner approves a run's spend before it is dispatched, from its estimate, and then dispatches it or does not; nothing at run time manages the budget.
+So no scenario gates execution on cost: approvals carry no `additional_cost_usd` ceiling, admission compares no estimate against one, the confirmation phrases name the run without an amount, and neither `environment.pricing_reviewed` nor `bigquery_plan.REVIEWED_AT` closes admission when it ages.
+Those review dates stay as the recorded basis of an estimate, and `estimated_cost`, `estimated_session_cost` and `bigquery_plan.estimate` stay as the numbers the owner approves.
+This replaces the reviewed trial file and the phrase bound to its cost in the production entrypoints section above, the Pub/Sub proposal's separate cost cap, and the 30-day pricing refusal the approval model applied to every scenario.
+
+A BigQuery trial therefore chooses only what differs between trials, its delivery method and destination count, and dispatch takes it as a workflow choice (`alo-10`, `eo-10`, `alo-50`, `eo-50`) rather than as a reviewed file; the query budget is the scenario's, fixed in code.
+A reviewed file per dispatch existed chiefly to carry the per-trial cost, and keeping those numbers beside a preregistration record needed a test to hold the two together.
+The proposal also drops the repeated-trial ordinal the recovery application section binds: nothing consumed it, and a repetition is a separate run ID.
+The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, and USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), which the rendered proposal carries.
+
+An approval written before this change still carries the removed ceiling, and a BigQuery one the old trial schema, so the model refuses it and recovery could not settle it; the change is therefore merged only while no run holds the environment lock, rather than carrying a reader for a shape no future run writes.
+Keep everything that stops and cleans up a run, which is where a failure costs more than the run: the environment lock, idle and cleanup verification, recovery, the three empty plans and image retention.
+Declined: keeping a USD 10 scenario ceiling as a backstop, because the owner already approves the estimate itself, and a second number beside it only decides which approved runs the rig refuses; and keeping the pricing refusal as a freshness prompt, because it turned a stale rate table into a dispatch deadline without anyone checking the rates.

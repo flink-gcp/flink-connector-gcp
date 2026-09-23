@@ -19,7 +19,8 @@ import json
 from pathlib import Path
 
 from . import pubsub_plan
-from .bigquery_plan import load_trial, prepare
+from .bigquery_plan import TRIALS, prepare
+from .bigquery_plan import trial as bigquery_trial
 from .cloudtasks import load_session
 from .common import Failure
 from .policy import CLOUDTASKS_POLICY, FLINK_LINES
@@ -49,9 +50,8 @@ def main(argv=None):
         "--application-image",
         help="application digest reference; an offline render may be synthetic",
     )
-    parser.add_argument(
-        "--trial-file", type=Path, help="unapproved BigQuery or Pub/Sub trial JSON"
-    )
+    parser.add_argument("--trial-file", type=Path, help="unapproved Pub/Sub trial JSON")
+    parser.add_argument("--trial", choices=tuple(TRIALS), help="BigQuery trial")
     parser.add_argument("--started-at", help="trial proposal's absolute start time")
     parser.add_argument(
         "--revision", help="trial proposal's intended full source revision"
@@ -60,12 +60,16 @@ def main(argv=None):
     parser.add_argument("--expression", default="delivery.resources")
     args = parser.parse_args(argv)
     if args.scenario in ("bigquery-recovery", "pubsub-recovery"):
-        if not all(
-            (args.trial_file, args.started_at, args.revision, args.application_image)
+        choice = args.trial_file if args.scenario == "pubsub-recovery" else args.trial
+        wrong = args.trial if args.scenario == "pubsub-recovery" else args.trial_file
+        if wrong or not all(
+            (choice, args.started_at, args.revision, args.application_image)
         ):
             parser.error(
                 args.scenario
-                + " requires --trial-file, --started-at, --revision and --application-image"
+                + " requires "
+                + ("--trial-file" if args.scenario == "pubsub-recovery" else "--trial")
+                + ", --started-at, --revision and --application-image"
             )
         if (
             args.cells_file
@@ -77,7 +81,7 @@ def main(argv=None):
         proposal_prepare, proposal_load = (
             (pubsub_plan.prepare, pubsub_plan.load_trial)
             if args.scenario == "pubsub-recovery"
-            else (prepare, load_trial)
+            else (prepare, bigquery_trial)
         )
         try:
             bundle = proposal_prepare(
@@ -88,13 +92,13 @@ def main(argv=None):
                 active_seconds=args.active_seconds,
                 revision=args.revision,
                 application_image=args.application_image,
-                trial=proposal_load(args.trial_file),
+                trial=proposal_load(choice),
             )
         except (ValueError, Failure) as error:
             parser.error(str(error))
         print(json.dumps(bundle, indent=2))
         return
-    if args.trial_file or args.started_at or args.revision:
+    if args.trial_file or args.trial or args.started_at or args.revision:
         parser.error("trial inputs apply only to BigQuery or Pub/Sub proposals")
     tags = {}
     if args.scenario == "cloudtasks":

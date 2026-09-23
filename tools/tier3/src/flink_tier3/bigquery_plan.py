@@ -43,84 +43,37 @@ QUERY_TIMEOUT_MS = 60000
 REVIEWED_AT = "2026-09-20T00:00:00Z"
 QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
-FIELDS = {
-    "version",
-    "mode",
-    "destinations",
-    "repetition",
-    "query_slots",
-    "maximum_bytes_billed",
-    "query_timeout_ms",
-    "additional_cost_usd",
+# The four dispatchable trials; the query budget above is every trial's.
+TRIALS = {
+    f"{mode.lower()}-{destinations}": (mode, destinations)
+    for destinations in (10, 50)
+    for mode in ("ALO", "EO")
 }
 
 
-def load_trial(path):
-    """Read a small, exact input schema; reject duplicate JSON object keys."""
-
-    def pairs(items):
-        result = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError("Duplicate trial field: " + key)
-            result[key] = value
-        return result
-
-    try:
-        with path.open("rb") as stream:
-            data = stream.read(8193)
-        if len(data) > 8192:
-            raise ValueError("Trial proposal input exceeds 8 KiB")
-        result = json.loads(data, object_pairs_hook=pairs)
-        validate_trial(result)
-        return result
-    except (OSError, UnicodeError, ValueError, TypeError) as error:
-        raise Failure("Invalid BigQuery trial proposal: " + str(error)) from error
+def trial(name):
+    """The approved trial a dispatch names, such as `alo-10`."""
+    if name not in TRIALS:
+        raise Failure("BigQuery trial must be one of " + ", ".join(TRIALS))
+    mode, destinations = TRIALS[name]
+    return {"mode": mode, "destinations": destinations}
 
 
 def validate_trial(value):
-    if not isinstance(value, dict) or set(value) != FIELDS:
-        raise ValueError("Trial proposal fields must match the version 1 schema")
-    integers = {
-        "version": (1, 1),
-        "repetition": (1, 3),
-        "query_slots": (1, QUERY_SLOTS),
-        "maximum_bytes_billed": (1024**3, BYTES_PER_QUERY),
-        "query_timeout_ms": (1, QUERY_TIMEOUT_MS),
-    }
-    for key, (low, high) in integers.items():
-        if type(value[key]) is not int or not low <= value[key] <= high:
-            raise ValueError("Invalid trial proposal field: " + key)
-    if (
-        value["mode"] not in ("ALO", "EO")
-        or type(value["destinations"]) is not int
-        or value["destinations"] not in (10, 50)
-    ):
+    # Serialized, so `10.0` or `True` cannot pass as a destination count.
+    if json_bytes(value) not in {json_bytes(trial(name)) for name in TRIALS}:
         raise ValueError("Trial must select ALO/EO and 10/50 destinations")
-    cost = value["additional_cost_usd"]
-    if (
-        not isinstance(cost, str)
-        or not re.fullmatch(r"(?:[1-9]|10)\.[0-9]{2}", cost)
-        or Decimal(cost) > 10
-    ):
-        raise ValueError("Cost proposal must be a USD string between 1.00 and 10.00")
-    if Decimal(cost) < estimate(value):
-        raise ValueError("Proposed cost is below the planning estimate")
 
 
-def estimate(value):
-    """Planning estimate, not a hard bound on service bills or SDK retries."""
+def estimate():
+    """Planning estimate for one trial; not a bound on bills or SDK retries."""
     shapes = [
         POD_RESOURCES["operator"],
         POD_RESOURCES["supervisor"],
         *[POD_RESOURCES["smoke"]] * 3,
     ]
     compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    query = (
-        Decimal(value["query_slots"] * value["maximum_bytes_billed"])
-        / 1024**4
-        * QUERY_USD_PER_TIB
-    )
+    query = Decimal(QUERY_SLOTS * BYTES_PER_QUERY) / 1024**4 * QUERY_USD_PER_TIB
     return compute + query + RESERVE_USD
 
 
@@ -136,9 +89,9 @@ def resource_plan(run_id, nonce, expires_at, trial):
         ),
         nonce,
         int(timestamp(expires_at) * 1000),
-        trial["query_slots"],
-        trial["maximum_bytes_billed"],
-        trial["query_timeout_ms"],
+        QUERY_SLOTS,
+        BYTES_PER_QUERY,
+        QUERY_TIMEOUT_MS,
     )
 
 
@@ -190,8 +143,6 @@ def prepare(
         raise ValueError(
             "Proposal requires a 90-minute window and a 5220-second supervisor deadline"
         )
-    if not timestamp(REVIEWED_AT) <= start <= timestamp(REVIEWED_AT) + 30 * 86400:
-        raise ValueError("Proposal starts outside the pricing review's 30-day window")
     resources = resource_plan(run_id, nonce, utc(end), trial)
     identity, records = resources.trial, resources.trial.records
     tags = {
@@ -272,7 +223,6 @@ def prepare(
         "started_at": utc(start),
         "cleanup_at": utc(end - BIGQUERY_CEILINGS["cleanup_seconds"]),
         "expires_at": utc(end),
-        "repetition": trial["repetition"],
         "resources": asdict(resources),
         "application_sha256": digest(initial),
         "upgrade_application_sha256": digest(upgrade),
@@ -289,13 +239,12 @@ def prepare(
             "pods": BIGQUERY_CEILINGS["pods"],
             "pvcs": BIGQUERY_CEILINGS["pvcs"],
             "input_bytes": records * ROW_BYTES[identity.mode],
-            "query_bytes": trial["query_slots"] * trial["maximum_bytes_billed"],
-            "additional_cost_usd": trial["additional_cost_usd"],
+            "query_bytes": QUERY_SLOTS * BYTES_PER_QUERY,
         },
         "observations": dict(BIGQUERY_OBSERVATIONS),
         "cost": {
             "kind": "planning-estimate",
-            "usd": str(estimate(trial)),
+            "usd": str(estimate()),
             "reviewed_at": REVIEWED_AT,
             "query_usd_per_tib": str(QUERY_USD_PER_TIB),
             "other_reserve_usd": str(RESERVE_USD),

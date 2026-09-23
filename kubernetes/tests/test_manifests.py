@@ -2024,14 +2024,8 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         application_image="us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
         + SYNTHETIC_DIGEST,
         trial={
-            "version": 1,
             "mode": mode,
             "destinations": destinations,
-            "repetition": 1,
-            "query_slots": 12,
-            "maximum_bytes_billed": 4 * 1024**3,
-            "query_timeout_ms": 60000,
-            "additional_cost_usd": "5.00",
         },
     )
     proposal = bundle["proposal"]
@@ -2053,7 +2047,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "ceilings": {**BIGQUERY_CEILINGS, "additional_cost_usd": "5.00"},
+        "ceilings": dict(BIGQUERY_CEILINGS),
         "namespaces": {
             namespace: {
                 "uid": namespace + "-uid",
@@ -2081,14 +2075,8 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
             "sha": "b" * 40,
         },
         "bigquery_trial": {
-            "version": 1,
             "mode": mode,
             "destinations": destinations,
-            "repetition": 1,
-            "query_slots": 12,
-            "maximum_bytes_billed": 4 * 1024**3,
-            "query_timeout_ms": 60000,
-            "additional_cost_usd": "5.00",
         },
     }
     # The synthetic CUE module is not a Git checkout; revision checks have separate tests.
@@ -2145,22 +2133,18 @@ def test_pubsub_proposal_from_real_cue(
         "revision": "b" * 40,
         "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         "trial": {
-            "version": 1,
+            "version": 2,
             "trial": trial,
             "records_per_subscription": records,
             "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
             "total_request_limit": 100000,
-            "additional_cost_usd": "10.00",
         },
     }
     bundle = pubsub_plan.prepare(**inputs)
     proposal = bundle["proposal"]
     initial, recovery = bundle["application"], bundle["recovery_application"]
     assert proposal["approved"] is False
-    assert proposal["cost"] == {
-        "kind": "unestimated-proposed-cap",
-        "estimate_usd": None,
-    }
+    assert proposal["cost"] == {"kind": "unestimated"}
     assert proposal["application_sha256"] == digest(initial)
     assert proposal["recovery_application_sha256"] == digest(recovery)
     assert proposal["supervisor_sha256"] == digest(bundle["delivery"]["supervisor"])

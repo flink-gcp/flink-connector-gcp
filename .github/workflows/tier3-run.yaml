@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       approval:
-        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES, or APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD <the trial file additional_cost_usd>'
+        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES, or APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES; spend is approved beforehand from the estimate'
         required: true
         type: string
       session:
@@ -50,10 +50,16 @@ on:
         type: string
         default: ''
       trial:
-        description: 'BigQuery only: trial file name under kubernetes/lifecycle/trials, without .json'
+        description: 'BigQuery only: delivery method and destination count'
         required: false
-        type: string
-        default: ''
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'alo-10'
+          - 'eo-10'
+          - 'alo-50'
+          - 'eo-50'
 
 permissions: {}
 concurrency:

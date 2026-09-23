@@ -528,11 +528,12 @@ def test_session_cost_and_quota_shapes_stay_within_policy():
     assert plan["task_creations"] == 9 * 16313 * 16 * 4 == 9396288
     assert plan["task_creations"] == sum(rt.cell_creations(c) for c in cells)
     cost = rt.estimated_session_cost(rt.CLOUDTASKS_CEILINGS["session_seconds"], cells)
-    assert Decimal(9) < cost <= Decimal(rt.CLOUDTASKS_CEILINGS["additional_cost_usd"])
+    assert Decimal(9) < cost < Decimal(10)
     too_many = [dict(c, id=f"c{i}") for i, c in enumerate(cells * 2)][:12]
     with pytest.raises(rt.Failure, match="task creation ceiling"):
         rt.validate_cells(too_many)
-    # Eleven such cells stay under the creation ceiling but not under USD 10.
+    # Eleven such cells stay under the creation ceiling; their estimate is the
+    # owner's to approve before dispatch, not a limit the session checks.
     expensive = [dict(c, id=f"c{i}") for i, c in enumerate(cells * 2)][:11]
     assert rt.validate_cells(expensive)["task_creations"] == 11484352
     assert rt.estimated_session_cost(18000, expensive) > Decimal("10.00")
@@ -595,7 +596,6 @@ def test_reviewed_session_policy_preserves_the_fixed_contract():
         "evidence_bytes": 4294967296,
         "receipt_bytes_supervisor": 268435456,
         "receipt_bytes_runner": 33554432,
-        "additional_cost_usd": "10.00",
     }
     assert rt.CLOUDTASKS_POD_RESOURCES == {
         "jobmanager": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
@@ -608,7 +608,7 @@ def test_reviewed_session_policy_preserves_the_fixed_contract():
     assert rt.CLOUDTASKS_POLICY["target"] == "https://ct1246.invalid/task"
     assert (
         cli.CLOUDTASKS_APPROVAL
-        == "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES"
+        == "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES"
     )
     assert rt.CEILINGS["evidence_bytes"] == 104857600  # smoke unchanged
     session = rt.load_session(
@@ -1790,7 +1790,8 @@ def test_first_cell_credit_never_exceeds_the_startup_allowance(env, monkeypatch)
     assert control.cells[CELL_A["id"]]["status"] == "skipped"
 
 
-def test_session_cost_gate_refuses_a_session_under_the_creation_ceiling(env):
+def test_an_estimate_above_ten_dollars_is_not_refused_at_admission(env):
+    """The owner approves the estimate before dispatch; admission does not."""
     session_approval(env)
     base = env[2]["cells"][1]
     big = {
@@ -1827,8 +1828,7 @@ def test_session_cost_gate_refuses_a_session_under_the_creation_ceiling(env):
     env[2]["cleanup_at"] = rt.utc(env[3]() + window - 900)
     assert rt.validate_cells(cells)["task_creations"] == 11840000 + 7 * 601 * 4
     assert rt.estimated_session_cost(window, cells) > Decimal("10.00")
-    with pytest.raises(rt.Failure, match="session cost exceeds"):
-        rt.validate_approval(env[2], env[3]())
+    rt.validate_approval(env[2], env[3]())
 
 
 def test_a_failed_export_leaves_the_cell_claimable_in_the_campaign(env, monkeypatch):

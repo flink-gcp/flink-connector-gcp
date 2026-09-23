@@ -74,9 +74,10 @@ Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
 
-A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, and the ceilings below.
+A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, the ceilings below and the run's cost estimate; spend is approved from that estimate before dispatch, and nothing at run time compares spend against it.
+The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, and `bigquery_plan.estimate` for a BigQuery trial, which its rendered proposal carries.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
-The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1` verbatim.
+The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES` verbatim.
 Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
 The last 15 minutes are reserved for cleanup, leaving at most 45 minutes for startup and the 30-minute smoke job.
 A Cloud Tasks session's evidence is downloaded and analyzed after the run; see [Local verification and evidence](#local-verification-and-evidence).
@@ -88,7 +89,7 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f run_id=APPROVED_RUN_ID \
   -f reviewed_sha=APPROVED_MAIN_SHA \
   -f expires_at=APPROVED_UTC_EXPIRY \
-  -f 'approval=APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1'
+  -f 'approval=APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES'
 ```
 
 For the recovery exercise, also pass `-f scenario=generic-recovery`.
@@ -130,7 +131,7 @@ What a replacement costs the measurement is scenario-specific; for a Cloud Tasks
 | State | Stop on observed usage above 1 GiB or 10,000 objects in the run prefix |
 | Logs | Stop at 100 MiB collected; stop if the initial 1 MiB or a later 64 KiB read would truncate |
 | Durable evidence | 100 MiB per run; supervisor 88 MiB, runner 10 MiB, 2 MiB reserved for approval/manifests/final receipts |
-| Incremental cost approval | USD 1 per run |
+| Cost estimate | USD 0.81 for a full hour, approved before dispatch |
 
 ResourceQuotas enforce aggregate Pod, CPU, memory, ephemeral storage, PVC, Job, CronJob and StatefulSet admission limits.
 Every observation also checks actual container counts, image digests, effective requests/limits and ownership.
@@ -139,8 +140,8 @@ Evidence export uses conditional creates and a separate budget for each writer; 
 
 The conservative cost model charges all 4 CPUs at USD 0.10 per CPU-hour, all 8 GiB memory at USD 0.02 per GiB-hour, and all 3.125 GiB ephemeral storage at USD 0.001 per GiB-hour, even for Spot Pods.
 Including USD 0.25 for the bounded storage, requests and telemetry gives USD 0.813125 for a full hour.
-The replacement slot is not charged, because it is quota rather than a running Pod; a Pod that occupied it for a whole hour would add USD 0.141 and reach USD 0.954125, still inside the approved USD 1 but with USD 0.046 of margin rather than USD 0.187.
-Those rates exceed the [published Iowa Autopilot prices](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-09-14; admission refuses a pricing review older than 30 days.
+The replacement slot is not charged, because it is quota rather than a running Pod; a Pod that occupied it for a whole hour would add USD 0.141 and reach USD 0.954125.
+Those rates exceed the [published Iowa Autopilot prices](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-09-14; that date is recorded as the estimate's basis, and a run is not refused for its age.
 This is an execution budget model, not a real-time billing meter or a cloud billing cutoff.
 The standing cluster fee and existing persistent infrastructure are outside incremental cost.
 An API outage, stuck finalizer or unavailable node can delay verified termination beyond expiry; the workflow reports failure, retains the lock and requires incident recovery rather than claiming a cost guarantee it cannot enforce.
@@ -192,7 +193,7 @@ In ordinary smoke, a transient checkpoint-proxy error also starts cleanup, inclu
 
 The reviewed policy fixes 12,000 deterministic sequence records at ten records per second, one savepoint upgrade and one JM Pod deletion, with no automatic repetition.
 These inputs require about 20 minutes of uninterrupted processing.
-The resource, storage, telemetry and USD 1 ceilings above are unchanged; this is a correctness exercise, not a performance sample.
+The resource, storage and telemetry ceilings above are unchanged; this is a correctness exercise, not a performance sample.
 
 | Stage | Required evidence and deadline |
 | --- | --- |
@@ -242,7 +243,7 @@ This implementation prepares [issue #1311](https://github.com/flink-gcp/flink-co
 ## Cloud Tasks session
 
 A `cloudtasks` dispatch admits one measurement session for [issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246): an ordered list of cells from a reviewed session file, executed one FlinkDeployment at a time in `tier3-cloudtasks`.
-The workflow input must contain `APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES` verbatim, and the dispatch names `session` (a file under [sessions/](sessions/) without its `.toml` suffix), `flink_version` (`2.2.1` or `1.20.4`) and `application_digest` (the published `sha256:` digest of that line's measurement application package).
+The workflow input must contain `APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES` verbatim, and the dispatch names `session` (a file under [sessions/](sessions/) without its `.toml` suffix), `flink_version` (`2.2.1` or `1.20.4`) and `application_digest` (the published `sha256:` digest of that line's measurement application package).
 Expiry must cover the session plan plus 15 minutes of cleanup and lie within ten minutes of that sum, at most 300 minutes ahead; the plan is the sum over cells of ten minutes of startup, the nominal input window and three minutes of teardown.
 After obtaining that separate execution approval and a published digest, dispatch with the approved values:
 
@@ -252,7 +253,7 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f flink_version=2.2.1 -f application_digest=sha256:PUBLISHED_DIGEST \
   -f run_id=APPROVED_RUN_ID -f reviewed_sha=APPROVED_MAIN_SHA \
   -f expires_at=APPROVED_UTC_EXPIRY \
-  -f 'approval=APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES'
+  -f 'approval=APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES'
 ```
 
 The application digest is verified live against Artifact Registry with the same 24-hour retention margin as the other images; it is never pinned in `images/pins.cue`, and a digest for the wrong line's package is refused.
@@ -270,7 +271,7 @@ The measurement application is published for both lines from `339d0a90675dffee74
 | State | Stop on observed checkpoint state above 1 GiB or 20,000 objects under the current cell |
 | Logs | Stop collecting at 100 MiB; a truncated read is recorded, not fatal, because evidence rows travel through storage |
 | Durable evidence | 4 GiB per session for the exported rows and receipts; supervisor receipts 256 MiB, runner receipts 32 MiB |
-| Incremental cost approval | USD 10 per session, covering compute at the policy rates, the task-creation planning bound at USD 0.40 per million and a USD 0.25 reserve |
+| Cost estimate | `estimated_session_cost` over the session window: compute at the policy rates, the task-creation planning bound at USD 0.40 per million and a USD 0.25 reserve, approved before dispatch |
 
 The TaskManager shape follows the cell's parallelism class: 1 CPU/4 GiB for parallelism 1, 2 CPU/8 GiB for 4 and 4 CPU/16 GiB for 16, each with one slot per parallel subtask; the JobManager is 1 CPU/2 GiB.
 The TaskManager selects Spot and the JobManager normal capacity; the session quota admits two Pods sized for the largest approved class.
@@ -458,4 +459,4 @@ The lifecycle delivery requires package sources from this command or the runner;
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub execution admission remains disabled.
 The version 4 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
-A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes a reviewed trial file under `kubernetes/lifecycle/trials`, the published application digest, an expiry 90 to 100 minutes ahead and a phrase naming the trial's own cost, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
+A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes the trial (`alo-10`, `eo-10`, `alo-50` or `eo-50`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
