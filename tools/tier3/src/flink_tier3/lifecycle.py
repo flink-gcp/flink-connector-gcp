@@ -677,13 +677,26 @@ def main(argv=None):
     if args.command == "lock" and args.operation == "acquire" and args.kind is None:
         parser.error("lock acquire requires --kind")
     if args.command == "start":
-        session_flags = (args.session, args.flink_version, args.application_digest)
-        if args.scenario == "cloudtasks" and not all(session_flags):
+        # Each scenario's own inputs, and none of another's: the run workflow
+        # passes exactly these, so a mismatch refuses before cloud access.
+        inputs = {
+            "cloudtasks": {"session", "flink_version", "application_digest"},
+            "bigquery-recovery": {"trial", "application_digest"},
+        }.get(args.scenario, set())
+        # Supplied is not the same as non-empty: an empty foreign input is still
+        # another scenario's, and an empty own input is still missing.
+        supplied = {
+            name
+            for name in ("session", "flink_version", "application_digest", "trial")
+            if getattr(args, name) is not None
+        }
+        if supplied != inputs or not all(getattr(args, name) for name in inputs):
+            flags = sorted("--" + name.replace("_", "-") for name in inputs)
             parser.error(
-                "cloudtasks requires --session, --flink-version and --application-digest"
+                f"{args.scenario} requires "
+                + (", ".join(flags) if flags else "no scenario inputs")
+                + " and accepts no others"
             )
-        if args.scenario != "cloudtasks" and any(session_flags):
-            parser.error("session inputs apply only to the cloudtasks scenario")
     store = rt.Storage()
     {
         "start": start,
