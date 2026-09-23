@@ -103,6 +103,14 @@ class LocalStagedHarness implements AutoCloseable {
     final AtomicBoolean finishSource = new AtomicBoolean();
     final CompletableFuture<Void> sourceReleased = new CompletableFuture<>();
     final AtomicBoolean failWriterClose = new AtomicBoolean();
+
+    /**
+     * Completes before a staged writer may be created. Writer creation runs while its task is still
+     * initializing, so an incomplete future holds every task short of RUNNING after the job itself
+     * has reported RUNNING.
+     */
+    volatile CompletableFuture<Void> writerCreation = CompletableFuture.completedFuture(null);
+
     final ScheduledExecutorService receiver = Executors.newSingleThreadScheduledExecutor();
     final int payloadBytes;
     final boolean hot;
@@ -111,9 +119,10 @@ class LocalStagedHarness implements AutoCloseable {
     volatile long delayMillis;
 
     /**
-     * Minimum pause between periodic checkpoints for jobs started after it is set. Flink picks the
-     * first periodic trigger uniformly between this pause and the interval, so a held job that must
-     * complete no checkpoint before its explicit savepoint sets it equal to the interval.
+     * Minimum pause between periodic checkpoints for jobs started after it is set, or zero for
+     * none. Flink picks the first periodic trigger uniformly between this pause and the interval; a
+     * job built with {@link LocalStagedJob#HELD_INTERVAL_MILLIS} already gets an equal pause when
+     * this is zero.
      */
     volatile long minPauseMillis;
 
@@ -330,6 +339,7 @@ class LocalStagedHarness implements AutoCloseable {
 
     @Override
     public void close() throws InterruptedException {
+        writerCreation.complete(null);
         releaseSource();
         receiver.shutdownNow();
         try {
@@ -379,6 +389,7 @@ class LocalStagedHarness implements AutoCloseable {
         public CommittingSinkWriter<Long, CheckAndMutateRowRequest> createWriter(
                 WriterInitContext context) {
             LocalStagedHarness run = run(runId);
+            run.writerCreation.join();
             StagedMutationTestSink.Writer delegate =
                     new StagedMutationTestSink.Writer(run.maxEntries, run.maxBytes);
             return new CommittingSinkWriter<>() {
