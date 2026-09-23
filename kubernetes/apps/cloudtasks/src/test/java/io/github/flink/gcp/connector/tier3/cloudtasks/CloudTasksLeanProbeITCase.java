@@ -141,6 +141,18 @@ final class CloudTasksLeanProbeITCase {
             // drops, so it is in every reading taken while the writer is registered, and the run
             // is several lines long.
             assertThat(samples).anyMatch(sample -> sample.contains(named));
+            // The cell runs for several one-second checkpoint intervals; each line is a completion
+            // the gauge reported, in increasing id order.
+            List<String> checkpoints =
+                    Files.readAllLines(temporary.resolve(cell).resolve("checkpoints.jsonl"));
+            assertThat(checkpoints).isNotEmpty();
+            long previous = 0;
+            for (String checkpoint : checkpoints) {
+                assertThat(checkpoint).matches("\\{\"id\":[0-9]+,\"completedMillis\":[0-9]+}");
+                long id = Long.parseLong(checkpoint.replaceAll("\\{\"id\":([0-9]+),.*", "$1"));
+                assertThat(id).isGreaterThan(previous);
+                previous = id;
+            }
             assertThat(server.accepted()).isNotEmpty();
         }
     }

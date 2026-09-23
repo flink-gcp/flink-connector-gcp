@@ -40,6 +40,29 @@ class CloudTasksLeanProbeTest {
     }
 
     @Test
+    void onlyTheCheckpointsTheGaugeReportedAreWrittenEachOnce() throws IOException {
+        StringWriter file = new StringWriter();
+
+        long none = CloudTasksLeanProbe.completions(file, 0, null, 1_000);
+        long first =
+                CloudTasksLeanProbe.completions(
+                        file, none, SinkGaugeReporter.Reading.of(List.of(1L)), 2_000);
+        long same =
+                CloudTasksLeanProbe.completions(
+                        file, first, SinkGaugeReporter.Reading.of(List.of(1L)), 3_000);
+        // A jump past id 2: it may have failed or expired, so only the id reported is written.
+        long jump =
+                CloudTasksLeanProbe.completions(
+                        file, same, SinkGaugeReporter.Reading.of(List.of(3L)), 4_000);
+
+        assertThat(List.of(none, first, same, jump)).containsExactly(0L, 1L, 1L, 3L);
+        assertThat(file.toString())
+                .isEqualTo(
+                        "{\"id\":1,\"completedMillis\":2000}\n"
+                                + "{\"id\":3,\"completedMillis\":4000}\n");
+    }
+
+    @Test
     void aPollThatWritesNoLineStillReachesTheExtremes() throws IOException {
         // The defect this pins: the gauges a staged arm publishes are live for part of each
         // checkpoint interval, and a reader that folded only when it wrote a line held one phase
