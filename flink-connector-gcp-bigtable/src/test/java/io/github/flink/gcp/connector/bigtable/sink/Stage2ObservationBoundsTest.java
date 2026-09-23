@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -104,38 +102,6 @@ class Stage2ObservationBoundsTest {
                                         limits))
                 .isInstanceOf(ArithmeticException.class);
         assertThat(work).doesNotExist();
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"serialized", "sustained"})
-    void actualAuxiliaryWorkerRoutesEachPhaseToItsOwnObservationBound(String name) {
-        Path work = directory.resolve(name);
-        var limits =
-                new Stage2RunLimits(
-                        1000,
-                        64000,
-                        1000,
-                        1048576,
-                        1048576,
-                        60000,
-                        Long.MAX_VALUE / 1_000_000L - 360000);
-        // Intentionally bypass the plan reader: ten minutes distinguishes the two
-        // runtime routes, then overflow prevents either route from starting a job.
-        var phase =
-                new Stage2AuxiliaryPlan.Phase(
-                        name, 600, 1000, 2000, limits, 4000, 8192000, 2048000);
-        assertThatThrownBy(() -> Stage2CampaignWorker.observeAuxiliary(null, phase, work))
-                .isInstanceOf(
-                        name.equals("sustained")
-                                ? ArithmeticException.class
-                                : IllegalArgumentException.class);
-        assertThat(work).doesNotExist();
-    }
-
-    @Test
-    void usageNamesTheAuxiliaryCommand() {
-        assertThatThrownBy(() -> BigtableStage2Probe.main(new String[] {"service-auxiliary"}))
-                .hasMessageContaining("service-auxiliary campaign-directory serialized|sustained");
     }
 
     @Test

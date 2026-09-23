@@ -1111,7 +1111,8 @@ mutation with no cell in it is not a write.
 ## Checkpoint-owned delivery
 
 Set `sink.delivery-guarantee` to `exactly-once` with `upsert`, `keep-latest` or `aggregate` to select the experimental staged runtime.
-Its production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319), but the formal Stage 2 gate declined it on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327), so it is not released or supported.
+Its production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319).
+A row becomes readable one checkpoint interval later at best, plus the commit drain: the measured visibility p95 is 5.7 to 48.9 seconds against 13 to 165 milliseconds for eager writes, which is why the Stage 2 gate was declined on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327) and no supported workload is claimed. The assessment ran the commit drain behind it at a concurrency of 1 to 16 against a default of 100; [#1464]({{< param BookRepo >}}/issues/1464) measures the default before release.
 The [DataStream staged contract]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) also governs SQL recovery, visibility and marker retention.
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="staged-sink" >}}

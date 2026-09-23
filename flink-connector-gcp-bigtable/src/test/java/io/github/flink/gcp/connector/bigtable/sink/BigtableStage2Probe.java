@@ -60,49 +60,6 @@ public final class BigtableStage2Probe {
     }
 
     private static void execute(String[] args) throws Exception {
-        if (args.length == 3 && args[0].equals("service-auxiliary")) {
-            Stage2CampaignWorker.executeAuxiliary(Path.of(args[1]), args[2]);
-            return;
-        }
-        if (args.length == 3 && args[0].equals("service-formal")) {
-            Stage2CampaignWorker.execute(Path.of(args[1]), args[2]);
-            return;
-        }
-        if (args.length == 4 && args[0].equals("plan-campaign")) {
-            Stage2CampaignPlan.write(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]));
-            System.out.println(
-                    "STAGE2_CAMPAIGN_PLAN leases=108 runs=648; preparation only, no service authorization");
-            return;
-        }
-        if (args.length == 4 && args[0].equals("local-formal")) {
-            Stage2AssessmentPlan.Run run = Stage2AssessmentPlan.run(args[2]);
-            Stage2AssessmentPlan.Cell cell = run.cell;
-            Stage2RunLimits limits = Stage2RunLimits.read(Path.of(args[3]));
-            timed(
-                    null,
-                    run.table(),
-                    Path.of(args[1]),
-                    run.staged,
-                    false,
-                    "127.0.0.1:1",
-                    cell.payloadBytes,
-                    cell.parallelism,
-                    cell.inFlight,
-                    cell.checkpointSeconds * 1000L,
-                    cell.warmupSeconds() * 1000L,
-                    cell.measurementSeconds() * 1000L,
-                    limits.inventoryEntries,
-                    0,
-                    cell.hot,
-                    limits);
-            return;
-        }
-        if (args.length == 2 && args[0].equals("plan-formal")) {
-            Stage2AssessmentPlan.write(Path.of(args[1]));
-            System.out.println(
-                    "STAGE2_FORMAL_PLAN cells=108 runs=648 minimumAdmissionSeconds=69120; not a service authorization");
-            return;
-        }
         if (args.length == 2 && args[0].equals("plan")) {
             Stage2Lease lease = Stage2Lease.plan(Path.of(args[1]));
             System.out.println(
@@ -115,9 +72,7 @@ public final class BigtableStage2Probe {
         if (args.length == 2) {
             Stage2Lease lease = new Stage2Lease(Path.of(args[1]));
             if (lease.productionRecovery
-                    && !(args[0].equals("cleanup")
-                            || args[0].equals("supervise")
-                            || args[0].equals("monitor"))) {
+                    && !(args[0].equals("cleanup") || args[0].equals("supervise"))) {
                 throw new IllegalArgumentException(
                         "Production recovery requires its own entry point");
             }
@@ -130,9 +85,6 @@ public final class BigtableStage2Probe {
                     return;
                 case "supervise":
                     lease.supervise();
-                    return;
-                case "monitor":
-                    Stage2Monitoring.capture(lease);
                     return;
                 case "preflight":
                     preflight(lease);
@@ -206,11 +158,7 @@ public final class BigtableStage2Probe {
             return;
         }
         throw new IllegalArgumentException(
-                "Commands: plan-campaign inputs.properties limits.properties new-directory; "
-                        + "plan-formal output.csv; local-formal directory table limits.properties; "
-                        + "service-formal campaign-directory table; "
-                        + "service-auxiliary campaign-directory serialized|sustained; "
-                        + "plan|create|cleanup|supervise|preflight manifest; "
+                "Commands: plan|create|cleanup|supervise|preflight manifest; "
                         + "service manifest table; local directory arm bytes parallelism inFlight checkpointMillis "
                         + "warmupMillis measureMillis capacity delayMillis keys");
     }

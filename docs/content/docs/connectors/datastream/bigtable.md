@@ -57,10 +57,31 @@ ADR-0093 records the measurement and decision.
 
 ## Checkpoint-owned writes
 
-`BigtableDeliveryGuarantee.EXACTLY_ONCE` selects the experimental staged runtime.
-Production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319), but the formal Stage 2 assessment declined the performance gate on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327), so this mode is not released or supported.
-It measured a staged visibility p95 between 129 and 1,546 times the bulk figure in every cell it compared, against a limit of four, because a staged write becomes visible only after its checkpoint completes and the conditional commits that completion releases have drained.
-The at-least-once path remains the default.
+`BigtableDeliveryGuarantee.EXACTLY_ONCE` selects the experimental staged runtime, and the at-least-once path remains the default.
+
+**Why the mode is experimental.**
+Its correctness is established: production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319).
+What is not yet settled is its cost, which has two parts of different kinds.
+
+The first part is the guarantee itself.
+A staged mutation reaches Bigtable only after the checkpoint that owns it completes, so a row becomes readable one checkpoint interval later at best.
+No implementation removes that wait; choosing this mode means choosing it.
+
+The second part is the drain that follows, and in the assessment the time beyond the interval was the larger share.
+Once a checkpoint completes, its staged mutations are applied as conditional writes, one `CheckAndMutateRow` per mutation because Bigtable has no batched conditional write, and a row becomes readable only when its write lands.
+How fast that drains is set by the committer's concurrency, `stagedOptions.requestOptions.maxInFlightRequests`, which defaults to 100.
+The [Stage 2 assessment]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0163-bigtable-stage2-assessment.md) ran the committer at a concurrency of only 1, 4 or 16 and measured a staged visibility p95 of 5.7 to 48.9 seconds at checkpoint intervals of one and ten seconds, against 13 to 165 milliseconds for the bulk sink, exceeding the interval by 4.7 to 38.9 seconds; waiting for the checkpoint accounts for at most one interval, so that excess is checkpoint completion and the drain.
+At those concurrencies the committer drained as fast as they allowed, from about 140 conditional writes per second at one to about 600 at sixteen, so the figures describe a committer held to a low concurrency rather than a limit of the mode.
+A single Bigtable node accepted at least 5,500 of these writes per second on distinct rows; [#1464]({{< param BookRepo >}}/issues/1464) measures the visibility at the default concurrency before the mode is released.
+Writes concentrated on one row are the exception: in the same probe the rate on one row rose with concurrency to about 2,100 per second at 400 and then stopped growing as its latency rose, consistent with Bigtable serialising conditional writes to a row, so raising the concurrency helps a workload that concentrates its writes on one row only until that row reaches its plateau.
+
+On these figures the [ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md) performance gate was declined on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327), and no supported workload is claimed.
+The gate compares against the eager bulk sink, so it charges the checkpoint wait to this mode by construction; read its ratio as the combined cost of the checkpoint wait and a drain run at a low commit concurrency, not as a measure of either alone.
+
+Choose it when a replayed row effect costs more than a delayed one, and set the checkpoint interval knowing it is the floor on visibility.
+For a plain `setCell` the default sink is usually enough, because a stable timestamp targets the same version and a replay overwrites instead of accumulating.
+The case this mode answers is the one a timestamp cannot: a repeated aggregate `AddToCell` contributes again at the same timestamp, and the retained marker is what suppresses the second contribution.
+Size the interval against the staging capacity below as well: a writer holds every envelope admitted since the last checkpoint, so retained work grows with both the payload size and the interval.
 
 Provision a dedicated raw marker family with no GC rule and an explicit application profile using single-cluster routing with transactional writes enabled.
 Grant data mutation permission plus metadata read permission for the application profile and table schema (`bigtable.appProfiles.get` and `bigtable.tables.get`).
@@ -88,8 +109,10 @@ Restoring an older snapshot can replay source inputs with new identities and can
 If stop-with-savepoint fails after completion notification, resume its completed savepoint explicitly; falling back to the preceding checkpoint is outside the guarantee.
 External marker deletion, table/family recreation and concurrent deployments that alter marker cells also invalidate replay protection.
 
-The writer limits one interval to 100,000 entries and 64 MiB of serialized requests plus 256 accounting bytes per entry.
-Exceeding either cap fails synchronously so the task does not wait for a barrier it is preventing.
+The writer limits one interval to 100,000 entries and 64 MiB of serialized requests plus 256 accounting bytes per entry by default, and `stagedOptions` raises either cap.
+Exceeding either cap fails synchronously so the task does not wait for a barrier it is preventing; the writer applies no backpressure, so a source faster than the drain reaches the cap rather than slowing down.
+Retained work is roughly the payload size times the admission rate times the checkpoint interval, so a byte cap holds far fewer envelopes as the payload grows: 64 MiB holds at most about a thousand 64 KiB mutations.
+The Stage 2 assessment raised the byte cap to 192 MiB per subtask, the most a 10 GiB heap admitted at parallelism 16, and its 64 KiB cells still reached it in 129 of 162 staged runs.
 These charges are not a Java heap bound: the committer can retain multiple pending intervals and snapshot copies.
 Size the checkpoint interval, heap and timeout for the complete work accumulated before a completion notification, including older checkpoint collections.
 Retained markers grow with the number of envelopes, and nothing reclaims them while a job runs: the Stage 2 assessment observed one hot row accumulate 1,445,269 marker cells in thirty minutes, growing linearly throughout ([#1327]({{< param BookRepo >}}/issues/1327)).
