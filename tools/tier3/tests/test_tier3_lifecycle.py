@@ -3008,6 +3008,143 @@ def test_evidence_failure_wins_the_creation_intent_cas_race(env):
     assert ("create", "FlinkDeployment", False) not in env[0].calls
 
 
+# The start arguments `tier3-run.yaml` builds for each scenario.
+WORKFLOW_INPUTS = {
+    "smoke": [],
+    "generic-recovery": [],
+    "cloudtasks": [
+        "--session",
+        "calibration-1246",
+        "--flink-version",
+        "2.2.1",
+        "--application-digest",
+        "sha256:" + "d" * 64,
+    ],
+    "bigquery-recovery": [
+        "--trial",
+        "alo-10",
+        "--application-digest",
+        "sha256:" + "d" * 64,
+    ],
+}
+
+
+def start_argv(tmp_path, scenario, extra):
+    return [
+        "--kubeconfig",
+        str(tmp_path / "kubeconfig"),
+        "start",
+        "--run-id",
+        "cli-1481",
+        "--sha",
+        "b" * 40,
+        "--expires-at",
+        "2026-09-23T16:20:00Z",
+        "--approve",
+        "phrase",
+        "--scenario",
+        scenario,
+        *extra,
+    ]
+
+
+def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
+    import re
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
+    [step] = [
+        s for s in workflow["jobs"]["lifecycle"]["steps"] if s.get("id") == "lifecycle"
+    ]
+    branches = dict(
+        re.findall(
+            r'"\$SCENARIO" = ([a-z-]+) \]; then\s+start\+=\(([^)]*)\)', step["run"]
+        )
+    )
+    assert set(branches) == {"cloudtasks", "bigquery-recovery"}
+    # Each flag with the workflow input it carries, not only its name.
+    expected = {
+        "cloudtasks": [
+            ("--session", "SESSION"),
+            ("--flink-version", "FLINK_VERSION"),
+            ("--application-digest", "APPLICATION_DIGEST"),
+        ],
+        "bigquery-recovery": [
+            ("--trial", "TRIAL"),
+            ("--application-digest", "APPLICATION_DIGEST"),
+        ],
+    }
+    for scenario, arguments in branches.items():
+        passed = re.findall(r'(--[a-z-]+) "\$([A-Z_]+)"', arguments)
+        assert passed == expected[scenario], scenario
+        assert [flag for flag, _ in passed] == [
+            a for a in WORKFLOW_INPUTS[scenario] if a.startswith("--")
+        ]
+        env = step["env"]
+        for _, name in passed:
+            assert env[name] == "${{ inputs." + name.lower() + " }}", name
+
+
+@pytest.mark.parametrize("scenario", sorted(WORKFLOW_INPUTS))
+def test_cli_start_accepts_the_inputs_the_workflow_passes(
+    monkeypatch, tmp_path, scenario
+):
+    """The BigQuery pilot died here: its digest was refused as a session input."""
+    import sys
+
+    class Reached(Exception):
+        pass
+
+    def storage():
+        raise Reached
+
+    monkeypatch.setattr(rt, "Storage", storage)
+    argv = start_argv(tmp_path, scenario, WORKFLOW_INPUTS[scenario])
+    monkeypatch.setattr(sys, "argv", ["flink-tier3-lifecycle", *argv])
+    with pytest.raises(Reached):
+        cli.main()
+
+
+@pytest.mark.parametrize(
+    "scenario, extra",
+    [
+        ("bigquery-recovery", ["--trial", "alo-10"]),
+        ("bigquery-recovery", ["--application-digest", "sha256:" + "d" * 64]),
+        (
+            "bigquery-recovery",
+            [*WORKFLOW_INPUTS["bigquery-recovery"], "--session", "x"],
+        ),
+        ("cloudtasks", WORKFLOW_INPUTS["cloudtasks"][:4]),
+        ("cloudtasks", [*WORKFLOW_INPUTS["cloudtasks"], "--trial", "alo-10"]),
+        ("smoke", ["--application-digest", "sha256:" + "d" * 64]),
+        ("generic-recovery", ["--trial", "alo-10"]),
+        # Supplied but empty: still another scenario's input, or still missing.
+        ("smoke", ["--session", ""]),
+        (
+            "bigquery-recovery",
+            ["--trial", "", "--application-digest", "sha256:" + "d" * 64],
+        ),
+    ],
+)
+def test_cli_start_refuses_another_scenarios_inputs_before_cloud_access(
+    monkeypatch, tmp_path, capsys, scenario, extra
+):
+    import sys
+
+    def cloud_access():
+        raise AssertionError("Argument rejection must precede cloud access")
+
+    monkeypatch.setattr(rt, "Storage", cloud_access)
+    monkeypatch.setattr(
+        sys, "argv", ["flink-tier3-lifecycle", *start_argv(tmp_path, scenario, extra)]
+    )
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2
+    assert f"{scenario} requires" in capsys.readouterr().err
+
+
 def test_cli_lock_acquire_requires_kind_before_cloud_access(
     monkeypatch, tmp_path, capsys
 ):
