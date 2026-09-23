@@ -221,6 +221,9 @@ public final class BigtableRequestOptions implements Serializable {
          * operator capacity. Flink enforces that bound; the async request function has no separate
          * admission gate.
          *
+         * <p>Each staged {@code EXACTLY_ONCE} committer keeps at most this many conditional writes
+         * outstanding, and at the cap it waits for its oldest one.
+         *
          * @param maxInFlightRequests the in-flight cap, positive
          * @return this builder
          */

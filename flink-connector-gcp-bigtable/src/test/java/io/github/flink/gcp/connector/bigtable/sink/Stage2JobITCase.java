@@ -16,11 +16,17 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
@@ -147,25 +153,45 @@ class Stage2JobITCase {
     @Test
     void failedRunPreservesSamplesBeforeOwnedWorkRemoval() throws Exception {
         Path work = directory.resolve("overflow");
+        StringBuilder failedOutput = new StringBuilder();
         org.assertj.core.api.Assertions.assertThatThrownBy(
                         () ->
-                                BigtableStage2Probe.timed(
-                                        null,
-                                        "local-table",
-                                        work,
-                                        true,
-                                        false,
-                                        "127.0.0.1:1",
-                                        65536,
-                                        1,
-                                        4,
-                                        60000,
-                                        0,
-                                        30000,
-                                        2000,
-                                        0,
-                                        false))
+                                capture(
+                                        failedOutput,
+                                        () ->
+                                                BigtableStage2Probe.timed(
+                                                        null,
+                                                        "local-table",
+                                                        work,
+                                                        true,
+                                                        false,
+                                                        "127.0.0.1:1",
+                                                        65536,
+                                                        1,
+                                                        4,
+                                                        60000,
+                                                        0,
+                                                        30000,
+                                                        2000,
+                                                        0,
+                                                        false)))
                 .hasStackTraceContaining("Bigtable staging capacity exceeded");
+        assertThat(
+                        failedOutput
+                                .toString()
+                                .lines()
+                                .filter(line -> line.startsWith("STAGE2_CLIENT_FINAL ")))
+                .as("a failed run still reports its commit records, once")
+                .singleElement()
+                .satisfies(line -> assertThat(line).contains("\"peakActive\":"));
+        assertThat(
+                        failedOutput
+                                .toString()
+                                .lines()
+                                .filter(line -> line.startsWith("STAGE2_COMMIT_FINAL ")))
+                .as("a failed run reports its active commits, once")
+                .singleElement()
+                .satisfies(line -> assertThat(line).contains("\"activeBatches\":"));
         assertThat(java.nio.file.Files.exists(work)).isFalse();
         Path evidence = directory.resolve("overflow-failed-samples.jsonl");
         assertThat(evidence).isRegularFile();
@@ -332,5 +358,135 @@ class Stage2JobITCase {
                 1,
                 true);
         assertThat(directory.resolve("run")).doesNotExist();
+    }
+
+    /**
+     * The firing control for issue #1464: the default commit concurrency must reach the committer,
+     * so more requests are in flight at once than the campaign's largest value of 16 allowed. A
+     * local run on 2026-09-23 peaked at 100 and admitted 11,738 of the 50,000-entry inventory.
+     */
+    @Test
+    void stagedRunAtTheDefaultConcurrencyKeepsMoreThanSixteenCommitsInFlight() throws Exception {
+        String output =
+                capture(
+                        () ->
+                                BigtableStage2Probe.timed(
+                                        null,
+                                        "local-table",
+                                        directory.resolve("default-concurrency"),
+                                        true,
+                                        false,
+                                        "127.0.0.1:1",
+                                        1024,
+                                        1,
+                                        100,
+                                        100,
+                                        500,
+                                        1000,
+                                        50_000,
+                                        5,
+                                        false));
+        assertThat(output)
+                .as("the run was censored; raise the inventory")
+                .doesNotContain("STAGE2_CENSORED")
+                .doesNotContain("STAGE2,staged,CENSORED");
+        assertThat(output)
+                .as("the probe echoes its argument; peakActive below is what shows it arrived")
+                .contains(" inFlight=100 ");
+        JsonNode client = clientFinal(output);
+        assertThat(client.path("peakActive").asInt())
+                .as("peak outstanding commits at a requested concurrency of 100")
+                .isGreaterThan(16)
+                .isLessThanOrEqualTo(100);
+        assertThat(client.path("completionHoldNanos").path("count").asLong())
+                .as("completions whose instrument hold was recorded")
+                .isPositive();
+        assertThat(client.path("measuredClientNanos").path("count").asLong())
+                .as("measured client round trips")
+                .isPositive();
+        assertThat(output.lines().filter(line -> line.startsWith("STAGE2_COMMIT_BATCH ")))
+                .as("one record per finished commit invocation")
+                .isNotEmpty()
+                .allSatisfy(line -> assertThat(line).contains("\"successful\":true"));
+        long threadCpu = 0;
+        for (String line :
+                output.lines().filter(l -> l.startsWith("STAGE2_COMMIT_BATCH ")).toList()) {
+            long reading =
+                    new ObjectMapper()
+                            .readTree(line.substring("STAGE2_COMMIT_BATCH ".length()))
+                            .path("threadCpuNanos")
+                            .asLong();
+            assertThat(reading)
+                    .as("committing thread's CPU time; negative means this JVM cannot measure it")
+                    .isNotNegative();
+            threadCpu += reading;
+        }
+        assertThat(threadCpu)
+                .as("CPU time the committing thread spent across all commits")
+                .isPositive();
+    }
+
+    /** The bulk sink's default of 1,000 in-flight entries is the bound's stated purpose. */
+    @Test
+    void bulkRunAtItsDefaultInFlightEntriesIsAdmitted() throws Exception {
+        String output =
+                capture(
+                        () ->
+                                BigtableStage2Probe.timed(
+                                        null,
+                                        "local-table",
+                                        directory.resolve("bulk-default"),
+                                        false,
+                                        false,
+                                        "127.0.0.1:1",
+                                        1024,
+                                        1,
+                                        BigtableStage2Probe.MAX_IN_FLIGHT,
+                                        100,
+                                        500,
+                                        1000,
+                                        10_000,
+                                        0,
+                                        false));
+        assertThat(output).contains(" inFlight=" + BigtableStage2Probe.MAX_IN_FLIGHT + " ");
+    }
+
+    private interface ProbeRun {
+        void run() throws Exception;
+    }
+
+    /** Runs the probe with standard output captured, replaying it whatever the outcome. */
+    private static String capture(ProbeRun probe) throws Exception {
+        StringBuilder output = new StringBuilder();
+        capture(output, probe);
+        return output.toString();
+    }
+
+    /** As above, appending the output to {@code sink} even when the probe throws. */
+    private static void capture(StringBuilder sink, ProbeRun probe) throws Exception {
+        PrintStream original = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        try {
+            probe.run();
+        } finally {
+            System.setOut(original);
+            String text = captured.toString(StandardCharsets.UTF_8);
+            original.print(text);
+            sink.append(text);
+        }
+    }
+
+    private static JsonNode clientFinal(String output) throws Exception {
+        String line =
+                output.lines()
+                        .filter(candidate -> candidate.startsWith("STAGE2_CLIENT_FINAL "))
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "No STAGE2_CLIENT_FINAL line; the run printed:\n"
+                                                        + output));
+        return new ObjectMapper().readTree(line.substring("STAGE2_CLIENT_FINAL ".length()));
     }
 }

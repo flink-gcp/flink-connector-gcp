@@ -36,6 +36,8 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collection;
@@ -60,8 +62,8 @@ final class Stage2Harness extends LocalStagedHarness {
     final AtomicLong sourceStarvations = new AtomicLong();
     final AtomicLong serializationAllocatedBytes = new AtomicLong();
     final AtomicLong restoreAllocatedBytes = new AtomicLong();
-    final AtomicLong clientCompletions = new AtomicLong();
-    private final long[] clientBins = new long[4096];
+    final Stage2Histogram clientNanos = new Stage2Histogram();
+    final Stage2Histogram completionHoldNanos = new Stage2Histogram();
     final AtomicLong attemptsCount = new AtomicLong();
     final long attemptLimit;
     final long wireLimit;
@@ -184,13 +186,13 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     void commitStarted(Object committer, int entries) {
-        commits.started(committer, entries, System.nanoTime());
+        commits.started(committer, entries, System.nanoTime(), threadCpuNanos());
         notifications.invocation(entries);
     }
 
     @Override
     void commitFinished(Object committer, boolean successful) {
-        commits.finished(committer, successful, System.nanoTime());
+        commits.finished(committer, successful, System.nanoTime(), threadCpuNanos());
     }
 
     @Override
@@ -364,26 +366,21 @@ final class Stage2Harness extends LocalStagedHarness {
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }
-        if (nanos <= 0) {
-            nanos = 1;
-        }
-        int exponent = 63 - Long.numberOfLeadingZeros(nanos);
-        long base = 1L << exponent;
-        int fraction = (int) (((double) nanos / base - 1) * 64);
-        clientBins[Math.min(4095, exponent * 64 + fraction)]++;
-        clientCompletions.incrementAndGet();
+        clientNanos.record(nanos);
     }
 
-    synchronized long clientQuantileUpperBound(double fraction) {
-        long target = (long) Math.ceil(clientCompletions.get() * fraction);
-        long count = 0;
-        for (int i = 0; i < clientBins.length; i++) {
-            count += clientBins[i];
-            if (count >= target && count > 0) {
-                return (long) Math.ceil(Math.scalb(1.0 + (i % 64 + 1) / 64.0, i / 64));
-            }
-        }
-        return 0;
+    /**
+     * The calling thread's CPU time, or -1 where the JVM does not measure it. Commit hooks run on
+     * the committer's thread, so the difference across an invocation is that thread's own work.
+     */
+    private static long threadCpuNanos() {
+        ThreadMXBean bean = ManagementFactory.getThreadMXBean();
+        return bean.isCurrentThreadCpuTimeSupported() ? bean.getCurrentThreadCpuTime() : -1;
+    }
+
+    @Override
+    void completionHeld(long nanos) {
+        completionHoldNanos.record(nanos);
     }
 
     @Override
@@ -397,8 +394,7 @@ final class Stage2Harness extends LocalStagedHarness {
     }
 
     static long allocatedBytes() {
-        java.lang.management.ThreadMXBean bean =
-                java.lang.management.ManagementFactory.getThreadMXBean();
+        ThreadMXBean bean = ManagementFactory.getThreadMXBean();
         if (bean instanceof com.sun.management.ThreadMXBean) {
             com.sun.management.ThreadMXBean allocated = (com.sun.management.ThreadMXBean) bean;
             if (allocated.isThreadAllocatedMemorySupported()

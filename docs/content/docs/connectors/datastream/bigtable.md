@@ -69,14 +69,19 @@ No implementation removes that wait; choosing this mode means choosing it.
 
 The second part is the drain that follows, and in the assessment the time beyond the interval was the larger share.
 Once a checkpoint completes, its staged mutations are applied as conditional writes, one `CheckAndMutateRow` per mutation because Bigtable has no batched conditional write, and a row becomes readable only when its write lands.
-How fast that drains is set by the committer's concurrency, `stagedOptions.requestOptions.maxInFlightRequests`, which defaults to 100.
-The [Stage 2 assessment]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0163-bigtable-stage2-assessment.md) ran the committer at a concurrency of only 1, 4 or 16 and measured a staged visibility p95 of 5.7 to 48.9 seconds at checkpoint intervals of one and ten seconds, against 13 to 165 milliseconds for the bulk sink, exceeding the interval by 4.7 to 38.9 seconds; waiting for the checkpoint accounts for at most one interval, so that excess is checkpoint completion and the drain.
-At those concurrencies the committer drained as fast as they allowed, from about 140 conditional writes per second at one to about 600 at sixteen, so the figures describe a committer held to a low concurrency rather than a limit of the mode.
-A single Bigtable node accepted at least 5,500 of these writes per second on distinct rows; [#1464]({{< param BookRepo >}}/issues/1464) measures the visibility at the default concurrency before the mode is released.
-Writes concentrated on one row are the exception: in the same probe the rate on one row rose with concurrency to about 2,100 per second at 400 and then stopped growing as its latency rose, consistent with Bigtable serialising conditional writes to a row, so raising the concurrency helps a workload that concentrates its writes on one row only until that row reaches its plateau.
+Each write is its own request because the marker check and the write must be one atomic operation, and Bigtable offers no conditional write that covers several rows; the at-least-once sink instead sends many rows in each `MutateRows` batch.
+A staged write therefore costs a round trip and the client's per-call processor time that a batch spreads across its rows, and a staged job writes fewer rows per second per task manager processor than an at-least-once one; that difference is part of the design, not a setting to tune away.
+Each subtask's committer keeps at most `stagedOptions.requestOptions.maxInFlightRequests` of these writes outstanding, 100 by default.
+The [Stage 2 assessment]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0163-bigtable-stage2-assessment.md) measured the default in the instance's zone under [#1464]({{< param BookRepo >}}/issues/1464), with 1 KiB rows on distinct keys and a one-second checkpoint interval.
+On a four-processor task manager host the staged visibility p95 was 3.5 to 6.6 seconds with one subtask and 7.2 to 7.6 seconds with four, where the subtasks competed for the host's processors.
+On a sixteen-processor host it was 2.6 to 3.5 seconds with one subtask and 1.7 to 2.1 seconds with four.
+The at-least-once sink's p95 was 23 to 61 milliseconds in the matching cells of the same matrix.
+What limits a single committer at the default is not yet identified, and [#1476]({{< param BookRepo >}}/issues/1476) investigates it; the rate of the staged committer's `requestsCompleted` counter shows how fast a job is draining.
+At a ten-second interval a commit could outlast the interval, so an input rate the drain cannot match grows a backlog: visibility rose to tens of seconds within the run, and checkpoints can expire.
+Writes concentrated on one row are bounded by Bigtable rather than by the connector: one row accepted about 1,600 to 2,200 conditional writes per second at every concurrency from 16 upwards, so the writes to that row cannot go faster, and a workload that sends a share of its writes to one row drains at most about that rate divided by the share; the measured hot-key workload sent nine writes in ten to one row.
 
 On these figures the [ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md) performance gate was declined on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327), and no supported workload is claimed.
-The gate compares against the eager bulk sink, so it charges the checkpoint wait to this mode by construction; read its ratio as the combined cost of the checkpoint wait and a drain run at a low commit concurrency, not as a measure of either alone.
+The gate compares against the eager bulk sink, so it charges the checkpoint wait to this mode by construction; read its ratio as the combined cost of the checkpoint wait and the commit drain, not as a measure of either alone.
 
 Choose it when a replayed row effect costs more than a delayed one, and set the checkpoint interval knowing it is the floor on visibility.
 For a plain `setCell` the default sink is usually enough, because a stable timestamp targets the same version and a replay overwrites instead of accumulating.

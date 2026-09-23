@@ -1112,7 +1112,8 @@ mutation with no cell in it is not a write.
 
 Set `sink.delivery-guarantee` to `exactly-once` with `upsert`, `keep-latest` or `aggregate` to select the experimental staged runtime.
 Its production-service recovery acceptance was recorded on 2026-09-14 under [#1319]({{< param BookRepo >}}/issues/1319).
-A row becomes readable one checkpoint interval later at best, plus the commit drain: the measured visibility p95 is 5.7 to 48.9 seconds against 13 to 165 milliseconds for eager writes, which is why the Stage 2 gate was declined on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327) and no supported workload is claimed. The assessment ran the commit drain behind it at a concurrency of 1 to 16 against a default of 100; [#1464]({{< param BookRepo >}}/issues/1464) measures the default before release.
+A row becomes readable one checkpoint interval later at best, plus the commit drain, which is why the Stage 2 gate was declined on 2026-09-21 under [#1327]({{< param BookRepo >}}/issues/1327) and no supported workload is claimed.
+At the default `sink.in-flight.max-requests` of 100, with 1 KiB rows on distinct keys and a one-second checkpoint interval, the measured visibility p95 on a four-processor task manager host was 3.5 to 6.6 seconds with one subtask and 7.2 to 7.6 seconds with four, against 23 to 61 milliseconds for eager writes ([#1464]({{< param BookRepo >}}/issues/1464)); the DataStream page explains why each staged write costs more than an eager one and what is known about the drain.
 The [DataStream staged contract]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) also governs SQL recovery, visibility and marker retention.
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="staged-sink" >}}

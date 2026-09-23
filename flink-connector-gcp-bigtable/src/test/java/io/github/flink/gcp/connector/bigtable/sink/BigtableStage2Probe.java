@@ -34,6 +34,12 @@ public final class BigtableStage2Probe {
     static final long ORDINARY_SAMPLE_BYTES = 8L * 1024 * 1024;
     static final long SUSTAINED_SAMPLE_BYTES = 64L * 1024 * 1024;
 
+    /**
+     * Admits the bulk writer's default of 1,000 in-flight entries; the staged committer's default
+     * of 100 lies inside it (issue #1464).
+     */
+    static final int MAX_IN_FLIGHT = 1000;
+
     private BigtableStage2Probe() {}
 
     public static void main(String[] args) throws Exception {
@@ -333,7 +339,7 @@ public final class BigtableStage2Probe {
                 || parallelism < 1
                 || parallelism > 16
                 || inFlight < 1
-                || inFlight > 16
+                || inFlight > MAX_IN_FLIGHT
                 || intervalMillis < 1
                 || intervalMillis > 60_000
                 || warmupMillis < 0
@@ -357,6 +363,9 @@ public final class BigtableStage2Probe {
                 lease == null
                         ? TableDestination.of("local-project", "local-instance", table)
                         : lease.table(table);
+        // Read by the failure path, so a failed or censored run still reports its commit records.
+        Stage2Harness observedRun = null;
+        boolean recordsPrinted = false;
         try (Stage2Harness run =
                         new Stage2Harness(
                                 destination,
@@ -385,6 +394,7 @@ public final class BigtableStage2Probe {
                 PrintWriter samples =
                         new PrintWriter(
                                 Files.newBufferedWriter(directory.resolve("samples.jsonl")))) {
+            observedRun = run;
             run.delayMillis = delayMillis;
             await(
                     "Stage 2 readers",
@@ -542,7 +552,7 @@ public final class BigtableStage2Probe {
                         result.p95,
                         result.p99,
                         result.drainNanos,
-                        run.clientQuantileUpperBound(.95),
+                        run.clientNanos.quantileUpperBound(.95),
                         run.peakWriterEntries.get(),
                         run.peakWriterBytes.get(),
                         run.peakActive.get(),
@@ -558,6 +568,8 @@ public final class BigtableStage2Probe {
             System.out.println("STAGE2_CHECKPOINT_FINAL " + job.checkpointStats());
             System.out.println("STAGE2_INPUT_FINAL " + run.ledger.sample());
             System.out.println("STAGE2_COMMIT_FINAL " + run.commits.sample(System.nanoTime()));
+            printCommitRecords(run);
+            recordsPrinted = true;
             System.out.println(
                     "STAGE2_NOTIFICATION_FINAL " + run.notifications.sample(System.nanoTime()));
             if (lease != null || emulator) {
@@ -578,6 +590,13 @@ public final class BigtableStage2Probe {
             preserveSamples(lease, directory, false, maximumSampleBytes);
             return !run.censored.get() && run.ledger.measuredCount() > 0;
         } catch (Exception failure) {
+            if (observedRun != null && !recordsPrinted) {
+                // Includes a commit still running when the run failed, such as the one a checkpoint
+                // expiry waited on, which the finished records cannot show.
+                System.out.println(
+                        "STAGE2_COMMIT_FINAL " + observedRun.commits.sample(System.nanoTime()));
+                printCommitRecords(observedRun);
+            }
             boolean workloadLimit = false;
             for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
                 String message = cause.getMessage();
@@ -603,6 +622,29 @@ public final class BigtableStage2Probe {
                 System.out.println("STAGE2_LOCAL_CLEANUP ABSENT " + directory);
             }
         }
+    }
+
+    /**
+     * Prints one record per finished commit invocation and the run's latency distributions. The
+     * client round trips cover the measurement window only; the completion hold covers every
+     * successful completion of the run; a failed RPC records none. The peak of outstanding
+     * conditional writes is here as well as on the {@code STAGE2} line, which a failed or censored
+     * run does not print.
+     */
+    private static void printCommitRecords(Stage2Harness run) {
+        for (String batch : run.commits.finishedRecords()) {
+            System.out.println("STAGE2_COMMIT_BATCH " + batch);
+        }
+        System.out.println(
+                "STAGE2_CLIENT_FINAL {\"droppedBatchRecords\":"
+                        + run.commits.droppedRecords()
+                        + ",\"peakActive\":"
+                        + run.peakActive.get()
+                        + ",\"measuredClientNanos\":"
+                        + run.clientNanos.json()
+                        + ",\"completionHoldNanos\":"
+                        + run.completionHoldNanos.json()
+                        + "}");
     }
 
     static void preserveSamples(

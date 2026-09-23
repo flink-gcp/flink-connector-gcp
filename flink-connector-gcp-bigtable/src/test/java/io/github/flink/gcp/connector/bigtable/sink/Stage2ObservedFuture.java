@@ -56,11 +56,13 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
                     @Override
                     public void onSuccess(V value) {
                         Exception failure = null;
+                        long completedAt = System.nanoTime();
                         try {
-                            completion.completed(value, System.nanoTime());
+                            completion.completed(value, completedAt);
                         } catch (Exception problem) {
                             failure = problem;
                         } finally {
+                            run.completionHeld(System.nanoTime() - completedAt);
                             run.active.decrementAndGet();
                         }
                         if (failure == null) {

@@ -157,7 +157,7 @@ class Stage2CommitProgressTest {
     }
 
     @Test
-    void reportsConcurrentInvocationsAndRetainsOnlyTotalsAfterCompletion() throws Exception {
+    void reportsConcurrentInvocationsAndRetainsOneRecordPerFinishedInvocation() throws Exception {
         Stage2CommitProgress progress = new Stage2CommitProgress();
         Object first = new Object();
         Object second = new Object();
@@ -182,6 +182,68 @@ class Stage2CommitProgressTest {
         progress.started(first, 1, 1100);
         progress.finished(first, true, 1200);
         assertThat(json(progress.sample(1300)).path("finishedBatches").asInt()).isEqualTo(3);
+        var records = progress.finishedRecords();
+        assertThat(records).hasSize(3);
+        JsonNode firstRecord = json(records.get(0));
+        assertThat(firstRecord.path("committer").asInt()).isZero();
+        assertThat(firstRecord.path("entries").asInt()).isEqualTo(80);
+        assertThat(firstRecord.path("startedNanos").asLong()).isEqualTo(100);
+        assertThat(firstRecord.path("durationNanos").asLong()).isEqualTo(500);
+        assertThat(firstRecord.path("successful").asBoolean()).isTrue();
+        JsonNode secondRecord = json(records.get(1));
+        assertThat(secondRecord.path("committer").asInt()).isEqualTo(1);
+        assertThat(secondRecord.path("durationNanos").asLong()).isEqualTo(600);
+        assertThat(secondRecord.path("successful").asBoolean()).isFalse();
+        assertThat(json(records.get(2)).path("committer").asInt()).isZero();
+        assertThat(firstRecord.path("threadCpuNanos").asLong())
+                .as("an invocation started without a CPU reading reports none")
+                .isEqualTo(-1);
+        assertThat(progress.droppedRecords()).isZero();
+    }
+
+    @Test
+    void recordsTheCommittingThreadsCpuTimeAcrossAnInvocation() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object committer = new Object();
+        progress.started(committer, 10, 100, 5_000);
+        progress.finished(committer, true, 900, 7_500);
+        JsonNode record = json(progress.finishedRecords().get(0));
+        assertThat(record.path("durationNanos").asLong()).isEqualTo(800);
+        assertThat(record.path("threadCpuNanos").asLong()).isEqualTo(2_500);
+    }
+
+    @Test
+    void reportsNoCpuTimeWhenEitherReadingIsMissing() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object first = new Object();
+        Object second = new Object();
+        progress.started(first, 1, 100, 5_000);
+        progress.finished(first, true, 200, -1);
+        progress.started(second, 1, 300, -1);
+        progress.finished(second, true, 400, 7_000);
+        var records = progress.finishedRecords();
+        assertThat(json(records.get(0)).path("threadCpuNanos").asLong()).isEqualTo(-1);
+        assertThat(json(records.get(1)).path("threadCpuNanos").asLong()).isEqualTo(-1);
+    }
+
+    @Test
+    void finishedRecordsAreBoundedAndCountWhatTheyDrop() {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object committer = new Object();
+        int total = Stage2CommitProgress.MAX_FINISHED_RECORDS + 3;
+        for (int i = 0; i < total; i++) {
+            progress.started(committer, 1, i);
+            progress.finished(committer, true, i + 1);
+        }
+        var records = progress.finishedRecords();
+        assertThat(records).hasSize(Stage2CommitProgress.MAX_FINISHED_RECORDS);
+        assertThat(records.get(0)).contains("\"startedNanos\":0,");
+        assertThat(records.get(records.size() - 1))
+                .contains(
+                        "\"startedNanos\":"
+                                + (Stage2CommitProgress.MAX_FINISHED_RECORDS - 1)
+                                + ",");
+        assertThat(progress.droppedRecords()).isEqualTo(3);
     }
 
     @Test

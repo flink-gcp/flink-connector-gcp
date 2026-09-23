@@ -346,7 +346,7 @@ class Stage2HarnessTest {
             assertThat(run.store.sent).isEmpty();
             assertThat(run.store.cells).isEmpty();
             assertThat(run.acknowledgedCount()).isEqualTo(100);
-            assertThat(run.clientQuantileUpperBound(.95)).isBetween(100L, 102L);
+            assertThat(run.clientNanos.quantileUpperBound(.95)).isBetween(100L, 102L);
         }
     }
 
@@ -539,8 +539,8 @@ class Stage2HarnessTest {
             run.ledger.admit(1, 110);
             run.clientCompleted(0, 10_000, 10_090);
             run.clientCompleted(1, 100, 210);
-            assertThat(run.clientCompletions.get()).isEqualTo(1);
-            assertThat(run.clientQuantileUpperBound(.95)).isBetween(100L, 102L);
+            assertThat(run.clientNanos.count()).isEqualTo(1);
+            assertThat(run.clientNanos.quantileUpperBound(.95)).isBetween(100L, 102L);
         }
         var mapper =
                 new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper();
