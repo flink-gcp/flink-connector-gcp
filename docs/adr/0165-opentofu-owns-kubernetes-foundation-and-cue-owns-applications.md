@@ -42,7 +42,9 @@ limitations under the License.
 - Updated: 2026-09-21 (Pub/Sub actor release connected to common settlement)
 - Updated: 2026-09-21 (offline Pub/Sub trial proposals)
 - Updated: 2026-09-23 (spend approved from the pre-run estimate; run-time cost gates removed)
+- Updated: 2026-09-23 (BigQuery trial preregistration)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
+- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -918,6 +920,7 @@ A BigQuery trial therefore chooses only what differs between trials, its deliver
 A reviewed file per dispatch existed chiefly to carry the per-trial cost, and keeping those numbers beside a preregistration record needed a test to hold the two together.
 The proposal also drops the repeated-trial ordinal the recovery application section binds: nothing consumed it, and a repetition is a separate run ID.
 The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, and USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), which the rendered proposal carries.
+The BigQuery campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md).
 
 An approval written before this change still carries the removed ceiling, and a BigQuery one the old trial schema, so the model refuses it and recovery could not settle it; the change is therefore merged only while no run holds the environment lock, rather than carrying a reader for a shape no future run writes.
 Keep everything that stops and cleans up a run, which is where a failure costs more than the run: the environment lock, idle and cleanup verification, recovery, the three empty plans and image retention.
