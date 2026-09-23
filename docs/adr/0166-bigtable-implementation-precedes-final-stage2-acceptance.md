@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0166: Bigtable implementation precedes final Stage 2 acceptance
 
 - Status: Accepted
-- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19; Stage 2 verdict recorded 2026-09-21
-- Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319), [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327)
+- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19; Stage 2 verdict recorded 2026-09-21; mode retained 2026-09-21; drain attributed 2026-09-23
+- Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319), [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327), [#1454](https://github.com/flink-gcp/flink-connector-gcp/issues/1454), [#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464)
 - Supersedes: only the implementation-start ordering in ADR-0104 and ADR-0163 for Bigtable staged writes
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
@@ -133,6 +133,9 @@ The protocol, its 108 cells, three repetitions, periods, thresholds and variabil
 - On a stop, the lean controller's supervisor preserves the free trial instance for the owner's decision instead of deleting it, because the trial cannot be recreated; a completed campaign still deletes it and verifies absence. The tracked `Stage2CampaignSupervisor.cleanup` path, which deletes the instance on every stop, is unchanged and is not used by that controller.
 - The owner also decided to judge the result under the unchanged latency criterion and to record the resulting verdict, expected to be a decline for most cells because staged visibility includes checkpoint waiting; a criterion change remains a separate decision with its own amending ADR.
 
+This section describes the execution rules as they stood on 2026-09-19, and the campaign it governed has since run.
+The journal, trial adapter, supervisor, workers and Monitoring capture it names were removed on 2026-09-22 under [the retention decision](#the-mode-is-retained-2026-09-21), so the present-tense references above, including `Stage2CampaignSupervisor.cleanup`, describe code that no longer exists.
+
 ## Stage 2 verdict (2026-09-21)
 
 The campaign ran on 2026-09-20 and 2026-09-21, completed all 108 cells, and the assessment declines the mode at the ADR-0104 gate.
@@ -146,10 +149,44 @@ In the remaining 93 cells the staged arm could not produce three valid repetitio
 
 Release and supported-workload claims therefore stay withheld, which is the state user-facing documentation already describes; what changes is that the reason is now measured rather than pending.
 The correctness acceptance recorded under #1319 is unaffected.
-Two decisions remain open: whether the mode stays in the tree as experimental or is withdrawn, and whether a future assessment amends the latency criterion to exclude checkpoint waiting, which would need its own superseding ADR under the rule this ADR already states.
 
 Both auxiliary observations ran.
 The sustained phase's marker timecourse failed inside the campaign through a defect in its sampler's client configuration, and was repeated on 2026-09-21 with the repaired sampler: one hot row accumulated 1,445,269 marker cells over thirty minutes, growing linearly with no reclamation during the run.
 Nothing of the protocol's coverage is now outstanding.
 
 The matrix ran on a Bigtable free trial and cost nothing in service charges; the assessment record holds the full cost ledger.
+
+## The mode is retained (2026-09-21)
+
+The verdict above left two questions open, and the owner settled them on the day it was recorded.
+
+**The mode stays, as experimental development functionality.**
+A declined gate withholds a supported-workload claim; it does not establish that the capability should not exist.
+Google's own Bigtable connector offers an exactly-once mode built differently, and a sink that participates in Flink's two-phase commit is what the framework's vocabulary calls exactly-once support.
+Removing the selector would withdraw that capability to report a performance result, which is not what the result says.
+
+The at-least-once path already covers the common case: a stable `setCell` timestamp targets the same version, so a replay overwrites rather than accumulates.
+Where it does not cover is the reason this mode has a use at all.
+A repeated aggregate `AddToCell` contributes again at the same timestamp, and no timestamp choice makes a Sum idempotent, so a replayed input changes the aggregate; the marker the staged mode retains is what suppresses that second contribution.
+A workload whose correctness turns on that distinction is the one for which a delayed row beats a doubled one.
+
+**The latency criterion is not amended, but the verdict is read in two parts.**
+ADR-0104 compares a candidate against the eager at-least-once sink, so for a checkpoint-owned mode it charges the checkpoint wait by construction: a staged write cannot be visible before its checkpoint completes, and no implementation of this design changes that.
+The measured visibility is that wait plus the drain of the conditional commits the completion releases, and the ratio the gate reports combines the two.
+Separating them changes what the verdict means.
+A staged p95 of 5.7 to 48.9 seconds at checkpoint intervals of one and ten seconds exceeded the interval by 4.7 to 38.9 seconds; waiting for the checkpoint accounts for at most one interval, so the excess is checkpoint completion and the commit drain rather than the wait, though a difference of percentiles does not measure either one.
+
+What set the drain's length is the committer's concurrency.
+The matrix's in-flight dimension is passed to the production sink as `maxInFlightRequests`, so every staged cell committed with 1, 4 or 16 conditional writes in flight, against a production default of 100 that no cell measured.
+The committer drained as fast as that allowed: at a concurrency of one it issued a conditional write every 6.9 ms, about one round trip within the zone, and its rate rose with each step of concurrency.
+A drain probe on 2026-09-23, issuing the committer's own request shape against a one-node instance, measured what the service accepts: at least 5,553 conditional writes per second on distinct rows with its median latency flat, and a single-row rate that stopped growing near 2,100 per second, consistent with the service serialising conditional writes to one row.
+At the default concurrency a committer would therefore be expected to reach the service's rate on distinct rows, and [#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464) measures the staged visibility there before the mode is released.
+A hot key's rate rose with concurrency up to 400 in the probe and then stopped growing, so raising the concurrency helps a hot key only until the row reaches that plateau; where a committer in the same zone reaches it is not measured.
+Neither result is explained by the absence of a batched conditional write.
+
+The obligation this leaves is documentary and a measurement.
+The pages a user reads must say which part of the cost is the guarantee, which is set by the commit concurrency and which is the service's single-row limit, so the trade-off can be judged rather than presented as a mode to avoid; the figures they quote describe the low concurrencies the matrix used until #1464 measures the default.
+Changing the criterion itself, for example to measure a checkpoint-owned mode against a checkpoint-aligned baseline, would affect the Cloud Tasks mode under ADR-0158 as well, and still needs its own superseding ADR under the rule this ADR already states.
+
+The campaign machinery built for the one-shot run is removed with this decision, because the trial it adopts cannot be created again in this project and a repeat assessment would reimplement its sequencing against whatever it then needs.
+The measurement instrument and the integration tests that drive the production staged path through it stay.

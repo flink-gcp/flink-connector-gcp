@@ -118,7 +118,12 @@ It rests on visibility, where the closest cell is `b65536-even-p16-i16-c1` at 12
 No spread within a cell moves a cell across a bar two orders of magnitude away, which is why the twelve inconclusive cells do not leave the verdict open.
 
 The protocol anticipated the mechanism: checkpoint waiting alone can fail the latency criterion, and it may not be subtracted after the result is seen.
-The measured staged p95 values run from 5.7 to 48.9 seconds at checkpoint intervals of 1 and 10 seconds, so the delay is not the interval itself but the interval plus the queue of conditional commits that each completion releases.
+The verdict above does not subtract it.
+Reading the result is another matter, because the baseline is an eager sink and a staged write cannot be visible before its checkpoint completes, so the ratio charges that wait to the mode by construction.
+The measured staged p95 values run from 5.7 to 48.9 seconds at checkpoint intervals of 1 and 10 seconds, exceeding the interval by 4.7 to 38.9 seconds.
+Waiting for the owning checkpoint accounts for at most one interval, since an input can arrive just before its checkpoint or just after the previous one, so the excess is checkpoint completion and the commit drain together.
+Percentiles do not subtract, so the excess bounds those two rather than measuring the drain; the commit records below measure the drain directly.
+[What limits the drain](#what-limits-the-drain) below shows what set its length.
 The bulk arm shares the host, the zone, the client configuration and the workload, and its p95 across these fifteen cells runs from 13 to 165 ms, so the staged seconds are not the network path that ADR-0166 set out to rule out.
 
 ## Why most cells have no comparison
@@ -133,9 +138,11 @@ The bulk arm ran the same source, host, controller and workload and produced a v
 | No measured acknowledgement in the window | 8 | 8 | 0 |
 | Drain deadline after admission closed | 2 | 2 | 0 |
 
-The first cause belongs to the mode.
+The first cause is the staging capacity, and the capacity is a value this campaign chose.
 A staged writer holds every envelope admitted since the last checkpoint, and `BigtableStagedWriter.write` fails the run when the retained work reaches its configured capacity, because the writer applies no backpressure and the harness source has no rate limiter.
-Retained work is the payload size times the admission rate times the checkpoint interval, so at the same rate and interval the 64 KiB half of the matrix exhausts the same capacity sixty-four times sooner than the 1 KiB half.
+The behaviour belongs to the mode; the threshold does not.
+`stagedBytes` was 192 MiB per subtask, three times the production default of 64 MiB, and it was the largest value the parallelism-16 cells admitted inside a 10 GiB heap, as the calibration above records, so the binding constraint behind the number is heap.
+Retained work is the payload size times the admission rate times the checkpoint interval, so at the same rate and interval the 64 KiB half of the matrix exhausts the same capacity sixty-four times sooner than the 1 KiB half: with the 256 accounting bytes each entry is charged, 192 MiB holds at most about 157,000 envelopes of 1 KiB but about 3,060 of 64 KiB, and fewer once row keys and markers are counted.
 The counts follow that: 129 of the 162 staged runs attempted at 64 KiB were censored this way, against 27 of 162 at 1 KiB.
 
 The second cause is checkpoint expiry, concentrated in the 1 KiB half where capacity lasts long enough for a checkpoint to be attempted over a large retained set.
@@ -146,6 +153,53 @@ The [2026-09-07 lease](0163-bigtable-stage2-experiment-harness.md) saw this symp
 
 Censoring and failure are distinct and this record keeps them apart.
 A censored run is one the protocol's own per-run ceiling stopped, and it is not by itself evidence that the mode cannot run that workload; what it does show is that the staged arm reaches those ceilings where the bulk arm, under the same ceilings, never does.
+
+## What limits the drain
+
+The matrix's in-flight dimension is the committer's concurrency.
+For a staged run the harness builds the production sink with `BigtableRequestOptions.maxInFlightRequests` set to the cell's in-flight value, so every staged cell committed with 1, 4 or 16 conditional writes in flight.
+The production default is 100, and no cell measured it.
+
+The campaign recorded each committer's drain.
+Dividing a run's largest commit batch by its longest commit batch time bounds that committer's drain rate from above, and dividing the committer's concurrency by that rate gives the time each conditional write held its slot:
+
+| Keys | Commit concurrency | Runs | Median drain per committer | Time per write |
+| --- | ---: | ---: | ---: | ---: |
+| Distinct rows | 1 | 16 | 144/s | 6.9 ms |
+| Distinct rows | 4 | 16 | 397/s | 10.1 ms |
+| Distinct rows | 16 | 22 | 596/s | 26.9 ms |
+| Hot | 1 | 6 | 90/s | 11.1 ms |
+| Hot | 4 | 7 | 229/s | 17.4 ms |
+| Hot | 16 | 13 | 605/s | 26.5 ms |
+
+At a concurrency of one the committer issued one conditional write every 6.9 ms, which is about what a single round trip within the zone costs and leaves little room for work added around it; the in-zone round trip itself was not measured.
+The committer therefore drained as fast as its configured concurrency allowed, and the drain rate follows the concurrency: it rose with each step, while the time per write also rose, from 7 to 27 ms between one and sixteen, a growth this record does not attribute.
+A hot cell sends nine inputs in ten to one row, which is why its time per write starts higher.
+
+A probe on 2026-09-23 measured what the service accepts at the committer's request shape.
+Each request was a `CheckAndMutateRow` whose predicate looks for the envelope's marker qualifier in the marker family and, when it is absent, writes a 1 KiB cell and the marker.
+It ran against a separately created one-node Enterprise instance in `us-central1-b`, from a workstation about 150 ms away, with concurrency bounded by a semaphore:
+
+| Keys | Concurrency | Rate | p50 | p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Distinct rows | 1 | 4/s | 152 ms | 735 ms |
+| Distinct rows | 100 | 650/s | 150 ms | 159 ms |
+| Distinct rows | 400 | 2,506/s | 150 ms | 167 ms |
+| Distinct rows | 1,000 | 5,553/s | 154 ms | 258 ms |
+| One row | 100 | 652/s | 150 ms | 158 ms |
+| One row | 400 | 2,199/s | 175 ms | 208 ms |
+| One row | 1,000 | 2,073/s | 458 ms | 507 ms |
+
+On distinct rows the rate grew with concurrency while the median latency stayed at the round trip, so one node was not saturated at 5,553 conditional writes per second and its ceiling lies above that.
+On a single row the rate stopped growing between concurrencies of 400 and 1,000, near 2,100 per second, while the median latency tripled.
+That is consistent with the service serialising conditional writes to one row, but the probe establishes only the plateau it observed on one one-node instance, not the mechanism or a ceiling for other instance sizes or request shapes.
+
+Read together, the drain the campaign measured is the drain of a committer run at a low concurrency, not a limit of the connector or of Bigtable.
+At its default concurrency of 100 and the 7 to 27 ms per write measured here, a committer would offer several thousand conditional writes per second, so on distinct rows its drain would be expected to reach what the service accepts rather than stop at what the campaign saw.
+That expectation is not a measurement, and [#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464) measures the staged visibility at the default concurrency before the mode is released.
+On a hot key the probe's single-row rate rose with concurrency from 652 per second at 100 to 2,199 at 400, then stopped growing near 2,100 per second between 400 and 1,000.
+Raising a committer's concurrency therefore helps a hot key until the row reaches that plateau and not beyond it; where a committer in the same zone reaches it is not measured, because the probe's rate at a concurrency of 100 was held down by its 150 ms round trip.
+Neither result is explained by the absence of a batched conditional write.
 
 ## The sustained hot-row observation
 
@@ -201,8 +255,10 @@ The three repetitions bound the variation within a cell and nothing here bounds 
 The margin against the latency criterion is two orders of magnitude, which is why the verdict does not wait for a second campaign.
 
 The mode's implementation is unaffected by this verdict and its correctness acceptance stands, recorded under [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) on 2026-09-14.
-What the verdict withholds is release and support: user-facing documentation continues to describe `EXACTLY_ONCE` on this connector as experimental and not supported, now with a measured reason rather than a pending assessment.
-Whether the mode stays in the tree as experimental or is withdrawn is a separate decision and needs its own record.
+What the verdict withholds is a supported-workload claim.
+[ADR-0166](../0166-bigtable-implementation-precedes-final-stage2-acceptance.md) retains the mode as experimental.
+The drain analysis above shows that most of the visibility cost the verdict rests on is the commit drain rather than the checkpoint wait, and that the matrix ran every staged cell at a commit concurrency of 1, 4 or 16 against a production default of 100; the visibility figures here describe those concurrencies.
+[#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464) measures the default before release, after which the distinct-row visibility figures in this record are superseded by its measurement.
 
 ## Cost and resources
 

@@ -88,20 +88,6 @@ class Stage2HarnessTest {
     }
 
     @Test
-    void monitoringCollisionDoesNotConsumeAnotherReadReservation() throws Exception {
-        Stage2Lease lease = Stage2Lease.plan(directory.resolve("lease.properties"));
-        assertThatThrownBy(lease::startedAt).hasMessageContaining("never started creation");
-        Path output = directory.resolve("monitoring.jsonl");
-        try (var writer = Stage2Monitoring.openCapture(lease, output, 1)) {
-            writer.write("first capture");
-        }
-        assertThatThrownBy(() -> Stage2Monitoring.openCapture(lease, output, 1))
-                .isInstanceOf(java.nio.file.FileAlreadyExistsException.class);
-        lease.reserveRead((1L << 30) - 1);
-        assertThat(java.nio.file.Files.readString(output)).isEqualTo("first capture");
-    }
-
-    @Test
     void workerCleanupPreservesReusedPidAndEscalatesOnlyTheOriginalWorker() throws Exception {
         FakeWorker other = new FakeWorker("replacement", false);
         Stage2Lease.stopWorker("original", other);

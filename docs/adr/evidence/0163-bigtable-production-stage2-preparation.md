@@ -21,6 +21,10 @@ The [formal protocol](0163-bigtable-staged-performance-protocol.md) retains all 
 This preparation records no service performance verdict and does not close the assessment.
 Production recovery acceptance through both API entry points and both Flink lines was recorded under [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) on 2026-09-14.
 
+> The campaign this record prepared has run, and the sequencing machinery described below was removed on 2026-09-22 with the retention decision in [ADR-0166](../0166-bigtable-implementation-precedes-final-stage2-acceptance.md).
+> The commands and classes named here no longer exist, so this stands as the account of how the campaign was prepared rather than as instructions to run.
+> The measurement instrument it describes — the harness, the production sink and the run inventory — is retained.
+
 ## Production instrumentation
 
 The staged jobs constructed from `Stage2Harness` now use `Stage2ProductionSink`, which delegates writer creation, committer creation, checkpoint serialization and pre-commit topology validation to the production `BigtableStagedSink` selected by the builder.

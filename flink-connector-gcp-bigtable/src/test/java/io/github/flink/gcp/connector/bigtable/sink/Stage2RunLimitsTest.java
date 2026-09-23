@@ -65,9 +65,6 @@ class Stage2RunLimitsTest {
         }
         assertThatThrownBy(() -> Stage2RunLimits.historical(2_000_000))
                 .hasMessageContaining("Historical calibration inventory exceeds its limit");
-        var run = Stage2AssessmentPlan.run("b65536-hot-p16-i16-c60-r3-staged");
-        assertThat(run.cell.warmupSeconds()).isEqualTo(60);
-        assertThat(run.cell.measurementSeconds()).isEqualTo(180);
         Files.writeString(file, "measurementSeconds=1\n", java.nio.file.StandardOpenOption.APPEND);
         assertThatThrownBy(() -> Stage2RunLimits.read(file)).hasMessageContaining("exactly");
     }
@@ -81,33 +78,5 @@ class Stage2RunLimitsTest {
                 .isInstanceOf(ArithmeticException.class);
         assertThatThrownBy(() -> new Stage2RunLimits(10, 640, 0, 1000, 10000, 1000, 1000))
                 .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void unknownCellAndMissingLimitsCannotStartCalibration() throws Exception {
-        Path work = directory.resolve("work");
-        assertThatThrownBy(
-                        () ->
-                                BigtableStage2Probe.main(
-                                        new String[] {
-                                            "local-formal",
-                                            work.toString(),
-                                            "b1024-even-p2-i1-c1-r1-bulk",
-                                            "missing"
-                                        }))
-                .hasMessageContaining("Not a formal Stage 2 table");
-        Path limits = directory.resolve("empty.properties");
-        Files.writeString(limits, "");
-        assertThatThrownBy(
-                        () ->
-                                BigtableStage2Probe.main(
-                                        new String[] {
-                                            "local-formal",
-                                            work.toString(),
-                                            "b1024-even-p1-i1-c1-r1-bulk",
-                                            limits.toString()
-                                        }))
-                .hasMessageContaining("exactly");
-        assertThat(work).doesNotExist();
     }
 }

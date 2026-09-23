@@ -51,7 +51,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Read ADR-0163, ADR-0166 and the local sizing evidence before changing staged writes.
   ADR-0166 permits implementation before final evaluation; #1319 recorded production service
   correctness acceptance on 2026-09-14, and #1327's Stage 2 campaign declined the performance gate
-  on 2026-09-21, so the mode stays experimental and unsupported. Read `docs/adr/evidence/0163-bigtable-stage2-assessment.md`
+  on 2026-09-21 on visibility latency. ADR-0166 then retained the mode as experimental development
+  functionality: no supported workload is claimed, and the campaign machinery that produced the
+  verdict was removed. Read `docs/adr/evidence/0163-bigtable-stage2-assessment.md`
   before proposing any change that assumes the mode can be released.
 - Stage immutable per-envelope identities in Flink committer state, never a row-wide checkpoint
   high-water mark. Preserve all earlier envelope markers on each row and reject whole-row deletes
