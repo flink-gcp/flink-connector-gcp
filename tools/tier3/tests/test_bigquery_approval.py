@@ -380,21 +380,85 @@ def test_real_environment_and_handoff_complete_owned_cleanup(prepared, stored):
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
 
 
-def test_unimplemented_execution_refuses_before_mutation(prepared, tmp_path):
+def test_an_actor_without_its_authenticated_handoff_refuses_before_mutation(
+    prepared,
+):
+    """Enabled, but only through the actor factories: a bare actor still refuses."""
     environment, application, *_ = prepared
     before = copy.deepcopy(environment.store.data)
-    with pytest.raises(Failure, match="admission is not implemented"):
+    with pytest.raises(Failure, match="requires its authenticated handoff"):
         Runner(environment).start({}, {}, application)
-    with pytest.raises(Failure, match="supervision is not implemented"):
+    with pytest.raises(Failure, match="requires its authenticated exercise"):
         Supervisor(environment).supervise("unused")
     assert environment.kube.calls == []
     assert environment.store.data == before
+
+
+def mount(directory, environment, application, upgrade, **approval_changes):
     approval = environment.approval.to_dict()
     approval["runtime_sha256"] = source_digest()
     approval["delivery_sha256"] = delivery_digest()
-    (tmp_path / "approval.json").write_text(json.dumps(approval))
-    (tmp_path / "application.json").write_text(json.dumps(application))
-    with pytest.raises(Failure, match="supervision is not implemented"):
+    approval.update(approval_changes)
+    (directory / "approval.json").write_text(json.dumps(approval))
+    (directory / "application.json").write_text(json.dumps(application))
+    if upgrade is not None:
+        (directory / "upgrade-application.json").write_text(json.dumps(upgrade))
+
+
+def test_a_valid_bigquery_delivery_is_admitted_by_the_entrypoint(prepared, tmp_path):
+    """The positive case the refusal tests could not show.
+
+    A BigQuery application carries its own arguments, and the generic recovery
+    check refused every one; this delivery is exactly what dispatch renders.
+    """
+    environment, application, upgrade, _ = prepared
+    mount(tmp_path, environment, application, upgrade)
+    _, approved, mounted_application, mounted_upgrade, cells = runtime.verify_delivery(
+        tmp_path
+    )
+    assert approved.scenario == "bigquery-recovery"
+    assert mounted_application == application
+    assert mounted_upgrade == upgrade
+    assert cells is None
+    # Off-cluster, the next thing it does is read its service account: the
+    # delivery is not what stops it.
+    with pytest.raises(FileNotFoundError, match="serviceaccount"):
+        runtime.supervisor_main(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "case, match",
+    [
+        ("missing-upgrade", "missing upgrade-application.json"),
+        ("changed-upgrade", "upgrade differs from approval"),
+        ("changed-application", "application differs from approval"),
+        ("changed-source", "source differs from approval"),
+        ("unknown-scenario", "Unknown approved scenario"),
+    ],
+)
+def test_the_supervisor_entrypoint_refuses_a_delivery_its_approval_does_not_fix(
+    prepared, tmp_path, case, match
+):
+    """The unconditional refusal became a real check, and every arm still refuses.
+
+    Each arm refuses before the entrypoint reads its service account or builds
+    a Kubernetes client, so an off-cluster run of this test is itself the proof
+    that no mutation could have been reached.
+    """
+    environment, application, upgrade, _ = prepared
+    changes = {}
+    if case == "missing-upgrade":
+        upgrade = None
+    elif case == "changed-upgrade":
+        upgrade = dict(upgrade, changed=True)
+    elif case == "changed-application":
+        application = dict(application, changed=True)
+    elif case == "changed-source":
+        changes["delivery_sha256"] = "0" * 64
+    elif case == "unknown-scenario":
+        changes["scenario"] = "bigquery-replay"
+    mount(tmp_path, environment, application, upgrade, **changes)
+    with pytest.raises(Failure, match=match):
         runtime.supervisor_main(tmp_path)
 
 

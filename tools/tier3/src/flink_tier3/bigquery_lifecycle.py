@@ -126,8 +126,12 @@ class BigQueryLifecycle:
 
         return self._state(self.env.records._change(change))
 
-    def initialize(self):
-        """Persist intent before any table or query write; never replace it."""
+    def initialize(self, handoff=None):
+        """Persist intent before any table or query write; never replace it.
+
+        A handoff given here is written with the intent in the same record
+        change, so no stop or crash can leave an intent without it.
+        """
         self._runner()
         self.env.admission_open()
 
@@ -149,6 +153,8 @@ class BigQueryLifecycle:
                 "billed_bytes": 0,
                 "cleaned": False,
             }
+            if handoff is not None:
+                record.bigquery["handoff"] = copy.deepcopy(handoff)
 
         self.env.assert_owner()
         self.env.records._change(initialize)

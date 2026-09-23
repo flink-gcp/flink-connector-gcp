@@ -77,11 +77,15 @@ def test_runner_bundle_and_supervisor_manifests_bind_distinct_authenticated_acto
         other,
         bundle["application"],
         bundle["upgrade_application"],
-        runner_token=TOKEN,
         credentials=Credentials("supervisor"),
     ) as supervisor:
         assert isinstance(supervisor, Supervisor)
-        assert supervisor.bigquery.binding == runner.bigquery.binding
+        # Everything its own approval fixes, and no token yet: the runner has
+        # not written a binding, and the supervisor may learn it only from one.
+        assert supervisor.bigquery.binding == {
+            **runner.bigquery.binding,
+            "runner_token": None,
+        }
         assert supervisor.bigquery.env is other
         assert supervisor.cleanup.quiesce() is True
         assert other.refresh().bigquery is None
@@ -108,12 +112,12 @@ def test_runner_rejects_tampered_bundle_before_authentication(prepared, wire, fi
 
 
 @pytest.mark.parametrize(
-    "change", ["source", "upgrade", "application", "role", "token", "owner"]
+    "change", ["source", "upgrade", "application", "role", "owner"]
 )
 def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, change):
     env, bundle = prepared
     env.actor = "supervisor"
-    app, upgrade, token = bundle["application"], bundle["upgrade_application"], TOKEN
+    app, upgrade = bundle["application"], bundle["upgrade_application"]
     if change == "source":
         env.approval = replace(env.approval, delivery_sha256="0" * 64)
     elif change == "upgrade":
@@ -122,8 +126,6 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
         app["changed"] = True
     elif change == "role":
         env.actor = "runner"
-    elif change == "token":
-        token = "invalid"
     elif change == "owner":
         _, generation = env.store.read(ENVIRONMENT)
         env.store.write(ENVIRONMENT, {"nonce": "replacement"}, generation)
@@ -133,7 +135,6 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
             env,
             app,
             upgrade,
-            runner_token=token,
             credentials=Credentials("supervisor"),
         ),
     ):
@@ -152,7 +153,6 @@ def test_supervisor_cannot_be_constructed_inside_the_cleanup_window(prepared, wi
             env,
             bundle["application"],
             bundle["upgrade_application"],
-            runner_token=TOKEN,
             credentials=Credentials("supervisor"),
         ),
     ):
@@ -176,7 +176,6 @@ def test_supervisor_source_check_is_the_pin_it_can_reproduce(prepared, wire):
         env,
         bundle["application"],
         bundle["upgrade_application"],
-        runner_token=TOKEN,
         credentials=Credentials("supervisor"),
     ) as supervisor:
         assert isinstance(supervisor, Supervisor)

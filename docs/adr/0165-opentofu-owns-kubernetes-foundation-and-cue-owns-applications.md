@@ -884,3 +884,24 @@ Accept that this raises the cost of a forgery rather than closing it: the readin
 Exclude only evidence problems: a run that did not complete exported its account of itself and is inconclusive, not unexported. Check the receipt's `success` in one direction only, because it is a conjunction the runner may refuse for reasons of its own.
 Accept that the recomputation uses the rule set as it stands and cannot tell rule drift from forgery, and read archived evidence with the revision that produced it, rather than pinning a rule version the same forger could edit.
 Declined: passing on a completed recovery alone, which an earlier revision of this ADR already refused for this scenario; and treating the query report as the measurement verdict, which says nothing about whether the run was observed.
+
+### BigQuery production entrypoints
+
+Admit `bigquery-recovery` at the dispatch boundary and build its supervisor in the in-cluster entrypoint, so that a run is reachable through the reviewed workflow rather than only through actors a test constructs.
+This meets the condition the approval-bound delivery section set — the executor now supplies the authenticated actors, the verified bundle and the actor/evidence protocol — and revises the one the authenticated actor construction section set, which kept the entrypoints closed until the remaining contracts were *accepted*: enabling them is not that acceptance and not an execution approval.
+A paid run still needs a reviewed trial file, a republished application image, the environment lock and the typed phrase, and the first run is itself the acceptance evidence.
+It also lifts the exclusion the approval section kept, and the one the internal execution loops kept, while authenticated delivery, query-evidence accounting, recovery scheduling and the external writer fence were outstanding: the delivery and authenticated actor sections supply the first, the evidence partition section the second, the internal execution loops the third and the quiescence barrier the last, and the bare `Runner` and `Supervisor` refusals the approval section added remain.
+
+Mint the runner token in the dispatching process and nowhere else, and construct the supervisor without it.
+The supervisor's Pod starts before the runner writes the binding, and every channel that could deliver the token to it — the approval, the ConfigMap — is one the recovery workflow builds its actors from or reads, so a token there would let that workflow match the binding without meaning to and act as the runner whose release lets cleanup delete tables.
+The token guards against that accidental match, not a deliberate one: the binding is written to the control record, which anything that can read the evidence bucket can read, and the recovery workflow constructs no BigQuery handoff.
+The supervisor binds the fields its own approval fixes and adopts the token from the first binding it reads; `initialize` writes that binding once and refuses a different one, so the first binding is the submitting runner's, and a replacement is refused from then on.
+Write the resource intent and the handoff binding in one record change.
+They were two writes, and a stop or crash between them left an intent that release could not clear and cleanup would not delete, holding the environment lock until incident recovery; an intent without a binding now arises only from a bare controller, the runner refuses to adopt one, and it still requires that recovery.
+Declined: reusing the approval's `nonce` as the token, because the recovery workflow constructs its runner from that approval and would hold a matching binding without trying; and delivering a dedicated token through the ConfigMap, which fixes it earlier but publishes it to the cluster and changes the delivery contract for a check the adoption already makes.
+
+Start the window at admission, on the whole second, and treat the typed expiry as the latest the run may end: dispatch admits an expiry 90 to 100 minutes after admission.
+Declined: deriving the start from the typed expiry, which the approval's exact 90 minutes and the bundle's start both allow, because the queueing it would absorb comes out of the 600-second startup budget every deadline counts from.
+Bind the approval phrase to the trial file's own cost rather than the scenario's maximum, so the operator types the number that will bind the run.
+Give the workflow job a 120-minute timeout for this scenario: the 90-minute window's serial budget is 114 minutes, and the 85 minutes it would otherwise have fallen into would kill the job mid-trial; a test holds the budget against the timeout.
+Keep the bare `Runner` and `Supervisor` refusing without their authenticated handoff, so the only path in is the actor factories.

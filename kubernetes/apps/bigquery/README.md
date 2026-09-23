@@ -89,12 +89,12 @@ The package describes that transition; it does not wait for baseline observation
 
 `just tier3-check` renders both phases for all four mode/destination combinations against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and the phase-only argument change.
 Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
-A later executor must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
+The [production dispatch](#production-dispatch) path must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
 
 ## Offline execution proposal
 
 `flink-tier3 render --scenario bigquery-recovery` combines one trial's proposed limits, initial/upgrade applications and supervisor delivery into a JSON bundle.
-The dispatch CLI and in-cluster supervisor still reject this scenario; the common model accepts only its separate version 4 approval contract described below.
+A proposal is not an approval: dispatch admits this scenario only through the [production dispatch](#production-dispatch) below, under its own version 4 approval contract.
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
@@ -139,7 +139,7 @@ The initial and upgrade manifests use the same input identity, and the only upgr
 The proposal embeds the `ResourcePlan`, application/upgrade/supervisor hashes and installed runtime-source hash.
 The ConfigMap carries that same proposal as `proposal.json`, separately from the empty approval document.
 The declared revision is a requested source identity: the renderer does not prove checkout cleanliness, GitHub main ancestry, image publication/provenance, registry retention or a live namespace/Operator baseline.
-Those checks and final approval belong to the future admission path.
+Those checks and final approval belong to [production dispatch](#production-dispatch).
 
 The planning estimate charges all five running Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
 It does not separately price occupancy of the shared policy's extra Operator replacement slot.
@@ -287,14 +287,14 @@ Rows contain no mode field, so this check cannot discover that mistake; the exec
 
 The [resource adapter](#resource-adapter) supplies table ownership/schema checks and binds a completed query job's SQL and all result pages to a trial.
 The internal resource controller persists intent, query slots and query evidence as described below.
-The later executor must supply the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
+The executor must supply the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
 The local tests execute the generated SQL unchanged on synthetic SQLite tables to exercise row, NULL, empty-table and duplicate semantics.
 Their SQLite build must provide the `MOD` math function.
 That coverage does not establish BigQuery query acceptance or streaming visibility; an authorized service run remains an acceptance gate.
 
 ### Resource adapter
 
-[`flink_tier3.bigquery_resources`](../../../tools/tier3/src/flink_tier3/bigquery_resources.py) provides internal REST v2 table and query operations for the future executor.
+[`flink_tier3.bigquery_resources`](../../../tools/tier3/src/flink_tier3/bigquery_resources.py) provides internal REST v2 table and query operations for the BigQuery actors.
 It has no CLI route and does not extend lifecycle admission.
 Its synthetic HTTP tests cover request construction, lost responses, ownership conflicts, cleanup and result pagination; real-service acceptance remains pending.
 
@@ -380,8 +380,9 @@ They do not establish authenticated handoff, a functioning external barrier or r
 
 [`flink_tier3.bigquery_handoff`](../../../tools/tier3/src/flink_tier3/bigquery_handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
 The common runner settlement and supervisor cleanup paths accept this protocol through explicit constructor arguments.
-The common model validates BigQuery approval inputs, but the CLI still rejects execution and does not construct these actor bindings.
+The common model validates BigQuery approval inputs, and the [production dispatch](#production-dispatch) constructs these actor bindings through the authenticated actor factories.
 The caller must authenticate both actors, allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
+The supervisor is bound without it: its Pod starts before the runner writes the binding, so it binds the fields its own approval fixes and adopts the token from the first binding it reads, refusing a replacement thereafter.
 The token binds records; it is not an authentication credential or a lease that another process may take over.
 After initializing this protocol on an empty resource intent, all runner provisioning and query calls must use it rather than the resource controller directly.
 
@@ -459,8 +460,8 @@ It does not prove that no append is still in flight server-side, and it does not
 The measurement does not rest on this barrier. The query oracle reads only after the job reached `FINISHED` and its post-recovery window closed, which is where a settled read is established. What rests on the barrier is that cleanup does not delete a table while a Pod that could write to it is still alive, and the window between the barrier returning `true` and `tables.delete` completing remains outside what this component guarantees.
 If release, the barrier or query termination does not complete, cleanup retains the control record and environment lock and does not scale down the Operator or claim idle.
 A runner without a cleanup-capable supervisor can remove the workload but cannot impersonate the supervisor to finish BigQuery cleanup.
-An intent left between the two initialization writes, without a handoff binding, remains blocked after stop; common cleanup cannot invent proof of runner release.
-Such partial initialization, standalone controller state without this binding, and unresolved creating calls require externally reviewed incident recovery rather than automatic adoption by a replacement process.
+The runner writes its resource intent and handoff binding in one record change, so initialization cannot leave an intent without a binding.
+An intent without one, which only a bare controller writes, is never adopted: the runner's initialization refuses it and common cleanup cannot invent proof of runner release, so such state and unresolved creating calls require externally reviewed incident recovery rather than automatic adoption by a replacement process.
 
 Recorded BigQuery state also gates Operator shutdown, the `CLEANED` transition, settlement, idle verification and finalization, even when no handoff is attached.
 The final receipt retains the complete BigQuery control snapshot, including table receipts and query evidence pointers.
@@ -474,10 +475,10 @@ The fixed dataset and namespace grants already exist, but checkpoint/savepoint r
 
 ### Approval and shared resource policy
 
-The common model accepts a version 4 `bigquery-recovery` approval for internal integration and cleanup tests.
+The common model accepts a version 4 `bigquery-recovery` approval, which [production dispatch](#production-dispatch) builds and the internal integration and cleanup tests construct directly.
 It binds `bigquery_trial` to the same exact input schema as the offline trial file, including mode, destination count, repetition, query slots, per-query limits and proposed cost.
 The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
-A valid document is not authenticated execution permission: the dispatch CLI still excludes this scenario and the in-cluster entrypoint rejects it.
+A valid document is not authenticated execution permission on its own: dispatch still requires the typed phrase, the environment lock and a verified bundle, and the in-cluster entrypoint builds its supervisor only through the authenticated actor factory.
 Internal runner admission requires an explicit environment-bound handoff; internal supervision additionally requires the approved upgrade and a quiescence callback.
 
 The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, at most six Pods and no PVCs.
@@ -517,7 +518,7 @@ Repository checks ignore ambient `GIT_*` overrides and bound each Git invocation
 The installed package runtime hash, both application hashes and the supervisor image must also match the approval.
 It embeds the approval in the immutable ConfigMap and reduces the supervisor Job's relative deadline to the time remaining at the specified preparation instant.
 All other rendered delivery fields are retained, and the complete ConfigMap data must fit Kubernetes' 1 MiB limit.
-The original proposal stays visibly unapproved; the enclosing bundle reports `admission_enabled: false`.
+The original proposal stays visibly unapproved; the enclosing bundle reports `admission_enabled: false`, because the bundle alone authorizes nothing — dispatch admits it only under the typed phrase and the environment lock.
 
 Run from the repository root with the managed CUE and Python tools:
 
@@ -540,13 +541,39 @@ The commands perform local generation and comparison, including CUE's pinned pub
 A matching file does not authenticate its approval or authorize execution.
 The future executor must independently authenticate the approval, verify GitHub main ancestry and image publication/provenance/retention, prove current lock/namespace ownership, prepare for the actual admission time, and enforce absolute deadlines, actor fencing and aggregate evidence budgets.
 A previously prepared relative Job deadline is not permission to start that Job later.
-The dispatch and supervisor entrypoints remain disabled for BigQuery.
+The [production dispatch](#production-dispatch) is that executor, for the checks it can make; image publication and retention remain a live check at dispatch.
+
+## Production dispatch
+
+The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with four inputs beyond the common ones.
+
+| Input | Contract |
+| --- | --- |
+| `trial` | A reviewed trial file name under `kubernetes/lifecycle/trials`, without `.json`; it uses the same schema as the offline proposal |
+| `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
+| `expires_at` | 90 to 100 minutes ahead; the latest the run may end |
+| `approval` | `APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD <cost>`, where `<cost>` is the trial file's own `additional_cost_usd` rather than the scenario maximum |
+
+The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget.
+The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
+The approval model also requires the start within 30 days of both pricing reviews, the environment's `pricing_reviewed` in `policy.toml` and the trial's `bigquery_plan.REVIEWED_AT`.
+
+The checks that need neither the cluster nor the lock run first: the trial and digest, the phrase, the exact main commit, the run ID, an existing run's evidence and the window.
+Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the version 4 approval and prepares the bundle with the approval embedded, so a bundle refusal also arrives before the lock.
+It then acquires the environment lock, checks the foundation again, writes the run documents and runs the authenticated runner inside its session, minting the runner token in this process.
+If the authenticated session cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.
+
+The in-cluster entrypoint verifies the mounted approval, application and upgrade against their pins, refusing a missing document by name, then builds the authenticated supervisor with its quiescence barrier and exercise and holds that session open for the whole supervision.
+It is constructed without the runner token and adopts it from the binding, as [Query requests and runner release](#query-requests-and-runner-release) describes.
+
+The workflow job runs for up to 120 minutes for this scenario, because the 90-minute window's serial budget is 114 minutes.
+No trial file is reviewed yet, and the published application image predates the appender observations; enabling the scenario does not approve a run.
 
 ## Internal recovery execution
 
 The common `Runner.start()` and `Supervisor.supervise()` paths now support an explicitly attached BigQuery handoff.
 They are internal integration points: the caller must verify the approval-bound bundle, authenticate each actor, retain exclusive environment ownership and provide the external writer/creator quiescence barrier and appropriate HTTP operation deadlines.
-The production dispatch and in-cluster CLI entrypoints still reject BigQuery; passing these tests does not enable a paid run.
+The production dispatch and in-cluster entrypoints reach these paths only through the actor factories, and a bare `Runner` or `Supervisor` without its handoff still refuses; passing these tests does not approve a paid run.
 A replacement runner must not reconstruct the submitting process's token.
 
 Admission validates the handoff's environment, approved resource plan, query-evidence allocation and absolute query deadline before any mutation.
@@ -619,9 +646,10 @@ Both validate the approval, current environment lock and actor role before Googl
 Each checks the source pin it can reproduce: the runner compares `runtime_sha256` against its complete installation, and the supervisor compares `delivery_sha256` against the mounted subset it actually runs, which is all it has.
 The runner also checks admission before and after authentication, including its 600-second startup limit.
 The handoff uses the approved resource plan, cleanup start as the query deadline and the fixed 10 MiB query-evidence budget.
-The caller supplies the original process token and keeps the context open through admission and settlement, or supervision and cleanup.
+The runner's caller supplies the original process token; the supervisor takes none and adopts it from the binding the runner writes.
+Each caller keeps its context open through admission and settlement, or supervision and cleanup.
 Because both factories validate the approval against the current clock, neither actor can be constructed once admission closes at the cleanup start, so the cleanup window runs inside a context opened before it.
-Replacing a supervisor inside that window is therefore not a recovery path; whether to make it one belongs to the entrypoint work, not to construction.
+Replacing a supervisor inside that window is therefore not a recovery path, and the production entrypoints do not make it one.
 Exiting closes the HTTP session; it does not acknowledge runner release or initiate cleanup automatically.
 
 [`BigQuerySession`](../../../tools/tier3/src/flink_tier3/bigquery_auth.py) uses `google-auth` application default credentials, requesting `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials with suitable scopes.
@@ -645,4 +673,4 @@ The factories do not authenticate the supplied Kubernetes/storage collaborators 
 The supervisor still requires an explicit external quiescence callback; constructing a session does not prove that callback works.
 Synthetic tests exercise the pinned Google auth request adapter, token refresh and rotation, identity refusal, shared time budgets, approval binding and lock loss.
 Acceptance of the deployed WIF/GKE credentials by userinfo remains unmeasured, as do live IAM access, fencing and full recovery/cleanup.
-Both production entrypoints remain disabled, and the overall BigQuery receipt still cannot report success.
+The overall BigQuery receipt reports success only for the [deployed verdict](#deployed-verdict)'s `usable`.

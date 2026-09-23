@@ -17,8 +17,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import copy
 import functools
 import json
+import math
 import os
 import signal
 import time
@@ -27,20 +30,121 @@ from pathlib import Path
 
 import flink_tier3 as rt
 
-from . import bootstrap
+from . import bigquery_actors, bigquery_bundle, bigquery_plan, bootstrap
 from . import runner as runner_api
 from . import workflow as wf
 from .cloudtasks import QUEUE_POLL_MASK, Ledger, Queues, load_session
 from .exercise import validate_manifests
 from .model import queue_name, session_plan
-from .policy import CLOUDTASKS_CEILINGS, DIGEST, FLINK_LINES, RECOVERY
+from .policy import (
+    BIGQUERY,
+    BIGQUERY_CEILINGS,
+    CLOUDTASKS_CEILINGS,
+    DIGEST,
+    FLINK_LINES,
+    RECOVERY,
+)
 
 ROOT = Path.cwd()
 APPROVAL = "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, USD 1"
 CLOUDTASKS_APPROVAL = (
     "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, USD 10, 0 DISPATCHES"
 )
-SCENARIOS = ("smoke", "generic-recovery", "cloudtasks")
+SCENARIOS = ("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery")
+# How far the operator's typed expiry may lie beyond the run's own end. The
+# window starts at admission, so queueing before dispatch costs the run none of
+# its startup budget; the typed expiry is the latest the run may end, and it
+# must not overstate that by more than this.
+BIGQUERY_EXPIRY_SLACK_SECONDS = 600
+
+
+def bigquery_phrase(trial):
+    """The phrase that approves this trial, including the cost it may spend.
+
+    The cost is the trial's own ceiling rather than the scenario's maximum, so
+    the operator types the number that will bind the run.
+    """
+    return (
+        f"APPROVE ONE BIGQUERY TRIAL: {BIGQUERY_CEILINGS['pods']} PODS, "
+        f"{BIGQUERY_CEILINGS['seconds'] // 60} MINUTES, "
+        f"USD {trial['additional_cost_usd']}"
+    )
+
+
+def trial_inputs(args):
+    """Resolve the reviewed trial file and the live application digest."""
+    if not rt.RUN_ID.fullmatch(args.trial or ""):
+        raise rt.Failure("BigQuery trials need a reviewed --trial name")
+    if not DIGEST.fullmatch(args.application_digest or ""):
+        raise rt.Failure("BigQuery trials need a sha256 --application-digest")
+    trial = bigquery_plan.load_trial(
+        ROOT / "kubernetes/lifecycle/trials" / (args.trial + ".json")
+    )
+    return trial, rt.GAR + "bigquery-recovery@" + args.application_digest
+
+
+def bigquery_window(now, expires_at):
+    """The approved window: it starts at admission and ends by the typed expiry.
+
+    The approval requires exactly 90 minutes on whole seconds, and a bundle
+    cannot be prepared before its start. Starting the window at admission
+    rather than deriving it from the expiry keeps dispatch queueing out of the
+    600-second startup budget that every deadline counts from.
+    """
+    started = int(now)
+    end = started + BIGQUERY_CEILINGS["seconds"]
+    if not end <= rt.timestamp(expires_at) <= end + BIGQUERY_EXPIRY_SLACK_SECONDS:
+        raise rt.Failure(
+            "BigQuery expiry must be 90 to 100 minutes after dispatch; the run "
+            "ends 90 minutes after admission, never later than the expiry"
+        )
+    return started, end
+
+
+def bigquery_approval(
+    *,
+    run_id,
+    nonce,
+    sha,
+    trial,
+    proposal,
+    namespaces,
+    operator_uid,
+    baseline,
+    images,
+    owner,
+    actor,
+):
+    """Assemble the version 4 approval from a rendered, verified proposal.
+
+    Every digest comes from the proposal, which rendered and checked the
+    manifests itself; nothing here renders or hashes a second time.
+    """
+    return {
+        "version": 4,
+        "scenario": "bigquery-recovery",
+        "run_id": run_id,
+        "nonce": nonce,
+        "sha": sha,
+        "started_at": proposal["started_at"],
+        "expires_at": proposal["expires_at"],
+        "cleanup_at": proposal["cleanup_at"],
+        "ceilings": {
+            **BIGQUERY_CEILINGS,
+            "additional_cost_usd": trial["additional_cost_usd"],
+        },
+        "bigquery_trial": copy.deepcopy(trial),
+        "namespaces": namespaces,
+        "operator_uid": operator_uid,
+        "baseline_uids": baseline,
+        "images": images,
+        "lock_owner": owner,
+        "runtime_sha256": proposal["runtime_sha256"],
+        "delivery_sha256": proposal["delivery_sha256"],
+        "application_sha256": proposal["application_sha256"],
+        "upgrade_application_sha256": proposal["upgrade_application_sha256"],
+        "actor": actor,
+    }
 
 
 def runner_for(approval, kube, store, queues=None, ledger=None):
@@ -70,13 +174,10 @@ def session_inputs(args):
     return session, args.flink_version, image
 
 
-def start(args, store):
-    scenario = getattr(args, "scenario", "smoke")
-    if scenario not in SCENARIOS:
-        raise rt.Failure("Unknown smoke scenario")
-    cloudtasks = scenario == "cloudtasks"
+def refuse_before_admission(args, store, phrase):
+    """What every dispatch refuses before it touches the cluster or the lock."""
     if (
-        args.approve != (CLOUDTASKS_APPROVAL if cloudtasks else APPROVAL)
+        args.approve != phrase
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
         or args.sha != os.environ.get("GITHUB_SHA")
     ):
@@ -87,6 +188,132 @@ def start(args, store):
         raise rt.Failure("Invalid run ID")
     if store.objects(f"runs/{args.run_id}/"):
         raise rt.Failure("Run ID already has immutable evidence; choose a new ID")
+
+
+def start_bigquery(args, store):
+    """Dispatch one approved BigQuery recovery trial.
+
+    Everything that can refuse without the lock does so first, including the
+    bundle's revision check, rendering and ConfigMap size. The runner's token is
+    minted here and lives only in this process and in the binding it writes;
+    the supervisor adopts it from that binding.
+    """
+    trial, application_image = trial_inputs(args)
+    refuse_before_admission(args, store, bigquery_phrase(trial))
+    started, end = bigquery_window(time.time(), args.expires_at)
+    nonce = uuid.uuid4().hex
+    owner = wf.execution("run", nonce) | {"run_id": args.run_id}
+    kube = wf.external(args.kubeconfig, idle=True)
+    bootstrap.Cluster(args.kubeconfig).can_i(
+        True, "create", "flink.apache.org", "flinkdeployments", BIGQUERY
+    )
+    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, BIGQUERY)
+    rendered = bigquery_plan.prepare(
+        run_id=args.run_id,
+        nonce=nonce,
+        started_at=rt.utc(started),
+        expires_at=rt.utc(end),
+        active_seconds=bigquery_plan.ACTIVE_SECONDS,
+        revision=args.sha,
+        application_image=application_image,
+        trial=trial,
+    )
+    proposal = rendered["proposal"]
+    images = {
+        "operator": operator_image,
+        "supervisor": proposal["images"]["supervisor"],
+        "application": application_image,
+    }
+    receipts = wf.image_receipts(
+        rt.authorized_session(rt.GoogleToken()), images, proposal["expires_at"]
+    )
+    approval = bigquery_approval(
+        run_id=args.run_id,
+        nonce=nonce,
+        sha=args.sha,
+        trial=trial,
+        proposal=proposal,
+        namespaces=namespaces,
+        operator_uid=operator_uid,
+        baseline=baseline,
+        images=images,
+        owner=owner,
+        actor=os.environ["GITHUB_ACTOR"],
+    )
+    rt.validate_approval(approval, time.time())
+    # Prepared before the lock so its revision check, render and ConfigMap
+    # size refuse without holding anything. Its Job deadline is taken now; the
+    # seconds the lock and the documents take extend it by that much, as the
+    # authentication and re-render inside the runner factory already did.
+    bundle = bigquery_bundle.prepare(
+        approval, prepared_at=rt.utc(math.ceil(time.time()))
+    )
+    wf.save(args.directory / "owner.json", owner)
+    rt.EnvironmentLock(store).acquire(owner)
+    # Recheck idle after acquiring exclusivity; the earlier snapshot cannot
+    # authorize a change that raced an infrastructure apply.
+    if wf.snapshot(kube, BIGQUERY) != (
+        namespaces,
+        operator_uid,
+        operator_image,
+        baseline,
+    ):
+        raise rt.Failure("Foundation changed while acquiring the environment lock")
+    wf.save(args.directory / "approval.json", approval)
+    artifact = functools.partial(
+        rt.write_artifact, store, args.run_id, scenario="bigquery-recovery"
+    )
+    artifact("approval.json", approval)
+    artifact("application.json", rendered["application"])
+    artifact("images.json", receipts)
+    artifact("upgrade-application.json", rendered["upgrade_application"])
+    store.write(
+        f"_control/runs/{args.run_id}.json",
+        {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},
+    )
+    env = rt.Environment(kube, store, approval, actor="runner")
+    with contextlib.ExitStack() as session:
+        try:
+            runner = session.enter_context(
+                bigquery_actors.runner(env, bundle, runner_token=uuid.uuid4().hex)
+            )
+        except BaseException:
+            # Nothing is admitted and no BigQuery state exists yet, so a plain
+            # runner can settle what the lock and the documents hold.
+            try:
+                runner_for(approval, kube, store).settle(request_stop=True)
+            finally:
+                idle_output()
+            raise
+
+        def stop(_number, _frame):
+            runner.env.stopping = True
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        failed = True
+        try:
+            runner.start(
+                bundle["delivery"]["config"],
+                bundle["delivery"]["supervisor"],
+                bundle["application"],
+            )
+            failed = False
+        finally:
+            runner.settle(request_stop=failed)
+            idle_output()
+
+
+def start(args, store):
+    scenario = getattr(args, "scenario", "smoke")
+    if scenario not in SCENARIOS:
+        raise rt.Failure("Unknown smoke scenario")
+    if scenario == "bigquery-recovery":
+        return start_bigquery(args, store)
+    cloudtasks = scenario == "cloudtasks"
+    refuse_before_admission(
+        args, store, CLOUDTASKS_APPROVAL if cloudtasks else APPROVAL
+    )
     now = time.time()
     end = rt.timestamp(args.expires_at)
     session = line = application_image = None
@@ -448,6 +675,7 @@ def main(argv=None):
     run.add_argument("--session")
     run.add_argument("--flink-version", choices=tuple(FLINK_LINES))
     run.add_argument("--application-digest")
+    run.add_argument("--trial")
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)
     sub.add_parser("plans")
