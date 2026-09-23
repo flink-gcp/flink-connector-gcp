@@ -60,6 +60,16 @@ from .common import Failure, digest, json_bytes, utc
 from .policy import CELL_ID, RUN_ID
 
 #: A claim whose owner has not written a heartbeat for this long is expired.
+#:
+#: The controller in ``vmcampaign`` heartbeats from the loop that waits on the
+#: forked run and after each signal's grace while it stops one, so between
+#: heartbeats it waits at most one of those periods — 30, 10 or 20 seconds —
+#: plus a journal write. Before the fork, its ``prepare`` hook is handed the
+#: heartbeat to call; after the run, recording the outcome is local disk work,
+#: and ``settle`` runs once the claim is released. This is five times the
+#: longest wait, so a slow fsync or a loaded host does not expire a claim
+#: whose owner is working. What it still catches is an owner that is alive
+#: but no longer driving the run, which the liveness check cannot see.
 HEARTBEAT_EXPIRY_SECONDS = 300
 
 #: What a run can be. A run leaves ``CLAIMED`` exactly once.
@@ -112,7 +122,7 @@ def _read(path):
         raise Failure(f"Unreadable campaign file {path.name}") from error
 
 
-def plan_campaign(directory, campaign_id, runs, inputs, budgets):
+def plan_campaign(directory, campaign_id, runs, inputs, budgets, predecessor=None):
     """Freezes a campaign's plan and the inputs it was planned against.
 
     ``inputs`` are the frozen inputs — the protocol file's digest, the
@@ -143,6 +153,8 @@ def plan_campaign(directory, campaign_id, runs, inputs, budgets):
         "budgets": _require_budgets(budgets),
         "plan": runs,
     }
+    if predecessor is not None:
+        manifest["predecessor"] = predecessor
     directory.mkdir(parents=True, exist_ok=True)
     # Under the campaign's lock, so two planners cannot both pass the check:
     # the second would otherwise rewrite a state the first had already begun
@@ -347,6 +359,20 @@ class Journal:
             "stopped": state["stopped"],
         }
 
+    def claims(self):
+        """Runs still claimed, by order, with the owner each was claimed by.
+
+        A stopped campaign keeps its lost claim, which is how a controller
+        opening it later finds the run a dead predecessor left running.
+        """
+        return self._locked(
+            lambda state: {
+                int(order): copy.deepcopy(run["owner"])
+                for order, run in _ordered(state)
+                if run["state"] == CLAIMED
+            }
+        )
+
     def claim(self, owner):
         """Hands out the next pending run, or ``None`` when the campaign is done.
 
@@ -448,6 +474,99 @@ class Journal:
         if run["owner"] != owner:
             raise Failure(f"Run {order} is held by another owner")
         return run
+
+
+def plan_successor(journal, directory, campaign_id, budgets=None):
+    """Plans a stopped campaign's unspent runs as a new campaign.
+
+    A stop is permanent, so this is how a campaign continues after one. Only
+    runs still ``PENDING`` carry over: a finished run is recorded, and the run
+    that was claimed when the campaign stopped spent its cell, so planning it
+    again would measure against a queue that already holds its tasks. The
+    successor inherits the frozen inputs and, unless ``budgets`` says
+    otherwise, what is left of the budget, which already charges the lost run
+    its whole reservation. A campaign stopped because its next run no longer
+    fit is continued with a new budget rather than the one it ran out of.
+
+    Open the stopped campaign through ``vmcampaign.Controller`` rather than a
+    bare :class:`Journal`: that is what stops a run its dead controller left
+    running, and a successor must not start beside it.
+
+    Under the stopped campaign's own lock it first records, durably, which
+    successor it is about to plan and where, and only then plans it. A
+    process that dies between the two leaves a campaign that accepts only that
+    same successor again, never a second one elsewhere that would hand the
+    same runs out twice; repeating the call completes it, or returns it when
+    it had already been written, whatever ``budgets`` the repeat names. A
+    refusal that leaves no successor manifest behind clears the mark, so the
+    campaign can be continued another way.
+    """
+    if Path(directory).resolve() == journal.directory.resolve():
+        raise Failure("A successor is planned in a directory of its own")
+    stop = journal.stopped()
+    if stop is None:
+        raise Failure("Only a stopped campaign has a successor; resume this one")
+
+    target = {"campaignId": campaign_id, "directory": str(Path(directory).resolve())}
+
+    def succeed(state):
+        mark = state.get("successor")
+        if mark is not None and mark != target:
+            raise Failure(
+                f"Campaign already continued as {mark['campaignId']} in "
+                f"{mark['directory']}; repeat that call if it did not finish"
+            )
+        if mark is not None and (Path(directory) / MANIFEST).exists():
+            written = _read(Path(directory) / MANIFEST)
+            predecessor = written.get("predecessor", {})
+            if (
+                written.get("campaignId") != campaign_id
+                or predecessor.get("campaignId") != journal.manifest["campaignId"]
+                or predecessor.get("planSha256") != state["planSha256"]
+            ):
+                raise Failure("A different campaign is already planned there")
+            return written
+        pending = [
+            run
+            for run in journal.plan
+            if state["runs"][str(run["order"])]["state"] == PENDING
+        ]
+        if not pending:
+            raise Failure("The stopped campaign has no unspent run")
+        runs = [
+            {**run, "order": index, "predecessorOrder": run["order"]}
+            for index, run in enumerate(pending, start=1)
+        ]
+        remaining = budgets or {
+            name: journal.manifest["budgets"][name] - state["consumed"][name]
+            for name in RESOURCES
+        }
+        if mark is None:
+            state["successor"] = target
+            _write(journal.directory / STATE, state)
+        try:
+            return plan_campaign(
+                directory,
+                campaign_id,
+                runs,
+                journal.manifest["inputs"],
+                remaining,
+                predecessor={
+                    "campaignId": journal.manifest["campaignId"],
+                    "planSha256": state["planSha256"],
+                    "stopped": stop,
+                },
+            )
+        except BaseException:
+            # A campaign counts as planned once its manifest exists; without
+            # one nothing was handed out, so the campaign is free to be
+            # continued another way.
+            if not (Path(directory) / MANIFEST).exists():
+                del state["successor"]
+                _write(journal.directory / STATE, state)
+            raise
+
+    return journal._locked(succeed)
 
 
 def _ordered(state):
