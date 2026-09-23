@@ -18,8 +18,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Keep the fixed-queue/failJob restrictions, v2beta3 retention readback and explicit out-of-guarantee
   expiry policies aligned with the DataStream recovery runbook.
 - Use `docs/adr/0162` for the delivery order: implementation can start from ADR-0158 without a
-  separate primitive performance pass; correctness and final performance acceptance still govern
-  release. Keep #1241's inconclusive result distinct from that sequencing decision.
+  separate primitive performance pass. #1246's assessment is done: the mode keeps up at the
+  measured rates, adds most of a checkpoint interval to task latency, ships `@Experimental`, and ADR-0104's
+  p95 threshold does not apply to it (ADR-0162, 2026-09-24). Keep #1241's inconclusive result
+  distinct from that sequencing decision.
 - **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
   (`docs/adr/0129`) — do not adopt a batch create without superseding that record.
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
