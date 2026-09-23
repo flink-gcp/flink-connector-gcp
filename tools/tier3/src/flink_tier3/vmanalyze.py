@@ -65,11 +65,15 @@ from types import SimpleNamespace
 from . import analyze as cluster
 from . import vmcampaign
 from .analyze import (
+    BASELINE,
     INCREMENTAL,
+    REPETITIONS,
     analyze_rows,
     base_cell_id,
     build_groups,
+    compare,
     creator_order,
+    incremental,
     probe_index,
     protocol_index,
     show,
@@ -683,6 +687,8 @@ def analyze(directories, protocol_path=None):
     # lost or inconsistent run is reported above and has none to compare.
     measured = [r for r in records if r["probe"] is None and "executed" in r]
     groups, unmatched = build_groups(measured, index)
+    for group in groups:
+        measured_arms(group)
     for record in records:
         record.pop("executed", None)
         record.pop("claimed", None)
@@ -696,6 +702,32 @@ def analyze(directories, protocol_path=None):
         "unmatched_cells": unmatched,
         "not_analyzed": sorted(r["cell_id"] for r in probes),
     }
+
+
+#: The arms the reduced assessment measures (ADR-0162, 2026-09-23): the unnamed
+#: baseline, the staged candidate, and the named path that isolates staging.
+MEASURED_ARMS = (BASELINE, "NAMED_HASH", "STAGED_HASH")
+
+
+def measured_arms(group):
+    """Judges a group on the arms the reduced assessment measures.
+
+    ``analyze.build_groups`` compares both staged arms and calls any arm short
+    of three repetitions a reason, so a group measured without the random-name
+    arms would always come out inconclusive. Here only the measured arms can be
+    short, and ``STAGED_HASH`` against ``UNNAMED`` is the whole verdict.
+    """
+    arms = group["arms"]
+    short = [arm for arm in MEASURED_ARMS if arms[arm]["usable"] < REPETITIONS]
+    comparison = compare(arms[BASELINE], arms["STAGED_HASH"], short, group["reasons"])
+    group["short_arms"] = short
+    group["comparisons"] = {"STAGED_HASH": comparison}
+    group["incremental_cost"] = {
+        "STAGED_HASH": None
+        if group["reasons"]
+        else incremental(arms[INCREMENTAL["STAGED_HASH"]], arms["STAGED_HASH"])
+    }
+    group["verdict"] = comparison["label"]
 
 
 def _campaign_summary(entry, records):
