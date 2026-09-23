@@ -19,6 +19,12 @@ import uuid
 
 from .bigquery import assess
 from .bigquery_observe import FlinkRest, observation, vertices
+from .bigquery_verdict import (
+    COMPLETE_STAGE,
+    MEASUREMENT_EVENT,
+    summarize,
+    verdict,
+)
 from .common import Failure, utc
 from .exercise import RecoveryExercise
 from .policy import (
@@ -48,7 +54,9 @@ class BigQueryExercise(RecoveryExercise):
     """Recover the finite input, then obtain a bounded query-visible result.
 
     The caller supplies authenticated actors and the cleanup quiescence barrier.
-    This exercise records recovery evidence, not a deployed measurement verdict.
+    It decides the deployed measurement verdict from the recovery evidence it
+    records and the observation coverage it accumulated, and writes it with the
+    transition that completes the run.
     """
 
     namespace = BIGQUERY
@@ -62,6 +70,7 @@ class BigQueryExercise(RecoveryExercise):
             raise Failure("BigQuery exercise requires a BigQuery approval")
         self.trial = env.approval.bigquery_plan.trial
         self.rest, self.vertices, self.measured_at = None, None, None
+        self.coverage = {}
         self.records = self.trial.records
         super().__init__(env, upgrade)
         self.baseline_until = None
@@ -130,6 +139,9 @@ class BigQueryExercise(RecoveryExercise):
             self.post_until = self.env.clock() + self.timing["post_recovery_seconds"]
         if stage == "complete":
             stage = "visibility"
+        # Every transition carries the coverage so far: for a run that aborts
+        # before the verdict, this record is the only account of what it read.
+        details.setdefault("coverage", self._coverage())
         super().persist(stage, **details)
 
     def attach_rest(self, service, job_id):
@@ -162,10 +174,12 @@ class BigQueryExercise(RecoveryExercise):
             return
         self.measured_at = now
         self.vertices = vertices(self.rest, self.vertices)
-        self.env.emit(
-            "bigquery-measurement",
-            {"stage": self.stage, **observation(self.rest, self.vertices)},
-        )
+        reading = observation(self.rest, self.vertices)
+        self.coverage = summarize(self.coverage, self.stage, reading)
+        self.env.emit(MEASUREMENT_EVENT, {"stage": self.stage, **reading})
+
+    def _coverage(self):
+        return {stage: dict(window) for stage, window in self.coverage.items()}
 
     def observe(self, app, rest, pods):
         self.measure()
@@ -206,8 +220,27 @@ class BigQueryExercise(RecoveryExercise):
                 raise Failure("BigQuery final rows violate routing or uniqueness")
             if report["verdict"] == "pass":
                 self.outcomes["query"] = {"observation": name, "report": report}
+                # Decide the verdict from what this run holds, and write it with
+                # the transition rather than after it, so it reaches the
+                # `recovery-complete` evidence artifact and not only the final
+                # receipt. It is decided over the record the transition is
+                # about to write, because the offline analyzer recomputes it
+                # from that same record once the evidence is exported.
+                coverage = self._coverage()
+                decided = verdict(
+                    {
+                        "stage": COMPLETE_STAGE,
+                        "outcomes": self.outcomes,
+                        "coverage": coverage,
+                    }
+                )
                 # Bypass the FINISHED-to-visibility transition only after the oracle passes.
-                super().persist("complete", processed=self.records)
+                super().persist(
+                    COMPLETE_STAGE,
+                    processed=self.records,
+                    coverage=coverage,
+                    **decided,
+                )
                 return
             self.env.sleep(min(POLL, max(0, self.deadline - self.env.clock())))
         raise Failure("BigQuery final visibility exhausted its approved query slots")

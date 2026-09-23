@@ -28,6 +28,7 @@ from .cloudtasks import load_session as load_session
 from .cloudtasks import release_queue as release_queue
 from .cloudtasks import validate_cell_manifest as validate_cell_manifest
 from .cloudtasks import verify_queue as verify_queue
+from .common import USABLE as USABLE
 from .common import ApiError as ApiError
 from .common import Failure as Failure
 from .common import IdlePending as IdlePending

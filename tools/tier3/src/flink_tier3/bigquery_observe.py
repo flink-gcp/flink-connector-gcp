@@ -61,7 +61,15 @@ CONNECTOR_METRICS = (
     "currentCommitDurationMillis",
     "recordsSkipped",
 )
-SINK_METRICS = frozenset((*NETWORK_METRICS, *TASK_METRICS, *CONNECTOR_METRICS))
+# The sink's metrics, partitioned into the families the run has to observe.
+# One declaration serves both readers: discovery keeps an id when it belongs
+# to some family, and the verdict asks which family a returned id belongs to.
+SINK_FAMILIES = {
+    "task": frozenset(TASK_METRICS),
+    "network": frozenset(NETWORK_METRICS),
+    "connector": frozenset(CONNECTOR_METRICS),
+}
+SINK_METRICS = frozenset(name for names in SINK_FAMILIES.values() for name in names)
 SOURCE_METRICS = ("numRecordsOut", "numRecordsOutPerSecond", *NETWORK_METRICS)
 
 

@@ -14,14 +14,17 @@
 """Drive the internal BigQuery loops with synthetic controller and service actors."""
 
 import copy
+import json
 from dataclasses import replace
 
 import pytest
+from flink_tier3 import analyze
 from flink_tier3.bigquery import assess
 from flink_tier3.bigquery_exercise import BigQueryExercise, require_handoff
 from flink_tier3.bigquery_handoff import BigQueryHandoff
 from flink_tier3.bigquery_lifecycle import BigQueryLifecycle
-from flink_tier3.common import Failure
+from flink_tier3.bigquery_verdict import MEASUREMENT_EVENT
+from flink_tier3.common import INCONCLUSIVE, Failure
 from flink_tier3.environment import Environment
 from flink_tier3.model import Phase
 from flink_tier3.policy import BIGQUERY, BIGQUERY_STATE, MIB
@@ -73,7 +76,7 @@ class QueryResources(Resources):
 
 
 class World:
-    def __init__(self, prepared, monkeypatch, fault=None):
+    def __init__(self, prepared, monkeypatch, fault=None, withheld=None):
         self.runner_env, initial, upgrade, _ = prepared
         self.kube, self.store, self.clock = (
             self.runner_env.kube,
@@ -85,6 +88,7 @@ class World:
         self.start = self.clock()
         self.changed = self.start
         self.fault = fault
+        self.withheld = withheld
         self.phase = "initial"
         self.upgrade_at = None
         self.failover_at = None
@@ -206,9 +210,21 @@ class World:
             return [
                 {"id": "Sink__Writer.openDestinations"},
                 {"id": "busyTimeMsPerSecond"},
+                {"id": "inPoolUsage"},
             ]
         if "/subtasks/metrics?" in path:
-            return [{"id": "openDestinations", "sum": "7"}]
+            # The service answers with an entry per requested id it holds, so
+            # the double echoes the query rather than a fixed single metric:
+            # the verdict credits a family from what came back, not from what
+            # discovery listed. `withheld` is the id the job stopped
+            # publishing after discovery listed it, which the real service
+            # answers by simply leaving out.
+            requested = path.split("?get=")[1].split("&")[0]
+            return [
+                {"id": name, "sum": "7"}
+                for name in requested.split(",")
+                if name != self.withheld
+            ]
         if path.endswith("/taskmanagers"):
             return {"taskmanagers": [{"id": "tm-0"}]}
         if "/taskmanagers/" in path and "/metrics?" in path:
@@ -345,11 +361,48 @@ class World:
     def measurements(self):
         return [
             value
+            for value in self.evidence().values()
+            if isinstance(value, dict) and value.get("event") == MEASUREMENT_EVENT
+        ]
+
+    def evidence(self):
+        return {
+            name: value
             for (bucket, name), (value, _generation) in self.store.data.items()
             if bucket == rt.EVIDENCE
-            and "/supervisor/" in name
-            and value["event"] == "bigquery-measurement"
-        ]
+        }
+
+    def export(self, root, record):
+        """The run directory as `gcloud storage cp --recursive` leaves it.
+
+        These loops drive the supervisor, not the runner's admission and
+        finalization, so the two run documents are written here from the run's
+        own approval and its own control record rather than by `Runner`. What
+        `Runner` writes into them is held by `test_bigquery_approval`; what is
+        proved here is that the evidence the exercise emitted recomputes to
+        the verdict it recorded.
+        """
+        prefix = f"runs/{self.approval.run_id}/"
+        for name, value in self.evidence().items():
+            if not name.startswith(prefix):
+                continue
+            path = root / name[len("runs/") :]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value))
+        run_dir = root / self.approval.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "approval.json").write_text(json.dumps(self.approval.to_dict()))
+        (run_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "scenario": self.approval.scenario,
+                    "success": record.success
+                    and record.recovery.get("verdict") == rt.USABLE,
+                    "recovery": record.recovery,
+                }
+            )
+        )
+        return root
 
     def quiesce(self):
         return self.fault != "barrier" and self.app() is None
@@ -372,6 +425,15 @@ def test_bigquery_recovery_and_query_then_cleanup(
     assert record.success, record.reason
     assert record.recovery["stage"] == "complete"
     assert set(record.recovery["outcomes"]) == {"upgrade", "failover", "query"}
+    # The verdict the production path produced, not one typed into a fixture:
+    # a run that proves both recoveries, passes the oracle and reads every
+    # family in both sampled windows is the usable measurement.
+    assert record.recovery["verdict"] == rt.USABLE
+    assert record.recovery["reasons"] == []
+    for stage in ("baseline", "finishing"):
+        window = record.recovery["coverage"][stage]
+        assert window["observed"] == ["connector", "memory", "network", "task"]
+        assert window["attempts"] >= 1
     assert [name for name, _ in world.calls] == ["upgrade", "failover"]
     # The deployed measurements the issue asks for: sampled through the run's
     # own windows, with every reading named even when it is absent.
@@ -391,6 +453,61 @@ def test_bigquery_recovery_and_query_then_cleanup(
     assert world.resources.tables == {}
     assert record.bigquery["handoff"]["released"]
     assert world.store.read(rt.ENVIRONMENT)[0] is not None
+    # Every sample the run emitted is accounted for by the record it wrote.
+    assert sum(w["attempts"] for w in record.recovery["coverage"].values()) == len(
+        world.measurements()
+    )
+
+
+def test_the_exported_evidence_recomputes_to_the_verdict_the_run_wrote(
+    prepared, monkeypatch, tmp_path
+):
+    """The one test that crosses the producer/consumer seam.
+
+    Every constant coupling the exercise to the offline analyzer -- the event
+    names, the record's shape, the receipt's copy of it and the per-stage
+    sample counts -- is proved here against evidence the run itself wrote,
+    rather than against a fixture that spells them a second time.
+    """
+    world = World(prepared, monkeypatch)
+    record = world.run()
+    exported = world.export(tmp_path, record)
+    assert sorted(path.name for path in exported.iterdir()) == [world.approval.run_id]
+    report = analyze.analyze(exported)
+    assert [item["status"] for item in report["bigquery"]] == [rt.USABLE]
+    item = report["bigquery"][0]
+    assert item["run_id"] == world.approval.run_id
+    assert item["verdict"] == rt.USABLE
+    assert item["reasons"] == []
+    assert item["problems"] == []
+    assert item["samples"] == len(world.measurements())
+    rendered = analyze.render_markdown(report)
+    assert rendered.startswith("# Tier-3 evidence analysis")
+    assert "0162-cloudtasks-assessment-1246.md" not in rendered
+    assert f"| {world.approval.run_id} | usable | usable |" in rendered
+    out = analyze.write_reports(report, tmp_path / "analysis")
+    assert "Deployed BigQuery runs" in (out / "report.md").read_text()
+    assert (
+        json.loads((out / "report.json").read_text())["bigquery"] == report["bigquery"]
+    )
+    assert "bigquery runs: usable 1" in analyze.summary_line(report, out)
+
+
+def test_a_listed_metric_the_job_stopped_publishing_is_not_observed(
+    prepared, monkeypatch, tmp_path
+):
+    """Discovery keeps the id; the answer omits it; the family is not read."""
+    world = World(prepared, monkeypatch, withheld="inPoolUsage")
+    record = world.run()
+    assert record.recovery["verdict"] == INCONCLUSIVE
+    assert record.recovery["reasons"] == [
+        f"unobserved-network-in-{stage}" for stage in ("baseline", "finishing")
+    ]
+    report = analyze.analyze(world.export(tmp_path, record))
+    item = report["bigquery"][0]
+    assert item["status"] == INCONCLUSIVE
+    assert item["problems"] == []
+    assert item["reasons"] == record.recovery["reasons"]
 
 
 @pytest.fixture(autouse=True)

@@ -154,7 +154,7 @@ class Exercising:
         self.env = Environment(cluster)
         self.env.emit = lambda event, payload: self.emitted.append((event, payload))
         self.emitted, self.rest, self.vertices = [], None, None
-        self.measured_at, self.stage = None, "baseline"
+        self.measured_at, self.stage, self.coverage = None, "baseline", {}
 
     timing = BIGQUERY_OBSERVATIONS
     attach_rest = BigQueryExercise.attach_rest
