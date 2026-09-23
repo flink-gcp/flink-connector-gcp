@@ -16,14 +16,23 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.api.common.JobStatus;
+
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
+import io.github.flink.gcp.connector.testutils.Awaits;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,7 +47,16 @@ class BigtableLocalStagedJobITCase {
         try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 2);
                 LocalStagedJob job =
                         new LocalStagedJob(
-                                run, directory, true, false, 2, 20, 3_600_000, true, null, false)) {
+                                run,
+                                directory,
+                                true,
+                                false,
+                                2,
+                                20,
+                                LocalStagedJob.HELD_INTERVAL_MILLIS,
+                                true,
+                                null,
+                                false)) {
             job.awaitAdmissions(20);
             assertThat(run.attempts).isEmpty();
             job.savepoint(directory, false);
@@ -51,12 +69,99 @@ class BigtableLocalStagedJobITCase {
     }
 
     @Test
+    void checkpointTriggeredBeforeTasksRunWaitsForThemInsteadOfFailing() throws Exception {
+        try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 2)) {
+            run.writerCreation = new CompletableFuture<>();
+            try (LocalStagedJob job =
+                    new LocalStagedJob(
+                            run,
+                            directory,
+                            true,
+                            false,
+                            2,
+                            20,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            false)) {
+                // Released before the job closes: a held writer ignores the interrupt that closing
+                // the job sends. The harness also releases it when it closes.
+                try {
+                    // The job reports RUNNING while its tasks are held initializing; a trigger in
+                    // this window is rejected because not all required tasks are running.
+                    Awaits.await(
+                            "job status running",
+                            Duration.ofSeconds(20),
+                            () -> job.client.getJobStatus().join() == JobStatus.RUNNING);
+                    CountDownLatch triggering = new CountDownLatch(1);
+                    CompletableFuture<String> trigger =
+                            CompletableFuture.supplyAsync(
+                                    () -> {
+                                        triggering.countDown();
+                                        try {
+                                            return job.checkpoint();
+                                        } catch (Exception failure) {
+                                            throw new CompletionException(failure);
+                                        }
+                                    });
+                    // Counted just before the call, so the bound below is not spent waiting for a
+                    // pool thread. An unguarded trigger is rejected within milliseconds, and only a
+                    // stall of more than the bound between the count and its request would let it
+                    // pass after the release; a guarded one cannot complete while the tasks are
+                    // held, so the bound never fails it.
+                    assertThat(triggering.await(20, TimeUnit.SECONDS)).isTrue();
+                    assertThatThrownBy(() -> trigger.get(1, TimeUnit.SECONDS))
+                            .isInstanceOf(TimeoutException.class);
+                    run.writerCreation.complete(null);
+                    assertThat(trigger.get(30, TimeUnit.SECONDS)).contains("chk-1");
+                } finally {
+                    run.writerCreation.complete(null);
+                }
+            }
+        }
+    }
+
+    @Test
+    void heldIntervalSetsAnEqualMinimumPause() throws Exception {
+        try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 1);
+                LocalStagedJob job =
+                        new LocalStagedJob(
+                                run,
+                                directory,
+                                true,
+                                false,
+                                1,
+                                1,
+                                LocalStagedJob.HELD_INTERVAL_MILLIS,
+                                true,
+                                null,
+                                false)) {
+            assertThat(
+                            job.cluster
+                                    .getExecutionGraph(job.client.getJobID())
+                                    .join()
+                                    .getCheckpointCoordinatorConfiguration()
+                                    .getMinPauseBetweenCheckpoints())
+                    .isEqualTo(LocalStagedJob.HELD_INTERVAL_MILLIS);
+        }
+    }
+
+    @Test
     void responseLossAfterPartialCommitRestartsFromCompletedCheckpoint() throws Exception {
         try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 1)) {
             run.loseAnswerAt = 3;
             try (LocalStagedJob job =
                     new LocalStagedJob(
-                            run, directory, true, false, 1, 20, 3_600_000, true, null, true)) {
+                            run,
+                            directory,
+                            true,
+                            false,
+                            1,
+                            20,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            true)) {
                 job.awaitAdmissions(20);
                 job.checkpoint();
                 job.awaitAcks(20);
@@ -87,7 +192,16 @@ class BigtableLocalStagedJobITCase {
         try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 1)) {
             try (LocalStagedJob initial =
                     new LocalStagedJob(
-                            run, directory, true, false, 1, 12, 3_600_000, true, null, false)) {
+                            run,
+                            directory,
+                            true,
+                            false,
+                            1,
+                            12,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            false)) {
                 initial.awaitAdmissions(12);
             }
             assertThat(run.store.applied).isZero();
@@ -108,10 +222,19 @@ class BigtableLocalStagedJobITCase {
             String previousCheckpoint;
             try (LocalStagedJob job =
                     new LocalStagedJob(
-                            run, directory, true, false, 1, 12, 3_600_000, true, null, false)) {
-                io.github.flink.gcp.connector.testutils.Awaits.await(
+                            run,
+                            directory,
+                            true,
+                            false,
+                            1,
+                            12,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            false)) {
+                Awaits.await(
                         "source ready",
-                        java.time.Duration.ofSeconds(20),
+                        Duration.ofSeconds(20),
                         () -> run.readersStarted.get() == 1);
                 previousCheckpoint = job.checkpoint();
                 run.allowInputs();

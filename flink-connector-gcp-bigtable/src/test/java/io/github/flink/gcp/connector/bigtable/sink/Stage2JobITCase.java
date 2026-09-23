@@ -54,7 +54,7 @@ class Stage2JobITCase {
                             false,
                             2,
                             4,
-                            3_600_000,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
                             true,
                             null,
                             false)) {
@@ -106,7 +106,16 @@ class Stage2JobITCase {
             run.hang = true;
             try (LocalStagedJob job =
                     new LocalStagedJob(
-                            run, directory, true, false, 1, 4, 3_600_000, true, null, false)) {
+                            run,
+                            directory,
+                            true,
+                            false,
+                            1,
+                            4,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            false)) {
                 job.awaitAdmissions(4);
                 job.checkpoint();
                 await("commit requests held", Duration.ofSeconds(10), () -> run.active.get() == 4);
@@ -183,7 +192,16 @@ class Stage2JobITCase {
             run.loseAnswerAt = 3;
             try (LocalStagedJob job =
                     new LocalStagedJob(
-                            run, directory, true, false, 2, 24, 3_600_000, true, null, true)) {
+                            run,
+                            directory,
+                            true,
+                            false,
+                            2,
+                            24,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            true)) {
                 await(
                         "ledger admissions",
                         Duration.ofSeconds(30),
@@ -275,7 +293,7 @@ class Stage2JobITCase {
                             false,
                             1,
                             4,
-                            3_600_000,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
                             true,
                             null,
                             true)) {

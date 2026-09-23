@@ -42,7 +42,16 @@ class BigtableLocalStagedEmulatorITCase extends AbstractBigtableEmulatorITCase {
             String savepoint;
             try (LocalStagedJob initial =
                     new LocalStagedJob(
-                            run, directory, true, true, 2, 40, 3_600_000, true, null, false)) {
+                            run,
+                            directory,
+                            true,
+                            true,
+                            2,
+                            40,
+                            LocalStagedJob.HELD_INTERVAL_MILLIS,
+                            true,
+                            null,
+                            false)) {
                 initial.awaitAdmissions(40);
                 assertThat(readRows(table)).isEmpty();
                 savepoint = initial.savepoint(directory, true);

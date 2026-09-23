@@ -49,7 +49,7 @@ class BigtableProductionStagedJobITCase {
                                 true,
                                 2)) {
             String savepoint;
-            try (var job = job(run, service, 2, 60000, null, false)) {
+            try (var job = job(run, service, 2, LocalStagedJob.HELD_INTERVAL_MILLIS, null, false)) {
                 job.awaitAdmissions(24);
                 assertThat(applied(service)).isZero();
                 savepoint = job.savepoint(directory.resolve("stop"), true);
@@ -84,19 +84,16 @@ class BigtableProductionStagedJobITCase {
                             false,
                             LocalStagedHarness.PROFILE);
             String savepoint;
-            run.minPauseMillis = 3_600_000;
-            try (var job = productionJob(run, sink, 2, 3_600_000, null)) {
+            try (var job = productionJob(run, sink, 2, LocalStagedJob.HELD_INTERVAL_MILLIS, null)) {
                 job.awaitAdmissions(24);
                 savepoint = job.savepoint(directory.resolve("stop"), true);
             }
-            run.minPauseMillis = 0;
             var inventory = ProductionRecoveryJob.requireCommitted(run.productionCommits, 0, 24);
 
             // The suppressed restore runs first and stops with a savepoint, because releasing the
             // held source for a finish() is a run-wide flag that would end every later job at once.
             int suppressed = run.productionCommits.size();
             try (var restored = productionJob(run, sink.suppressingCommits(), 1, 1000, savepoint)) {
-                ProductionRecoveryJob.awaitRunning(restored);
                 restored.savepoint(directory.resolve("stop-suppressed"), true);
             }
             synchronized (service.probe) {
@@ -125,7 +122,7 @@ class BigtableProductionStagedJobITCase {
 
             int mark = run.productionCommits.size();
             try (var restored = productionJob(run, sink, 3, 1000, savepoint)) {
-                ProductionRecoveryJob.awaitRunning(restored);
+                restored.awaitRunning();
                 restored.finish();
             }
             ProductionRecoveryJob.requireReplayed(run.productionCommits, mark, inventory);

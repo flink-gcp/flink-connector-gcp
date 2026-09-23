@@ -16,14 +16,12 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.api.connector.sink2.CommitterInitContext;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -61,6 +59,12 @@ import static io.github.flink.gcp.connector.testutils.Awaits.await;
 
 /** Shared local/service correctness scenario through the two production API factories. */
 final class ProductionRecoveryJob {
+    /**
+     * The periodic interval of the restored jobs, unchanged by the held initial job: the injected
+     * response loss is spent before they start, so a periodic commit there replays harmlessly.
+     */
+    private static final long RESTORED_INTERVAL_MILLIS = 60_000;
+
     private ProductionRecoveryJob() {}
 
     static LocalStagedHarness newRun(
@@ -201,42 +205,6 @@ final class ProductionRecoveryJob {
         return text.toString();
     }
 
-    /** Waits until every vertex is RUNNING, which for a restored committer follows its replay. */
-    static void awaitRunning(LocalStagedJob job) throws Exception {
-        await(
-                "local vertices running",
-                Duration.ofMillis(job.run.checkpointOperationTimeoutMillis()),
-                () -> allRunning(job),
-                () -> "status=" + job.client.getJobStatus().join());
-    }
-
-    /**
-     * True once the job and every vertex are RUNNING; rethrows a terminated job's failure. The job
-     * status is checked first because the dispatcher answers an execution-graph request for a job
-     * whose JobManager is still initializing with a graph that has no vertices yet, which an
-     * all-vertices loop alone would accept.
-     */
-    private static boolean allRunning(LocalStagedJob job) {
-        if (job.result.isDone()) {
-            job.result.join();
-        }
-        if (job.client.getJobStatus().join() != JobStatus.RUNNING) {
-            return false;
-        }
-        int vertices = 0;
-        for (var vertex :
-                job.cluster
-                        .getExecutionGraph(job.client.getJobID())
-                        .join()
-                        .getAllExecutionVertices()) {
-            vertices++;
-            if (vertex.getExecutionState() != ExecutionState.RUNNING) {
-                return false;
-            }
-        }
-        return vertices > 0;
-    }
-
     /**
      * Waits for the job to terminate and returns every failure text it left behind: the job status,
      * the caller's direct exception, the job result's failure and each execution's own failure
@@ -303,7 +271,18 @@ final class ProductionRecoveryJob {
             throws Exception {
         var sink = sink(run, proxy.endpoint(), tableApi);
         String checkpoint;
-        try (var job = job(run, directory.resolve("initial"), sink, 2, null, true)) {
+        // The initial job must not complete a periodic checkpoint before the explicit one: its
+        // commit meets the injected response loss, and the failover that follows aborts the
+        // explicit trigger while it is still pending or queued.
+        try (var job =
+                job(
+                        run,
+                        directory.resolve("initial"),
+                        sink,
+                        2,
+                        LocalStagedJob.HELD_INTERVAL_MILLIS,
+                        null,
+                        true)) {
             job.awaitAdmissions(128);
             checkpoint = job.checkpoint();
             System.out.println(
@@ -332,6 +311,7 @@ final class ProductionRecoveryJob {
                             directory.resolve("rescale-" + parallelism),
                             sink,
                             parallelism,
+                            RESTORED_INTERVAL_MILLIS,
                             checkpoint,
                             false)) {
                 waitFor(job, proxy, 128, duplicates + 128);
@@ -343,7 +323,15 @@ final class ProductionRecoveryJob {
             }
             readback.verify();
         }
-        try (var job = job(run, directory.resolve("resume-stop"), sink, 1, stop, false)) {
+        try (var job =
+                job(
+                        run,
+                        directory.resolve("resume-stop"),
+                        sink,
+                        1,
+                        RESTORED_INTERVAL_MILLIS,
+                        stop,
+                        false)) {
             job.finish();
         }
         proxy.requireHealthy();
@@ -369,6 +357,7 @@ final class ProductionRecoveryJob {
             Path directory,
             MappedSink<?> sink,
             int parallelism,
+            long interval,
             String restore,
             boolean restart)
             throws Exception {
@@ -379,7 +368,7 @@ final class ProductionRecoveryJob {
                 false,
                 parallelism,
                 128,
-                60_000,
+                interval,
                 true,
                 restore,
                 restart,
@@ -393,7 +382,7 @@ final class ProductionRecoveryJob {
                 "production recovery acknowledgements",
                 Duration.ofSeconds(90),
                 () -> {
-                    if (!allRunning(job)) {
+                    if (!job.allRunning()) {
                         return false;
                     }
                     synchronized (proxy) {

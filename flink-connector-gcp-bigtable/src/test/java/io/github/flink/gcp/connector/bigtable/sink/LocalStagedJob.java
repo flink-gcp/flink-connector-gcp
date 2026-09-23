@@ -25,6 +25,7 @@ import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.nio.file.Path;
@@ -35,6 +36,16 @@ import static io.github.flink.gcp.connector.testutils.Awaits.await;
 
 /** Owns one embedded MiniCluster job; the caller owns its temporary checkpoint directory. */
 final class LocalStagedJob implements AutoCloseable {
+    /**
+     * An interval no held job reaches, so only an explicit checkpoint or savepoint completes one.
+     * Flink draws the first periodic trigger uniformly between the minimum pause and the interval,
+     * so a job built with this interval also gets an equal pause, which pins that draw to the
+     * interval; without it the first periodic checkpoint can complete, and notify its committer,
+     * within a second of submission. A harness that sets its own {@code minPauseMillis} keeps that
+     * pause instead.
+     */
+    static final long HELD_INTERVAL_MILLIS = 3_600_000;
+
     final org.apache.flink.runtime.minicluster.MiniCluster cluster;
     final JobClient client;
     final java.util.concurrent.CompletableFuture<org.apache.flink.api.common.JobExecutionResult>
@@ -110,6 +121,8 @@ final class LocalStagedJob implements AutoCloseable {
         env.getCheckpointConfig().setCheckpointTimeout(run.checkpointTimeoutMillis());
         if (run.minPauseMillis > 0) {
             env.getCheckpointConfig().setMinPauseBetweenCheckpoints(run.minPauseMillis);
+        } else if (intervalMillis == HELD_INTERVAL_MILLIS) {
+            env.getCheckpointConfig().setMinPauseBetweenCheckpoints(intervalMillis);
         }
         env.fromSource(run.source(records, hold), WatermarkStrategy.noWatermarks(), "local-input")
                 .uid("local-input")
@@ -199,7 +212,62 @@ final class LocalStagedJob implements AutoCloseable {
         return true;
     }
 
+    /** Waits until every vertex is RUNNING, which for a restored committer follows its replay. */
+    void awaitRunning() throws InterruptedException {
+        await(
+                "local vertices running",
+                Duration.ofMillis(run.checkpointOperationTimeoutMillis()),
+                this::allRunning,
+                () ->
+                        "status="
+                                + client.getJobStatus().join()
+                                + " vertices="
+                                + java.util.stream.StreamSupport.stream(
+                                                cluster.getExecutionGraph(client.getJobID())
+                                                        .join()
+                                                        .getAllExecutionVertices()
+                                                        .spliterator(),
+                                                false)
+                                        .map(
+                                                vertex ->
+                                                        vertex.getTaskNameWithSubtaskIndex()
+                                                                + "="
+                                                                + vertex.getExecutionState())
+                                        .collect(java.util.stream.Collectors.joining(", ")));
+    }
+
+    /**
+     * True once the job and every vertex are RUNNING; rethrows a terminated job's failure. The job
+     * status is checked first because the dispatcher answers an execution-graph request for a job
+     * whose JobManager is still initializing with a graph that has no vertices yet, which an
+     * all-vertices loop alone would accept.
+     */
+    boolean allRunning() {
+        if (result.isDone()) {
+            result.join();
+        }
+        if (client.getJobStatus().join() != JobStatus.RUNNING) {
+            return false;
+        }
+        int vertices = 0;
+        for (var vertex :
+                cluster.getExecutionGraph(client.getJobID()).join().getAllExecutionVertices()) {
+            vertices++;
+            if (vertex.getExecutionState() != ExecutionState.RUNNING) {
+                return false;
+            }
+        }
+        return vertices > 0;
+    }
+
+    /**
+     * Triggers a savepoint once every vertex is RUNNING as the JobManager sees it. A task reports
+     * RUNNING asynchronously after it has started on the TaskManager, so a signal raised inside the
+     * task, such as a reader starting or a record being admitted, can arrive first; the trigger
+     * would then fail because not all required tasks are running.
+     */
     String savepoint(Path directory, boolean stop) throws Exception {
+        awaitRunning();
         String path =
                 (stop
                                 ? client.stopWithSavepoint(
@@ -216,7 +284,12 @@ final class LocalStagedJob implements AutoCloseable {
         return path;
     }
 
+    /**
+     * Triggers a checkpoint once every vertex is RUNNING, for the reason {@link #savepoint(Path,
+     * boolean)} gives.
+     */
     String checkpoint() throws Exception {
+        awaitRunning();
         return cluster.triggerCheckpoint(client.getJobID())
                 .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
     }
