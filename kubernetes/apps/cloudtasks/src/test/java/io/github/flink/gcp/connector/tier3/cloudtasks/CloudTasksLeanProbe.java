@@ -20,6 +20,7 @@ import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.configuration.RestartStrategyOptions;
+import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -73,12 +74,17 @@ import java.util.stream.Stream;
  *   <li>a teardown failure, or {@code -}
  * </ol>
  *
+ * <p>A third artefact, {@code checkpoints.jsonl}, carries one line per completed checkpoint, {@code
+ * {"id": n, "completedMillis": t}} in this JVM's wall clock, the clock the source receipts use. The
+ * offline analyzer builds the preregistered observation window from it. A completion is placed at
+ * the poll that first saw it, so within one poll of when it happened. When two complete between the
+ * same two polls only the newer is seen, so the file can undercount completions but never invents
+ * one.
+ *
  * <p>What it cannot show. The probe passes an emulator endpoint, which switches off the committer's
  * queue-retention readback — a cluster run performs that {@code GetQueue} on every {@code
  * createCommitter} before its first commit, and a failure there leaves the committer's gauges
- * unregistered, which is exactly the shape this probe reports as absent. Checkpoint statistics are
- * not sampled either. Which quantities this rig owes, and how it takes them, is settled by the
- * preregistration revision rather than here.
+ * unregistered, which is exactly the shape this probe reports as absent.
  */
 final class CloudTasksLeanProbe {
     /**
@@ -90,6 +96,12 @@ final class CloudTasksLeanProbe {
     private static final Duration SAMPLE = Duration.ofSeconds(1);
     private static final Duration POLL = Duration.ofMillis(100);
     private static final Duration SUBMIT = Duration.ofSeconds(30);
+
+    /**
+     * The JobManager's gauge for the newest completed checkpoint. Flink names it in {@code
+     * CheckpointStatsTracker} without a public constant, on both supported lines.
+     */
+    static final String LAST_COMPLETED_CHECKPOINT = "lastCompletedCheckpointId";
 
     /** Nothing in the summary may carry these, or its fields stop being countable. */
     private static final String UNSAFE = "[,;\\r\\n]";
@@ -181,7 +193,10 @@ final class CloudTasksLeanProbe {
         // Both arms' names, not just this one's, so a sink registering a gauge the arm does not
         // require still shows up rather than being invisible to the reader.
         SinkGaugeReporter.watch(
-                Stream.concat(EAGER.stream(), STAGED.stream()).collect(Collectors.toSet()));
+                Stream.concat(
+                                Stream.concat(EAGER.stream(), STAGED.stream()),
+                                Stream.of(LAST_COMPLETED_CHECKPOINT))
+                        .collect(Collectors.toSet()));
         SinkGaugeReporter.deafTo(deaf);
         Map<String, Long> extremes = new LinkedHashMap<>();
         Cost cost = new Cost();
@@ -247,22 +262,25 @@ final class CloudTasksLeanProbe {
             throws Exception {
         long expiry = started + deadline.toNanos();
         var result = job.getJobExecutionResult();
-        try (Writer file = Files.newBufferedWriter(directory.resolve("samples.jsonl"))) {
+        try (Writer file = Files.newBufferedWriter(directory.resolve("samples.jsonl"));
+                Writer checkpoints =
+                        Files.newBufferedWriter(directory.resolve("checkpoints.jsonl"))) {
             long next = started;
+            long completed = 0;
             while (!result.isDone()) {
                 long now = System.nanoTime();
                 if (now >= expiry) {
                     throw new TimeoutException("Cell exceeded " + deadline.toSeconds() + "s");
                 }
-                next =
-                        tick(
-                                extremes,
-                                cost,
-                                file,
-                                SinkGaugeReporter.read(),
-                                now - started,
-                                now,
-                                next);
+                Map<String, SinkGaugeReporter.Reading> readings = SinkGaugeReporter.read();
+                // Not a sink gauge, so it stays out of the extremes and the sample lines.
+                completed =
+                        completions(
+                                checkpoints,
+                                completed,
+                                readings.remove(LAST_COMPLETED_CHECKPOINT),
+                                System.currentTimeMillis());
+                next = tick(extremes, cost, file, readings, now - started, now, next);
                 try {
                     result.get(POLL.toMillis(), TimeUnit.MILLISECONDS);
                 } catch (TimeoutException waiting) {
@@ -277,6 +295,27 @@ final class CloudTasksLeanProbe {
         result.get();
     }
 
+    /**
+     * Writes a line for the newest completed checkpoint if it is newer than {@code previous},
+     * placed at {@code wallMillis}, and returns the newest id seen.
+     *
+     * <p>Only the id the gauge reports is written, never the ids between it and the previous one: a
+     * checkpoint that failed or expired consumes an id without completing, so filling the gap would
+     * count a checkpoint that never completed and could lengthen a window it should have ended. The
+     * gauge reports the idle sentinel until the first completion, which the reader drops, so no
+     * reading means none has completed yet.
+     */
+    static long completions(
+            Writer file, long previous, SinkGaugeReporter.Reading reading, long wallMillis)
+            throws IOException {
+        if (reading == null || reading.max() <= previous) {
+            return previous;
+        }
+        file.write("{\"id\":" + reading.max() + ",\"completedMillis\":" + wallMillis + "}\n");
+        file.flush();
+        return reading.max();
+    }
+
     private static JobClient submit(Path directory, String endpoint, MeasurementOptions options)
             throws Exception {
         Configuration configuration = new Configuration();
@@ -287,6 +326,13 @@ final class CloudTasksLeanProbe {
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 3);
         configuration.set(
                 RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY, Duration.ofSeconds(10));
+        // The cluster cells' checkpoint settings (kubernetes/pkg/cloudtasks/application.cue), so
+        // a cell measures the same job on either rig. Left unset, the timeout is Flink's ten
+        // minutes, under which a saturated cell's growing checkpoints hide far longer.
+        configuration.set(StateBackendOptions.STATE_BACKEND, "hashmap");
+        configuration.set(CheckpointingOptions.CHECKPOINTING_TIMEOUT, Duration.ofSeconds(120));
+        configuration.set(CheckpointingOptions.MAX_CONCURRENT_CHECKPOINTS, 1);
+        configuration.set(CheckpointingOptions.MAX_RETAINED_CHECKPOINTS, 2);
         configuration.set(CheckpointingOptions.CHECKPOINT_STORAGE, "filesystem");
         configuration.set(
                 CheckpointingOptions.CHECKPOINTS_DIRECTORY,
