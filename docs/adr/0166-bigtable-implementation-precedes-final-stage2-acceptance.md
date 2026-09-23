@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0166: Bigtable implementation precedes final Stage 2 acceptance
 
 - Status: Accepted
-- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19; Stage 2 verdict recorded 2026-09-21; mode retained 2026-09-21; drain attributed 2026-09-23
+- Date: 2026-09-11; refined 2026-09-13; revised by [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319) and [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327) (2026-09-14); execution rules refined 2026-09-19; Stage 2 verdict recorded 2026-09-21; mode retained 2026-09-21; drain attributed 2026-09-23; default concurrency measured 2026-09-23
 - Issues: [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211), [#1319](https://github.com/flink-gcp/flink-connector-gcp/issues/1319), [#1327](https://github.com/flink-gcp/flink-connector-gcp/issues/1327), [#1454](https://github.com/flink-gcp/flink-connector-gcp/issues/1454), [#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464)
 - Supersedes: only the implementation-start ordering in ADR-0104 and ADR-0163 for Bigtable staged writes
 - Modules: bigtable
@@ -174,18 +174,22 @@ A workload whose correctness turns on that distinction is the one for which a de
 ADR-0104 compares a candidate against the eager at-least-once sink, so for a checkpoint-owned mode it charges the checkpoint wait by construction: a staged write cannot be visible before its checkpoint completes, and no implementation of this design changes that.
 The measured visibility is that wait plus the drain of the conditional commits the completion releases, and the ratio the gate reports combines the two.
 Separating them changes what the verdict means.
-A staged p95 of 5.7 to 48.9 seconds at checkpoint intervals of one and ten seconds exceeded the interval by 4.7 to 38.9 seconds; waiting for the checkpoint accounts for at most one interval, so the excess is checkpoint completion and the commit drain rather than the wait, though a difference of percentiles does not measure either one.
+The campaign's staged p95 of 5.7 to 48.9 seconds, at commit concurrencies of 1 to 16 and checkpoint intervals of one and ten seconds, exceeded the interval by 4.7 to 38.9 seconds; waiting for the checkpoint accounts for at most one interval, so the excess is checkpoint completion and the commit drain rather than the wait, though a difference of percentiles does not measure either one.
 
-What set the drain's length is the committer's concurrency.
-The matrix's in-flight dimension is passed to the production sink as `maxInFlightRequests`, so every staged cell committed with 1, 4 or 16 conditional writes in flight, against a production default of 100 that no cell measured.
-The committer drained as fast as that allowed: at a concurrency of one it issued a conditional write every 6.9 ms, about one round trip within the zone, and its rate rose with each step of concurrency.
-A drain probe on 2026-09-23, issuing the committer's own request shape against a one-node instance, measured what the service accepts: at least 5,553 conditional writes per second on distinct rows with its median latency flat, and a single-row rate that stopped growing near 2,100 per second, consistent with the service serialising conditional writes to one row.
-At the default concurrency a committer would therefore be expected to reach the service's rate on distinct rows, and [#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464) measures the staged visibility there before the mode is released.
-A hot key's rate rose with concurrency up to 400 in the probe and then stopped growing, so raising the concurrency helps a hot key only until the row reaches that plateau; where a committer in the same zone reaches it is not measured.
-Neither result is explained by the absence of a batched conditional write.
+The campaign committed with at most 1, 4 or 16 conditional writes in flight, because the matrix passed its in-flight dimension to the production sink as `maxInFlightRequests`, and [#1464](https://github.com/flink-gcp/flink-connector-gcp/issues/1464) then measured the default of 100 in the same zone.
+At the default the committer's bound was reached, with up to 100 requests outstanding per committer, and one committer drained about twice what a concurrency of 16 had allowed; the service accepted at least about 12,600 conditional writes per second on distinct rows and was not the limit.
+Part of the remaining gap to the at-least-once sink is the design: the staged mode writes each mutation with its own `CheckAndMutateRow`, because the marker check and the write must be atomic and the Bigtable data API has no multi-row conditional write, so every write pays a round trip and the client's per-call processor cost that a `MutateRows` batch amortizes; per write the staged path cost about two to two and a half times a bare client's processor time.
+What stops a single committer short of the service's rate is not identified: on a sixteen-processor host the committing thread spent 20 to 29% of its commit time waiting for its oldest request, at the bound or at the end of a batch, and on the campaign's four-processor host processors were contended.
+More subtasks raised the drain on the sixteen-processor host and lowered it on the four-processor one.
+At the default the staged visibility p95 on distinct rows at a one-second interval was 3.5 to 6.6 seconds with one subtask and 7.2 to 7.6 seconds with four on the four-processor host, and 1.7 to 3.5 seconds on the sixteen-processor host, against 23 to 61 milliseconds for the at-least-once sink; at a ten-second interval a commit could outlast the interval and visibility grew through most runs.
+A hot key is bounded by the service instead: one row accepted about 1,600 to 2,200 conditional writes per second at every concurrency from 16 upwards, and the staged hot-key runs at one subtask drained at or just below that plateau.
+The service-side results, the node's rate and the single-row plateau, are not explained by the absence of a batched conditional write; the per-write cost on the client is.
 
-The obligation this leaves is documentary and a measurement.
-The pages a user reads must say which part of the cost is the guarantee, which is set by the commit concurrency and which is the service's single-row limit, so the trade-off can be judged rather than presented as a mode to avoid; the figures they quote describe the low concurrencies the matrix used until #1464 measures the default.
+The obligation this leaves is documentary.
+The pages a user reads must say which part of the cost is the guarantee, which part is the commit drain, and which part is the service's single-row limit.
+They must also say what is known about the drain: every staged write is its own conditional request, which costs more per write than a batch, `maxInFlightRequests` bounds how many are outstanding, and what limits a single committer at the default is not identified.
+[#1476](https://github.com/flink-gcp/flink-connector-gcp/issues/1476) identifies it and reduces the connector's per-write cost.
+
 Changing the criterion itself, for example to measure a checkpoint-owned mode against a checkpoint-aligned baseline, would affect the Cloud Tasks mode under ADR-0158 as well, and still needs its own superseding ADR under the rule this ADR already states.
 
 The campaign machinery built for the one-shot run is removed with this decision, because the trial it adopts cannot be created again in this project and a repeat assessment would reimplement its sequencing against whatever it then needs.

@@ -66,6 +66,63 @@ class Stage2ObservedFutureTest {
     }
 
     @Test
+    void recordsTheHoldBeforePublishingTheCompletion() throws Exception {
+        var held = new java.util.concurrent.atomic.AtomicLong(-1);
+        var publishedWhenRecorded = new AtomicBoolean(true);
+        var observed =
+                new java.util.concurrent.atomic.AtomicReference<Stage2ObservedFuture<Boolean>>();
+        try (LocalStagedHarness run =
+                new LocalStagedHarness(1024, false, false, 1) {
+                    @Override
+                    void completionHeld(long nanos) {
+                        held.set(nanos);
+                        publishedWhenRecorded.set(observed.get().isDone());
+                    }
+                }) {
+            SettableApiFuture<Boolean> original = SettableApiFuture.create();
+            observed.set(
+                    new Stage2ObservedFuture<>(original, run, (value, now) -> Thread.sleep(20)));
+            original.set(true);
+            assertThat(observed.get().get(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(publishedWhenRecorded)
+                    .as("published before the hold was recorded")
+                    .isFalse();
+            // A margin below the 20 ms sleep: the ordering assertion above carries the claim.
+            assertThat(held.get()).isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(15));
+        }
+    }
+
+    @Test
+    void recordsTheHoldWhenTheMeasurementFails() throws Exception {
+        var held = new java.util.concurrent.atomic.AtomicLong(-1);
+        var publishedWhenRecorded = new AtomicBoolean(true);
+        var observed =
+                new java.util.concurrent.atomic.AtomicReference<Stage2ObservedFuture<Boolean>>();
+        try (LocalStagedHarness run =
+                new LocalStagedHarness(1024, false, false, 1) {
+                    @Override
+                    void completionHeld(long nanos) {
+                        held.set(nanos);
+                        publishedWhenRecorded.set(observed.get().isDone());
+                    }
+                }) {
+            SettableApiFuture<Boolean> original = SettableApiFuture.create();
+            observed.set(
+                    new Stage2ObservedFuture<>(
+                            original,
+                            run,
+                            (value, now) -> {
+                                throw new IOException("measurement failed");
+                            }));
+            original.set(true);
+            assertThatThrownBy(() -> observed.get().get(10, TimeUnit.SECONDS))
+                    .hasRootCauseMessage("measurement failed");
+            assertThat(held.get()).isNotNegative();
+            assertThat(publishedWhenRecorded).as("failure published before the hold").isFalse();
+        }
+    }
+
+    @Test
     void cancellationReachesTheOriginalRpcWithoutRecordingAnAcknowledgement() throws Exception {
         try (LocalStagedHarness run = new LocalStagedHarness(1024, false, false, 1)) {
             SettableApiFuture<Boolean> original = SettableApiFuture.create();

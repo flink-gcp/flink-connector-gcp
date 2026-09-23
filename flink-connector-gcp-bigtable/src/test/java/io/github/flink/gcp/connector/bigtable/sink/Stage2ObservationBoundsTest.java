@@ -56,6 +56,32 @@ class Stage2ObservationBoundsTest {
     }
 
     @Test
+    void inFlightAboveTheBulkDefaultIsRejectedBeforeCreatingWork() {
+        Path work = directory.resolve("in-flight");
+        assertThatThrownBy(
+                        () ->
+                                BigtableStage2Probe.timedRun(
+                                        null,
+                                        "in-flight",
+                                        work,
+                                        false,
+                                        false,
+                                        "",
+                                        1024,
+                                        1,
+                                        BigtableStage2Probe.MAX_IN_FLIGHT + 1,
+                                        1000,
+                                        10000,
+                                        30000,
+                                        1000,
+                                        0,
+                                        false,
+                                        Stage2RunLimits.historical(1000)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(work).doesNotExist();
+    }
+
+    @Test
     void sustainedObservationIsBoundedBeforeCreatingWork() {
         Path work = directory.resolve("sustained");
         assertThatThrownBy(

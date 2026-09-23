@@ -205,6 +205,9 @@ class LocalStagedHarness implements AutoCloseable {
 
     void committerWaited(long nanos) {}
 
+    /** Time a completion spent in its measurement before the committer could observe it. */
+    void completionHeld(long nanos) {}
+
     void clientCompleted(long sequence, long nanos, long completedAt) {
         clientCompletionNanos.add(nanos);
     }
