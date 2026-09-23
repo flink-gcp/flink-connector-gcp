@@ -21,6 +21,7 @@ import json
 import subprocess
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import google_crc32c
 import pytest
@@ -223,6 +224,10 @@ class Kube:
 
     def namespace(self, namespace):
         return {"metadata": {"uid": namespace + "-uid"}}
+
+    def nodes(self):
+        # An idle Autopilot cluster has no nodes, which the capacity gate admits.
+        return copy.deepcopy(getattr(self, "node_list", []))
 
     def get(self, kind, namespace, name):
         return copy.deepcopy(self.data.get((kind, namespace, name)))
@@ -1032,6 +1037,106 @@ def test_the_audit_accepts_autopilots_term_as_an_alternative_on_its_own():
     rt.verify_pod(pod, "supervisor", image)
 
 
+def node(ready=True, unschedulable=False, arch="amd64", spot=False):
+    labels = {"kubernetes.io/arch": arch}
+    if spot:
+        labels["cloud.google.com/gke-spot"] = "true"
+    value = {
+        "metadata": {"labels": labels},
+        "spec": {},
+        "status": {"conditions": [{"type": "Ready", "status": str(ready)}]},
+    }
+    if unschedulable:
+        value["spec"]["unschedulable"] = True
+    return value
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [[], [node(), node()], [node(), node(), node(unschedulable=True)]],
+    ids=["idle", "two", "two-and-draining"],
+)
+def test_capacity_admits_no_nodes_or_two_schedulable(nodes):
+    cli.require_capacity(SimpleNamespace(nodes=lambda: nodes))
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        [node()],
+        # The 2026-09-23 pilot's cluster: one node ready, one draining.
+        [node(), node(unschedulable=True)],
+        [node(), node(ready=False)],
+        [node(unschedulable=True)],
+        # Only nodes the supervisor could land on count.
+        [node(), node(spot=True)],
+        [node(), node(arch="arm64")],
+    ],
+    ids=[
+        "one",
+        "one-and-draining",
+        "one-and-not-ready",
+        "only-draining",
+        "one-and-spot",
+        "one-and-arm",
+    ],
+)
+def test_capacity_refuses_one_schedulable_node(nodes):
+    with pytest.raises(rt.Failure, match="none or at least two"):
+        cli.require_capacity(SimpleNamespace(nodes=lambda: nodes))
+
+
+def rig_args(**overrides):
+    value = {
+        "approve": "phrase",
+        "sha": "a" * 40,
+        "rig_sha": None,
+        "run_id": "rig-1487",
+    }
+    value.update(overrides)
+    return SimpleNamespace(**value)
+
+
+class EmptyStore:
+    def objects(self, prefix):
+        return []
+
+
+def test_dispatch_runs_the_main_commit_unless_a_rig_commit_is_named(monkeypatch):
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    cli.refuse_before_admission(rig_args(), EmptyStore(), "phrase")
+    with pytest.raises(rt.Failure, match="exact rig commit"):
+        cli.refuse_before_admission(rig_args(sha="b" * 40), EmptyStore(), "phrase")
+    # A named rig commit must be the approved one, not main's.
+    cli.refuse_before_admission(
+        rig_args(sha="b" * 40, rig_sha="b" * 40), EmptyStore(), "phrase"
+    )
+    with pytest.raises(rt.Failure, match="exact rig commit"):
+        cli.refuse_before_admission(
+            rig_args(sha="a" * 40, rig_sha="b" * 40), EmptyStore(), "phrase"
+        )
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/feature")
+    with pytest.raises(rt.Failure, match="exact rig commit"):
+        cli.refuse_before_admission(
+            rig_args(sha="b" * 40, rig_sha="b" * 40), EmptyStore(), "phrase"
+        )
+
+
+def test_the_lock_owner_names_a_rig_commit_the_approval_then_binds(env):
+    workflow = {"kind": "run", "nonce": "a" * 32, "sha": "b" * 40}
+    assert "rig_sha" not in cli.rig_owner(workflow, rig_args(sha="b" * 40))
+    owner = cli.rig_owner(workflow, rig_args(sha="c" * 40))
+    assert owner["sha"] == "b" * 40 and owner["rig_sha"] == "c" * 40
+    approval = copy.deepcopy(env[2])
+    approval["sha"] = "c" * 40
+    approval["lock_owner"] = dict(approval["lock_owner"], rig_sha="c" * 40)
+    rt.validate_approval(approval)
+    approval["lock_owner"]["rig_sha"] = "d" * 40
+    with pytest.raises(rt.Failure, match="lock identity"):
+        rt.validate_approval(approval)
+
+
 class SdkAdapter(requests.adapters.BaseAdapter):
     def __init__(self, replies):
         self.replies = iter(replies)
@@ -1394,9 +1499,29 @@ def test_workflows_hold_the_lock_around_infrastructure_and_preserve_main_boundar
             "opentofu-plan@flink-gcp.iam.gserviceaccount.com",
             "tier3-runner@flink-gcp.iam.gserviceaccount.com",
         ]
-        assert not any(step.get("with", {}).get("ref") for step in steps), (
-            "Never execute source from an untrusted input or workflow_run head"
-        )
+        refs = [
+            (index, step["with"]["ref"])
+            for index, step in enumerate(steps)
+            if step.get("with", {}).get("ref")
+        ]
+        if name == "recover":
+            # Recovery never executes anything but main.
+            assert refs == [], "Never execute a workflow_run head in recovery"
+            continue
+        # A run may check out a chosen rig commit, and only after main's own
+        # workflow has verified that the commit heads a branch of this
+        # repository, which excludes a fork's pull request commit.
+        assert [ref for _, ref in refs] == ["${{ inputs.rig_sha || github.sha }}"]
+        [(checkout, _)] = refs
+        verify = [
+            index
+            for index, step in enumerate(steps)
+            if "branches-where-head" in step.get("run", "")
+            and step.get("if") == "${{ inputs.rig_sha != '' }}"
+        ]
+        assert verify and verify[0] < checkout, "Verify the rig before checking it out"
+        assert '[[ "$RIG_SHA" =~ ^[0-9a-f]{40}$ ]]' in steps[verify[0]]["run"]
+        assert '[ "$RIG_SHA" != "$REVIEWED_SHA" ]' in steps[verify[0]]["run"]
 
 
 def test_completed_later_attempt_can_recover_an_older_retained_lock(env, monkeypatch):

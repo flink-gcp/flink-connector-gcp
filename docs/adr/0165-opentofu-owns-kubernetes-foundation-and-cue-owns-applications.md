@@ -43,6 +43,7 @@ limitations under the License.
 - Updated: 2026-09-21 (offline Pub/Sub trial proposals)
 - Updated: 2026-09-23 (spend approved from the pre-run estimate; run-time cost gates removed)
 - Updated: 2026-09-23 (BigQuery trial preregistration)
+- Updated: 2026-09-24 (dispatch of a chosen rig commit; capacity gate)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -925,3 +926,16 @@ The BigQuery campaign, its estimate, stop conditions and cleanup checks are prer
 An approval written before this change still carries the removed ceiling, and a BigQuery one the old trial schema, so the model refuses it and recovery could not settle it; the change is therefore merged only while no run holds the environment lock, rather than carrying a reader for a shape no future run writes.
 Keep everything that stops and cleans up a run, which is where a failure costs more than the run: the environment lock, idle and cleanup verification, recovery, the three empty plans and image retention.
 Declined: keeping a USD 10 scenario ceiling as a backstop, because the owner already approves the estimate itself, and a second number beside it only decides which approved runs the rig refuses; and keeping the pricing refusal as a freshness prompt, because it turned a stale rate table into a dispatch deadline without anyone checking the rates.
+
+### A run may check out a chosen rig commit
+
+The run workflow stays dispatched on `main`, so the runner's Workload Identity binding and recovery are unchanged, and may check out another rig commit through `rig_sha`.
+Confirming a rig fix against the service no longer waits for its merge: on 2026-09-23 two such defects each cost a full review and merge before one dispatch could confirm them.
+The commit must equal the approved `reviewed_sha` and head a branch of this repository, which `main`'s own workflow verifies before any rig source is checked out; a check inside the rig would be the rig vouching for itself, and a fork's commit is reachable through its pull request ref.
+The lock owner records the rig commit as `rig_sha` beside the workflow commit that recovery verifies, and the approval binds the rig commit.
+This runs unreviewed code with the runner's identity, which the owner accepted for speed; whether a run from an unmerged commit counts as a measurement is recorded with the run.
+Declined: letting the workflow itself run from a branch, which would widen the runner's Workload Identity condition from `main` to any ref.
+
+Dispatch refuses, before the lock, a cluster with exactly one schedulable node.
+Pilot `bq1312-alo-10-a2` lost its 1 CPU / 2 GiB supervisor to a system Pod 30 seconds after it started on a one-node cluster, so the supervisor's size does not prevent that preemption; from no nodes Autopilot provisioned one for it.
+A draining node counts as unschedulable, since GKE's node count includes it; the runner reads Node objects through the bootstrap reader role for this.

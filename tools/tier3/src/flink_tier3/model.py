@@ -305,7 +305,8 @@ def validate_approval(approval, now=None):
         raise Failure("Incomplete run approval")
     if (
         approval["lock_owner"].get("nonce") != approval["nonce"]
-        or approval["lock_owner"].get("sha") != approval["sha"]
+        or approval["lock_owner"].get("rig_sha", approval["lock_owner"].get("sha"))
+        != approval["sha"]
         or approval["lock_owner"].get("run_id") != approval["run_id"]
     ):
         raise Failure("Approval and lock identity differ")
