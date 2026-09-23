@@ -14,14 +14,149 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Cloud Tasks performance assessment: calibration preregistration
+# Cloud Tasks performance assessment: preregistration
 
-This is the preregistration for the host calibration that precedes the [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) assessment, within [ADR-0162](../0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) and [ADR-0104](../0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md).
-It fixes the execution conditions, the calibration cells, the numeric ceilings of the calibration session, the acceptance criteria for the instrument, and the protocol interpretations the owner must confirm before any paid session.
-Nothing here authorizes a dispatch: a session runs only after the owner approves this document's numbers, an image has been published for each Flink line, and the workflow input carries the approval phrase.
-The main assessment has its own later approval; the scale estimate at the end is context for that decision, not a request.
+This is the preregistration for the [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) assessment, within [ADR-0162](../0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) and [ADR-0104](../0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md).
+The assessment runs on a single-VM rig, as ADR-0162's 2026-09-21 refinement decided.
+Each section below names the rig it covers: the VM rig for everything that is still to run, and the cluster for the three calibration attempts already recorded, kept as they ran.
+Nothing here authorizes execution: the host, its deadline, each campaign's resources and cost are approved separately before anything billable runs, and the main assessment has its own later approval.
 
-## Fixed execution conditions
+## Fixed execution conditions on the VM rig
+
+| Condition | Value |
+| --- | --- |
+| Project and region | `flink-gcp`, `us-central1`; the zone is named in the approval |
+| Host | one `e2-standard-8` (8 vCPU, 32 GB) on standard provisioning, not Spot, with a Compute Engine maximum run duration and `DELETE` termination action as its deadline |
+| JVM | Java 17, `-Xmx24g`, leaving 8 GB to the operating system, direct memory and the controller; every run reports its peak heap |
+| Flink lines | `2.2.1` and `1.20.4`, each from its own classpath built from the reviewed source and frozen with its launcher among a campaign's inputs; one campaign runs one line |
+| Embedded cluster | the lean probe's in-JVM cluster, one TaskManager holding every slot; hashmap state, filesystem checkpoint storage inside the run's directory, the cell's checkpoint interval, a 120-second checkpoint timeout, one concurrent checkpoint, two retained, and a fixed-delay restart of three attempts ten seconds apart. These are the cluster's values, pinned in the probe by [#1473](https://github.com/flink-gcp/flink-connector-gcp/issues/1473); the probe left them at Flink's defaults until then, a ten-minute timeout among them |
+| Instrument | the lean probe ([#1446](https://github.com/flink-gcp/flink-connector-gcp/issues/1446)) reading the sink's gauges in process, extended by #1473 with checkpoint completions, checkpoint duration, size and pending count, restarts, source output and sink input for backlog, and the restore record a recovery cell needs |
+| Queue | `projects/flink-gcp/locations/us-central1/queues/ct1246-<campaign>-<order>`, one per run, created with the paused-queue configuration in `flink_tier3/cloudtasks.py` and read back paused before the run, deleted after it; never reused |
+| Target | `https://ct1246.invalid/task`; the paused queue dispatches nothing |
+| Sequencing | the campaign journal (`flink_tier3.campaign`) and controller (`flink_tier3.vmcampaign`); each run reserves its nominal span plus 600 seconds, which the calibration measures before the main campaign's reservation is fixed |
+| Evidence | each run's receipts, rows, samples and logs inside its own run directory, under an evidence root the controller names, with the per-file SHA-256 digests the controller records with its outcome; campaign directories are collected to the reviewing host with a SHA-256 manifest of the collected tree beside the frozen inputs' own digest |
+| Analysis | `flink_tier3.vmanalyze`, offline, reading the cell set from `flink_tier3/protocol_1246.toml`. It applies the steady-state items and the decision rule today; the calibration's other acceptance items and the achieved rate of interpretation 1 are not yet computed by it, and must be before the calibration's result is recorded ([#1475](https://github.com/flink-gcp/flink-connector-gcp/issues/1475)) |
+| Pricing basis | USD 0.268 per hour for the host and USD 0.40 per million Cloud Tasks operations, both re-checked when the owner approves an estimate |
+
+The staged arms keep the application's fixed options: one-hour name retention, one-minute clock-skew allowance, a 20-second request timeout, `recoveryMaxAttempts` 3 and `notFoundRecoveryMaxAttempts` 1.
+These are experiment inputs, not recommended production values.
+
+## Calibration cells on the VM rig
+
+Flink 2.2.1, 1 KiB bodies, channel pool 1, `UNNAMED` unless stated.
+Warm-up and observation follow the protocol rule, max(60 s, two checkpoints) and max(180 s, six checkpoints), except where a cell says otherwise.
+
+| Cell | Purpose | Parallelism, concurrency, checkpoint | Offered rate | Records |
+| --- | --- | --- | ---: | ---: |
+| `k01-pace-10` | pacing floor and target acceptance | 1, 1, 1 s | 10 | 2,430 |
+| `k02-pace-25` | pacing near the single-subtask ceiling | 1, 1, 1 s | 25 | 6,075 |
+| `k03a-delay-latency` | the 100 ms serialization delay at a rate the delayed pipeline sustains | 1, 1, 1 s | 2 | 486 |
+| `k03b-delay-capacity` | the same delay above what the pipeline sustains; 60 s warm-up and 60 s observation | 1, 1, 1 s | 10 | 1,230 |
+| `k04-pace-100` | pacing with CSV rows on | 4, 4, 10 s | 100 | 26,100 |
+| `k05-pace-1000` | pacing at 1,000 records per second | 16, 16, 60 s | 1,000 | 601,000 |
+| `k06-pace-2000` | pacing at 2,000 records per second, and the host's memory at the largest parallelism | 16, 16, 60 s | 2,000 | 1,202,000 |
+| `k07-counts-only` | the `k04` pair without CSV output | 4, 4, 10 s | 100 | 26,100 |
+| `k09-staged-gauges` | staged arm gauges and 64-hex names (`STAGED_HASH`) | 4, 4, 10 s | 100 | 26,100 |
+| `k10-random-control` | 32-hex name control (`NAMED_RANDOM_CONTROL`) | 4, 4, 10 s | 100 | 26,100 |
+| `k11-overrun-control` | a reservation of 120 seconds against a 243-second span; proves the overrun path | 1, 1, 1 s | 10 | 2,430 |
+| `k12-recovery-control` | one injected task failure half-way through observation on `STAGED_HASH`; proves the recovery record | 1, 1, 1 s | 10 | 2,430 |
+| `k13-staged-memory` | the host's memory under 64 KiB staged bodies at the largest parallelism (`STAGED_HASH`, 64 KiB) | 16, 16, 60 s | 100 | 60,100 |
+
+The Flink 1.20.4 repeat runs `k01`, `k02`, `k03a`, `k03b` and `k04` as a campaign of its own.
+
+The delay control is two cells because one cell cannot show both effects.
+The third cluster attempt measured that the delay caps its single subtask at 5.48 records per second, and its hard ceiling is ten, one record per 100 ms.
+A cell offered a rate the pipeline sustains achieves that rate, so its throughput shows nothing; it shows the delay in its latency, which is what `k03a` holds at 2 records per second.
+A cell offered more than the pipeline sustains shows the delay in its throughput and backlog, which is the capacity search's rejection rule, and `k03b` holds that at 10 records per second.
+`k03b`'s window is shorter than the rule because the saturated cell's checkpoints grow with its backlog, as the third cluster attempt's durations did.
+This is an estimate, not a measurement: at the cluster's 5.48, the backlog grows by 4.52 records a second and a barrier behind it waits about 0.82 seconds per second of input, which would pass the 120-second timeout about 146 seconds in and restart the job, so the span ends at 123 seconds.
+
+## Numeric ceilings of the VM calibration
+
+| Quantity | Calibration | Ceiling |
+| --- | ---: | ---: |
+| Runs | 13 on 2.2.1, 5 on 1.20.4 | 20 |
+| Records the sources emit | 1,982,581 and 36,321 | derived |
+| Task creations, planning bound (attempt limit × subtasks × the four incarnations the restart strategy allows) | 11,895,736 and 217,936 | 12,000,000 |
+| Queue administration writes | create, pause, delete per run | 3 per run |
+| Dispatches | 0 | 0 |
+| Nominal span | 4,185 s and 1,113 s, plus up to 600 s per run | 20,000 s |
+| Evidence | rows about 100 MB compressed | 4 GiB |
+| Cost | about USD 5.90 at the planning bound (USD 4.85 of operations) and about USD 1.90 at the records the sources emit, each with four hours of host time (USD 1.07) | USD 10 |
+
+## Acceptance criteria for the instrument on the VM rig
+
+Calibration passes when every item holds; a failure is repaired and this document is revised before any capacity claim.
+
+- `k03a` is detected and is a valid measurement: it achieves at least 95 % of its 2 records per second, and its per-repetition p95 is at least 100 ms.
+- `k03b` is detected: the capacity search's rejection rule rejects it, by achieving less than 95 % of its offered rate over the nominal window of interpretation 1, without a restart.
+- `k01`, `k02`, `k04`, `k05` and `k06` achieve at least 95 % of their offered rates with no sustained backlog growth across checkpoint boundaries.
+- The `k04` against `k07` pair reports the CSV output overhead in heap, GC time and achieved rate; the numbers parameterize the main approval and carry no threshold here.
+- The staged gauges are read on `k09` and absent on `k04`, and `k10` produces 32-hex task names.
+- `k06` and `k13` leave the host room: the largest heap in use after a collection stays at or below 75 % of the JVM's maximum, and collection takes at most 10 % of the run's elapsed time, both from the probe's record ([#1473](https://github.com/flink-gcp/flink-connector-gcp/issues/1473) adds the heap after collection); each run is recorded observed rather than failed or lost.
+- Every cell except `k03b`, `k11` and `k12` is a usable steady-state result under `vmanalyze`: the journal records it observed, it reconciles `complete`, it did not restart, its window holds at least six ordinary checkpoints, and its files verify against the digests recorded with its outcome.
+- `k11` is recorded failed for outliving its reservation, the analyzer lists it among the campaign's overruns, and the campaign proceeds to the next run.
+- `k12` restores once from a failure that found staged envelopes in the writer, its restore commits a nonempty set, and its record carries the restore's duration and the replay budget the restore consumed; its timing is reported, never judged.
+- The host is deleted and its absence verified, and every run's queue is deleted; this item is the rig's own record, not an analyzer check.
+
+## Protocol interpretations the owner must confirm
+
+The preregistered protocol leaves these points open; each is a decision, not a measurement, and the analysis code implements the reading below.
+
+1. The capacity search runs on the `UNNAMED` arm of each shape, body and line, and the frozen rate applies to all five arms of that group.
+   Only evidence that the sink fell behind rejects a rate: achieving less than 95 % of the offered rate, or sustained backlog growth across checkpoint boundaries.
+   A probe's achieved rate is the distinct creations completing between the end of warm-up and the source's last mapped record, divided by that span, not the steady-state window of interpretation 3: a saturated probe's checkpoints space out with its backlog, so it may hold too few of them for that window and still have fallen behind.
+   An interrupted, restarted or unexported probe, and one that met its offered rate over a window holding too few checkpoint boundaries to evaluate the backlog, measured nothing about saturation and is repeated under a fresh `-qN` index rather than counted as a rejection.
+   A rate offered twice without a measurement stalls the search for an operator instead of buying a third probe, and a search that accepts the protocol's highest offered rate of 10,000 records per second reports a ceiling at that rate.
+   A group whose contributing arms did not all run at one offered rate is inconclusive, as is a cell whose executed arm, line, body, shape, window or channel pool differs from the entry its ID names.
+2. A repetition whose evidence was lost is recorded and repeated at most once, with the suffix `-x2`; a second failure leaves the arm short and the shape inconclusive.
+   On the VM rig evidence is lost when the run was lost with the campaign that held it, outlived its reservation, failed before its source started, or left evidence that reconciles incomplete; the repeat counts only when it was handed out after that loss.
+   A restart, a failure after the source started and a window too short are the job's own behaviour on this host, so none of them is repeated.
+   On the cluster the same rule named incomplete evidence and interrupted Spot Pods.
+   A probe is repeated the same number of times, but under a fresh `-qN` index, because the probe index is the end of the identifier.
+3. The observation window of a cell runs from the first completed ordinary checkpoint after warm-up to the last completed ordinary checkpoint before end of input and must hold at least six such checkpoints; a cell with a restart is never a steady-state result.
+   On the VM rig the completions are the ones the probe records in its own wall clock, the clock of the source receipts that bound the window ([#1473](https://github.com/flink-gcp/flink-connector-gcp/issues/1473)); a cell without them has no window and no verdict, and no other window replaces it.
+4. Per-repetition p95 uses rows with status `OK` and a nonnegative latency. Throughput counts distinct sequences whose origin lies in the window and whose eventual status is `OK`, or `ALREADY_EXISTS` on a named or staged arm, where the service deduplicated an attempt whose outcome the client never saw; the unnamed baseline has no such answer, so an `ALREADY_EXISTS` there is a defect rather than a record.
+5. No averaging across lines or bodies; the repetition order is the pinned order.
+6. One queue per run on the VM rig, named from the campaign and the run's order, created paused before the run and deleted after it; a name is never reused.
+   Its depth is bounded by the run's attempt limit.
+   The cluster sessions used one queue per session.
+7. `ALREADY_EXISTS` on a named arm is explained only by an earlier attempt of the same sequence with the same name; otherwise the cell is invalid.
+8. `https://ct1246.invalid/task` is the target; `k01` proves the service accepts it before any larger cell runs.
+9. Calibration runs on Flink 2.2.1 first; the 1.20.4 repeat covers `k01` to `k04`, including both halves of the delay control.
+10. Recovery time and the replay budget a recovery consumes are reported and never thresholded.
+    They come from the recovery cells below, whose failure is one injected task failure on a single host; a JobManager or TaskManager replacement is outside this rig, and [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362)'s deployed evidence is cited for it rather than required.
+
+## Recovery cells on the VM rig
+
+The pinned protocol has no field that could express a failure, so the recovery quantities ADR-0162 leaves to this document come from cells of their own, beside the 420.
+Each is `STAGED_HASH` at 1 KiB, one injected task failure half-way through observation, three repetitions, reported and never thresholded:
+
+- `r1-s1`: shape `s1`, one subtask and a one-second checkpoint;
+- `r2-s3`: shape `s3`, sixteen subtasks and a sixty-second checkpoint, where the part of the replay budget spent before the owning checkpoint completes is material.
+
+Each runs at its shape's frozen rate from the capacity search, on each supported line.
+`k12` in the calibration proves only that the record is taken; these cells are the measurement.
+The record is the restart's timing, the restore's duration and the replay budget the restore consumed; #1473 supplies the instrument.
+A failure counts only when the writer held staged envelopes at the moment it was injected and the restore committed a nonempty set; one that found nothing to replay exercised no budget, and that repetition is recorded as unreported rather than repeated, because interpretation 2 repeats only lost evidence.
+
+## Main assessment scale on the VM rig, for context only
+
+The pinned protocol holds 420 cells whose nominal spans sum to 46.85 hours, 40 of them warm-up and observation.
+The capacity search adds about 260 probe cells and about 30 hours of span at the planning capacities.
+Each run adds its start and teardown: at the full 600-second margin every run reserves, the campaign's 680 runs would take about 190 hours, and at the minute the calibration is expected to measure, about 88 hours, or USD 24 of host time.
+The recovery cells add 12 runs across the two lines and about 1.4 hours of span.
+Creations depend on the accepted rates.
+With the two sixteen-by-sixteen shapes capped at 1,000 records per second and the others at their planning capacities, the pinned cells emit about 112 million records (USD 45), and the probes fewer than the 88 million the uncapped search would (under USD 35).
+The main campaign's ceiling is USD 150 for operations and host together; measuring a capacity above 1,000 records per second on those two shapes needs its own approval.
+The Cloud Tasks task-creation quota of the project is read before that approval, because the capacity search on the other shapes may still offer up to the protocol's 10,000 records per second.
+
+## Cluster calibration, 2026-09-19 to 2026-09-20
+
+The first three calibration attempts ran on the `flink-tier3` Autopilot cluster under the conditions below, and are recorded as they ran.
+Their session ceilings, acceptance items and cost basis are the cluster's, and nothing in this section applies to the VM rig.
+
+### Cluster execution conditions
 
 | Condition | Value |
 | --- | --- |
@@ -36,10 +171,7 @@ The main assessment has its own later approval; the scale estimate at the end is
 | Protocol pin | `flink_tier3/protocol_1246.toml`, converted field for field from the private draft, whose own SHA-256 is `32122ff01527f4e17a1eac7377c0f11430d71fabba2bce65b4c011afb5b07354`; the pin is part of the package source bundle, so `runtime_sha256` covers it; it is not part of the smaller set the supervisor mounts and `delivery_sha256` pins |
 | Pricing basis | the reviewed Autopilot rates in `policy.toml` and USD 0.40 per million Cloud Tasks operations; both are re-checked when the owner approves the estimate; since 2026-09-23 admission no longer refuses an older review (ADR-0165, spend is approved before dispatch) |
 
-The staged arms keep the application's fixed options: one-hour name retention, one-minute clock-skew allowance, a 20-second request timeout, `recoveryMaxAttempts` 3 and `notFoundRecoveryMaxAttempts` 1.
-These are experiment inputs, not recommended production values.
-
-## Calibration cells
+### Cluster calibration cells
 
 The reviewed session file is [`kubernetes/lifecycle/sessions/calibration-1246.toml`](../../../kubernetes/lifecycle/sessions/calibration-1246.toml); Flink 2.2.1, 1 KiB bodies, channel pool 1, `UNNAMED` unless stated.
 Warm-up and observation windows follow the protocol rule, max(60 s, two checkpoints) and max(180 s, six checkpoints).
@@ -84,12 +216,12 @@ Two acceptance items hold and four fail, and none of the four fails on the servi
 `k05` and `k06` had their JobManager Pod replaced 3 min 04 s and 6 min 53 s after the previous cell's JobManager Deployment was deleted, their TaskManager surviving both times and no eviction, preemption or termination reason recorded for either, which [#1413](https://github.com/flink-gcp/flink-connector-gcp/pull/1413) addresses by keeping the JobManager off Spot and out of the autoscaler's way.
 The sink metric identifiers were listed once per cell, on the first poll that reached the job, and all ten cells froze an empty list, so the staged gauges of `k09` and the `k04` against `k07` overhead figures have no evidence in this run at all; [#1440](https://github.com/flink-gcp/flink-connector-gcp/issues/1440) repairs the instrument, and the cell that carries the proof of that repair is the next attempt's `k09`.
 
-The campaign of this file is therefore `calibration-1246c`, and it is now spent. The name advances with the cells that will run it, and which rig runs the calibration that follows is open: the 2026-09-21 refinement of ADR-0162 moves the assessment onto the lean VM rig and leaves the calibration to the revision this document is owed.
+The campaign of this file is therefore `calibration-1246c`, and it is now spent. The calibration that follows runs on the VM rig, under the sections above.
 
 There is no record-count-mode pair: record-count mode prints its rows to standard output, which the session cannot capture, and receipt writes happen at most four times per creator incarnation outside the observation window, so their cost is bounded by construction and is read from the observed busy time rather than measured separately.
 Higher offered rates are not calibrated in advance: the capacity search of the main assessment ramps each shape from a low rate and observes the instrument at every step.
 
-## Numeric ceilings of the calibration session
+### Cluster session ceilings
 
 The session policy in `policy.toml` is the hard bound; the values below are what this session is expected to need under it.
 The cell count, records, creations and plan come from `flink_tier3.model.validate_cells` over the session file; the cost comes from `estimated_session_cost` at the window's lower bound of 11,918 seconds, and reaches USD 8.85 at its upper bound of 12,518 seconds.
@@ -112,7 +244,7 @@ The read estimate, the queue writes, the dispatch count and the evidence sizes a
 The Flink 1.20.4 repeat needs 4,110 s of plan, 236,800 planning-bound creations and USD 1.44 at its own window's lower bound of 5,010 seconds, USD 1.57 at the upper bound.
 The planning bound assumes one JobMaster's restart budget; a JobManager failover resets it, so the cell deadline and the paused queue, not the bound, cap what a misbehaving cell can spend.
 
-## Acceptance criteria for the instrument
+### Cluster acceptance criteria
 
 Calibration passes when every item holds; a failure is repaired and this document is revised before any capacity claim.
 
@@ -124,36 +256,3 @@ Calibration passes when every item holds; a failure is repaired and this documen
   The gauge and task-name items ask only that their cell's evidence was exported and verified, because neither reads a rate or a window.
 - `interrupt-control-k11` reconciles `restarted`, because its own interruption makes the source register a second incarnation, with `missing-terminal` among its reasons; it is exported, and the analyzer refuses it as a steady-state result while still reporting its recovery timing.
 - The session ends with the queue deleted, the benchmark prefixes released, the idle receipt and three empty refreshed plans; this item is the run's own receipts, not an analyzer check.
-
-## Protocol interpretations the owner must confirm
-
-The preregistered protocol leaves these points open; each is a decision, not a measurement, and the analysis code implements the reading below.
-
-1. The capacity search runs on the `UNNAMED` arm of each shape, body and line, and the frozen rate applies to all five arms of that group.
-   Only evidence that the sink fell behind rejects a rate: achieving less than 95 % of the offered rate, or sustained backlog growth across checkpoint boundaries.
-   An interrupted, restarted or unexported probe, and one that met its offered rate over a window holding too few checkpoint boundaries to evaluate the backlog, measured nothing about saturation and is repeated under a fresh `-qN` index rather than counted as a rejection.
-   A rate offered twice without a measurement stalls the search for an operator instead of buying a third probe, and a search that accepts the protocol's highest offered rate of 10,000 records per second reports a ceiling at that rate.
-   A group whose contributing arms did not all run at one offered rate is inconclusive, as is a cell whose executed arm, line, body, shape, window or channel pool differs from the entry its ID names.
-2. A repetition whose evidence is incomplete or whose Spot Pods were interrupted is recorded and repeated at most once, with the suffix `-x2`; a second failure leaves the arm short and the shape inconclusive.
-   A probe is repeated the same number of times, but under a fresh `-qN` index, because the probe index is the end of the identifier.
-3. The observation window of a cell runs from the first completed ordinary checkpoint after warm-up to the last completed ordinary checkpoint before end of input and must hold at least six such checkpoints; a cell with a restart is never a steady-state result.
-4. Per-repetition p95 uses rows with status `OK` and a nonnegative latency. Throughput counts distinct sequences whose origin lies in the window and whose eventual status is `OK`, or `ALREADY_EXISTS` on a named or staged arm, where the service deduplicated an attempt whose outcome the client never saw; the unnamed baseline has no such answer, so an `ALREADY_EXISTS` there is a defect rather than a record.
-5. No averaging across lines or bodies; the repetition order is the pinned order.
-6. One queue per session; its depth is bounded by the session's creation ceiling and it is deleted at cleanup.
-7. `ALREADY_EXISTS` on a named arm is explained only by an earlier attempt of the same sequence with the same name; otherwise the cell is invalid.
-8. `https://ct1246.invalid/task` is the target; `k01` proves the service accepts it before any larger cell runs.
-9. Calibration runs on Flink 2.2.1 first; the 1.20.4 repeat covers `k01` to `k04`.
-
-## Main assessment scale, for context only
-
-The pinned protocol holds 420 cells whose warm-up and observation sum to exactly 40 hours.
-Adding the ten minutes of startup and three minutes of teardown each cell is planned with brings the 420 cells to 138 hours.
-The capacity search adds one cell per probe: simulating the pinned search from an initial 25 records per second reaches the planning capacities below in six probes for the single-subtask shape, nine for the three shapes planned at 500 records per second, ten for the sixteen-subtask single-concurrency shape and eleven for the two sixteen-by-sixteen shapes, so the 28 groups of shape, body and line need 260 probe cells, or 86.6 hours.
-The campaign is therefore about 224 hours of cell time, 137.9 for the pinned cells and 86.6 for the probes, and a probe that has to be repeated adds to it.
-The per-session cell ceiling of 20 bounds 680 cells at 34 sessions, and the five-hour window, of which cleanup reserves the last 15 minutes, bounds the same time at 48, so the campaign needs at least 48 sessions as the ceilings stand.
-Compute at the policy rates is about USD 204 for that cell time, with the largest parallelism class accounting for 108 of the 224 hours.
-Creations depend on the accepted rates: at planning capacities of 25 records per second for the single-subtask shape, 400 for the sixteen-subtask single-concurrency shape, 500 for the four-subtask and one-subtask sixteen-concurrency shapes and 3,000 for the two sixteen-by-sixteen shapes, the sources would emit about 256 million records (USD 103 at USD 0.40 per million); halving the two largest shapes to 1,000 records per second brings that to about 112 million (USD 45).
-The 260 probe cells add about 88 million records of their own at those capacities (USD 35), because the search spends most of its probes near the accepted rate.
-The planning bound over those cells is several times the expected count, so the per-session creation ceiling binds long before the cost ceiling does.
-Compressed rows would occupy 10 to 15 GB of evidence at 40 to 60 bytes a row.
-Those sessions need a revised `[cloudtasks_ceilings]` for cells, creations and evidence, and the session count is itself a reason to revisit the five-hour window; each is a separate reviewed change and approval.
