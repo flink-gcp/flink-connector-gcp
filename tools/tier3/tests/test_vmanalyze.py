@@ -49,13 +49,8 @@ INC = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
 PROC = "cccccccc-cccc-4ccc-8ccc-ccccccccccc1"
 QUEUE = "projects/flink-gcp/locations/us-central1/queues/ct1246-vm1246a"
 BUDGETS = {"bytes": 1_000_000_000, "seconds": 36_000}
-ARM_INDEX = {
-    "UNNAMED": 0,
-    "NAMED_HASH": 1,
-    "NAMED_RANDOM_CONTROL": 2,
-    "STAGED_HASH": 3,
-    "STAGED_RANDOM": 4,
-}
+# The arms the reduced assessment measures.
+ARM_INDEX = {"UNNAMED": 0, "NAMED_HASH": 1, "STAGED_HASH": 3}
 
 WORKER = textwrap.dedent(
     """
@@ -421,19 +416,12 @@ def test_equal_arms_are_general_and_the_window_is_the_preregistered_one(
     assert report["cells"][0]["rows"]["p95_nanos"] == 5_000_000
 
 
-def test_a_candidate_is_labelled_by_the_thresholds_and_the_group_by_its_worst_arm(
+def test_half_the_throughput_at_three_times_the_p95_is_constrained(
     tmp_path, worker, trees
 ):
     directory = (
         Campaign(tmp_path, worker, trees)
-        .group(
-            {
-                # Half the records, three times the latency: constrained.
-                "STAGED_HASH": {"ok": 50, "latency": 15_000_000},
-                # A fifth of the records: below the constrained floor.
-                "STAGED_RANDOM": {"ok": 20},
-            }
-        )
+        .group({"STAGED_HASH": {"ok": 50, "latency": 15_000_000}})
         .drive()
     )
 
@@ -443,8 +431,23 @@ def test_a_candidate_is_labelled_by_the_thresholds_and_the_group_by_its_worst_ar
     assert hashed["label"] == "constrained"
     assert hashed["p95_ratio"] == 3
     assert Fraction(45, 100) < hashed["throughput_ratio"] < Fraction(55, 100)
-    assert group["comparisons"]["STAGED_RANDOM"]["label"] == "decline"
+    assert group["verdict"] == "constrained"
+    # The named path isolates staging: same names, same throughput as the baseline.
+    assert group["incremental_cost"]["STAGED_HASH"]["p95_ratio"] == 3
+
+
+def test_a_fifth_of_the_throughput_is_declined(tmp_path, worker, trees):
+    directory = (
+        Campaign(tmp_path, worker, trees).group({"STAGED_HASH": {"ok": 20}}).drive()
+    )
+
+    group = only_group(analyzed(directory))
+
+    assert group["comparisons"]["STAGED_HASH"]["label"] == "decline"
     assert group["verdict"] == "decline"
+    # Only the measured arms can be short; the random-name arms were never planned.
+    assert group["short_arms"] == []
+    assert set(group["comparisons"]) == {"STAGED_HASH"}
 
 
 def test_a_baseline_whose_repetitions_spread_more_than_a_tenth_is_inconclusive(
@@ -634,7 +637,7 @@ def test_a_different_offered_rate_across_arms_disqualifies_the_group(
     runs = Campaign(tmp_path, worker, trees).group()
     report = analyzed(runs.drive())
     for record in report["cells"]:
-        if record["arm"] == "STAGED_RANDOM":
+        if record["arm"] == "NAMED_HASH":
             record["offered_rate"] = 20
     groups, _ = vmanalyze.build_groups(
         [dict(r, reasons=[]) for r in report["cells"]],
@@ -642,6 +645,7 @@ def test_a_different_offered_rate_across_arms_disqualifies_the_group(
     )
 
     (group,) = groups
+    vmanalyze.measured_arms(group)
     assert group["verdict"] == "inconclusive"
     assert group["reasons"] == ["offered-rate-differs-across-arms"]
 
