@@ -108,6 +108,10 @@ final class Stage2ProductionSink
             @Override
             public void write(Long value, Context context)
                     throws IOException, InterruptedException {
+                if (run.light) {
+                    writer.write(value, context);
+                    return;
+                }
                 try {
                     writer.write(value, context);
                     run.staged.incrementAndGet();
@@ -207,21 +211,31 @@ final class Stage2ProductionSink
 
             @Override
             public byte[] serialize(BigtableCommittable value) throws IOException {
+                Stage2Harness run = run();
+                run.committableSerializations.incrementAndGet();
+                if (run.light) {
+                    return serializer.serialize(value);
+                }
                 long before = Stage2Harness.allocatedBytes();
                 try {
                     return serializer.serialize(value);
                 } finally {
-                    Stage2Harness.allocationDelta(run().serializationAllocatedBytes, before);
+                    Stage2Harness.allocationDelta(run.serializationAllocatedBytes, before);
                 }
             }
 
             @Override
             public BigtableCommittable deserialize(int version, byte[] value) throws IOException {
+                Stage2Harness run = run();
+                run.committableDeserializations.incrementAndGet();
+                if (run.light) {
+                    return serializer.deserialize(version, value);
+                }
                 long before = Stage2Harness.allocatedBytes();
                 try {
                     return serializer.deserialize(version, value);
                 } finally {
-                    Stage2Harness.allocationDelta(run().restoreAllocatedBytes, before);
+                    Stage2Harness.allocationDelta(run.restoreAllocatedBytes, before);
                 }
             }
         };
@@ -273,6 +287,9 @@ final class Stage2ProductionSink
             return new SingleRowClient() {
                 @Override
                 public ApiFuture<Boolean> checkAndMutateRow(ConditionalRowMutation mutation) {
+                    if (run.light && client != null) {
+                        return lightSend(client, mutation);
+                    }
                     var wire =
                             mutation.toProto(
                                     RequestContext.create(
@@ -296,6 +313,25 @@ final class Stage2ProductionSink
                                         now - started,
                                         now);
                                 run.commitAcknowledged(wire, now);
+                                if (matched) {
+                                    run.deduplicated.incrementAndGet();
+                                }
+                            });
+                }
+
+                private ApiFuture<Boolean> lightSend(
+                        SingleRowClient client, ConditionalRowMutation mutation) {
+                    try {
+                        // The wire limit's own per-attempt allowance, without a second copy.
+                        run.beforeProductionSend(run.payloadBytes + 1024L);
+                    } catch (IOException failure) {
+                        throw new UncheckedIOException(failure);
+                    }
+                    return new Stage2ObservedFuture<>(
+                            client.checkAndMutateRow(mutation),
+                            run,
+                            (matched, now) -> {
+                                run.lightAcknowledged.incrementAndGet();
                                 if (matched) {
                                     run.deduplicated.incrementAndGet();
                                 }

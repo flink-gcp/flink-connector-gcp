@@ -69,6 +69,22 @@ final class Stage2Harness extends LocalStagedHarness {
     final long wireLimit;
     final AtomicLong wireBytes = new AtomicLong();
     final boolean timed;
+
+    /**
+     * Skips the per-write bookkeeping that proves delivery (ledger, markers, acknowledgement times,
+     * client histogram, the instrument's own request copy) so the connector's cost can be measured
+     * apart from the instrument's. A light run keeps batch records, CPU readings and every budget
+     * guard, and cannot verify readback or visibility.
+     */
+    volatile boolean light;
+
+    final AtomicLong lightAcknowledged = new AtomicLong();
+    final AtomicLong committableSerializations = new AtomicLong();
+    final AtomicLong committableDeserializations = new AtomicLong();
+
+    /** Admissions per second across all readers, or 0 for as fast as backpressure allows. */
+    volatile long admitPerSecond;
+
     private volatile long admissionEnd = Long.MAX_VALUE;
     private volatile long measureStart;
     private volatile boolean preflightDone;
@@ -197,6 +213,9 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     synchronized void admitted(long sequence) {
+        if (light) {
+            return;
+        }
         try {
             ledger.admit(sequence, System.nanoTime());
         } catch (IOException failure) {
@@ -206,6 +225,10 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     synchronized void acknowledged(long sequence, long now) {
+        if (light) {
+            lightAcknowledged.incrementAndGet();
+            return;
+        }
         try {
             ledger.acknowledge(sequence, now);
         } catch (IOException failure) {
@@ -220,6 +243,9 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     StagedMutationTestSink.Input input(long sequence) {
+        if (light) {
+            return input(sequence, Stage2Ledger.MEASURED);
+        }
         try {
             return input(sequence, ledger.entry(sequence).phase);
         } catch (IOException failure) {
@@ -264,6 +290,9 @@ final class Stage2Harness extends LocalStagedHarness {
 
     @Override
     void prepared(Collection<CheckAndMutateRowRequest> requests) throws IOException {
+        if (light) {
+            return;
+        }
         for (CheckAndMutateRowRequest request : requests) {
             new BigtableCommittable(request);
             ledger.marker(
@@ -358,7 +387,15 @@ final class Stage2Harness extends LocalStagedHarness {
     }
 
     @Override
+    Stage2CommitProgress.Invocation commitSent() {
+        return commits.sent();
+    }
+
+    @Override
     synchronized void clientCompleted(long sequence, long nanos, long completedAt) {
+        if (light) {
+            return;
+        }
         try {
             if (ledger.entry(sequence).phase != Stage2Ledger.MEASURED) {
                 return;

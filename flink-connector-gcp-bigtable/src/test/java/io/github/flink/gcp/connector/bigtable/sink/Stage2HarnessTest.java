@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
+import com.google.bigtable.v2.MutateRowsRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -27,7 +28,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -571,6 +575,126 @@ class Stage2HarnessTest {
         assertThat(BigtableStage2Probe.directorySize(root)).isEqualTo(2048);
         assertThatThrownBy(() -> BigtableStage2Probe.directorySize(directory.resolve("missing")))
                 .hasMessageContaining("disappeared");
+    }
+
+    @Test
+    void lightModeSkipsTheLedgerAndOnlyCountsAcknowledgements() throws Exception {
+        try (Stage2Harness run = local(true)) {
+            run.startWindow(System.nanoTime(), 0, TimeUnit.MINUTES.toNanos(1));
+            StagedMutationTestSink.Input input = run.input(3);
+            CheckAndMutateRowRequest committed =
+                    BigtableCommittable.stage(
+                                    run.table,
+                                    LocalStagedHarness.PROFILE,
+                                    StagedMutationTestSink.MARKER_FAMILY,
+                                    MutateRowsRequest.Entry.newBuilder()
+                                            .setRowKey(input.row())
+                                            .addAllMutations(input.mutations())
+                                            .build(),
+                                    new SecureRandom())
+                            .getRequest();
+            assertThatThrownBy(() -> run.prepared(List.of(committed)))
+                    .as("the full instrument records a marker only for an admitted input")
+                    .hasMessageContaining("Marker without admitted input");
+            run.light = true;
+            run.admitted(3);
+            run.prepared(List.of(committed));
+            run.acknowledged(3, System.nanoTime());
+            assertThat(run.ledger.admittedCount()).isZero();
+            assertThat(run.ledger.acknowledgedCount()).isZero();
+            assertThat(run.lightAcknowledged).hasValue(1);
+            assertThat(run.input(3).row().toStringUtf8())
+                    .as("a light run names rows without reading the ledger")
+                    .startsWith(Stage2Ledger.MEASURED + "/");
+        }
+    }
+
+    @Test
+    void theInstrumentModeAndAdmissionRateAreValidated() {
+        String mode = System.getProperty("stage2.instrument");
+        String rate = System.getProperty("stage2.admitPerSecond");
+        try {
+            System.clearProperty("stage2.instrument");
+            assertThat(BigtableStage2Probe.lightInstrument(false)).isFalse();
+            System.setProperty("stage2.instrument", "lite");
+            assertThatThrownBy(() -> BigtableStage2Probe.lightInstrument(true))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("full or light");
+            System.setProperty("stage2.instrument", "light");
+            assertThat(BigtableStage2Probe.lightInstrument(true)).isTrue();
+            assertThatThrownBy(() -> BigtableStage2Probe.lightInstrument(false))
+                    .as("the lightweight send path needs a real transport")
+                    .hasMessageContaining("needs the emulator or a service transport");
+            System.clearProperty("stage2.admitPerSecond");
+            assertThat(BigtableStage2Probe.admitPerSecond(4)).isZero();
+            System.setProperty("stage2.admitPerSecond", "3");
+            assertThatThrownBy(() -> BigtableStage2Probe.admitPerSecond(4))
+                    .hasMessageContaining("at least the parallelism");
+            System.setProperty("stage2.admitPerSecond", "10000x");
+            assertThatThrownBy(() -> BigtableStage2Probe.admitPerSecond(1))
+                    .as("an unparseable rate is refused rather than read as unpaced")
+                    .hasMessageContaining("whole number");
+            System.setProperty("stage2.admitPerSecond", "-1");
+            assertThatThrownBy(() -> BigtableStage2Probe.admitPerSecond(1))
+                    .hasMessageContaining("at least the parallelism");
+            System.setProperty("stage2.admitPerSecond", "1000");
+            assertThat(BigtableStage2Probe.admitPerSecond(3)).isEqualTo(1000);
+        } finally {
+            restore("stage2.instrument", mode);
+            restore("stage2.admitPerSecond", rate);
+        }
+    }
+
+    private static void restore(String key, String value) {
+        if (value == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, value);
+        }
+    }
+
+    @Test
+    void admissionSharesAddUpToTheRateAndPaceFromTheFirstAdmission() {
+        assertThat(Stage2Source.perReaderRate(0, 3, 0)).as("unpaced").isZero();
+        long total = 0;
+        for (int index = 0; index < 3; index++) {
+            total += Stage2Source.perReaderRate(1000, 3, index);
+        }
+        assertThat(total).isEqualTo(1000);
+        assertThat(Stage2Source.perReaderRate(1000, 3, 0)).isEqualTo(334);
+        assertThat(Stage2Source.perReaderRate(1000, 3, 2)).isEqualTo(333);
+        assertThat(Stage2Source.dueNanos(5_000, 0, 1000)).isEqualTo(5_000);
+        assertThat(Stage2Source.dueNanos(5_000, 250, 1000))
+                .as("the 251st record is due a quarter second after the first")
+                .isEqualTo(5_000 + 250_000_000L);
+    }
+
+    @Test
+    void threadGroupTotalsFoldDigitsKeepEndedThreadsAndStayValidJson() throws Exception {
+        Map<Long, BigtableStage2Probe.ThreadReading> before =
+                Map.of(
+                        1L, new BigtableStage2Probe.ThreadReading("worker-1", 100, 10),
+                        2L, new BigtableStage2Probe.ThreadReading("worker-2", 50, -1));
+        Map<Long, BigtableStage2Probe.ThreadReading> seen =
+                Map.of(
+                        1L, new BigtableStage2Probe.ThreadReading("worker-1", 400, 30),
+                        2L, new BigtableStage2Probe.ThreadReading("worker-2", 150, -1),
+                        3L, new BigtableStage2Probe.ThreadReading("odd \"name\"\\\n", 7, 1));
+        var mapper =
+                new org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper();
+        var cpu =
+                mapper.readTree(
+                        BigtableStage2Probe.threadGroupTotals(
+                                before, seen, reading -> reading.cpuNanos));
+        assertThat(cpu.path("worker-N").asLong()).isEqualTo(300 + 100);
+        assertThat(cpu.size()).isEqualTo(2);
+        var bytes =
+                mapper.readTree(
+                        BigtableStage2Probe.threadGroupTotals(
+                                before, seen, reading -> reading.allocatedBytes));
+        assertThat(bytes.path("worker-N").asLong())
+                .as("a thread the JVM gave no allocation reading is left out")
+                .isEqualTo(20);
     }
 
     private Stage2Harness local(boolean timed) throws IOException {

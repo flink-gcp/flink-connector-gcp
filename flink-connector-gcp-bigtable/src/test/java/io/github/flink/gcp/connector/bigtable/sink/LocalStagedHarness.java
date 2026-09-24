@@ -205,6 +205,13 @@ class LocalStagedHarness implements AutoCloseable {
 
     void committerWaited(long nanos) {}
 
+    /**
+     * The commit invocation on the calling thread that a new request belongs to, or {@code null}.
+     */
+    Stage2CommitProgress.Invocation commitSent() {
+        return null;
+    }
+
     /** Time a completion spent in its measurement before the committer could observe it. */
     void completionHeld(long nanos) {}
 

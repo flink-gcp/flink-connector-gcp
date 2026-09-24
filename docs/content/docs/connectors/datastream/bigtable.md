@@ -76,7 +76,11 @@ The [Stage 2 assessment]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0163
 On a four-processor task manager host the staged visibility p95 was 3.5 to 6.6 seconds with one subtask and 7.2 to 7.6 seconds with four, where the subtasks competed for the host's processors.
 On a sixteen-processor host it was 2.6 to 3.5 seconds with one subtask and 1.7 to 2.1 seconds with four.
 The at-least-once sink's p95 was 23 to 61 milliseconds in the matching cells of the same matrix.
-What limits a single committer at the default is not yet identified, and [#1476]({{< param BookRepo >}}/issues/1476) investigates it; the rate of the staged committer's `requestsCompleted` counter shows how fast a job is draining.
+A committer sends every write from its one committing thread, and [#1476]({{< param BookRepo >}}/issues/1476) found what limits it.
+Near the instance that thread's processor time is the limit: with the measuring instrument's own overhead removed, one committer on a sixteen-processor host in the instance's zone drained about 10,000 writes per second at the default and about 12,000 with `maxInFlightRequests` at 400, close to what a bare Bigtable client reached from one thread.
+There, more subtasks raise a job's rate where the task managers have idle processors, and a four times larger bound added only about a fifth.
+Far from the instance the round trip is the limit instead, and the drain grows in proportion to `maxInFlightRequests`: over a round trip of about 170 ms, one committer drained about 390 writes per second at 100 and about 1,500 at 400.
+The rate of the staged committer's `requestsCompleted` counter shows how fast a job is draining.
 At a ten-second interval a commit could outlast the interval, so an input rate the drain cannot match grows a backlog: visibility rose to tens of seconds within the run, and checkpoints can expire.
 Writes concentrated on one row are bounded by Bigtable rather than by the connector: one row accepted about 1,600 to 2,200 conditional writes per second at every concurrency from 16 upwards, so the writes to that row cannot go faster, and a workload that sends a share of its writes to one row drains at most about that rate divided by the share; the measured hot-key workload sent nine writes in ten to one row.
 

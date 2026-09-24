@@ -25,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static io.github.flink.gcp.connector.testutils.Awaits.await;
@@ -356,6 +357,9 @@ public final class BigtableStage2Probe {
         Math.multiplyExact(
                 Math.addExact(Math.addExact(warmupMillis, measurementMillis), limits.drainMillis),
                 1_000_000L);
+        boolean light = lightInstrument(lease != null || emulator);
+        long admitPerSecond = admitPerSecond(parallelism);
+        Stage2CommitProgress.enableWaitAccounting();
         Stage2Harness.checkDistribution();
         Files.createDirectories(directory.getParent());
         Files.createDirectory(directory);
@@ -367,18 +371,21 @@ public final class BigtableStage2Probe {
         Stage2Harness observedRun = null;
         boolean recordsPrinted = false;
         try (Stage2Harness run =
-                        new Stage2Harness(
-                                destination,
-                                endpoint,
-                                directory.resolve("inventory.bin"),
-                                capacity,
-                                bytes,
-                                hot,
-                                false,
-                                inFlight,
-                                true,
-                                lease,
-                                limits);
+                        instrumented(
+                                new Stage2Harness(
+                                        destination,
+                                        endpoint,
+                                        directory.resolve("inventory.bin"),
+                                        capacity,
+                                        bytes,
+                                        hot,
+                                        false,
+                                        inFlight,
+                                        true,
+                                        lease,
+                                        limits),
+                                light,
+                                admitPerSecond);
                 LocalStagedJob job =
                         new LocalStagedJob(
                                 run,
@@ -408,7 +415,13 @@ public final class BigtableStage2Probe {
                     () -> "started=" + run.readersStarted.get());
             Stage2Sampler sampler = new Stage2Sampler(job);
             String initialSample =
-                    "{\"phase\":\"before-admission\",\"admissionMode\":\"unrestricted\",\"checkpoints\":"
+                    "{\"phase\":\"before-admission\",\"admissionMode\":\""
+                            + (run.admitPerSecond == 0 ? "unrestricted" : "paced")
+                            + "\",\"admitPerSecond\":"
+                            + run.admitPerSecond
+                            + ",\"instrument\":\""
+                            + (run.light ? "light" : "full")
+                            + "\",\"checkpoints\":"
                             + job.checkpointStats()
                             + "}";
             long sampleBytes =
@@ -423,7 +436,11 @@ public final class BigtableStage2Probe {
                 throw new IOException("Stage 2 measurement write failed");
             }
             System.out.println(
-                    "STAGE2_CONFIG instrument=production-v1 bytes="
+                    "STAGE2_CONFIG instrument="
+                            + (run.light ? "production-light" : "production-v1")
+                            + " admitPerSecond="
+                            + run.admitPerSecond
+                            + " bytes="
                             + bytes
                             + " parallelism="
                             + parallelism
@@ -447,6 +464,10 @@ public final class BigtableStage2Probe {
                 lease.requireWindow(Math.addExact(warmupMillis, measurementMillis));
             }
             long gcBefore = gcMillis();
+            long cpuBefore = processCpuNanos();
+            Map<Long, ThreadReading> threadsBefore = new java.util.HashMap<>();
+            observeThreads(threadsBefore);
+            Map<Long, ThreadReading> threadsSeen = new java.util.HashMap<>();
             long started = System.nanoTime();
             run.startWindow(
                     started,
@@ -474,6 +495,7 @@ public final class BigtableStage2Probe {
                     lease.requireLive();
                 }
                 if (now >= nextSample) {
+                    observeThreads(threadsSeen);
                     String sample = job.checkpointStats();
                     String runtime = sampler.sample();
                     String progress = run.commits.sample(System.nanoTime());
@@ -529,8 +551,56 @@ public final class BigtableStage2Probe {
                 }
             }
             job.result.get();
+            long finished = System.nanoTime();
+            long cpuAfter = processCpuNanos();
+            observeThreads(threadsSeen);
             requireWorkWithinLimit(lease, directory, limits.workBytes);
             long gc = gcMillis() - gcBefore;
+            System.out.println(
+                    "STAGE2_PROCESS_CPU {\"elapsedNanos\":"
+                            + (finished - started)
+                            + ",\"processCpuNanos\":"
+                            + (cpuBefore < 0 || cpuAfter < 0 ? -1 : cpuAfter - cpuBefore)
+                            + ",\"processors\":"
+                            + Runtime.getRuntime().availableProcessors()
+                            + ",\"threadGroups\":"
+                            + threadGroupTotals(
+                                    threadsBefore, threadsSeen, reading -> reading.cpuNanos)
+                            + ",\"committableSerializations\":"
+                            + run.committableSerializations.get()
+                            + ",\"committableDeserializations\":"
+                            + run.committableDeserializations.get()
+                            + ",\"threadGroupAllocatedBytes\":"
+                            + threadGroupTotals(
+                                    threadsBefore, threadsSeen, reading -> reading.allocatedBytes)
+                            + "}");
+            if (run.light) {
+                System.out.println(
+                        "STAGE2_LIGHT {\"acknowledged\":"
+                                + run.lightAcknowledged.get()
+                                + ",\"deduplicated\":"
+                                + run.deduplicated.get()
+                                + ",\"peakActive\":"
+                                + run.peakActive.get()
+                                + ",\"committerWaitNanos\":"
+                                + run.committerWaitNanos.get()
+                                + ",\"gcMillis\":"
+                                + gc
+                                + ",\"censored\":"
+                                + run.censored.get()
+                                + "}");
+                System.out.println("STAGE2_CHECKPOINT_FINAL " + job.checkpointStats());
+                System.out.println("STAGE2_COMMIT_FINAL " + run.commits.sample(System.nanoTime()));
+                printCommitRecords(run);
+                recordsPrinted = true;
+                samples.flush();
+                preserveSamples(lease, directory, false, maximumSampleBytes);
+                // A match means the row already held this envelope's marker, so nothing was
+                // written.
+                return !run.censored.get()
+                        && run.lightAcknowledged.get() > 0
+                        && run.deduplicated.get() == 0;
+            }
             if (run.ledger.measuredCount() == 0 && run.censored.get()) {
                 if (run.ledger.admittedCount() != run.ledger.acknowledgedCount()) {
                     throw new IOException("Censored inventory was not drained");
@@ -622,6 +692,138 @@ public final class BigtableStage2Probe {
                 System.out.println("STAGE2_LOCAL_CLEANUP ABSENT " + directory);
             }
         }
+    }
+
+    /**
+     * Whether {@code -Dstage2.instrument} selects the lightweight instrument; {@code full} or unset
+     * selects the full one and anything else fails. The lightweight send path needs a Bigtable
+     * transport, so it is refused for the fake one.
+     */
+    static boolean lightInstrument(boolean transport) {
+        String mode = System.getProperty("stage2.instrument", "full");
+        if (!mode.equals("full") && !mode.equals("light")) {
+            throw new IllegalArgumentException("stage2.instrument must be full or light: " + mode);
+        }
+        if (mode.equals("light") && !transport) {
+            throw new IllegalArgumentException(
+                    "stage2.instrument=light needs the emulator or a service transport");
+        }
+        return mode.equals("light");
+    }
+
+    /**
+     * The average admission rate across readers from {@code -Dstage2.admitPerSecond}, 0 for
+     * unpaced; a paced run gives every reader at least one input per second.
+     */
+    static long admitPerSecond(int parallelism) {
+        String value = System.getProperty("stage2.admitPerSecond", "0");
+        long rate;
+        try {
+            rate = Long.parseLong(value);
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException(
+                    "stage2.admitPerSecond must be a whole number: " + value, failure);
+        }
+        if (rate < 0 || (rate > 0 && rate < parallelism)) {
+            throw new IllegalArgumentException(
+                    "stage2.admitPerSecond must be 0 or at least the parallelism: " + rate);
+        }
+        return rate;
+    }
+
+    /** Sets the run's instrument mode and admission rate before any reader or writer exists. */
+    private static Stage2Harness instrumented(
+            Stage2Harness run, boolean light, long admitPerSecond) {
+        run.light = light;
+        run.admitPerSecond = admitPerSecond;
+        return run;
+    }
+
+    /**
+     * One thread's name, CPU time and allocated bytes, each -1 where the JVM does not measure it.
+     */
+    static final class ThreadReading {
+        final String name;
+        final long cpuNanos;
+        final long allocatedBytes;
+
+        ThreadReading(String name, long cpuNanos, long allocatedBytes) {
+            this.name = name;
+            this.cpuNanos = cpuNanos;
+            this.allocatedBytes = allocatedBytes;
+        }
+    }
+
+    /**
+     * Reads every live thread into {@code seen}, replacing an earlier reading of the same thread,
+     * so a thread that has ended keeps its last one.
+     */
+    static void observeThreads(Map<Long, ThreadReading> seen) {
+        var bean = ManagementFactory.getThreadMXBean();
+        var allocation =
+                bean instanceof com.sun.management.ThreadMXBean
+                                && ((com.sun.management.ThreadMXBean) bean)
+                                        .isThreadAllocatedMemoryEnabled()
+                        ? (com.sun.management.ThreadMXBean) bean
+                        : null;
+        boolean cpu = bean.isThreadCpuTimeSupported() && bean.isThreadCpuTimeEnabled();
+        for (java.lang.management.ThreadInfo info : bean.getThreadInfo(bean.getAllThreadIds())) {
+            if (info == null) {
+                continue;
+            }
+            long id = info.getThreadId();
+            seen.put(
+                    id,
+                    new ThreadReading(
+                            info.getThreadName(),
+                            cpu ? bean.getThreadCpuTime(id) : -1,
+                            allocation == null ? -1 : allocation.getThreadAllocatedBytes(id)));
+        }
+    }
+
+    /**
+     * The growth of one per-thread value since {@code before} for every thread {@code seen}, summed
+     * by thread name with digits folded, as a JSON object. A thread that ended counts up to its
+     * last reading, so a group can understate its share by up to one sampling interval; a thread
+     * without the value is left out.
+     */
+    static String threadGroupTotals(
+            Map<Long, ThreadReading> before,
+            Map<Long, ThreadReading> seen,
+            java.util.function.ToLongFunction<ThreadReading> value) {
+        Map<String, Long> groups = new java.util.TreeMap<>();
+        seen.forEach(
+                (id, reading) -> {
+                    long now = value.applyAsLong(reading);
+                    if (now < 0) {
+                        return;
+                    }
+                    ThreadReading earlier = before.get(id);
+                    long then = earlier == null ? 0 : Math.max(0, value.applyAsLong(earlier));
+                    String group =
+                            reading.name
+                                    .replaceAll("[0-9]+", "N")
+                                    .replaceAll("[^A-Za-z0-9 ._:#()>/-]", "_");
+                    groups.merge(group, now - then, Long::sum);
+                });
+        StringBuilder json = new StringBuilder("{");
+        groups.forEach(
+                (name, total) -> {
+                    if (json.length() > 1) {
+                        json.append(',');
+                    }
+                    json.append('"').append(name).append("\":").append(total);
+                });
+        return json.append('}').toString();
+    }
+
+    /** This JVM's CPU time, or -1 where the platform does not report it. */
+    static long processCpuNanos() {
+        var bean = ManagementFactory.getOperatingSystemMXBean();
+        if (bean instanceof com.sun.management.OperatingSystemMXBean) {
+            return ((com.sun.management.OperatingSystemMXBean) bean).getProcessCpuTime();
+        }
+        return -1;
     }
 
     /**

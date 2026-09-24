@@ -21,6 +21,8 @@ import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 
+import javax.annotation.Nullable;
+
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -36,6 +38,7 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
     private final SettableApiFuture<V> observed = SettableApiFuture.create();
     private final LocalStagedHarness run;
     private final boolean measureCommitWait;
+    @Nullable private final Stage2CommitProgress.Invocation invocation;
 
     Stage2ObservedFuture(ApiFuture<V> original, LocalStagedHarness run, Completion<V> completion) {
         this(original, run, completion, true);
@@ -50,6 +53,7 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
         this.run = run;
         this.measureCommitWait = measureCommitWait;
         run.peakActive.accumulateAndGet(run.active.incrementAndGet(), Math::max);
+        invocation = measureCommitWait ? run.commitSent() : null;
         ApiFutures.addCallback(
                 original,
                 new ApiFutureCallback<V>() {
@@ -70,6 +74,9 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
                         } else {
                             observed.setException(failure);
                         }
+                        // Only after publishing, so a request is never counted complete behind
+                        // itself while the committer is already waiting on it.
+                        completedInInvocation();
                     }
 
                     @Override
@@ -80,9 +87,16 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
                         } else {
                             observed.setException(failure);
                         }
+                        completedInInvocation();
                     }
                 },
                 Runnable::run);
+    }
+
+    private void completedInInvocation() {
+        if (invocation != null) {
+            invocation.completed();
+        }
     }
 
     @Override
@@ -107,12 +121,18 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
 
     @Override
     public V get() throws InterruptedException, ExecutionException {
+        boolean blocked = !observed.isDone();
+        int completedBehind = invocation == null ? 0 : invocation.completedBehindHead(!blocked);
         long started = System.nanoTime();
         try {
             return observed.get();
         } finally {
             if (measureCommitWait) {
-                run.committerWaited(System.nanoTime() - started);
+                long waited = System.nanoTime() - started;
+                run.committerWaited(waited);
+                if (invocation != null) {
+                    invocation.waited(waited, blocked, completedBehind);
+                }
             }
         }
     }
@@ -120,12 +140,18 @@ final class Stage2ObservedFuture<V> implements ApiFuture<V> {
     @Override
     public V get(long timeout, TimeUnit unit)
             throws InterruptedException, ExecutionException, TimeoutException {
+        boolean blocked = !observed.isDone();
+        int completedBehind = invocation == null ? 0 : invocation.completedBehindHead(!blocked);
         long started = System.nanoTime();
         try {
             return observed.get(timeout, unit);
         } finally {
             if (measureCommitWait) {
-                run.committerWaited(System.nanoTime() - started);
+                long waited = System.nanoTime() - started;
+                run.committerWaited(waited);
+                if (invocation != null) {
+                    invocation.waited(waited, blocked, completedBehind);
+                }
             }
         }
     }

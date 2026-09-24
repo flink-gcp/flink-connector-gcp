@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.apache.flink.api.common.serialization.SerializerConfigImpl;
+import org.apache.flink.api.connector.sink2.Committer.CommitRequest;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo;
 import org.apache.flink.streaming.runtime.operators.sink.CommitterOperatorFactory;
@@ -27,18 +29,36 @@ import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
+import com.google.api.core.ApiFuture;
 import com.google.api.core.SettableApiFuture;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
+import com.google.cloud.bigtable.data.v2.models.ConditionalRowMutation;
+import com.google.cloud.bigtable.data.v2.models.ReadModifyWriteRow;
+import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.committer.BigtableStagedCommitter;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowClient;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowClientFactory;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static io.github.flink.gcp.connector.testutils.Awaits.await;
@@ -305,6 +325,264 @@ class Stage2CommitProgressTest {
             assertThat(snapshot.path("finishedBatches").asInt()).isEqualTo(1);
             assertThat(snapshot.path("failedBatches").asInt()).isZero();
             assertThat(run.ledger.acknowledgedCount()).isEqualTo(3);
+        }
+    }
+
+    @Test
+    void classifiesTheProductionCommittersWaitsAtTheBoundAndInTheDrain() throws Exception {
+        var bean = java.lang.management.ManagementFactory.getThreadMXBean();
+        Assumptions.assumeTrue(bean.isThreadContentionMonitoringSupported());
+        boolean accounting = bean.isThreadContentionMonitoringEnabled();
+        Stage2CommitProgress.enableWaitAccounting();
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        AtomicLong totalWait = new AtomicLong();
+        List<SettableApiFuture<Boolean>> sent = new CopyOnWriteArrayList<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (LocalStagedHarness run =
+                new LocalStagedHarness(1024, false, false, 2) {
+                    @Override
+                    Stage2CommitProgress.Invocation commitSent() {
+                        return progress.sent();
+                    }
+
+                    @Override
+                    void committerWaited(long nanos) {
+                        totalWait.addAndGet(nanos);
+                    }
+                }) {
+            SingleRowClient client =
+                    new SingleRowClient() {
+                        @Override
+                        public ApiFuture<Boolean> checkAndMutateRow(
+                                ConditionalRowMutation mutation) {
+                            SettableApiFuture<Boolean> original = SettableApiFuture.create();
+                            // Every second request completes at once, behind a slower head.
+                            if (sent.size() % 2 == 1) {
+                                original.set(false);
+                            }
+                            sent.add(original);
+                            return new Stage2ObservedFuture<>(original, run, (value, now) -> {});
+                        }
+
+                        @Override
+                        public ApiFuture<Row> readModifyWriteRow(ReadModifyWriteRow mutation) {
+                            throw new AssertionError("Only conditional requests");
+                        }
+                    };
+            var options =
+                    BigtableStagedOptions.builder()
+                            .markerFamily(StagedMutationTestSink.MARKER_FAMILY)
+                            .requestOptions(
+                                    BigtableRequestOptions.builder().maxInFlightRequests(2).build())
+                            .build();
+            Object committerId = new Object();
+            try (var committer =
+                    new BigtableStagedCommitter(
+                            options,
+                            (table, profile, marker, expected) -> {},
+                            profile -> new FixedClients(client),
+                            Map.of(),
+                            new UnregisteredMetricsGroup())) {
+                List<CommitRequest<BigtableCommittable>> requests = new ArrayList<>();
+                for (int i = 0; i < 4; i++) {
+                    requests.add(new Request());
+                }
+                Thread thread =
+                        new Thread(
+                                () -> {
+                                    progress.started(committerId, 4, System.nanoTime(), -1);
+                                    boolean successful = false;
+                                    try {
+                                        committer.commit(requests);
+                                        successful = true;
+                                    } catch (Throwable caught) {
+                                        failure.set(caught);
+                                    } finally {
+                                        progress.finished(
+                                                committerId, successful, System.nanoTime(), -1);
+                                    }
+                                });
+                thread.start();
+                // The committer blocks twice: on the first request at the bound of two, while the
+                // second is already complete, and on the third in the final drain. Each time it is
+                // held for 20 ms before the request it waits on completes.
+                for (int head : new int[] {0, 2}) {
+                    await(
+                            "committer blocked on request " + head,
+                            Duration.ofSeconds(5),
+                            () -> sent.size() > head && isBlocked(thread),
+                            () -> "sent=" + sent.size() + " state=" + thread.getState());
+                    Thread.sleep(20);
+                    sent.get(head).set(false);
+                }
+                thread.join(5000);
+                assertThat(thread.isAlive()).isFalse();
+            }
+        } finally {
+            bean.setThreadContentionMonitoringEnabled(accounting);
+        }
+        assertThat(failure.get()).isNull();
+        JsonNode record = json(progress.finishedRecords().get(0));
+        long held = TimeUnit.MILLISECONDS.toNanos(15);
+        assertThat(record.path("sends").asInt()).isEqualTo(4);
+        assertThat(record.path("boundBlockedWaits").asInt()).isEqualTo(1);
+        assertThat(record.path("completedBehindAtBound").asInt())
+                .as("the second request had completed while the committer waited on the first")
+                .isEqualTo(1);
+        assertThat(record.path("drainBlockedWaits").asInt()).isEqualTo(1);
+        assertThat(record.path("boundWaitNanos").asLong()).isGreaterThanOrEqualTo(held);
+        assertThat(record.path("drainWaitNanos").asLong()).isGreaterThanOrEqualTo(held);
+        assertThat(record.path("sendPhaseNanos").asLong()).isGreaterThanOrEqualTo(held);
+        assertThat(record.path("drainPhaseNanos").asLong()).isGreaterThanOrEqualTo(held);
+        assertThat(record.path("waitedMillis").asLong())
+                .as("two holds of 20 ms, counted in whole milliseconds")
+                .isGreaterThanOrEqualTo(30);
+        assertThat(record.path("boundWaitNanos").asLong() + record.path("drainWaitNanos").asLong())
+                .as("every wait the harness saw is classified once")
+                .isEqualTo(totalWait.get());
+    }
+
+    private static boolean isBlocked(Thread thread) {
+        Thread.State state = thread.getState();
+        return state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING;
+    }
+
+    @Test
+    void classifiesEachWaitByWhetherASendFollowsIt() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object committer = new Object();
+        progress.started(committer, 4, 0, -1);
+        // Three requests go out at a bound of three, and the second completes first.
+        Stage2CommitProgress.Invocation invocation = progress.sent();
+        progress.sent();
+        progress.sent();
+        invocation.completed();
+        // The committer blocks on the first with the second already done behind it.
+        int behind = invocation.completedBehindHead(false);
+        assertThat(behind)
+                .as("one of three in flight completed behind a pending head")
+                .isEqualTo(1);
+        invocation.completed();
+        invocation.waited(100, true, behind);
+        // The second is the head now and is done, so collecting it does not block.
+        assertThat(invocation.completedBehindHead(true)).isZero();
+        invocation.waited(5, false, 0);
+        progress.sent();
+        // In the drain the third and fourth are both pending: nothing is done behind the head.
+        int drainBehind = invocation.completedBehindHead(false);
+        assertThat(drainBehind).isZero();
+        invocation.waited(30, true, drainBehind);
+        invocation.completed();
+        invocation.completed();
+        invocation.waited(0, false, 0);
+        progress.finished(committer, true, 1_000, -1);
+        JsonNode record = json(progress.finishedRecords().get(0));
+        assertThat(record.path("sends").asInt()).isEqualTo(4);
+        assertThat(record.path("boundWaitNanos").asLong()).isEqualTo(105);
+        assertThat(record.path("drainWaitNanos").asLong()).isEqualTo(30);
+        assertThat(record.path("boundBlockedWaits").asInt()).isEqualTo(1);
+        assertThat(record.path("drainBlockedWaits").asInt()).isEqualTo(1);
+        assertThat(record.path("completedBehindAtBound").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void anInvocationWithoutSendsHasNoDrainPhase() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object committer = new Object();
+        progress.started(committer, 0, 100, -1);
+        progress.finished(committer, true, 400, -1);
+        JsonNode record = json(progress.finishedRecords().get(0));
+        assertThat(record.path("sendPhaseNanos").asLong()).isEqualTo(300);
+        assertThat(record.path("drainPhaseNanos").asLong()).isZero();
+    }
+
+    @Test
+    void sendsOutsideAnInvocationAreNotAttributed() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        assertThat(progress.sent()).isNull();
+        Object committer = new Object();
+        progress.started(committer, 1, 0, -1);
+        progress.finished(committer, true, 1, -1);
+        assertThat(progress.sent()).as("the finished invocation is no longer current").isNull();
+        JsonNode record = json(progress.finishedRecords().get(0));
+        assertThat(record.path("sends").asInt()).isZero();
+        assertThat(record.path("boundWaitNanos").asLong()).isZero();
+        assertThat(record.path("drainWaitNanos").asLong()).isZero();
+        assertThat(record.path("boundBlockedWaits").asInt()).isZero();
+    }
+
+    private static final class FixedClients implements SingleRowClientFactory {
+        private static final long serialVersionUID = 1L;
+        private final transient SingleRowClient client;
+
+        FixedClients(SingleRowClient client) {
+            this.client = client;
+        }
+
+        @Override
+        public SingleRowClient create(TableDestination table) {
+            return client;
+        }
+
+        @Override
+        public void release(TableDestination table) {}
+
+        @Override
+        public void close() {}
+    }
+
+    private static final class Request implements CommitRequest<BigtableCommittable> {
+        private final BigtableCommittable value;
+
+        Request() {
+            try {
+                value =
+                        BigtableCommittable.stage(
+                                TableDestination.of("p", "i", "t"),
+                                LocalStagedHarness.PROFILE,
+                                StagedMutationTestSink.MARKER_FAMILY,
+                                RowMutationEntry.create("r")
+                                        .setCell("cf", "q", 1000, "v")
+                                        .toProto(),
+                                new SecureRandom());
+            } catch (IOException failure) {
+                throw new UncheckedIOException(failure);
+            }
+        }
+
+        @Override
+        public BigtableCommittable getCommittable() {
+            return value;
+        }
+
+        @Override
+        public int getNumberOfRetries() {
+            return 0;
+        }
+
+        @Override
+        public void signalAlreadyCommitted() {
+            throw new AssertionError("No request matched its marker");
+        }
+
+        @Override
+        public void retryLater() {
+            throw new AssertionError("Must fail the commit");
+        }
+
+        @Override
+        public void updateAndRetryLater(BigtableCommittable value) {
+            throw new AssertionError("Must retain identity");
+        }
+
+        @Override
+        public void signalFailedWithKnownReason(Throwable failure) {
+            throw new AssertionError("Must fail the commit");
+        }
+
+        @Override
+        public void signalFailedWithUnknownReason(Throwable failure) {
+            throw new AssertionError("Must fail the commit");
         }
     }
 

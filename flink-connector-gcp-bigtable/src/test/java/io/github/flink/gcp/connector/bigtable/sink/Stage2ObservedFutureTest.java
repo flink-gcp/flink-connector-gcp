@@ -31,6 +31,38 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class Stage2ObservedFutureTest {
     @Test
+    void aFailedRequestCountsAsCompleteForItsInvocation() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object committer = new Object();
+        progress.started(committer, 2, 0, -1);
+        try (LocalStagedHarness run =
+                new LocalStagedHarness(1024, false, false, 2) {
+                    @Override
+                    Stage2CommitProgress.Invocation commitSent() {
+                        return progress.sent();
+                    }
+                }) {
+            SettableApiFuture<Boolean> head = SettableApiFuture.create();
+            SettableApiFuture<Boolean> behind = SettableApiFuture.create();
+            new Stage2ObservedFuture<>(head, run, (value, now) -> {});
+            Stage2ObservedFuture<Boolean> failed =
+                    new Stage2ObservedFuture<>(behind, run, (value, now) -> {});
+            Stage2CommitProgress.Invocation invocation = progress.sent();
+            behind.setException(new IOException("rejected"));
+            assertThat(failed.isDone()).isTrue();
+            assertThat(invocation.completedBehindHead(false))
+                    .as("the failed request is done behind the pending head")
+                    .isEqualTo(1);
+            head.cancel(false);
+            assertThat(invocation.completedBehindHead(false))
+                    .as("a cancelled head is done too, leaving only the extra send in flight")
+                    .isEqualTo(2);
+        } finally {
+            progress.finished(committer, false, 1, -1);
+        }
+    }
+
+    @Test
     void rpcCompletionDoesNotPublishSuccessBeforeMeasurementFinishes() throws Exception {
         try (LocalStagedHarness run = new LocalStagedHarness(1024, false, false, 1)) {
             SettableApiFuture<Boolean> original = SettableApiFuture.create();
