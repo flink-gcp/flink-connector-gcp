@@ -58,27 +58,6 @@ resource "google_project_iam_member" "tier3_runner_cluster" {
   member  = google_service_account.tier3_runner.member
 }
 
-# The runner refuses a dispatch onto exactly one schedulable node, where a
-# system Pod preempts the supervisor, and lists nodes to know that. GKE's IAM
-# authorizer grants this without an RBAC rule the apply identity could not
-# hand out: RBAC refuses to grant a permission its granter does not hold.
-resource "google_project_iam_custom_role" "tier3_node_reader" {
-  project     = local.project_id
-  role_id     = "tier3NodeReader"
-  title       = "Tier-3 node reader"
-  description = "Lists GKE nodes for the Tier-3 dispatch capacity gate"
-  permissions = ["container.nodes.list"]
-  stage       = "GA"
-
-  depends_on = [google_project_iam_member.opentofu["roles/iam.roleAdmin"]]
-}
-
-resource "google_project_iam_member" "tier3_runner_nodes" {
-  project = local.project_id
-  role    = google_project_iam_custom_role.tier3_node_reader.name
-  member  = google_service_account.tier3_runner.member
-}
-
 resource "google_artifact_registry_repository_iam_member" "tier3_runner" {
   project    = local.project_id
   location   = google_artifact_registry_repository.tier3.location

@@ -352,29 +352,6 @@ def test_the_plain_fallback_leaves_a_run_the_workflow_finalizes(
     assert not [key for key in cluster.store.data if key[1].startswith("_control/")]
 
 
-def test_one_schedulable_node_is_refused_before_the_lock(
-    cluster, reviewed, tmp_path, monkeypatch
-):
-    """The 2026-09-23 pilot lost its supervisor to a system Pod on one node."""
-    install(monkeypatch)
-    ready = {
-        "metadata": {"labels": {"kubernetes.io/arch": "amd64"}},
-        "spec": {},
-        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
-    }
-    draining = {**ready, "spec": {"unschedulable": True}}
-    cluster.kube.node_list = [ready, draining]
-    before = copy.deepcopy(cluster.store.data)
-    with pytest.raises(Failure, match="none or at least two"):
-        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
-    assert cluster.locks == []
-    assert cluster.store.data == before
-    # With a second node the supervisor could use, the same dispatch proceeds.
-    cluster.kube.node_list = [ready, copy.deepcopy(ready)]
-    cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
-    assert len(cluster.locks) == 1
-
-
 def test_a_bundle_that_refuses_does_so_before_the_lock(
     cluster, reviewed, tmp_path, monkeypatch
 ):
