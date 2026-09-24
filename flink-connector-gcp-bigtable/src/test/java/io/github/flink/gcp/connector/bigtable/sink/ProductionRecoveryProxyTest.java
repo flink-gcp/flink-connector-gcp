@@ -56,13 +56,15 @@ class ProductionRecoveryProxyTest {
                                             "recovery-table-flink1"
                                         }))
                 .hasMessageContaining("Experimental workers");
+        // No Flink version maps to flink3. The probe names every version it does not support
+        // "unsupported", so a table named for that line would match on those versions.
         assertThatThrownBy(
                         () ->
                                 BigtableProductionRecoveryProbe.main(
                                         new String[] {
                                             "service",
                                             lease.manifest.toString(),
-                                            "recovery-datastream-unsupported"
+                                            "recovery-datastream-flink3"
                                         }))
                 .hasMessageContaining("supported Flink line");
         lease.update(properties -> properties.setProperty("tables", "bulk-r1"));
