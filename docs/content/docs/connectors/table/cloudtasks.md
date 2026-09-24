@@ -489,7 +489,8 @@ The [heap and checkpoint sizing rules]({{< relref "docs/connectors/datastream/cl
 Writer caps do not bound Flink's total pending collector; use peak pending counts, task size and representation overhead, and size the checkpoint timeout for all pending commit waves and retries.
 Task visibility is incremental after checkpoint completion, and handler execution remains at-least-once.
 Administrative removal of name protection and unbounded late service effects remain outside the guarantee.
-The mode has [#1245]({{< param BookRepo >}}/issues/1245)'s adopted real-service recovery evidence; release still requires [#1246]({{< param BookRepo >}}/issues/1246)'s final performance assessment.
+The mode is experimental.
+It has [#1245]({{< param BookRepo >}}/issues/1245)'s adopted real-service recovery evidence, and [#1246]({{< param BookRepo >}}/issues/1246) measured the DataStream sink it runs on keeping up with the at-least-once path at every rate it tried, without a separate Table measurement, with most of a checkpoint interval added to task visibility latency; the [DataStream page]({{< relref "docs/connectors/datastream/cloudtasks" >}}#checkpointed-task-creation) has the figures.
 
 ## Testing
 
