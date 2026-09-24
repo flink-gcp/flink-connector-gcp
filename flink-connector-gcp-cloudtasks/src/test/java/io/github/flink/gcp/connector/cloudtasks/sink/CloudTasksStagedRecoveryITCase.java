@@ -209,11 +209,19 @@ class CloudTasksStagedRecoveryITCase {
         JobClient refused = start(checkpoint, ExpiredEnvelopePolicy.FAIL, true, false);
         assertThatThrownBy(() -> refused.getJobExecutionResult().get(20, TimeUnit.SECONDS))
                 .hasStackTraceContaining("allowNonRestoredState");
+        int ticksBeforeDowngrade = control.ticks.get();
         JobClient allowed = start(checkpoint, ExpiredEnvelopePolicy.FAIL, true, true);
         Awaits.await(
                 "the explicit state-dropping downgrade to run",
                 Duration.ofSeconds(20),
                 () -> status(allowed) == JobStatus.RUNNING);
+        // The replay check below means something only once the restored operator has seen a
+        // tick: a record it mapped before this checkpoint's barrier reaches the eager sink
+        // before the checkpoint completes.
+        Awaits.await(
+                "the restored records operator to map a tick",
+                Duration.ofSeconds(20),
+                () -> control.ticks.get() > ticksBeforeDowngrade);
         checkpoint(cluster, allowed);
         assertThat(probe.created).isEmpty();
         assertThat(probe.requests).hasSize(1);
@@ -468,6 +476,7 @@ class CloudTasksStagedRecoveryITCase {
         private final AtomicInteger limit = new AtomicInteger();
         private final AtomicInteger initializations = new AtomicInteger();
         private final AtomicInteger replayedRecords = new AtomicInteger();
+        private final AtomicInteger ticks = new AtomicInteger();
     }
 
     private static final class ControlledRecords extends RichMapFunction<Long, String>
@@ -483,6 +492,7 @@ class CloudTasksStagedRecoveryITCase {
 
         @Override
         public String map(Long tick) {
+            CONTROLS.get(runId).ticks.incrementAndGet();
             return emitted < CONTROLS.get(runId).limit.get() ? "body-" + emitted++ : "skip";
         }
 
