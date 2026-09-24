@@ -203,7 +203,7 @@ class Supervisor:
                 continue
             self.pod_read_failures.pop(uid, None)
             self.log_bytes += len(data)
-            truncated = len(data) >= (65536 if since else MIB)
+            truncated = len(data) >= MIB
             exhausted = self.log_bytes > self.cleanup.ceilings["log_bytes"]
             if (truncated or exhausted) and not self.session:
                 raise Failure(
