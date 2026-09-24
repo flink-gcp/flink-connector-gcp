@@ -205,6 +205,7 @@ Move the bootstrap/schema helpers and their tests into that member and remove th
 Repository checks and release helpers remain in `scripts/` until their planned `tools/checks` and `tools/release` member migrations; shell programs remain there.
 The installed CLI requires an explicit checkout or the repository root as its current directory for CUE/OpenTofu files; the supervisor does not require a checkout.
 Retain explicit UID/generation preconditions and timeouts; disable automatic SDK API retries and optional background bucket-metadata lookups.
+Refined after pilot `bq1312-alo-10-a6`, whose runner exited on one `503 NOT_SERVING` namespace read after both recoveries had passed: the Kubernetes adapter repeats a read answered 500, 502, 503 or 504 up to three times, after 1, 2 and 4 seconds, and repeats no mutation, no timed-out read, whose timeout is already spent against the caller's deadline, and no proxied Flink REST read, whose 503 is the job's answer that only the recovery stages tolerate.
 Restart a complete GCS read up to five times when the observed generation disappears or changes between metadata and download; distinguish that concurrency from an initially absent object.
 Use native SDK downloads and pools instead of custom response-size wrappers; generic API bodies no longer have an 8 MiB memory cap, while inventory count limits and Pod log byte limits remain.
 A standard authorized session is still injected into GCS to preserve disabled proxies, redirects and rejected-request refresh retries; public Client options do not expose those settings.

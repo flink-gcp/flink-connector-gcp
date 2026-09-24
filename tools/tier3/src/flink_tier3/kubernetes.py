@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 
 import urllib3
@@ -46,6 +47,13 @@ COLLECTIONS = {
         "flinkbluegreendeployments",
     ),
 }
+
+
+# A control-plane blip answers a read with one of these; pilot
+# bq1312-alo-10-a6 lost a run to a single 503 after both recoveries passed.
+TRANSIENT_READ_STATUSES = (500, 502, 503, 504)
+# Seconds before each retry of a read; mutations are never retried.
+READ_RETRY_DELAYS = (1, 2, 4)
 
 
 INVENTORY = tuple(k for k in COLLECTIONS if k not in ("ResourceQuota", "Event"))
@@ -100,8 +108,24 @@ class KubernetesTransport:
 
 
 class Kubernetes:
-    def __init__(self, endpoint, http):
-        self.endpoint, self.http = endpoint.rstrip("/"), http
+    def __init__(self, endpoint, http, sleep=time.sleep):
+        self.endpoint, self.http, self.sleep = endpoint.rstrip("/"), http, sleep
+
+    def read(self, call):
+        """Run an idempotent read, retrying what a control-plane blip returns.
+
+        A transport error is not retried: a timed-out read has already spent
+        its whole timeout, and repeating it would multiply that against the
+        caller's deadline.
+        """
+        for delay in READ_RETRY_DELAYS:
+            try:
+                return call()
+            except ApiError as error:
+                if error.status not in TRANSIENT_READ_STATUSES:
+                    raise
+            self.sleep(delay)
+        return call()
 
     def path(self, kind, namespace, name=""):
         if namespace not in NAMESPACES:
@@ -111,7 +135,14 @@ class Kubernetes:
         return path + "/" + encoded(name) if name else path
 
     def request(self, method, path, body=None, **kwargs):
-        return self.http.json(method, self.endpoint + path, body, **kwargs)
+        def call():
+            return self.http.json(method, self.endpoint + path, body, **kwargs)
+
+        # A proxied Flink REST answer is the job's, not the control plane's:
+        # its 503 during a recovery is an observation the caller classifies.
+        if method != "GET" or "/proxy/" in path:
+            return call()
+        return self.read(call)
 
     def nodes(self):
         """Every node, which the cluster-scoped read alone may list."""
@@ -217,4 +248,6 @@ class Kubernetes:
             + "/log?"
             + urllib.parse.urlencode(query)
         )
-        return self.http.request("GET", self.endpoint + path, limit=limit)
+        return self.read(
+            lambda: self.http.request("GET", self.endpoint + path, limit=limit)
+        )

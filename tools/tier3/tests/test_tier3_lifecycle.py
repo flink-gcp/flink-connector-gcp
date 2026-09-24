@@ -2250,7 +2250,7 @@ def test_kubernetes_sdk_preserves_delete_and_patch_preconditions():
     )
 
 
-@pytest.mark.parametrize("status", [404, 409, 503])
+@pytest.mark.parametrize("status", [404, 409, 403])
 def test_kubernetes_sdk_errors_are_mapped_without_retries(status):
     kube, pool = sdk_kube([(status, {"message": "fixture failure"})])
     if status == 404:
@@ -2259,6 +2259,37 @@ def test_kubernetes_sdk_errors_are_mapped_without_retries(status):
         with pytest.raises(rt.ApiError) as error:
             kube.get("Pod", rt.SYSTEM, "absent")
         assert error.value.status == status
+    assert len(pool.calls) == 1
+
+
+def test_a_transient_read_is_retried_and_a_mutation_is_not():
+    """Pilot bq1312-alo-10-a6 lost a run to one 503 on a namespace read."""
+    kube, pool = sdk_kube([(503, {}), (502, {}), (200, {"metadata": {"uid": "u"}})])
+    slept = []
+    kube.sleep = slept.append
+    assert kube.get("Pod", rt.SYSTEM, "owned") == {"metadata": {"uid": "u"}}
+    assert len(pool.calls) == 3 and slept == [1, 2]
+    kube, pool = sdk_kube([(503, {})] * 4)
+    kube.sleep = slept.append
+    with pytest.raises(rt.ApiError, match="503"):
+        kube.get("Pod", rt.SYSTEM, "owned")
+    assert len(pool.calls) == 4
+    kube, pool = sdk_kube([(503, {})])
+    kube.sleep = lambda _delay: pytest.fail("A mutation was retried")
+    with pytest.raises(rt.ApiError, match="503"):
+        kube.delete(obj("Pod", "owned"))
+    assert len(pool.calls) == 1
+
+
+def test_a_proxied_flink_rest_read_is_not_retried():
+    """Its 503 is the job's answer, which recovery windows classify themselves."""
+    kube, pool = sdk_kube([(503, {})])
+    kube.sleep = lambda _delay: pytest.fail("A proxied read was retried")
+    with pytest.raises(rt.ApiError, match="503"):
+        kube.request(
+            "GET",
+            "/api/v1/namespaces/tier3-bigquery/services/app-rest:8081/proxy/jobs/j/checkpoints",
+        )
     assert len(pool.calls) == 1
 
 
