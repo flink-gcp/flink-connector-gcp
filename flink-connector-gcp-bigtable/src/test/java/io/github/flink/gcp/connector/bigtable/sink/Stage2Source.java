@@ -41,11 +41,38 @@ final class Stage2Source extends NumberSequenceSource {
         return Boundedness.CONTINUOUS_UNBOUNDED;
     }
 
+    /**
+     * One reader's share of {@code admitPerSecond}, the remainder going to the lowest indexes so
+     * the shares add up to it; 0 means unpaced. The probe requires a rate of at least one per
+     * reader.
+     */
+    static long perReaderRate(long admitPerSecond, int parallelism, int index) {
+        if (admitPerSecond == 0) {
+            return 0;
+        }
+        return admitPerSecond / parallelism + (index < admitPerSecond % parallelism ? 1 : 0);
+    }
+
+    /**
+     * When a paced reader may emit its next record. The rate is an average from the first
+     * admission: a reader held up, for example while its task commits, catches up afterwards.
+     */
+    static long dueNanos(long pacedFrom, long emitted, long perReader) {
+        return pacedFrom + emitted * 1_000_000_000L / perReader;
+    }
+
     @Override
     public SourceReader<Long, NumberSequenceSplit> createReader(SourceReaderContext context) {
         SourceReader<Long, NumberSequenceSplit> delegate = super.createReader(context);
         Stage2Harness run = (Stage2Harness) LocalStagedHarness.run(runId);
+        long perReader =
+                perReaderRate(
+                        run.admitPerSecond,
+                        context.currentParallelism(),
+                        context.getIndexOfSubtask());
         return new SourceReader<>() {
+            private long pacedFrom = -1;
+            private long emitted;
 
             @Override
             public void start() {
@@ -62,7 +89,21 @@ final class Stage2Source extends NumberSequenceSource {
                     return InputStatus.END_OF_INPUT;
                 }
                 long before = System.nanoTime();
+                if (perReader > 0) {
+                    if (pacedFrom < 0) {
+                        pacedFrom = before;
+                    }
+                    long due = dueNanos(pacedFrom, emitted, perReader);
+                    if (before < due) {
+                        java.util.concurrent.locks.LockSupport.parkNanos(
+                                Math.min(due - before, 1_000_000L));
+                        return InputStatus.MORE_AVAILABLE;
+                    }
+                }
                 InputStatus status = delegate.pollNext(output);
+                if (status != InputStatus.NOTHING_AVAILABLE) {
+                    emitted++;
+                }
                 run.sourcePollNanos.addAndGet(System.nanoTime() - before);
                 if (status == InputStatus.END_OF_INPUT) {
                     run.censored.set(true);

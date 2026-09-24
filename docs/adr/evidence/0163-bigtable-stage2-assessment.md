@@ -271,18 +271,17 @@ The host's load is averaged over the whole run, including the source, the writer
 The staged path writes each mutation with its own `CheckAndMutateRow`, because the check for the envelope's marker and the write must be one atomic operation and the Bigtable data API has no multi-row conditional write, while the at-least-once sink sends `MutateRows` batches that carry many rows per call.
 Each staged write therefore pays a round trip and the client's per-call processor cost that a batch amortizes, and a gap to the at-least-once sink's roughly 10,000 inputs per second in the same matrix is expected from the design.
 On the four-processor host the staged committer drained 37 to 42% of a bare client's rate, paired run by run, and busy share times processors over rate gives about 0.70 to 1.02 ms of host processor time per staged write against 0.33 to 0.40 ms per client write, about two to two and a half times as much.
+That ratio includes the instrument's own per-write work, which the [next section](#where-a-single-committers-time-goes) measures at about a third to two-fifths of the staged path's processor time per write.
 
 The service was not the limit on distinct rows.
 One node accepted at least about 12,600 of these writes per second from one client, and its `cluster/cpu_load` stayed at or below 0.48 while the staged runs committed.
 
-What stops a single committer short of the service's rate is not identified, and the measurements narrow it only partly.
-The instrument also records the time the committing thread spends waiting for its oldest request, either at the bound or at the end of a batch, without telling the two apart.
+These measurements did not identify what stops a single committer short of the service's rate; the [next section](#where-a-single-committers-time-goes) does.
+The instrument recorded the time the committing thread spent waiting for its oldest request, either at the bound or at the end of a batch, without telling the two apart.
 On the sixteen-processor host at parallelism 1 the thread was on a processor for 61 to 69% of its commit time and waiting on a request for 20 to 29%, while the host stayed about 80% idle; at parallelism 4 it waited for 46 to 51%.
 On the four-processor host the thread was on a processor for 56 to 58% and waiting for 6 to 26%, and the host ran at 90% or more for stretches of 6 to 8 seconds in every run, so contention for processors there is not excluded.
 More subtasks raised the drain on the sixteen-processor host, from 7,041 to 7,799 per second with one to 8,681 to 10,212 with four, but on the four-processor host four subtasks drained 2,833 to 3,252 per second against 3,784 to 4,785 with one, and visibility was longer.
-Whether a larger bound, a wait for any completion instead of the oldest, or less instrument overhead would raise the drain was not measured.
 Part of the per-write cost is the instrument's own: it additionally holds each completion on the transport thread for its bookkeeping, about 2.4 ms at parallelism 4 and a one-second interval and 0.06 to 0.5 ms elsewhere, and it converts each request a second time to observe it.
-[#1476](https://github.com/flink-gcp/flink-connector-gcp/issues/1476) separates the per-write cost into the instrument's, the connector's and the client's shares, separates waits at the bound from waits at the end of a batch, and reduces what the connector can.
 
 The short probes run earlier on the four-processor host understate the client.
 From a fresh JVM, over 20,000 to 40,000 requests, they stopped near 2,500 to 3,000 per second at every concurrency from 16 to 1,000, and running two or four of them at once did not raise the total; the warmed runs above show that this was a limit of short runs from a fresh JVM, not the host's ceiling.
@@ -312,6 +311,89 @@ That limit belongs to the key distribution rather than to the connector, and it 
 These measurements are consistent with the campaign's quotient growing from 7 to 27 ms, though the campaign recorded no processor data to confirm the mechanism.
 The quotient divides the configured concurrency by the drain, and when the drain stops short of the bound, a larger bound adds idle slots to the numerator; at parallelism 16 the job's sixteen committers also shared the four-processor host.
 At the default a write's mean round trip on distinct rows was 3.7 to 5.9 ms at parallelism 1 and 8.9 to 15.5 ms at parallelism 4 on the four-processor host, with the instrument's hold of about 2.4 ms at parallelism 4 and a one-second interval coming on top, and it rose further on a hot key because requests queued for the row.
+
+## Where a single committer's time goes
+
+[#1476](https://github.com/flink-gcp/flink-connector-gcp/issues/1476) took the question the previous section left open and measured it on 2026-09-23 and 2026-09-24, without changing the connector.
+It extended the Stage 2 instrument in three ways.
+Each commit invocation now records its send phase (from its start to its last send) and its drain phase (from the last send to its end), the committing thread's time in a waiting state, and, for each wait on the oldest request, whether a send followed it (a wait at the bound) or not (the end-of-batch drain).
+A lightweight mode (`-Dstage2.instrument=light`) skips the per-write bookkeeping that proves delivery: the inventory ledger's writes and reads, the marker records, the completion histogram and the instrument's own copy of each request.
+It keeps the batch records, every budget and target guard, and the processor readings, and it still wraps each completion to record the committer's waits and the completion hold.
+It therefore measures the connector's drain with far less of the instrument's cost added, though not with none, and it cannot verify readback or visibility, so it runs paired with the full mode rather than alone.
+The run also records the process's processor time and, for each group of threads by name, their processor time and allocated bytes, and a source admission limit (`-Dstage2.admitPerSecond`) runs different arms at the same offered load.
+
+Three environments answer different parts of the question.
+The Bigtable emulator (`google-cloud-cli:583.0.0-emulators`) on a ten-core Apple M1 Pro workstation costs nothing and gives short round trips, where processor cost dominates.
+The same workstation against a one-node Enterprise instance in `us-central1-b`, where the full instrument measured a mean round trip of 171 to 174 ms, makes the round trip dominate.
+An `e2-standard-16` host in the instance's zone repeats the #1464 conditions.
+All runs used parallelism 1, 1 KiB rows on distinct keys and a one-second checkpoint interval, and every figure below is a range across runs, each computed from that run's own records.
+
+### Where the committer waits
+
+The committer's waiting is almost all at its in-flight bound.
+On the emulator at 10,000 inputs per second, a wait that a send followed took 75 to 76% of commit time under the full instrument and 59 to 63% under the lightweight one, and the end-of-batch drain took 0.5 to 0.6%; the drain figures here are the waits after each invocation's last send.
+From the workstation to the instance the drain took 3 to 4% under the lightweight instrument and 12 to 21% under the full one, whose ledger slows the source and so leaves batches of a few hundred writes, each ending with about one round trip in which fewer requests are outstanding.
+
+When the committer blocks on its oldest request, some requests behind it are usually complete already.
+On the emulator at 10,000 inputs per second that count averaged 11.2 to 11.4 under the lightweight instrument and 26.0 to 26.7 under the full one; from the workstation it was 3 to 5 of 100, and in the zone 12 to 45.
+A committer that waited for any completion rather than the oldest could reuse those slots sooner, so the reaping order was changed and measured.
+The committer offered each request to a completion queue as it finished and took the first one from it, under the same bound, and a unit test confirmed that a completed request behind a pending one freed its slot.
+On the emulator at 25,000 inputs per second under the full instrument, the drain was 14,216 to 15,013 per second against 14,275 to 15,267 with the oldest first, and the committing thread's processor time per write rose from 14.7 to 15.4 µs to 27.0 to 29.2 µs.
+The reason is how often the thread wakes: with the oldest first, one wake-up collects the head and the requests already complete behind it, while a completion queue wakes the thread for every completion.
+The change was reverted, and a wait for any completion is not adopted.
+The bare-client probes in the previous section, which measured the two orders the same at a concurrency of 100 on the service, agree.
+
+### What the instrument, the connector and the client each cost
+
+The emulator separates the three at the same offered load of 10,000 inputs per second, with a bare client issuing the committer's request shape from one JVM at the same rate:
+
+| Arm | Runs | Process CPU per write | CPU no thread accounts for | Task-thread allocation per write |
+| --- | ---: | ---: | ---: | ---: |
+| Bare client | 3 | 101–103 µs | 1.8–2.7 µs | 18.6 KiB on the issuing thread |
+| Staged, lightweight instrument | 3 | 126–130 µs | 30–33 µs | 105–107 KiB |
+| Staged, full instrument | 3 | 206–214 µs | 35–40 µs | 105–107 KiB |
+
+The means of the three arms are 102, 129 and 209 µs, so the full instrument added about 80 µs per write and the staged path over the bare client about 27 µs.
+The full instrument's share is therefore about 38% of its per-write processor time here, and about three-quarters of what the staged path cost beyond the bare client; on the zone's host below, the same comparison of run means gives about a third.
+Processor time that no Java thread accounts for is most likely the collector's and the compiler's: it is 1.8 to 2.7 µs per write for the bare client and 30 to 40 µs on the staged path, which allocates five to six times as much per write, though removing most of that allocation below lowered it only to 26 to 28 µs.
+
+A flight recording of one lightweight run at 12,000 inputs per second shows where the task thread's time goes.
+Of the samples on the thread that runs the source, the writer and the committer, the instrument's input generation took 37%, the Bigtable client's gax and gRPC code about 20%, protobuf about 3%, staging the envelope about 13%, and the committer's own code, including converting the stored request back into a `ConditionalRowMutation`, about 1%.
+Sending the stored request without that conversion, or resolving the destination once per batch, could therefore save at most that 1%, and neither is pursued.
+
+Most of the staged path's allocation is Flink's rather than the connector's.
+Flink's `SimpleVersionedSerialization.writeVersionAndSerializeList` calls the element serializer twice for every element, once for the length it writes and once for the bytes, and the committer operator's state nests that list three levels deep, so every pending committable is serialized eight times per checkpoint.
+The instrument counted exactly eight serializations per committed write in every commit interval and no deserialization.
+With a copy of that method that writes the first result, placed ahead of `flink-core` on the test classpath, the count fell to one and the lightweight arm allocated 43 to 44 KiB per write instead of 105 to 107, used 111 to 114 µs of processor time per write instead of 126 to 130, and drained at the same rate.
+Nothing in the connector can remove the repetition, and caching the serialized committable would not help because the encoding took about 0.1% of the samples; [#1486](https://github.com/flink-gcp/flink-connector-gcp/issues/1486) tracks reporting it upstream.
+
+### What limits one committer
+
+From the workstation to the instance, the committer is bound by the round trip:
+
+| Arm | Bound | Runs | Drain | Committing thread on a processor | Waiting |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Full instrument | 100 | 2 | 272–293/s | 3% | 95–96% |
+| Lightweight instrument | 100 | 3 | 372–399/s | 3–4% | 95–96% |
+| Lightweight instrument | 400 | 2 | 1,469–1,538/s | 5–6% | 93–94% |
+
+Four times the bound gave 3.7 to 4.1 times the drain.
+These runs admitted at most 1,000 inputs per second, or 3,000 at the larger bound, because an unlimited source over this round trip let the first batch grow until its commit outlasted the checkpoint timeout or left the measurement window without an acknowledgement.
+A third full-instrument run reused a table that a failed run had written to, measured a drain of 403 per second and then failed its readback on the earlier run's rows, so it is excluded.
+
+In the instance's zone, as in #1464, the committer is bound by the committing thread's own processor time:
+
+| Arm | Bound | Runs | Drain | Committing thread on a processor | Waiting | Host busy (mean) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Full instrument | 100 | 3 | 8,439–8,760/s | 76–79% | 20–23% | 21–25% |
+| Lightweight instrument | 100 | 3 | 9,917–10,062/s | 74–80% | 19–26% | 24–27% |
+| Lightweight instrument | 400 | 2 | 11,865–12,245/s | 84–85% | 14–15% | 25–26% |
+| Bare client, second half of 200,000 requests | 100 | 2 | 12,328–13,062/s | — | — | 33% |
+
+Four times the bound raised the drain by about a fifth, and the host stayed three-quarters idle.
+The committer sends every request from the one committing thread, and in the workstation's flight recording most of that thread's commit time was the client's own send path rather than the connector's code, which suggests that a single committer's rate is what one thread can push through the client; the zone's runs recorded no profile to confirm it.
+The gap #1464 measured, 7,041 to 7,799 per second staged against 12,644 to 13,654 for a bare client on the same host shape, is thus mostly the instrument and the bound: the lightweight instrument at a bound of 400 drained 11,865 to 12,245 per second, close to the bare client's 12,328 to 13,062 at 100.
+More committers raise the job's rate where processors are free, as #1464's four subtasks on the sixteen-processor host did.
 
 ## The sustained hot-row observation
 
@@ -387,6 +469,9 @@ The default-concurrency measurement lowers that cost but does not change the ver
 | Observation host `stage2-1464-host2`, `e2-standard-4` | 2026-09-23T10:32Z to 11:12Z | USD 0.134 per hour | about USD 0.09 |
 | Bigtable instance `stage2-1464c`, one SSD node, Enterprise edition | 2026-09-23T13:23Z to 13:55Z, one clock hour | USD 0.65 per node-hour | about USD 0.65 |
 | Comparison hosts `stage2-1464-host16b`, `e2-standard-16`, and `stage2-1464-host4c`, `e2-standard-4` | 2026-09-23T13:25Z to 13:54Z | USD 0.536 and 0.134 per hour | about USD 0.32 |
+| Bigtable instance `stage2-1476`, one SSD node, Enterprise edition | 2026-09-23T20:45Z to 21:03Z, one clock hour | USD 0.65 per node-hour | about USD 0.65 |
+| Bigtable instance `stage2-1476g`, one SSD node, Enterprise edition | 2026-09-24T05:42Z to 05:57Z, one clock hour | USD 0.65 per node-hour | about USD 0.65 |
+| Observation host `stage2-1476-e16`, `e2-standard-16`, 50 GiB pd-balanced | 2026-09-24T05:43Z to 05:57Z | USD 0.536 per hour | about USD 0.13 |
 
 The matrix itself cost nothing in Bigtable charges: a free trial gives one SSD node for ten days, which is the whole instrument this protocol needs, and the campaign neither upgraded it nor exceeded it.
 The repeat of the sustained observation ran on a paid instance because the campaign's trial no longer existed by then and a free trial is available once per project.
@@ -401,3 +486,13 @@ All owned resources were deleted after their evidence was collected on 2026-09-2
 The #1464 measurement cost about USD 11.5, including under USD 0.1 of disk, against a USD 5 authorization.
 Three things account for the overrun: after the first matrix finished at 04:45Z the resources stayed up for about four and a half hours before the remaining probes ran, the staged arm had to be measured again once its instrument was found to be mutated, and the host comparison was added at the owner's request to identify what limits the drain.
 Its resources were deleted on 2026-09-23 after the evidence was collected, and their absence was verified in the same way.
+
+The #1476 measurement cost about USD 1.45 against a USD 5 authorization, because the emulator runs cost nothing and each paid resource lived for under twenty minutes.
+Each resource was deleted once its evidence was on the workstation, on 2026-09-23 and 2026-09-24, and the project then listed no Bigtable instance, no Compute Engine instance and no disk.
+The runtime that ran on the `e2-standard-16` host was built from a clean compile of `e27279766104c98f434e63a94ba183bd2ebdcfb3`, a working commit of the #1476 branch, and its archive's SHA-256 was `75793273fe67f0ad41f42f68bb17f87f13dc47682a24aad11838f9da0fa0155c`; its bytecode was checked for the reverted completion queue and for any cap on the requested concurrency before it was copied.
+Every run in this section used that commit's instrument, and the review of the pull request then changed it in five ways that bear on the figures.
+A request now reports itself complete to its invocation only after publishing its result, where the measured instrument reported it just before, so a count of requests complete behind the head may include the head itself; each blocked wait could be overstated by at most one.
+The waiting-time accounting is now switched on before the run rather than at its first commit.
+An invocation that sends nothing now reports no drain phase, and none of the 1,267 recorded invocations sent nothing.
+A paced reader now counts an input only when one is emitted, so the measured runs admitted slightly less than their limit, which is what they show: 9,876 to 9,939 inputs per second against 10,000 on the emulator.
+A lightweight run now fails when any write found its marker already present; every recorded lightweight run reported none.

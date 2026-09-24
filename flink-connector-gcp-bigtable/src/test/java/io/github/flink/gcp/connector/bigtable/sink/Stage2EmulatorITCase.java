@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.sink;
 
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -30,6 +31,37 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class Stage2EmulatorITCase extends AbstractBigtableEmulatorITCase {
     @TempDir Path directory;
+
+    @Test
+    void lightInstrumentCommitsThroughTheTransportWithoutTheLedger() throws Exception {
+        TableDestination table =
+                createTable("stage2-light", FAMILY, StagedMutationTestSink.MARKER_FAMILY);
+        try (Stage2Harness run =
+                new Stage2Harness(
+                        table,
+                        "127.0.0.1:" + EMULATOR.getEmulatorPort(),
+                        directory.resolve("inventory"),
+                        64,
+                        1024,
+                        false,
+                        false,
+                        4,
+                        false,
+                        null)) {
+            run.light = true;
+            run.startWindow(System.nanoTime(), 0, TimeUnit.HOURS.toNanos(1));
+            try (LocalStagedJob job =
+                    new LocalStagedJob(
+                            run, directory, true, true, 1, 24, 100, false, null, false)) {
+                job.finish();
+            }
+            assertThat(run.lightAcknowledged).hasValue(24);
+            assertThat(run.deduplicated).hasValue(0);
+            assertThat(run.ledger.admittedCount()).isZero();
+            assertThat(run.ledger.acknowledgedCount()).isZero();
+            assertThat(readRows(table)).hasSize(24);
+        }
+    }
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
