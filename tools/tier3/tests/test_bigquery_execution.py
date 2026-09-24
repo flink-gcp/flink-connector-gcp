@@ -27,7 +27,7 @@ from flink_tier3.bigquery_verdict import MEASUREMENT_EVENT
 from flink_tier3.common import INCONCLUSIVE, Failure
 from flink_tier3.environment import Environment
 from flink_tier3.model import Phase
-from flink_tier3.policy import BIGQUERY, BIGQUERY_STATE, MIB
+from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, MIB
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 from test_bigquery_approval import prepared as prepared  # noqa: PLC0414
@@ -668,6 +668,20 @@ def test_wrong_upgrade_hash_refused_at_construction(prepared):
     upgrade["spec"]["job"]["args"][3] = "wrong"
     with pytest.raises(Failure, match="approved upgrade"):
         BigQueryExercise(environment, upgrade)
+
+
+def test_input_may_start_after_the_admission_budget(prepared):
+    """A cold cluster provisions Pods past admission's budget; input may follow."""
+    environment, _, upgrade, _ = prepared
+    environment.records.set_phase(Phase.READY)
+    environment.records.set_phase(Phase.RUNNING)
+    exercise = BigQueryExercise(environment, upgrade)
+    started = environment.schedule.started
+    environment.clock.now = started + BIGQUERY_OBSERVATIONS["startup_seconds"]
+    exercise.check_open()
+    environment.clock.now = started + BIGQUERY_OBSERVATIONS["input_seconds"]
+    with pytest.raises(Failure, match="deadline expired: baseline"):
+        exercise.check_open()
 
 
 def test_handoff_requires_same_environment(prepared):

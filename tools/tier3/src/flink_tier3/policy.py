@@ -55,6 +55,11 @@ BIGQUERY_OBSERVATIONS = {
     "baseline_seconds": 600,
     "post_recovery_seconds": 600,
     "startup_seconds": 600,
+    # From admission to input flowing, which only the exercise waits for. A
+    # cold Autopilot cluster provisions a node each for the supervisor, the
+    # JobManager and the TaskManagers in turn; pilot bq1312-alo-10-a4 needed
+    # about ten minutes for that and missed the startup budget by seconds.
+    "input_seconds": 1200,
     "recovery_seconds": 300,
     "visibility_seconds": 600,
     # One measurement per this many seconds, not per poll. Six REST reads at
