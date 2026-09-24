@@ -158,13 +158,6 @@ resource "kubernetes_cluster_role_v1" "reader" {
     resources  = ["customresourcedefinitions"]
     verbs      = ["list"]
   }
-  # The runner refuses a dispatch onto exactly one schedulable node, where a
-  # system Pod preempts the supervisor; it reads nodes to know that.
-  rule {
-    api_groups = [""]
-    resources  = ["nodes"]
-    verbs      = ["list"]
-  }
   metadata {
     name   = "tier3-bootstrap-reader"
     labels = local.labels
