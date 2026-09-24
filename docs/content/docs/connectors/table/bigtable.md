@@ -1067,7 +1067,7 @@ DataStream builder.
 | `sink.in-flight.max-requests` | Integer | `BigtableRequestOptions.maxInFlightRequests(...)`; conditional, read-modify-write and staged modes |
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
-| `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
+| `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement. Accepted with `upsert` and `keep-latest`; rejected in other write modes |
 | `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
 | `sink.batching.element-count-threshold` | Long | `BigtableWriterOptions.batchElementCountThreshold(...)`. Counts **entries** — one row's mutations — not mutations |
 | `sink.batching.request-byte-threshold` | MemorySize | `BigtableWriterOptions.batchRequestByteThreshold(...)` |
@@ -1117,6 +1117,8 @@ At the default `sink.in-flight.max-requests` of 100, with 1 KiB rows on distinct
 The [DataStream staged contract]({{< relref "docs/connectors/datastream/bigtable" >}}#checkpoint-owned-writes) also governs SQL recovery, visibility and marker retention.
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="staged-sink" >}}
+
+Staged delivery does not require `sink.insert-only-input-mode`; the example sets it only so the same plain insert plans on Flink 1.20, 2.2 and 2.3, as [Flink 2.3 may demand ON CONFLICT](#flink-23-may-demand-on-conflict) explains.
 
 Provision `cf` and the reserved raw `flink_commit` family before running this example, with no GC rule on `flink_commit` and transactional single-cluster routing on `transactional`.
 Keep the marker family outside the DDL's data families.

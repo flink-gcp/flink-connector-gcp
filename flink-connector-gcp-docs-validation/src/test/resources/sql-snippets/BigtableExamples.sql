@@ -336,7 +336,8 @@ CREATE TABLE staged_orders (
   'table' = 'orders',
   'sink.delivery-guarantee' = 'exactly-once',
   'sink.app-profile-id' = 'transactional',
-  'sink.staged.marker-family' = 'flink_commit'
+  'sink.staged.marker-family' = 'flink_commit',
+  'sink.insert-only-input-mode' = 'insert-only'
 );
 
 INSERT INTO staged_orders VALUES ('order#1', ROW('created'));
