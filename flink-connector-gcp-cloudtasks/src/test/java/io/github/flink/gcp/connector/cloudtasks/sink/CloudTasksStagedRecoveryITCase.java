@@ -336,7 +336,15 @@ class CloudTasksStagedRecoveryITCase {
         environment.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         environment.setParallelism(1);
         // Tests trigger checkpoints explicitly; no periodic barrier can overtake a fault stimulus.
+        // The interval alone never held that: the first periodic trigger is drawn between the
+        // minimum pause and the interval, and Flink 2.3 restarts the checkpoint scheduler once
+        // every task is RUNNING and schedules that restart after the minimum pause alone, so
+        // without one a periodic checkpoint fires at startup (#1501). Explicit checkpoints and
+        // savepoints are not subject to the periodic minimum pause.
         environment.enableCheckpointing(Duration.ofHours(1).toMillis());
+        environment
+                .getCheckpointConfig()
+                .setMinPauseBetweenCheckpoints(Duration.ofHours(1).toMillis());
         environment.disableOperatorChaining();
         var ticks =
                 new DataGeneratorSource<Long>(
@@ -415,7 +423,13 @@ class CloudTasksStagedRecoveryITCase {
                 "writer to stage " + records + " records",
                 Duration.ofSeconds(20),
                 () -> probe.serialized.get() >= records,
-                () -> "serialized=" + probe.serialized + ", requests=" + probe.requests.size());
+                () ->
+                        "serialized="
+                                + probe.serialized
+                                + ", requests="
+                                + probe.requests.size()
+                                + ", lastCompletedCheckpoint="
+                                + control.completed);
     }
 
     private void awaitCreated(int records) throws InterruptedException {
@@ -423,7 +437,13 @@ class CloudTasksStagedRecoveryITCase {
                 "service to create " + records + " tasks",
                 Duration.ofSeconds(20),
                 () -> probe.created.size() == records,
-                () -> "created=" + probe.created.size() + ", requests=" + probe.requests.size());
+                () ->
+                        "created="
+                                + probe.created.size()
+                                + ", requests="
+                                + probe.requests.size()
+                                + ", lastCompletedCheckpoint="
+                                + control.completed);
     }
 
     private static void assertReadable(String pointer) {
