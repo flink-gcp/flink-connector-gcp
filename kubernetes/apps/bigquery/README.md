@@ -566,7 +566,7 @@ Only then does it inventory and remove the workload and run BigQuery cleanup; a 
 A failed or ambiguous provisioning call prevents workload admission and retains the existing unresolved-call cleanup guard.
 
 The BigQuery exercise shares the smoke exercise's UID-scoped mutations and checkpoint/savepoint proof checks, using the BigQuery namespace, state bucket, input sizes and three-Pod topology.
-Within the initial 600-second deadline, it requires input progress, a completed checkpoint and all three running Pods before starting 180 seconds of warmup followed by a 600-second baseline window.
+Within 1200 seconds of the approved start, it requires input progress, a completed checkpoint and all three running Pods before starting 180 seconds of warmup followed by a 600-second baseline window.
 It then requires a checkpoint triggered after that window and fresh, unfinished input before applying the approved upgrade.
 Each recovery has its own 300-second deadline, capped by the absolute cleanup start.
 The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint before a single JobManager deletion.

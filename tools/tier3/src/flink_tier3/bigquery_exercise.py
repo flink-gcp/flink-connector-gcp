@@ -73,6 +73,10 @@ class BigQueryExercise(RecoveryExercise):
         self.coverage = {}
         self.records = self.trial.records
         super().__init__(env, upgrade)
+        self.deadline = min(
+            env.schedule.started + self.timing["input_seconds"],
+            env.schedule.cleanup_at,
+        )
         self.baseline_until = None
         self.post_until = None
 

@@ -939,3 +939,7 @@ Declined: letting the workflow itself run from a branch, which would widen the r
 Dispatch refuses, before the lock, a cluster with exactly one schedulable node.
 Pilot `bq1312-alo-10-a2` lost its 1 CPU / 2 GiB supervisor to a system Pod 30 seconds after it started on a one-node cluster, so the supervisor's size does not prevent that preemption; from no nodes Autopilot provisioned one for it.
 A draining node counts as unschedulable, since GKE's node count includes it; the runner lists nodes through a one-permission custom IAM role, `container.nodes.list`, which GKE's IAM authorizer honours; an RBAC rule on the bootstrap reader role was the first choice and failed to apply, because RBAC refuses the apply identity a permission it does not hold itself.
+
+The BigQuery exercise waits 1200 seconds from the approved start for input to flow; admission keeps its 600-second startup window.
+Pilot `bq1312-alo-10-a4` started from no nodes and was admitted four minutes in, after which Autopilot provisioned a node for the JobManager, following a zonal quota refusal, and then one for the TaskManagers; its first input progress was logged 16 seconds before the 600-second budget expired, and the next supervisor poll found the budget spent, so the run stopped at its baseline stage with no query spent.
+The phases still fit the window: 1200 seconds to input, 180 of warmup, 600 of baseline, two 300-second recoveries, 600 after recovery and 600 for visibility take 3780 of the 4500 seconds before cleanup.
