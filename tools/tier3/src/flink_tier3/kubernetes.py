@@ -113,6 +113,10 @@ class Kubernetes:
     def request(self, method, path, body=None, **kwargs):
         return self.http.json(method, self.endpoint + path, body, **kwargs)
 
+    def nodes(self):
+        """Every node, which the cluster-scoped read alone may list."""
+        return self.request("GET", "/api/v1/nodes").get("items", [])
+
     def namespace(self, name):
         if name not in NAMESPACES:
             raise Failure("Unexpected namespace")

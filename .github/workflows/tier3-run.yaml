@@ -49,6 +49,11 @@ on:
         required: false
         type: string
         default: ''
+      rig_sha:
+        description: 'Optional full SHA of the rig to run, when not this main commit; it must head a branch of this repository, and reviewed_sha must equal it'
+        required: false
+        type: string
+        default: ''
       trial:
         description: 'BigQuery only: delivery method and destination count'
         required: false
@@ -79,8 +84,32 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Verify the rig commit heads a branch of this repository
+        # Runs from main's workflow before any rig source is checked out, so a
+        # fork commit reachable through a pull request ref cannot be selected.
+        if: ${{ inputs.rig_sha != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RIG_SHA: ${{ inputs.rig_sha }}
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+        run: |
+          if ! [[ "$RIG_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::rig_sha must be a full lowercase commit SHA"
+            exit 1
+          fi
+          if [ "$RIG_SHA" != "$REVIEWED_SHA" ]; then
+            echo "::error::reviewed_sha must equal rig_sha"
+            exit 1
+          fi
+          heads=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RIG_SHA/branches-where-head" --jq length)
+          if [ "$heads" -lt 1 ]; then
+            echo "::error::rig_sha must be the head of a branch of this repository"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The workflow itself always runs from main; this selects the rig.
+          ref: ${{ inputs.rig_sha || github.sha }}
           persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
@@ -106,8 +135,12 @@ jobs:
           FLINK_VERSION: ${{ inputs.flink_version }}
           APPLICATION_DIGEST: ${{ inputs.application_digest }}
           TRIAL: ${{ inputs.trial }}
+          RIG_SHA: ${{ inputs.rig_sha }}
         run: |
           start=(start --run-id "$RUN_ID" --sha "$REVIEWED_SHA" --expires-at "$EXPIRES_AT" --approve "$APPROVAL" --scenario "$SCENARIO")
+          if [ -n "$RIG_SHA" ]; then
+            start+=(--rig-sha "$RIG_SHA")
+          fi
           if [ "$SCENARIO" = cloudtasks ]; then
             start+=(--session "$SESSION" --flink-version "$FLINK_VERSION" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = bigquery-recovery ]; then

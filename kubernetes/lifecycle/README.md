@@ -77,6 +77,8 @@ Merging this implementation does not authorize a dispatch.
 A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, the ceilings below and the run's cost estimate; spend is approved from that estimate before dispatch, and nothing at run time compares spend against it.
 The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, and `bigquery_plan.estimate` for a BigQuery trial, which its rendered proposal carries.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
+The run workflow can check out another rig commit through `rig_sha`, which must equal the approved `reviewed_sha` and head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
+Dispatch also refuses, before the lock, a cluster with exactly one schedulable node: a system Pod scaling up with the cluster preempts the supervisor there within seconds, as it did to the BigQuery pilot `bq1312-alo-10-a2`. An idle cluster with no nodes, or one with at least two schedulable nodes, is admitted; a draining node does not count.
 The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES` verbatim.
 Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
 The last 15 minutes are reserved for cleanup, leaving at most 45 minutes for startup and the 30-minute smoke job.

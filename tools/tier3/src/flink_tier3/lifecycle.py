@@ -158,15 +158,61 @@ def session_inputs(args):
     return session, args.flink_version, image
 
 
+def schedulable(node):
+    """A node the supervisor could land on: ready, uncordoned, AMD64, not Spot."""
+    conditions = node.get("status", {}).get("conditions", [])
+    labels = node.get("metadata", {}).get("labels", {})
+    ready = any(
+        c.get("type") == "Ready" and c.get("status") == "True" for c in conditions
+    )
+    return (
+        ready
+        and not node.get("spec", {}).get("unschedulable")
+        and labels.get("kubernetes.io/arch") == "amd64"
+        and labels.get("cloud.google.com/gke-spot") != "true"
+    )
+
+
+def require_capacity(kube):
+    """Refuse a dispatch onto exactly one schedulable node.
+
+    On that node a system Pod scaling up with the cluster preempts the
+    supervisor within seconds; from no nodes Autopilot provisions one for it,
+    and with two the system Pods have room. A draining node does not count.
+    """
+    nodes = kube.nodes()
+    ready = sum(1 for node in nodes if schedulable(node))
+    if nodes and ready < 2:
+        raise rt.Failure(
+            f"Cluster has {ready} schedulable of {len(nodes)} nodes; dispatch when "
+            "it has none or at least two"
+        )
+
+
+def rig_owner(owner, args):
+    """The lock owner, naming the rig commit when it is not the workflow's."""
+    owner = owner | {"run_id": args.run_id}
+    if args.sha != owner["sha"]:
+        owner["rig_sha"] = args.sha
+    return owner
+
+
 def refuse_before_admission(args, store, phrase):
-    """What every dispatch refuses before it touches the cluster or the lock."""
+    """What every dispatch refuses before it touches the cluster or the lock.
+
+    The workflow always runs from `main`; the rig it checks out is the
+    dispatched `main` commit unless `--rig-sha` names another, which must then
+    be the approved commit. The workflow, not this code, verifies that such a
+    commit heads a branch of this repository, before it checks the rig out.
+    """
+    rig = getattr(args, "rig_sha", None) or os.environ.get("GITHUB_SHA")
     if (
         args.approve != phrase
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
-        or args.sha != os.environ.get("GITHUB_SHA")
+        or args.sha != rig
     ):
         raise rt.Failure(
-            "Dispatch must explicitly approve the ceilings and exact current main SHA"
+            "Dispatch must explicitly approve the ceilings and the exact rig commit"
         )
     if not rt.RUN_ID.fullmatch(args.run_id):
         raise rt.Failure("Invalid run ID")
@@ -186,8 +232,9 @@ def start_bigquery(args, store):
     refuse_before_admission(args, store, BIGQUERY_APPROVAL)
     started, end = bigquery_window(time.time(), args.expires_at)
     nonce = uuid.uuid4().hex
-    owner = wf.execution("run", nonce) | {"run_id": args.run_id}
+    owner = rig_owner(wf.execution("run", nonce), args)
     kube = wf.external(args.kubeconfig, idle=True)
+    require_capacity(kube)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", BIGQUERY
     )
@@ -316,9 +363,10 @@ def start(args, store):
     elif not 3300 <= end - now <= 3600:
         raise rt.Failure("Dispatch expiry must be 55 to 60 minutes ahead")
     nonce = uuid.uuid4().hex
-    owner = wf.execution("run", nonce) | {"run_id": args.run_id}
+    owner = rig_owner(wf.execution("run", nonce), args)
     namespace = rt.CLOUDTASKS if cloudtasks else rt.SMOKE
     kube = wf.external(args.kubeconfig, idle=True)
+    require_capacity(kube)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", namespace
     )
@@ -653,6 +701,9 @@ def main(argv=None):
     run = sub.add_parser("start")
     run.add_argument("--run-id", required=True)
     run.add_argument("--sha", required=True)
+    run.add_argument(
+        "--rig-sha", help="rig commit checked out, when not the workflow's"
+    )
     run.add_argument("--expires-at", required=True)
     run.add_argument("--approve", required=True)
     run.add_argument("--scenario", choices=SCENARIOS, default="smoke")
