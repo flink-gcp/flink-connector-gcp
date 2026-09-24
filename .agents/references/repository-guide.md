@@ -729,6 +729,10 @@ facts); the rules a session needs:
   for latency. Rows carry a **role** (`floor` / `ceiling` / `next` / `lts`) resolved from the
   `FLINK_*` envs at the top of the file, and every matrix job checks out `github.sha`; the
   whys, including why the `floor` row passes no `-Dflink.version`, are in ADR-0053
+- A weekly row runs its reactor with `-fae` and plans the documentation examples only in a
+  separate `!cancelled()` step (`just check-doc-snippets`), so one red module cannot hide the
+  modules that do not depend on it, and the docs-validation module, which depends on every
+  connector, is still planned (#1502). Keep both when editing the row
 - **The test frameworks follow Flink across a major.** The root POM imports `junit-bom` and
   `testcontainers-bom` in `dependencyManagement`, so those imports set the version of artifacts
   **Flink's own test utilities declare** — `flink-test-utils-junit` 2.2.1 declares
