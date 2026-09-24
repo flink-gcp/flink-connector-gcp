@@ -470,6 +470,7 @@ The example's datagen source is synthetic input, not an event deduplication prot
 The Table runtime refuses `Context.isBounded() == true`, which the supported Flink batch planners report.
 Streaming planners report false even for finite input, so finite STREAMING jobs are supported when exactly-once checkpoints and checkpoints after tasks finish are enabled; their tail commits after a completed checkpoint.
 The shared graph check rejects BATCH, AUTOMATIC, disabled checkpointing, at-least-once checkpoint alignment and disabled checkpoints after tasks finish.
+In a Table job, `execution.runtime-mode=AUTOMATIC` does not get that far on the supported Flink versions: their Table API accepts only an explicit BATCH or STREAMING mode and refuses AUTOMATIC before the sink is planned.
 These are planning checks, not remote queue checks.
 The committer performs the retention readback at startup; an emulator endpoint skips it, and disabling verification makes retention the operator's responsibility.
 No path creates a queue or updates queue policy.

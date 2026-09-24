@@ -17,9 +17,12 @@
 package io.github.flink.gcp.connector.cloudtasks.table;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 
@@ -27,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -70,7 +74,6 @@ class CloudTasksTablePlanTest {
     @ParameterizedTest
     @CsvSource({
         "execution.runtime-mode,BATCH,STREAMING",
-        "execution.runtime-mode,AUTOMATIC,STREAMING",
         "execution.checkpointing.interval,absent,requires checkpointing; set execution.checkpointing.interval",
         "execution.checkpointing.mode,AT_LEAST_ONCE,execution.checkpointing.mode=EXACTLY_ONCE",
         "execution.checkpointing.checkpoints-after-tasks-finish,false,checkpoints-after-tasks-finish"
@@ -100,6 +103,37 @@ class CloudTasksTablePlanTest {
                             environment.getStreamGraph();
                         })
                 .hasStackTraceContaining(reason);
+    }
+
+    @Test
+    void automaticRuntimeModeNeverPlansTheStagedSinkIntoABatchJob() {
+        // Who answers AUTOMATIC depends on the Flink version, not on this connector: the Table
+        // API of Flink 1.20 to 2.3 refuses the mode before any sink is planned, and Flink 2.4
+        // resolves it (#1506). A refusal, or a streaming job with checkpoints, keeps the
+        // contract; a mode resolved to batch must meet the connector's bounded-runtime refusal.
+        Configuration config = new Configuration();
+        config.setString("execution.runtime-mode", "AUTOMATIC");
+        config.setString("execution.checkpointing.interval", "1 s");
+        var environment = StreamExecutionEnvironment.getExecutionEnvironment(config);
+        StreamGraph graph;
+        try {
+            var table = StreamTableEnvironment.create(environment);
+            table.executeSql(
+                    "CREATE TABLE staged_tasks (payload STRING) WITH ("
+                            + QUEUE_OPTIONS
+                            + ", 'http.url'='https://example.com/task',"
+                            + " 'emulator-endpoint'='127.0.0.1:1',"
+                            + " 'sink.delivery-guarantee'='exactly-once')");
+            table.createStatementSet()
+                    .addInsertSql("INSERT INTO staged_tasks VALUES ('body')")
+                    .attachAsDataStream();
+            graph = environment.getStreamGraph();
+        } catch (TableException | ValidationException refused) {
+            assertThat(refused.getMessage()).containsAnyOf("AUTOMATIC", "requires STREAMING");
+            return;
+        }
+        assertThat(graph.getJobType()).isEqualTo(JobType.STREAMING);
+        assertThat(graph.getCheckpointConfig().isCheckpointingEnabled()).isTrue();
     }
 
     @Test
