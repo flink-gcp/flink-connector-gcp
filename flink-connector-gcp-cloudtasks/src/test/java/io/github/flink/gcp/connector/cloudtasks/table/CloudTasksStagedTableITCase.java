@@ -279,7 +279,14 @@ class CloudTasksStagedTableITCase {
         var env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         env.setParallelism(1);
+        // Tests trigger checkpoints explicitly, and a periodic one would commit the staged tasks
+        // before a test observes them. The interval alone never prevented that: the first
+        // periodic trigger is drawn between the minimum pause and the interval, and Flink 2.3
+        // restarts the checkpoint scheduler once every task is RUNNING and schedules that restart
+        // after the minimum pause alone, so without one a periodic checkpoint fires at startup
+        // (#1501). Explicit checkpoints are not subject to the periodic minimum pause.
         env.enableCheckpointing(Duration.ofHours(1).toMillis());
+        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(Duration.ofHours(1).toMillis());
         var source =
                 new DataGeneratorSource<Long>(
                         value -> value,
@@ -359,7 +366,10 @@ class CloudTasksStagedTableITCase {
     private static void awaitGauge(JobClient job, String name, long expected)
             throws InterruptedException {
         Awaits.await(
-                name + "=" + expected, Duration.ofSeconds(20), () -> gauge(job, name) == expected);
+                name + "=" + expected,
+                Duration.ofSeconds(20),
+                () -> gauge(job, name) == expected,
+                () -> diagnosis(job, name, gauge(job, name)));
     }
 
     private static void awaitCounter(JobClient job, String name, long expected)
@@ -367,6 +377,17 @@ class CloudTasksStagedTableITCase {
         Awaits.await(
                 name + "=" + expected,
                 Duration.ofSeconds(20),
-                () -> counter(job, name) == expected);
+                () -> counter(job, name) == expected,
+                () -> diagnosis(job, name, counter(job, name)));
+    }
+
+    // A checkpoint the test did not trigger can commit a value before the test sees it (#1501),
+    // so the timeout names how many checkpoints completed.
+    private static String diagnosis(JobClient job, String name, long actual) {
+        return name
+                + "="
+                + actual
+                + ", completedCheckpoints="
+                + gauge(job, "numberOfCompletedCheckpoints");
     }
 }
