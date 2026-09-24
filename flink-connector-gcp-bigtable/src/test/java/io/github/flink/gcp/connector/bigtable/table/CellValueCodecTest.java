@@ -88,6 +88,20 @@ class CellValueCodecTest {
                         DataTypes.NULL())) {
             map.put(type.getLogicalType().getTypeRoot(), type.getLogicalType());
         }
+        // Roots newer than the oldest supported Flink cannot be named in this shared source, so
+        // they are sampled through their DataTypes factory wherever the running Flink has one
+        // (#1516). A root sampled this way takes part in the agreement walk below instead of
+        // passing it unchecked.
+        for (String factory : Arrays.asList("DESCRIPTOR", "VARIANT", "BITMAP", "UUID")) {
+            try {
+                DataType type = (DataType) DataTypes.class.getMethod(factory).invoke(null);
+                map.put(type.getLogicalType().getTypeRoot(), type.getLogicalType());
+            } catch (NoSuchMethodException absentOnThisFlink) {
+                // Left to the unsampled allowlist in theThreeSwitchesAgreeOnEveryTypeRoot.
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException("DataTypes." + factory + "() failed", e);
+            }
+        }
         return map;
     }
 
@@ -678,24 +692,13 @@ class CellValueCodecTest {
             // The roots with no constructible sample above — structured or user-defined types no
             // switch names. Pinned as an allowlist rather than skipped silently, so a new
             // LogicalTypeRoot arriving in a Flink upgrade fails the walk until a sample — and so
-            // an agreement check — exists for it. A subset, not an equality: the supported range
-            // spans Flink majors and the newer roots cannot all be named from this shared source:
-            // DESCRIPTOR and VARIANT are absent on 1.20, BITMAP is absent on 1.20 and 2.2, and
-            // UUID is absent before 2.4 (#1507).
+            // an agreement check — exists for it. Roots newer than the oldest supported Flink are
+            // sampled reflectively where they exist, so they need no entry here.
             java.util.Set<LogicalTypeRoot> unsampled =
                     java.util.EnumSet.complementOf(java.util.EnumSet.copyOf(SAMPLES.keySet()));
             assertThat(unsampled)
                     .extracting(Enum::name)
-                    .isSubsetOf(
-                            "DISTINCT_TYPE",
-                            "STRUCTURED_TYPE",
-                            "RAW",
-                            "SYMBOL",
-                            "UNRESOLVED",
-                            "DESCRIPTOR",
-                            "VARIANT",
-                            "BITMAP",
-                            "UUID");
+                    .isSubsetOf("DISTINCT_TYPE", "STRUCTURED_TYPE", "RAW", "SYMBOL", "UNRESOLVED");
             for (LogicalTypeRoot root : LogicalTypeRoot.values()) {
                 LogicalType type = SAMPLES.get(root);
                 if (type == null) {
