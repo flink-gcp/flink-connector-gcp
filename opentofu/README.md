@@ -199,11 +199,11 @@ These job permissions can inspect and cancel other principals' jobs in the proje
 The later runtime must record exact query IDs before submission, enforce the approved query and byte budget, and limit recovery to those IDs.
 The existing project-wide Role Admin grant lets the apply identity manage these four custom roles.
 
-All three actors can list and read the dedicated state bucket and use Object User under `runs/`.
+All three actors can list and read the dedicated state bucket and use Object User under `runs/` and `.inprogress/flink-gcp-tier3-bigquery/runs/`, where the Flink GCS filesystem's recoverable writer stages each upload before composing it into place; the bucket's one-day expiry covers both prefixes.
 That grant covers all runs in the bucket; run ownership must be checked by the lifecycle code before deletion.
 The workload receives no access to the evidence bucket or environment lock.
 The runtime must keep checkpoint, savepoint and HA paths under `runs/`.
-A separately approved checkpoint write and restore with the pinned Flink GCS filesystem is a follow-up acceptance requirement; these static grants alone do not establish filesystem compatibility.
+A separately approved checkpoint write and restore with the pinned Flink GCS filesystem is a follow-up acceptance requirement; these static grants alone do not establish filesystem compatibility, and pilot `bq1312-alo-10-a5` found the staging prefix only when its first checkpoint was refused.
 
 The GCP plan should add 19 resources without changing existing resources.
 The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-prerequisites-for-bigquery) precede the bootstrap plan, which imports six objects and adds five job/lifecycle objects.

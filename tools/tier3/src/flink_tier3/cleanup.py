@@ -153,7 +153,11 @@ class Cleanup:
         if self.env.approval.scenario == "pubsub-recovery":
             return [(f"runs/{run_id}/", PUBSUB_STATE)]
         if self.env.approval.scenario == "bigquery-recovery":
-            return [(f"runs/{run_id}/", BIGQUERY_STATE)]
+            # Flink's GCS writer stages uploads under .inprogress/<bucket>/.
+            return [
+                (f"runs/{run_id}/", BIGQUERY_STATE),
+                (f".inprogress/{BIGQUERY_STATE}/runs/{run_id}/", BIGQUERY_STATE),
+            ]
         if not self.cloudtasks:
             return [(f"runs/{run_id}/", STATE)]
         if cell_ids is None:
@@ -164,11 +168,15 @@ class Cleanup:
 
     def remaining_state(self, cell_ids=None, maximum=None):
         maximum = self.ceilings["state_objects"] if maximum is None else maximum
-        return [
-            (obj, bucket)
-            for prefix, bucket in self.state_prefixes(cell_ids)
-            for obj in self.env.store.objects(prefix, bucket, maximum)
-        ]
+        remaining = []
+        for prefix, bucket in self.state_prefixes(cell_ids):
+            # A Cloud Tasks cell's prefix is its own state; otherwise every
+            # prefix holds one run's state and they share the ceiling.
+            budget = maximum if self.cloudtasks else maximum - len(remaining)
+            remaining += [
+                (obj, bucket) for obj in self.env.store.objects(prefix, bucket, budget)
+            ]
+        return remaining
 
     @retry_conflicts
     def quota(self, namespace, admission):

@@ -943,3 +943,7 @@ A draining node counts as unschedulable, since GKE's node count includes it; the
 The BigQuery exercise waits 1200 seconds from the approved start for input to flow; admission keeps its 600-second startup window.
 Pilot `bq1312-alo-10-a4` started from no nodes and was admitted four minutes in, after which Autopilot provisioned a node for the JobManager, following a zonal quota refusal, and then one for the TaskManagers; its first input progress was logged 16 seconds before the 600-second budget expired, and the next supervisor poll found the budget spent, so the run stopped at its baseline stage with no query spent.
 The phases still fit the window: 1200 seconds to input, 180 of warmup, 600 of baseline, two 300-second recoveries, 600 after recovery and 600 for visibility take 3780 of the 4500 seconds before cleanup.
+
+The BigQuery state grant also covers `.inprogress/flink-gcp-tier3-bigquery/runs/`, and BigQuery cleanup deletes the run's objects there.
+Flink's GCS recoverable writer stages each upload under `.inprogress/<bucket>/<object>/` in the same bucket before composing it into place, so a `runs/`-only condition refused pilot `bq1312-alo-10-a5`'s first checkpoint `_metadata` with 403; the job restarted without a checkpoint, and the supervisor stopped the run on the fresh input lineage.
+The staging prefix repeats the run path, so the grant stays run-scoped; the other scenarios' workloads hold unconditional Object User on their buckets and never met the condition.

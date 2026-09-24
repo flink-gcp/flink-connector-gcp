@@ -258,20 +258,39 @@ def test_creation_and_uncertain_adoption_use_bigquery_namespace(prepared):
 def test_state_cleanup_uses_only_bigquery_bucket_and_run_prefix(prepared):
     environment, *_ = prepared
     prefix = f"runs/{environment.approval.run_id}/"
+    # Flink's GCS writer stages an upload under .inprogress/<bucket>/<object>/.
+    staged = f".inprogress/{BIGQUERY_STATE}/{prefix}chk-1/_metadata/upload"
     targets = [
         (prefix + "checkpoint", BIGQUERY_STATE),
+        (staged, BIGQUERY_STATE),
         (prefix + "checkpoint", rt.STATE),
         (prefix + "checkpoint", rt.EVIDENCE),
         ("runs/other/checkpoint", BIGQUERY_STATE),
+        (f".inprogress/{BIGQUERY_STATE}/runs/other/upload", BIGQUERY_STATE),
     ]
     for path, bucket in targets:
         environment.store.write(path, {"saved": True}, bucket=bucket)
     cleanup = Cleanup(environment)
-    assert [(o["name"], b) for o, b in cleanup.remaining_state()] == [targets[0]]
+    assert [(o["name"], b) for o, b in cleanup.remaining_state()] == targets[:2]
     cleanup.clean_state()
-    assert environment.store.read(*targets[0])[0] is None
-    for path, bucket in targets[1:]:
+    for path, bucket in targets[:2]:
+        assert environment.store.read(path, bucket)[0] is None
+    for path, bucket in targets[2:]:
         assert environment.store.read(path, bucket)[0] == {"saved": True}
+
+
+def test_staged_uploads_share_the_run_state_object_ceiling(prepared):
+    environment, *_ = prepared
+    prefix = f"runs/{environment.approval.run_id}/"
+    for name in ("a", "b"):
+        environment.store.write(prefix + name, {}, bucket=BIGQUERY_STATE)
+        environment.store.write(
+            f".inprogress/{BIGQUERY_STATE}/{prefix}{name}", {}, bucket=BIGQUERY_STATE
+        )
+    cleanup = Cleanup(environment)
+    assert len(cleanup.remaining_state(maximum=4)) == 4
+    with pytest.raises(Failure, match="ceiling"):
+        cleanup.remaining_state(maximum=3)
 
 
 @pytest.mark.parametrize(

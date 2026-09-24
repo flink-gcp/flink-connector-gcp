@@ -61,7 +61,7 @@ resource "google_storage_bucket" "tier3_bigquery" {
     }
     condition {
       age            = 1
-      matches_prefix = ["runs/"]
+      matches_prefix = ["runs/", ".inprogress/"]
     }
   }
 }
@@ -163,7 +163,9 @@ resource "google_storage_bucket_iam_member" "tier3_bigquery_state" {
   member = each.value
   condition {
     title       = "bigquery-run-state-only"
-    description = "Manage Flink state under run prefixes without bucket administration"
-    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.tier3_bigquery.name}/objects/runs/')"
+    description = "Manage Flink state and its staged uploads under run prefixes"
+    # Flink's GCS writer stages every object as .inprogress/<bucket>/<object>/
+    # in the same bucket before composing it into place.
+    expression = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.tier3_bigquery.name}/objects/runs/') || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.tier3_bigquery.name}/objects/.inprogress/${google_storage_bucket.tier3_bigquery.name}/runs/')"
   }
 }
