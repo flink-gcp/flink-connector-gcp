@@ -76,8 +76,41 @@ A failed calibration run stops the session before the measurement; the failure i
 
 The 27 cells take 9,945 seconds of nominal span, about 2.8 hours, plus the calibration's 747 seconds and up to a few minutes per run for start and teardown.
 They emit 5,698,575 records, about USD 2.30 of Cloud Tasks operations, and the host costs about USD 1 for four hours.
-The planning bound — every subtask exhausting its attempt limit in each of four incarnations — is 34.2 million creations, USD 13.70; the paused queue and the per-run deadline keep a misbehaving run far below it.
+The planning bound — every subtask exhausting its attempt limit in each of four incarnations — is 34.2 million creations, USD 13.68; the paused queue and the per-run deadline keep a misbehaving run far below it.
 The ceiling is USD 20 for the host and operations together.
+
+## Result on the VM rig, 2026-09-24
+
+The host `ct1246-vm-1` ran from 2026-09-23T14:40Z for about three and a half hours and was deleted, with no instance, disk or `ct1246-*` queue left.
+The probe classpath was built from `32f346232d42578e713b27ae9907a724905c7624`.
+
+Calibration passed every item.
+`k01-pace-10` achieved 10.003 records per second with a p95 of 37 ms over a window of 182 checkpoints.
+`k03a-delay-latency` achieved 2.0006 records per second with a p95 of 153 ms, about 115 ms above `k01`'s, so the delay is detected.
+`k09-staged-gauges` reported all six staged gauges.
+Each reconciled `complete`.
+
+All 27 cells of the measurement were usable: observed, reconciled `complete`, no restart, and each window held at least six checkpoints.
+
+| Shape | Offered rate | Arm | Mean throughput | Range over mean | Mean p95 |
+| --- | ---: | --- | ---: | ---: | ---: |
+| `s1` (1, 1, 1 s) | 25 | `UNNAMED` | 25.004 | 0.01 % | 60.9 ms |
+| | | `NAMED_HASH` | 25.003 | 0.02 % | 51.5 ms |
+| | | `STAGED_HASH` | 25.002 | 0.06 % | 783.9 ms |
+| `s2` (4, 4, 10 s) | 100 | `UNNAMED` | 100.005 | 0.04 % | 27.7 ms |
+| | | `NAMED_HASH` | 99.995 | 0.06 % | 33.0 ms |
+| | | `STAGED_HASH` | 99.991 | 0.03 % | 9,022.4 ms |
+| `s3` (16, 16, 60 s) | 1,000 | `UNNAMED` | 999.983 | 0.00 % | 31.5 ms |
+| | | `NAMED_HASH` | 1,000.035 | 0.01 % | 33.1 ms |
+| | | `STAGED_HASH` | 1,000.063 | 0.01 % | 53,721.1 ms |
+
+Against `UNNAMED`, `STAGED_HASH`'s throughput ratio is 1.000 on every shape and its p95 ratio is 12.9, 326 and 1,706, so ADR-0104's rule, applied as written, labels every shape `decline` on p95 alone.
+The staged p95 was 78 %, 90 % and 90 % of each shape's checkpoint interval, and it follows the interval by construction: a task is created only after the checkpoint that owns its envelope completes, so its visibility waits for most of an interval.
+ADR-0162 records what the owner decided about that criterion.
+At these rates staging kept up fully; capacity above them was not measured.
+
+The run created 5,698,575 distinct tasks in the measurement, about USD 2.30 of operations, and the host cost about USD 1.
+The campaign directories, analysis report and logs are retained by the owner with a per-file SHA-256 manifest; the collected archive's SHA-256 is `541d378092a68a416daaff2c8e8918264992ce9bc9ccd506915d837688f0e80d`, which matched on the host before deletion.
 
 ## Protocol interpretations the owner must confirm
 

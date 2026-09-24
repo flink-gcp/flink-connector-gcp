@@ -21,21 +21,23 @@ limitations under the License.
   and by [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
   [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210), and
   [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) (2026-09-05), and
-  [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) (2026-09-06)
+  [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239) (2026-09-06), and
+  [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) (2026-09-24)
 - Issues: [#591](https://github.com/flink-gcp/flink-connector-gcp/issues/591),
   [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596),
   [#1208](https://github.com/flink-gcp/flink-connector-gcp/issues/1208),
   [#1210](https://github.com/flink-gcp/flink-connector-gcp/issues/1210),
   [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211),
   [#1239](https://github.com/flink-gcp/flink-connector-gcp/issues/1239),
-  [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241)
+  [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241),
+  [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
 [ADR-0154](0154-support-follows-published-google-cloud-specifications.md) supersedes only the blanket Cloud Tasks G0 stop and its mandatory investigation prerequisites.
 The original stronger recovery claim remains unproved; every other decision, correctness requirement, measurement and performance gate in this record remains in force.
 [ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md) supersedes only the Cloud Tasks decision below: it defines the checkpointed-creation mode [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240) was asked for, scoped to published service semantics, and leaves this record's evidence and performance gates in force.
-[ADR-0162](0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) subsequently supersedes only the Cloud Tasks requirement for a separate primitive performance pass before implementation, connector-level evaluation or release; final performance acceptance retains the thresholds below.
+[ADR-0162](0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) subsequently supersedes only the Cloud Tasks requirement for a separate primitive performance pass before implementation, connector-level evaluation or release; final performance acceptance retains the thresholds below, except that ADR-0162's 2026-09-24 disposition applies only the throughput threshold to that checkpoint-coordinated mode, whose latency follows its checkpoint interval.
 [ADR-0163](0163-bigtable-checkpointed-writes-stage-immutable-mutations-and-retain-row-markers.md) settles the Bigtable staged-mode design: Flink committer state owns immutable mutation envelopes, and permanent same-row envelope markers absorb repeated commits.
 It supersedes the application-event-identity requirement for that mode, while retaining the Bigtable performance gates below; the runtime is not implemented.
 

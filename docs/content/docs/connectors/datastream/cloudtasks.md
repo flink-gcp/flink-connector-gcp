@@ -472,8 +472,20 @@ Four exclusions constrain this guarantee:
 - **Unbounded service effects and administrative history:** client cancellation and deadlines do not exclude late service-side effects, including requests sent by an old process; purge, queue deletion/recreation and shortened name retention can remove replay protection.
 - **Stop-with-savepoint without FINISHED:** a synchronous savepoint can create tasks before an unrelated operator or the commit itself fails; the job fails without automatic recovery; an external restart from an older checkpoint can stage those records under fresh random names.
 
-The DataStream and Table implementations have [#1245]({{< param BookRepo >}}/issues/1245)'s adopted real-service recovery evidence; release of the mode still requires [#1246]({{< param BookRepo >}}/issues/1246)'s final performance verdict.
-The earlier primitive measurements remain inconclusive; implementing this mode does not change that result.
+The mode is experimental.
+The DataStream and Table implementations have [#1245]({{< param BookRepo >}}/issues/1245)'s adopted real-service recovery evidence.
+[#1246]({{< param BookRepo >}}/issues/1246) measured the DataStream sink's cost against the at-least-once paths on Flink 2.2.1 with 1 KiB tasks; the Table mode runs the same staged sink but was not measured on its own:
+
+| Parallelism, concurrency, checkpoint interval | Offered rate | Throughput against at-least-once | p95 at-least-once | p95 checkpointed |
+| --- | ---: | ---: | ---: | ---: |
+| 1, 1, 1 s | 25/s | 100 % | 61 ms | 0.78 s |
+| 4, 4, 10 s | 100/s | 100 % | 28 ms | 9.0 s |
+| 16, 16, 60 s | 1,000/s | 100 % | 32 ms | 53.7 s |
+
+Throughput kept up at every measured rate; the added latency follows the checkpoint interval, at 78 to 90 % of it, because a task is created only after the checkpoint that owns it completes.
+Capacity above these rates, 64 KiB tasks, skewed routing and Flink 1.20 were not measured.
+Choose the mode when records have no stable key to name tasks with and duplicate tasks are unacceptable; with a stable key, the at-least-once writer's named tasks collapse duplicates within the queue's name retention without waiting for a checkpoint, and at the measured rates their p95 was at most 5.3 ms above unnamed tasks'.
+The [preregistration and raw figures]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0162-cloudtasks-assessment-1246.md) and the [decision]({{< param BookRepo >}}/blob/main/docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) record the measurement.
 
 ### Recovery window and prerequisites
 

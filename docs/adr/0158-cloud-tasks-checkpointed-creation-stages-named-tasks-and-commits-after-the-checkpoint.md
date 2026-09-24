@@ -18,16 +18,17 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-06
-- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240)
+- Updated: 2026-09-24 (the mode ships as experimental after #1245's recovery acceptance and #1246's assessment, revised by [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246))
+- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)
 - Supersedes: only [ADR-0104](0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md)'s Cloud Tasks decision ("bounded effectively-once task creation only")
 - Refines: [ADR-0048](0048-the-cloud-tasks-sink-owns-its-retry-loop-and-never-creates-queues.md) (the stateless writer becomes the default mode's property) and [ADR-0049](0049-exactly-three-cloud-tasks-failures-are-routed-and-the-argument-half-never-scans.md) (the routed failures belong to the default mode)
 - Modules: cloudtasks
-- Current behavior: `docs/content/docs/connectors/delivery-guarantees.md` § Cloud Tasks (unchanged until the mode ships)
+- Current behavior: `docs/content/docs/connectors/delivery-guarantees.md` § Cloud Tasks
 
 This record is the G1 protocol decision of [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238).
 It defines a delivery mode; it does not enable one.
 The runtime is built by [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) through [#1244](https://github.com/flink-gcp/flink-connector-gcp/issues/1244) under the delivery order in [ADR-0162](0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md), which supersedes this record's separate primitive-pass prerequisite.
-Implementation may proceed before final performance acceptance; release requires [#1245](https://github.com/flink-gcp/flink-connector-gcp/issues/1245)'s real-service recovery acceptance and [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)'s assessment of the complete mode.
+Implementation proceeded before final performance acceptance; after [#1245](https://github.com/flink-gcp/flink-connector-gcp/issues/1245)'s real-service recovery acceptance and [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)'s assessment of the complete mode, the mode ships as experimental (ADR-0162).
 The [#1241 repeat](evidence/0104-cloudtasks-stage1-1241.md#result-on-2026-09-06) was inconclusive and supplied no primitive performance pass.
 
 ## Context
@@ -409,7 +410,7 @@ The v2beta3 retention client and settings are class-level `@BetaApi` in the pinn
 This dependency enables the default retention preflight; its removal or service withdrawal would require a replacement readback with the same retention semantics, or an explicit deployment choice to verify retention outside the connector.
 The connector must not silently disable that check on a dependency upgrade.
 Readback rejects an emulator-configured factory before client creation and reports sanitized status codes for RPC failures, using `UNCLASSIFIED` when no code is available.
-Issue #1244 adds Table API exposure below; real-service/performance release acceptance remains #1245 and #1246 respectively.
+Issue #1244 adds Table API exposure below; #1245 accepted real-service recovery and #1246 assessed performance.
 
 The MiniCluster implementation corrected the earlier stop/savepoint claim in this ADR.
 Calling `handleGlobalFailure` does not imply a restart: both Flink 1.20.4 and 2.2.1 annotate `StopWithSavepointStoppingException` as non-recoverable, and `ExecutionFailureHandler` checks that before the restart strategy.
@@ -485,7 +486,7 @@ The gated real-GCP acceptance in [#1245](https://github.com/flink-gcp/flink-conn
 - ADR-0048's stateless writer and ADR-0049's routed failures describe the default mode; both are refined in place with a pointer here.
 - [#1242](https://github.com/flink-gcp/flink-connector-gcp/issues/1242) builds the writer, envelope, serializer and staging caps with the operator-harness and writer tests above; [#1243](https://github.com/flink-gcp/flink-connector-gcp/issues/1243) builds the committer, the deadline arithmetic, the graph check, the readback and the DataStream entry point with the MiniCluster tests and the four seams they need; [#1244](https://github.com/flink-gcp/flink-connector-gcp/issues/1244) adds the Table option, the planner check, and the documentation named next.
 - The documentation that changes when the mode ships: the delivery-guarantees sink matrix and Cloud Tasks section, the DataStream page's task naming and delivery sections, the Table page's delivery section, and the option reference; each states the guarantee, the four exclusions, the window arithmetic, the heap rule, the checkpoint-timeout rule, the prerequisites and the runbook.
-- Releasing the mode under the label `EXACTLY_ONCE` requires the tests above to pass on both supported Flink lines, [#1245](https://github.com/flink-gcp/flink-connector-gcp/issues/1245)'s real-service recovery acceptance and [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)'s final performance acceptance, under ADR-0162. Implementation of the entry point does not itself authorize release.
+- Releasing the mode under the label `EXACTLY_ONCE` requires the tests above to pass on both supported Flink lines, [#1245](https://github.com/flink-gcp/flink-connector-gcp/issues/1245)'s real-service recovery acceptance and [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246)'s assessment, under ADR-0162; #1245 and #1246 are complete, and the mode ships as experimental.
 
 [create-task]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues.tasks/create
 [queue]: https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues
