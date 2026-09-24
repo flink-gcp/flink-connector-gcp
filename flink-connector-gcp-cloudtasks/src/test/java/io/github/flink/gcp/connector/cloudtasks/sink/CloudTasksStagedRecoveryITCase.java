@@ -161,6 +161,7 @@ class CloudTasksStagedRecoveryITCase {
         control.limit.set(2);
         JobClient first = start(null, ExpiredEnvelopePolicy.FAIL, false, false);
         awaitAccepted(2);
+        awaitRunning(cluster, first);
         String savepoint =
                 first.stopWithSavepoint(
                                 false,
@@ -252,6 +253,7 @@ class CloudTasksStagedRecoveryITCase {
         }
         control.limit.set(2);
         awaitAccepted(2);
+        awaitRunning(cluster, first);
         Path savepointDirectory = temporary.resolve("failed-stop");
         var stopped =
                 first.stopWithSavepoint(
@@ -398,6 +400,13 @@ class CloudTasksStagedRecoveryITCase {
     }
 
     private String checkpoint(MiniCluster cluster, JobClient job) throws Exception {
+        awaitRunning(cluster, job);
+        return cluster.triggerCheckpoint(job.getJobID()).get(30, TimeUnit.SECONDS);
+    }
+
+    // A checkpoint or a stop-with-savepoint fails outright while any task is still initializing,
+    // and records reaching the writer do not show that the separately scheduled committer runs.
+    private void awaitRunning(MiniCluster cluster, JobClient job) throws InterruptedException {
         Awaits.await(
                 "all checkpoint-triggering tasks to run",
                 Duration.ofSeconds(20),
@@ -423,7 +432,6 @@ class CloudTasksStagedRecoveryITCase {
                         throw new AssertionError(failure);
                     }
                 });
-        return cluster.triggerCheckpoint(job.getJobID()).get(30, TimeUnit.SECONDS);
     }
 
     private void awaitAccepted(int records) throws InterruptedException {

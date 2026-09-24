@@ -281,6 +281,8 @@ abstract class StagedRecoveryAcceptance {
             Shape shape, @InjectMiniCluster MiniCluster cluster) throws Exception {
         JobClient initial = start(shape, null, 1, false, "fail", false);
         staged(initial, 4);
+        // The writer staging records does not show that the separately scheduled committer runs.
+        awaitRunning(cluster, initial);
         String savepoint =
                 initial.stopWithSavepoint(
                                 false,
