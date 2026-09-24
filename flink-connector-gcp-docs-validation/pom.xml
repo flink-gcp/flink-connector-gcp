@@ -206,8 +206,8 @@ limitations under the License.
                 <executions>
                     <!-- The parent binds ordinary *Test classes again at `test`. This module's
                          explicit execution below is the whole test boundary, so disable that
-                         inherited execution rather than running every planner scenario twice in
-                         the weekly full-profile matrix. -->
+                         inherited execution rather than running every planner scenario twice
+                         whenever the profile builds through `test` or later. -->
                     <execution>
                         <id>default-test</id>
                         <phase>none</phase>
