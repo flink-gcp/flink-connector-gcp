@@ -453,13 +453,12 @@ class RecoveryExercise:
                     if p["metadata"]["namespace"] == self.namespace
                 } - self.retiring_pods
         if status == "FINISHED":
-            # Operator 1.15.0 marks the old job FINISHED after stop-with-savepoint.
-            if (
-                self.stage == "upgrade"
-                and app["status"]["jobStatus"].get("jobId") == self.before["job_id"]
-                and app["status"].get("reconciliationStatus", {}).get("state")
-                == "UPGRADING"
-            ):
+            # Operator 1.15.0 marks the old job FINISHED after stop-with-savepoint
+            # and assigns the upgraded job's ID before that state clears, so
+            # FINISHED under either ID is the transition. An upgraded job that
+            # really finished never proves recovery, and the stage deadline
+            # stops the run.
+            if self.stage == "upgrade":
                 return False
             if self.stage != "finishing" or not self.input_complete():
                 raise Failure(
