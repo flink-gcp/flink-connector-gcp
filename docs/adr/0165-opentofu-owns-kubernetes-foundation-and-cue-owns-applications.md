@@ -269,7 +269,8 @@ An Operator version change must revisit this choice against its upstream behavio
 
 Correlate restored state identity and timestamps with fresh progress, a different JM UID and a later completed checkpoint for each disruption separately.
 A savepoint upgrade may change the Flink job ID; a JM failover must restore the upgraded job ID and a checkpoint at least as recent as the observed nonzero-progress checkpoint.
-Operator 1.15.0 reports the old job as `FINISHED` after stop-with-savepoint; tolerate it only during that job's `UPGRADING` reconciliation, without treating it as final input completion.
+Operator 1.15.0 reports the old job as `FINISHED` after stop-with-savepoint; tolerate it during the upgrade stage, without treating it as final input completion.
+Refined after trial `bq1312-alo-50-a1`, whose supervisor polled after the Operator had assigned the upgraded job's ID but before the stopped job's `FINISHED` state cleared, and stopped the run: the tolerance no longer requires the old job ID or `UPGRADING`, since an upgraded job that really finished never proves recovery and the upgrade's own deadline stops the run.
 After both recoveries and observed complete input, normal idle-Pod removal may precede the final job status; permit only a shrinking stable Pod set, excluding Pods already terminating when that set was recorded.
 No earlier phase's success flag or completed-checkpoint counter substitutes for this evidence.
 Limit REST unavailability tolerance to the two recovery windows, retain scheduling/interruption observations, and classify observed unplanned interruption as inconclusive.

@@ -228,6 +228,15 @@ class World:
         if not app:
             return
         elapsed = self.clock() - self.changed
+        if (
+            self.fault == "override-before-running"
+            and self.phase == "upgrade"
+            and 15 <= elapsed < 30
+        ):
+            # bq1312-alo-50-a1: the Operator assigned the upgraded job's ID
+            # while the stopped job's FINISHED state was still reported.
+            app["status"]["jobStatus"].update(state="FINISHED", jobId="2" * 32)
+            self.kube.put(app)
         if self.phase in ("upgrade", "failover") and elapsed >= 30:
             if self.phase == "upgrade":
                 for key, pod in list(self.kube.data.items()):
@@ -331,7 +340,14 @@ class World:
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "lost-upgrade-response", "lost-delete-response", "retiring-jm"]
+    "fault",
+    [
+        None,
+        "lost-upgrade-response",
+        "lost-delete-response",
+        "retiring-jm",
+        "override-before-running",
+    ],
 )
 def test_integrated_trial_proves_each_recovery_then_cleans(env, monkeypatch, fault):
     world = World(env, monkeypatch, fault)
@@ -388,8 +404,9 @@ def test_missing_phase_evidence_cannot_pass_and_still_cleans(env, monkeypatch, f
         assert "Upgrade precondition rejected" in result.reason
         assert world.calls == ["upgrade"]
     if fault in ("new-job-finished", "old-job-finished-deployed"):
-        assert "Finished without both recovery proofs" in result.reason
-        assert world.clock() < world.upgrade_at + RECOVERY["recovery_seconds"]
+        # FINISHED is the upgrade's transition; only its deadline ends it.
+        assert "deadline expired: upgrade" in result.reason
+        assert world.clock() >= world.upgrade_at + RECOVERY["recovery_seconds"]
         assert world.calls == ["upgrade"]
 
 

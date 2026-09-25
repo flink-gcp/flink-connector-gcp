@@ -228,7 +228,7 @@ During either five-minute recovery window, checkpoint-proxy transport failures a
 Authentication failures and ownership changes still fail immediately.
 An old Pod disappearing during log collection is recorded; the run must still obtain the required recovery evidence from surviving/replacement Pods.
 During the savepoint upgrade, temporary cancellation/suspension is expected.
-Operator 1.15.0 also reports the old job as `FINISHED` after stopping it with a savepoint; accept that state only for the old job ID while reconciliation remains `UPGRADING`.
+Operator 1.15.0 also reports the old job as `FINISHED` after stopping it with a savepoint, and assigns the upgraded job's ID before that state clears; during the upgrade `FINISHED` is therefore accepted under either job ID, and an upgraded job that really finished is stopped by the upgrade's deadline because it never proves recovery.
 It does not satisfy final completion, and terminal failure or Operator rollback still stops the trial.
 No wait extends the absolute cleanup deadline.
 
