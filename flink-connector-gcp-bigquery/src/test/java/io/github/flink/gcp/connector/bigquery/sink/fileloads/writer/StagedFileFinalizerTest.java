@@ -202,7 +202,12 @@ class StagedFileFinalizerTest {
                                 "third",
                                 new AtomicInteger(),
                                 fatalFailure,
-                                () -> await(ordinaryFailureFinished, "ordinary failure")));
+                                () -> {
+                                    // A stalled file still queued would be cancelled, leaving
+                                    // the fatal failure nothing to overtake.
+                                    await(stalledFileStarted, "stalled file");
+                                    await(ordinaryFailureFinished, "ordinary failure");
+                                }));
         ExecutorService caller = Executors.newSingleThreadExecutor();
         try {
             Future<?> finalization =
@@ -221,8 +226,8 @@ class StagedFileFinalizerTest {
         } finally {
             releaseStalledFile.countDown();
             caller.shutdownNow();
-            assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
         }
+        assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
     }
 
     @Test
@@ -287,8 +292,8 @@ class StagedFileFinalizerTest {
             releaseFatalAbort.countDown();
             releaseStalledFile.countDown();
             caller.shutdownNow();
-            assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
         }
+        assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
     }
 
     @Test
@@ -332,8 +337,8 @@ class StagedFileFinalizerTest {
         } finally {
             releaseStalledFile.countDown();
             caller.shutdownNow();
-            assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
         }
+        assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
     }
 
     @Test
@@ -483,8 +488,8 @@ class StagedFileFinalizerTest {
         } finally {
             releaseStalledFile.countDown();
             caller.shutdownNow();
-            assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
         }
+        assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
     }
 
     @Test
@@ -538,8 +543,8 @@ class StagedFileFinalizerTest {
             releaseFatalFailure.countDown();
             releaseStalledFile.countDown();
             caller.join(TimeUnit.SECONDS.toMillis(5));
-            assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
         }
+        assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
     }
 
     @Test
