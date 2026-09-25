@@ -639,12 +639,14 @@ facts); the rules a session needs:
 - Releases follow full semver. Early milestones closed without artifacts and without tags; the
   first tag and the first Maven Central version are both `1.0.0` (issue #29), and the working
   tree precedes the next release as `<next>-SNAPSHOT`. The published docs name the latest
-  *released* version, not the tree's: cutting a release updates the quickstart coordinates,
+  *released* version, not the tree's. Cutting a release updates the quickstart coordinates,
   the status blockquotes (README and the site front page), and the `ADD JAR` jar names in the
-  source-backed SQL snippets — three tagged `.sql` sources; the plan test's
-  `addJarExamplesNameOneReleasedVersion` holds all three to one version, because only two
-  carry exact statement expectations — and a follow-up PR then bumps the working tree to the
-  next `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
+  three tagged `.sql` sources of the source-backed SQL snippets, together with the two plan
+  expectations in `DocumentationSqlPlanTest` that quote those jar names. That class's
+  `releaseDocSurfacesNameOneReleasedVersion` holds all of those surfaces to one version, so a
+  partial bump fails. The bump merges before the tag, because the tag freezes those surfaces
+  on that release's documentation line (ADR-0159). A follow-up PR then bumps the working tree to the next
+  `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
   rides the CI Maven cache — measured on #728, the cache archives the whole local repository
   including it; ADR-0124's revision records why)
 - **Releases publish after both Central Portal deployments validate** (ADR-0147, issues #724, #1185):
