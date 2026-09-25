@@ -332,6 +332,7 @@ Publish the SDK-equipped image through the existing image workflow and adopt its
 The supervisor does not install packages at startup.
 
 SDK API retries and automatic credential refresh retries after a rejected request are disabled; failed operations return to the lifecycle's existing recovery and generation-conflict handling.
+The one exception is a Kubernetes read answered 500, 502, 503 or 504, which the adapter repeats up to three times after 1, 2 and 4 seconds: a single 503 from a control-plane blip ended pilot `bq1312-alo-10-a6` after both recoveries had passed. A mutation, a read that timed out, and a Flink REST read through the API server's proxy are not repeated; the last is the job's answer, which the recovery windows classify themselves.
 A generation replaced between a GCS metadata read and its download restarts the complete read, at most five times; only an initial metadata 404 means the object is absent.
 Other download failures return immediately.
 The GCS SDK's optional background bucket-metadata reads are disabled to preserve the object-only permission boundary.
