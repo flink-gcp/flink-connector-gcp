@@ -141,7 +141,8 @@ check-readme-examples:
     mise x uv -- uv run --locked scripts/check-readme-examples.py
 
 # The site build lets Hugo decide which SQL shortcodes are actually rendered. The docs-validation
-# module inventories those rendered markers and plans the corresponding Flink SQL regions.
+# module inventories those rendered markers and plans the corresponding Flink SQL regions; the same
+# test class holds the release doc-bump surfaces (Version policy) to one released version.
 #
 # Check and compile source-backed examples and plan Flink SQL regions.
 check-doc-snippets *args:
@@ -153,7 +154,7 @@ check-doc-snippets *args:
     mise x uv -- uv run --locked scripts/assert-surefire-boundaries.py \
         flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml \
         everyRenderedSqlBlockIsSourceBacked \
-        addJarExamplesNameOneReleasedVersion \
+        releaseDocSurfacesNameOneReleasedVersion \
         everyFlinkRegionHasOneValidationBoundary \
         documentedFlinkSqlMatchesItsValidationContract \
         batchRuntimeModeDetectionDoesNotDependOnSpacing \

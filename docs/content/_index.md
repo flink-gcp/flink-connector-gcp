@@ -24,8 +24,8 @@ limitations under the License.
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/).
 
 > **Status: released.** Artifacts are on
-> [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp): `1.0.0` for the
-> supported Flink 2.x range and `1.0.0-1.20` for the Flink 1.20 LTS. The
+> [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp): `1.1.0` for the
+> supported Flink 2.x range and `1.1.0-1.20` for the Flink 1.20 LTS. The
 > [Quickstart]({{< relref "docs/quickstart" >}}) shows the coordinates; building from source
 > is covered by [Development]({{< relref "docs/development" >}}).
 

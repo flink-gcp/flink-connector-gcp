@@ -63,7 +63,10 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Planner validation for the Flink SQL regions rendered by the documentation. */
+/**
+ * Planner validation for the Flink SQL regions rendered by the documentation, and the check that
+ * the documentation's release doc-bump surfaces name one released version.
+ */
 public class DocumentationSqlPlanTest {
 
     private static final String DOCS_PUBLIC_PROPERTY = "flink.gcp.docs.public";
@@ -175,13 +178,25 @@ public class DocumentationSqlPlanTest {
     }
 
     @Test
-    void addJarExamplesNameOneReleasedVersion() throws IOException {
-        // The release doc-bump rule (repository guide, Version policy) updates every
-        // ADD JAR literal to the version being released. Only two of the three carry an
-        // exact plan expectation and plan() skips AddJarOperation, so a partial bump
-        // would otherwise stay green while a rendered page names the previous release.
-        Pattern jarName = Pattern.compile("flink-sql-connector-gcp-[a-z]+-([^']+)'");
-        Map<String, String> suffixes = new LinkedHashMap<>();
+    void releaseDocSurfacesNameOneReleasedVersion() throws IOException {
+        // The release doc-bump rule (repository guide, Version policy) moves the README and
+        // site front-page status blockquotes, the quickstart coordinates and every ADD JAR
+        // literal to the version being released, and the tag then freezes those surfaces on
+        // that release's documentation line (ADR-0159). Holding every surface to one version
+        // turns a partial bump into a failure; a rewording or removal that drops a surface
+        // fails too, rather than silently leaving it unchecked. The surfaces agreeing on a
+        // stale version is outside this test's reach: only the tag names the release.
+        Map<String, String> versions = new LinkedHashMap<>();
+        String semver = "([0-9]+\\.[0-9]+\\.[0-9]+)";
+        // Flink SQL keywords are case-insensitive, so the filter is too: a lowercase statement
+        // must not slip past with a stale jar name.
+        Pattern addJar = Pattern.compile("(?i)\\bADD\\s+JAR\\b");
+        Pattern bareJar =
+                Pattern.compile(
+                        "(?i)\\bADD\\s+JAR\\s+'[^']*flink-sql-connector-gcp-[a-z]+-"
+                                + semver
+                                + "\\.jar'");
+        Set<String> addJarSources = new LinkedHashSet<>();
         Path directory =
                 repositoryRoot()
                         .resolve(
@@ -193,33 +208,91 @@ public class DocumentationSqlPlanTest {
                             .sorted()
                             .collect(Collectors.toList())) {
                 for (String line : Files.readAllLines(file)) {
-                    if (!line.contains("ADD JAR")) {
+                    if (!addJar.matcher(line).find()) {
                         continue;
                     }
-                    Matcher matcher = jarName.matcher(line);
+                    String where = file.getFileName() + ": " + line.trim();
+                    Matcher matcher = bareJar.matcher(line);
                     assertThat(matcher.find())
                             .as(
-                                    "%s: %s must name a quoted"
-                                            + " flink-sql-connector-gcp-<connector> jar",
-                                    file.getFileName(), line.trim())
+                                    "%s must name the bare released"
+                                            + " flink-sql-connector-gcp-<connector>-<version>.jar,"
+                                            + " not a classifier or the -1.20 line (the docs-wide"
+                                            + " convention names the 2.x jar)",
+                                    where)
                             .isTrue();
-                    suffixes.put(file.getFileName() + ": " + line.trim(), matcher.group(1));
+                    versions.put(where, matcher.group(1));
+                    addJarSources.add(file.getFileName().toString());
                 }
             }
         }
-        assertThat(suffixes).as("the docs carry ADD JAR examples").isNotEmpty();
-        suffixes.forEach(
-                (where, suffix) ->
-                        assertThat(suffix)
-                                .as(
-                                        "%s must name the bare released uber-jar, not a"
-                                                + " classifier or the -1.20 line (the docs-wide"
-                                                + " convention names the 2.x jar)",
-                                        where)
-                                .matches("[0-9]+\\.[0-9]+\\.[0-9]+\\.jar"));
-        assertThat(new HashSet<>(suffixes.values()))
-                .as("every ADD JAR example names the same released version: %s", suffixes)
+        assertThat(addJarSources)
+                .as("the three tagged sources the Version policy names each carry an ADD JAR")
+                .containsExactlyInAnyOrder(
+                        "CloudTasksTableReference.sql",
+                        "PubSubQuickstart.sql",
+                        "SpannerTableReference.sql");
+
+        String version = "`" + semver + "`";
+        String lts = "`" + semver + "-1\\.20`";
+        Pattern statusBlockquote =
+                Pattern.compile(
+                        version
+                                + " for the supported Flink 2\\.x range and "
+                                + lts
+                                + " for the Flink 1\\.20 LTS");
+        collectReleasedVersions(versions, "README.md", statusBlockquote);
+        collectReleasedVersions(versions, "docs/content/_index.md", statusBlockquote);
+        String quickstart = "docs/content/docs/quickstart/_index.md";
+        collectReleasedVersions(
+                versions,
+                quickstart,
+                Pattern.compile(
+                        version
+                                + " is compiled against the supported Flink 2\\.x floor, and "
+                                + lts
+                                + " is the same code"));
+        collectReleasedVersions(
+                versions,
+                quickstart,
+                Pattern.compile(
+                        "<artifactId>flink-connector-gcp-[a-z]+</artifactId> <version>"
+                                + semver
+                                + "</version>"));
+        collectReleasedVersions(
+                versions, quickstart, Pattern.compile("<version>" + semver + "-1\\.20</version>"));
+
+        assertThat(new HashSet<>(versions.values()))
+                .as("every release doc-bump surface names the same released version: %s", versions)
                 .hasSize(1);
+    }
+
+    /**
+     * Adds every version {@code pattern} captures in {@code relativePath}, read with blockquote
+     * markers removed and whitespace collapsed so that a re-wrapped sentence still matches.
+     */
+    private static void collectReleasedVersions(
+            Map<String, String> versions, String relativePath, Pattern pattern) throws IOException {
+        String text =
+                Files.readString(repositoryRoot().resolve(relativePath))
+                        .replaceAll("(?m)^>[ \\t]?", "")
+                        .replaceAll("\\s+", " ");
+        Matcher matcher = pattern.matcher(text);
+        int matches = 0;
+        while (matcher.find()) {
+            matches++;
+            for (int group = 1; group <= matcher.groupCount(); group++) {
+                versions.put(
+                        relativePath + " [" + matcher.group() + "] #" + group,
+                        matcher.group(group));
+            }
+        }
+        assertThat(matches)
+                .as(
+                        "%s must still carry a release doc-bump surface matching %s; update this"
+                                + " test if the sentence was reworded",
+                        relativePath, pattern)
+                .isPositive();
     }
 
     @Test
@@ -473,7 +546,7 @@ public class DocumentationSqlPlanTest {
                         command(
                                 "flink/CloudTasksTableReference.sql",
                                 "add-jar",
-                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.0.0.jar';")),
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.1.0.jar';")),
                 scenario(
                         "Cloud Tasks table reference form values",
                         snippet("flink/CloudTasksTableReference.sql", "repeated-form-values"),
@@ -564,7 +637,7 @@ public class DocumentationSqlPlanTest {
                         command(
                                 "flink/SpannerTableReference.sql",
                                 "add-jar",
-                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.0.0.jar';")),
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.1.0.jar';")),
                 scenario(
                         "Spanner table reference named schema",
                         withFollowup(
