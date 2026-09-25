@@ -476,6 +476,8 @@ Common creation/adoption uses the approved application namespace.
 Inventory includes `tier3-bigquery` for BigQuery approvals, counts its Pods against the six-Pod ceiling, and verifies owner UIDs, image digests and effective resources.
 Recovery of version 1–3 approvals keeps the namespace scope of their saved baseline.
 BigQuery cleanup records the tables a pass deleted in one control write, not one per table: trial `bq1312-alo-50-a1` wrote once per table, exceeded Cloud Storage's per-object mutation rate and crashed with most of its fifty tables left.
+Provisioning likewise writes every missing create intent in one control write before the first create, and the receipts in one write after the creates: trial `bq1312-alo-50-a2` wrote twice per table and stopped halfway through fifty.
+A supervisor that stops before admission completes records its reason as an `admission-stopped` event; that trial's supervisor stopped and left none.
 State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-tier3-bigquery` and `.inprogress/flink-gcp-tier3-bigquery/runs/<run-id>/`, where Flink's GCS writer stages uploads before composing them into place; same-named objects in the smoke or evidence buckets and other BigQuery run prefixes remain outside that operation.
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
 They do not establish a functioning external quiescence barrier or live service acceptance.

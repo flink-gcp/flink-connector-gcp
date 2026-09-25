@@ -106,9 +106,11 @@ def test_provisioning_rest_calls_share_the_startup_deadline(actors):
     a = actors
     a.now[0] = NOW + 598
     plan = a.runner.controller.plan
-    replies = []
+    # Every destination is checked absent before the one intent write, then
+    # each is created.
+    replies = [Response({}, 404) for _ in range(plan.trial.destinations)]
     for destination in range(plan.trial.destinations):
-        replies.extend([Response({}, 404), Response({}, 404), table(plan, destination)])
+        replies.extend([Response({}, 404), table(plan, destination)])
     api, http = transport(a, *replies)
     a.runner.provision()
     assert len(http.calls) == 3 * plan.trial.destinations

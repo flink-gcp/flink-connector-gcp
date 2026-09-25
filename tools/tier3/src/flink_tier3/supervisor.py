@@ -402,6 +402,10 @@ class Supervisor:
                 if self.env.evidence_failed:
                     self.env.records.mark_evidence_failed()
                 self.env.records.request_stop()
+                # The reason otherwise survives only in this process, which
+                # may end in the wait below without reporting it. The stop is
+                # durable first, so this write cannot delay it.
+                self.env.emit("admission-stopped", {"reason": reason})
                 if (
                     self.env.approval.scenario != "bigquery-recovery"
                     or self.env.refresh().bigquery is None
