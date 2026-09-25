@@ -290,6 +290,38 @@ def test_late_create_receipt_is_recorded_after_stop(setup):
     assert set(api.tables) == {0}
 
 
+def test_a_failed_receipt_write_does_not_replace_the_create_failure(setup):
+    """The receipts are one write now; losing it must not hide why creates stopped."""
+    controller, env, api, _ = setup
+    create = api.ensure_table
+
+    def third_create_lost(destination):
+        observed = create(destination)
+        if destination == 2:
+            lost()
+        return observed
+
+    api.ensure_table = third_create_lost
+    change = controller._change
+    intents = []
+
+    def refuse_receipts(edit, **kwargs):
+        if intents:
+            raise Failure("Fixture storage refused the receipt write")
+        intents.append(edit)
+        return change(edit, **kwargs)
+
+    controller._change = refuse_receipts
+    with pytest.raises(TransportError, match="Lost response"):
+        controller.provision()
+    tables = env.refresh().bigquery["tables"]
+    # Two receipts were gathered and their write refused; every intent
+    # survives, so cleanup can still recover them.
+    assert set(api.tables) == {0, 1, 2}
+    assert len(tables) == api.plan.trial.destinations
+    assert all(saved["receipt"] is None for saved in tables.values())
+
+
 def test_slot_allocation_is_durable_deduplicated_and_bounded(setup):
     controller = running(setup)
     assert controller.reserve_query("baseline") == 0
@@ -511,11 +543,21 @@ def test_real_adapter_cleanup_uses_receipt_and_confirms_absence(setup):
     api.after_create = lambda _: lost()
     with pytest.raises(TransportError):
         controller.provision()
+    # Every intent was persisted before the first create, so cleanup also
+    # confirms the never-created tables absent.
+    others = api.plan.trial.destinations - 1
     real_api, http = client(
-        api.plan, table(api.plan), table(api.plan), Response({}, 204), Response({}, 404)
+        api.plan,
+        table(api.plan),
+        table(api.plan),
+        Response({}, 204),
+        Response({}, 404),
+        *[Response({}, 404) for _ in range(2 * others)],
     )
     assert BigQueryLifecycle(env, real_api, app).cleanup(lambda: True)
-    assert [call[0] for call in http.calls] == ["GET", "GET", "DELETE", "GET"]
+    assert [call[0] for call in http.calls] == ["GET", "GET", "DELETE", "GET"] + [
+        "GET"
+    ] * (2 * others)
 
 
 @pytest.mark.parametrize("flag", ["stop_requested", "evidence_failed"])
@@ -583,7 +625,16 @@ def test_fifty_destinations_preserve_all_receipts_and_cleanup(setup, mode):
     env = Environment(api.plan, app)
     controller = BigQueryLifecycle(env, api, app)
     controller.initialize()
+    provisioning = []
+    change = controller._change
+    controller._change = lambda edit, **kwargs: (
+        provisioning.append(edit),
+        change(edit, **kwargs),
+    )[1]
     controller.provision()
+    controller._change = change
+    # bq1312-alo-50-a2 wrote twice per table and stopped halfway.
+    assert len(provisioning) == 2
     assert set(api.tables) == set(range(50))
     assert len(env.refresh().bigquery["tables"]) == 50
     writes = []

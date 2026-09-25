@@ -3217,6 +3217,17 @@ def test_supervisor_uid_evidence_failure_never_publishes_ready_heartbeat(
     assert record.evidence_failed
     assert not env[0].calls
     assert record.phase == rt.Phase.READY
+    # bq1312-alo-50-a2's supervisor stopped admission and left no reason.
+    stopped = [
+        value
+        for (_bucket, path), (value, _gen) in env[1].data.items()
+        if isinstance(value, dict) and value.get("event") == "admission-stopped"
+    ]
+    # The failed observation marks evidence failed, which the admission loop
+    # then reports as a cancellation; that is the reason the stop records.
+    assert [value["payload"]["reason"] for value in stopped] == [
+        "Cancellation or recovery requested"
+    ]
 
 
 def test_evidence_failure_wins_the_creation_intent_cas_race(env):

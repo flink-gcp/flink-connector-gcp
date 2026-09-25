@@ -169,37 +169,60 @@ class BigQueryLifecycle:
             raise Failure("BigQuery resource admission has stopped")
 
     def provision(self):
-        """Persist each create intent and receipt; resume only recorded intents."""
-        for destination in range(self.plan.trial.destinations):
-            self._admission()
-            key = str(destination)
-            saved = self._read()["tables"].get(key)
-            if saved is None:
-                if self.api.table(destination) is not None:
-                    raise Failure(
-                        "BigQuery table predates its persisted creation intent"
-                    )
+        """Persist every create intent before creating; resume only recorded ones.
 
-                def intend(state, key=key):
+        Intents and receipts are each one control write: Cloud Storage refuses
+        more than about one mutation a second on an object, and two writes per
+        table stopped bq1312-alo-50-a2 halfway through fifty tables.
+        """
+        self._admission()
+        tables = self._read()["tables"]
+        missing = [
+            str(destination)
+            for destination in range(self.plan.trial.destinations)
+            if str(destination) not in tables
+        ]
+        for key in missing:
+            if self.api.table(int(key)) is not None:
+                raise Failure("BigQuery table predates its persisted creation intent")
+        if missing:
+
+            def intend(state):
+                for key in missing:
                     state["tables"].setdefault(key, {"receipt": None, "deleted": False})
 
-                self._change(intend, open_only=True)
-            self._admission()
-            saved = self._read()["tables"][key]
-            if saved["receipt"] is not None:
-                self._table(destination, saved["receipt"])
-                continue
-            observed = self.api.ensure_table(destination)
-            receipt = self._receipt(destination, observed)
+            self._change(intend, open_only=True)
+        receipts = {}
 
-            def remember(state, key=key, receipt=receipt):
+        def remember(state):
+            for key, receipt in receipts.items():
                 previous = state["tables"][key]["receipt"]
                 if previous not in (None, receipt):
                     raise Failure("BigQuery table receipt cannot be replaced")
                 state["tables"][key]["receipt"] = receipt
 
-            # A stop may arrive after the service accepts the create. Keep its
-            # receipt for cleanup even though no new admission is permitted.
+        try:
+            for destination in range(self.plan.trial.destinations):
+                self._admission()
+                key = str(destination)
+                saved = self._read()["tables"][key]
+                if saved["receipt"] is not None:
+                    self._table(destination, saved["receipt"])
+                    continue
+                observed = self.api.ensure_table(destination)
+                receipts[key] = self._receipt(destination, observed)
+        except BaseException:
+            # A stop may arrive after the service accepts a create. Keep the
+            # receipts for cleanup even though no new admission is permitted,
+            # but never let that write replace the failure being raised: a
+            # receipt it loses is recovered from its intent during cleanup.
+            if receipts:
+                try:
+                    self._change(remember)
+                except (Failure, OSError, ValueError):
+                    pass
+            raise
+        if receipts:
             self._change(remember)
 
     def _receipt(self, destination, table):
