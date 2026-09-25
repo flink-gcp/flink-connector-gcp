@@ -45,8 +45,9 @@ limitations under the License.
 - Updated: 2026-09-23 (BigQuery trial preregistration)
 - Updated: 2026-09-24 (dispatch of a chosen rig commit; capacity gate)
 - Updated: 2026-09-25 (one-node capacity gate removed)
+- Updated: 2026-09-25 (BigQuery deployed trial findings)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
-- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md)
+- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -928,6 +929,14 @@ A reviewed file per dispatch existed chiefly to carry the per-trial cost, and ke
 The proposal also drops the repeated-trial ordinal the recovery application section binds: nothing consumed it, and a repetition is a separate run ID.
 The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, and USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), which the rendered proposal carries.
 The BigQuery campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md).
+
+### BigQuery deployed trial findings
+
+All four preregistered trials reached a `usable` verdict on 2026-09-25, as the [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md) record: ALO and EO at 10 and 50 destinations each passed a savepoint upgrade and a JobManager failover while the sink was active, and the query oracle found every expected sequence exactly once and routed to its own table.
+The deployed rig is therefore accepted as the instrument for these trials, and its measured values are findings, not targets.
+The campaign took fourteen admitted attempts: nine exposed rig or environment defects, each repaired in its own change before the next dispatch, one was lost to a Spot reclamation, and two needed manual repair of the environment lock.
+The fixes the deployment required are recorded in their paragraphs of this ADR: the startup and input budgets, the staged-upload grant, the read retry, the upgrade transition, the per-pass control writes and the removed capacity gate.
+The regional `SSD_TOTAL_GB` quota is also a precondition: an upgrade needs replacement nodes while the old ones drain, and at 500 GB a 50-destination trial could not provision them.
 
 An approval written before this change still carries the removed ceiling, and a BigQuery one the old trial schema, so the model refuses it and recovery could not settle it; the change is therefore merged only while no run holds the environment lock, rather than carrying a reader for a shape no future run writes.
 Keep everything that stops and cleans up a run, which is where a failure costs more than the run: the environment lock, idle and cleanup verification, recovery, the three empty plans and image retention.

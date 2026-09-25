@@ -1696,6 +1696,17 @@ rewind the source behind the last completed checkpoint so a potential loss becom
 and make duplicates harmless downstream (an idempotent key plus `MERGE` or
 `QUALIFY ROW_NUMBER()`).
 
+**Checkpoints on Cloud Storage.** By default Flink's `gs://` file system writes each checkpoint and
+savepoint file first as a temporary object under `.inprogress/<bucket>/<object>/` in the same
+bucket, then composes it into place, lists the temporaries and deletes them. An IAM grant
+conditioned on the checkpoint directory's prefix alone therefore refuses the temporary objects, and
+checkpoints fail to finalize with `403` on `storage.objects.create`. A pattern that works: Storage
+Object Viewer on the bucket, for listing and reads, and Storage Object User conditioned on both the
+checkpoint prefix and `.inprogress/<bucket>/<checkpoint prefix>`, for create, compose and delete.
+`gs.writer.temporary.bucket.name` moves the temporaries to another bucket and
+`gs.filesink.entropy.enabled` puts a random segment before `.inprogress/`; with either, grant on
+the location they produce, or on the whole bucket.
+
 Neither method is uniformly safer — their loss paths are disjoint:
 
 | Loss path | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` |
@@ -2904,6 +2915,17 @@ credential-less CI:
 
 These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
 ([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent.
+
+**Deployed recovery trials** exercise the sink the way it runs in production: as a
+FlinkDeployment of the Flink Kubernetes Operator on GKE Autopilot, writing through dynamic
+destinations to real tables while a state-preserving upgrade (`upgradeMode: savepoint`) and a
+JobManager failover happen under load. On 2026-09-25 both `STORAGE_API_AT_LEAST_ONCE` and
+`STORAGE_API_EXACTLY_ONCE`, each at 10 and 50 destinations, passed both recoveries, and a query
+oracle found every expected sequence exactly once and in its own table. The
+[findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-trial-findings-1312.md)
+record every attempt and the memory, GC, back-pressure, checkpoint and writer metrics each run
+reported. Those figures were taken at one fixed input rate, one run per configuration; they
+describe these runs, not a throughput limit or a sizing target.
 
 ## Scope and provenance
 
