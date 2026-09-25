@@ -530,7 +530,7 @@ The [production dispatch](#production-dispatch) is that executor, for the checks
 ## Production dispatch
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with four inputs beyond the common ones.
-The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md).
+The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md), and its results, every attempt included, are in the [BigQuery trial findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md).
 
 | Input | Contract |
 | --- | --- |
