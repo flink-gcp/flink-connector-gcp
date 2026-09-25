@@ -358,6 +358,16 @@ class BigQueryLifecycle:
                 pending = True
         if pending:
             return False
+        # One control write per pass: Cloud Storage refuses more than about
+        # one mutation a second on an object, and fifty per-table writes
+        # crashed bq1312-alo-50-a1's cleanup. Deletion is idempotent, so a
+        # pass that stops early loses only marks the next pass rewrites.
+        deleted = []
+
+        def mark(value):
+            for key in deleted:
+                value["tables"][key].update(deleted=True)
+
         for key, saved in state["tables"].items():
             self.env.assert_owner()
             destination = int(key)
@@ -375,9 +385,10 @@ class BigQueryLifecycle:
                     )
                 self.api.delete_table(destination, receipt)
             if self.api.table(destination) is not None:
+                if deleted:
+                    self._change(mark)
                 return False
-            self._change(
-                lambda value, key=key: value["tables"][key].update(deleted=True)
-            )
-        self._change(lambda value: value.update(cleaned=True))
+            if not saved["deleted"]:
+                deleted.append(key)
+        self._change(lambda value: (mark(value), value.update(cleaned=True)))
         return True
