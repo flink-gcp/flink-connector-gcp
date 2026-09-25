@@ -44,6 +44,7 @@ limitations under the License.
 - Updated: 2026-09-23 (spend approved from the pre-run estimate; run-time cost gates removed)
 - Updated: 2026-09-23 (BigQuery trial preregistration)
 - Updated: 2026-09-24 (dispatch of a chosen rig commit; capacity gate)
+- Updated: 2026-09-25 (one-node capacity gate removed)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -937,9 +938,12 @@ The lock owner records the rig commit as `rig_sha` beside the workflow commit th
 This runs unreviewed code with the runner's identity, which the owner accepted for speed; whether a run from an unmerged commit counts as a measurement is recorded with the run.
 Declined: letting the workflow itself run from a branch, which would widen the runner's Workload Identity condition from `main` to any ref.
 
-Dispatch refuses, before the lock, a cluster with exactly one schedulable node.
-Pilot `bq1312-alo-10-a2` lost its 1 CPU / 2 GiB supervisor to a system Pod 30 seconds after it started on a one-node cluster, so the supervisor's size does not prevent that preemption; from no nodes Autopilot provisioned one for it.
-A draining node counts as unschedulable, since GKE's node count includes it; the runner lists nodes through a one-permission custom IAM role, `container.nodes.list`, which GKE's IAM authorizer honours; an RBAC rule on the bootstrap reader role was the first choice and failed to apply, because RBAC refuses the apply identity a permission it does not hold itself.
+Dispatch no longer checks the cluster's node count.
+The one-node refusal assumed an idle cluster settles at zero nodes; on 2026-09-24 one settled at one node carrying only system Pods for over three hours, the refusal held every attempt for two hours, and only a hand-made placeholder Pod that forced a second node let pilot `bq1312-alo-10-a6` dispatch.
+The risk it guarded remains: on a one-node cluster kube-dns, which is system-critical and outranks any PriorityClass a workload may set, preempted the supervisor of pilot `bq1312-alo-10-a2` and four in [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246).
+In each of those five cases kube-dns took the supervisor about 30 seconds after it started, while the cluster scaled up and before application admission, so the run stopped with no BigQuery query spent and an immediate redispatch found the cluster already scaled up; a preemption later in a run would stop that run like any other supervisor loss.
+Declined: a required anti-affinity keeping the supervisor off kube-dns's node, because the scheduler may still preempt the lower-priority supervisor to place a later kube-dns replica on the supervisor's node, so it does not guarantee the protection; and a rig-created placeholder Pod forcing a second node, for the RBAC, cleanup and deadline handling it would add.
+The node listing and its one-permission `tier3NodeReader` custom IAM role are removed with the refusal.
 
 The BigQuery exercise waits 1200 seconds from the approved start for input to flow; admission keeps its 600-second startup window.
 Pilot `bq1312-alo-10-a4` started from no nodes and was admitted four minutes in, after which Autopilot provisioned a node for the JobManager, following a zonal quota refusal, and then one for the TaskManagers; its first input progress was logged 16 seconds before the 600-second budget expired, and the next supervisor poll found the budget spent, so the run stopped at its baseline stage with no query spent.

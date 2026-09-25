@@ -158,37 +158,6 @@ def session_inputs(args):
     return session, args.flink_version, image
 
 
-def schedulable(node):
-    """A node the supervisor could land on: ready, uncordoned, AMD64, not Spot."""
-    conditions = node.get("status", {}).get("conditions", [])
-    labels = node.get("metadata", {}).get("labels", {})
-    ready = any(
-        c.get("type") == "Ready" and c.get("status") == "True" for c in conditions
-    )
-    return (
-        ready
-        and not node.get("spec", {}).get("unschedulable")
-        and labels.get("kubernetes.io/arch") == "amd64"
-        and labels.get("cloud.google.com/gke-spot") != "true"
-    )
-
-
-def require_capacity(kube):
-    """Refuse a dispatch onto exactly one schedulable node.
-
-    On that node a system Pod scaling up with the cluster preempts the
-    supervisor within seconds; from no nodes Autopilot provisions one for it,
-    and with two the system Pods have room. A draining node does not count.
-    """
-    nodes = kube.nodes()
-    ready = sum(1 for node in nodes if schedulable(node))
-    if nodes and ready < 2:
-        raise rt.Failure(
-            f"Cluster has {ready} schedulable of {len(nodes)} nodes; dispatch when "
-            "it has none or at least two"
-        )
-
-
 def rig_owner(owner, args):
     """The lock owner, naming the rig commit when it is not the workflow's."""
     owner = owner | {"run_id": args.run_id}
@@ -234,7 +203,6 @@ def start_bigquery(args, store):
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args)
     kube = wf.external(args.kubeconfig, idle=True)
-    require_capacity(kube)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", BIGQUERY
     )
@@ -366,7 +334,6 @@ def start(args, store):
     owner = rig_owner(wf.execution("run", nonce), args)
     namespace = rt.CLOUDTASKS if cloudtasks else rt.SMOKE
     kube = wf.external(args.kubeconfig, idle=True)
-    require_capacity(kube)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", namespace
     )

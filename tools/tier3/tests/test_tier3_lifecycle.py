@@ -225,10 +225,6 @@ class Kube:
     def namespace(self, namespace):
         return {"metadata": {"uid": namespace + "-uid"}}
 
-    def nodes(self):
-        # An idle Autopilot cluster has no nodes, which the capacity gate admits.
-        return copy.deepcopy(getattr(self, "node_list", []))
-
     def get(self, kind, namespace, name):
         return copy.deepcopy(self.data.get((kind, namespace, name)))
 
@@ -1035,55 +1031,6 @@ def test_the_audit_accepts_autopilots_term_as_an_alternative_on_its_own():
     """
     pod, image = audited_supervisor([PILOT_SUPERVISOR_TERMS[1]])
     rt.verify_pod(pod, "supervisor", image)
-
-
-def node(ready=True, unschedulable=False, arch="amd64", spot=False):
-    labels = {"kubernetes.io/arch": arch}
-    if spot:
-        labels["cloud.google.com/gke-spot"] = "true"
-    value = {
-        "metadata": {"labels": labels},
-        "spec": {},
-        "status": {"conditions": [{"type": "Ready", "status": str(ready)}]},
-    }
-    if unschedulable:
-        value["spec"]["unschedulable"] = True
-    return value
-
-
-@pytest.mark.parametrize(
-    "nodes",
-    [[], [node(), node()], [node(), node(), node(unschedulable=True)]],
-    ids=["idle", "two", "two-and-draining"],
-)
-def test_capacity_admits_no_nodes_or_two_schedulable(nodes):
-    cli.require_capacity(SimpleNamespace(nodes=lambda: nodes))
-
-
-@pytest.mark.parametrize(
-    "nodes",
-    [
-        [node()],
-        # The 2026-09-23 pilot's cluster: one node ready, one draining.
-        [node(), node(unschedulable=True)],
-        [node(), node(ready=False)],
-        [node(unschedulable=True)],
-        # Only nodes the supervisor could land on count.
-        [node(), node(spot=True)],
-        [node(), node(arch="arm64")],
-    ],
-    ids=[
-        "one",
-        "one-and-draining",
-        "one-and-not-ready",
-        "only-draining",
-        "one-and-spot",
-        "one-and-arm",
-    ],
-)
-def test_capacity_refuses_one_schedulable_node(nodes):
-    with pytest.raises(rt.Failure, match="none or at least two"):
-        cli.require_capacity(SimpleNamespace(nodes=lambda: nodes))
 
 
 def rig_args(**overrides):
