@@ -586,8 +586,19 @@ def test_fifty_destinations_preserve_all_receipts_and_cleanup(setup, mode):
     controller.provision()
     assert set(api.tables) == set(range(50))
     assert len(env.refresh().bigquery["tables"]) == 50
+    writes = []
+    change = controller._change
+    controller._change = lambda edit, **kwargs: (
+        writes.append(edit),
+        change(edit, **kwargs),
+    )[1]
     assert controller.cleanup(lambda: True)
     assert not api.tables
+    # bq1312-alo-50-a1 wrote once per table and hit Cloud Storage's rate limit;
+    # now the stop request and the pass's result are the only two writes.
+    assert len(writes) == 2
+    state = env.refresh().bigquery
+    assert state["cleaned"] and all(t["deleted"] for t in state["tables"].values())
 
 
 def test_collected_queries_accumulate_the_bytes_the_trial_was_billed(setup):
