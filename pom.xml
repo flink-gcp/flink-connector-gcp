@@ -37,7 +37,7 @@ limitations under the License.
 
     <groupId>io.github.flink-gcp</groupId>
     <artifactId>flink-connector-gcp-parent</artifactId>
-    <version>1.1.0-SNAPSHOT</version>
+    <version>1.2.0-SNAPSHOT</version>
     <name>Flink Connectors GCP : Parent</name>
     <!-- name, description, url, licenses, developers and scm are the POM metadata Maven
          Central validates on every published artifact (#724). Modules carry their own
@@ -152,7 +152,7 @@ limitations under the License.
              the japicmp declaration below. Until this version exists on Maven Central
              the parent's ignoreNonResolvableArtifacts=true makes the check log a
              warning and pass. -->
-        <japicmp.referenceVersion>1.0.0</japicmp.referenceVersion>
+        <japicmp.referenceVersion>1.1.0</japicmp.referenceVersion>
         <google-cloud-libraries-bom.version>26.87.0</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.2</avro.version>
