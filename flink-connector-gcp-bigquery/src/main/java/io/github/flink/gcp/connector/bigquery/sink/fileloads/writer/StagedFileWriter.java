@@ -90,6 +90,19 @@ interface StagedFileWriter {
      */
     FileLoadsCommittable finish() throws IOException;
 
-    /** Closes the file discarding errors; the object (finalized or not) is never referenced. */
+    /**
+     * Discards the file without finalizing its object: nothing is encoded, uploaded or closed, and
+     * the method does not fail. The staging upload is left unfinalized, which creates no object;
+     * Cloud Storage expires an unfinalized resumable upload on its own. The writer's buffers are
+     * heap memory and go with the writer. Callers still tolerate an implementation that fails.
+     *
+     * <p>Not closing is safe only while three conditions hold. The staging stream must be the Cloud
+     * Storage HTTP upload channel that {@code GcsStagingStorage} opens, which holds no connection
+     * or thread between chunk requests. The format writer's codec must hold no resource that only
+     * {@code close()} releases. Parquet's buffers must come from its default heap allocator, since
+     * {@code close()} is what releases an allocator's buffers. Revisit this method before any of
+     * them changes, for example before switching the storage client to the gRPC transport, adding a
+     * Parquet codec or giving the Parquet builder an allocator.
+     */
     void abort();
 }

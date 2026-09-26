@@ -39,10 +39,9 @@ public final class InMemoryStagingStorage implements StagingStorage {
 
     /**
      * When set, every object's stream throws it on close — reaching the writer as a failure to
-     * finalize or abort a staged file. Typed {@code Throwable} so a test can script an {@code
-     * Error}, which is thrown as itself; a checked exception arrives wrapped in a {@code
-     * RuntimeException}, which {@code StagedFileWriter.abort()} swallows exactly as it would the
-     * original.
+     * finalize a staged file. An abort never closes the stream, so it never reaches this. Typed
+     * {@code Throwable} so a test can script an {@code Error}, which is thrown as itself; a checked
+     * exception arrives wrapped in a {@code RuntimeException}.
      */
     Throwable closeFailure;
 

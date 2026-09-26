@@ -22,17 +22,22 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -133,12 +138,7 @@ class StagedFileFinalizerTest {
                                 new IOException("first failure"),
                                 () -> await(laterFailureFinished, "later failure"),
                                 firstAbortCalls::incrementAndGet),
-                        failingFile(
-                                "second",
-                                finishCalls,
-                                null,
-                                () -> {},
-                                secondAbortCalls::incrementAndGet),
+                        abortCountingFile("second", finishCalls, secondAbortCalls),
                         failingFile(
                                 "third",
                                 finishCalls,
@@ -393,6 +393,34 @@ class StagedFileFinalizerTest {
     }
 
     @Test
+    void fatalFailureAfterTheDrainDoesNotAbortAnUnsubmittedFileTwice() throws Exception {
+        AtomicInteger secondAbortCalls = new AtomicInteger();
+        AtomicInteger thirdAbortCalls = new AtomicInteger();
+        OutOfMemoryError fatalFailure = new OutOfMemoryError("fatal failure");
+        List<StagedFileWriter> files =
+                Arrays.asList(
+                        file("first", () -> {}),
+                        file("second", () -> {}, secondAbortCalls::incrementAndGet),
+                        file("third", () -> {}, thirdAbortCalls::incrementAndGet));
+
+        // The drain has already aborted the unsubmitted files when reporting a result fails, so
+        // that fatal failure has nothing left to abandon.
+        assertThatThrownBy(
+                        () ->
+                                StagedFileFinalizer.finish(
+                                        files,
+                                        3,
+                                        ignored -> {
+                                            throw fatalFailure;
+                                        },
+                                        ignored -> executorRejectingAfter(1)))
+                .isSameAs(fatalFailure);
+
+        assertThat(secondAbortCalls).hasValue(1);
+        assertThat(thirdAbortCalls).hasValue(1);
+    }
+
+    @Test
     void executorCreationFailureAbortsEveryFile() {
         AtomicInteger abortCalls = new AtomicInteger();
         List<StagedFileWriter> files =
@@ -428,13 +456,16 @@ class StagedFileFinalizerTest {
         CountDownLatch stalledFileInterrupted = new CountDownLatch(1);
         CountDownLatch stalledFileFinished = new CountDownLatch(1);
         AtomicInteger stalledFileAbortCalls = new AtomicInteger();
-        CountDownLatch thirdFileStarted = new CountDownLatch(1);
-        CountDownLatch thirdFileInterrupted = new CountDownLatch(1);
-        CountDownLatch thirdFileFinished = new CountDownLatch(1);
         OutOfMemoryError fatalFailure = new OutOfMemoryError("fatal failure");
         AtomicBoolean callerInterruptedAfterFailure = new AtomicBoolean();
         AtomicInteger queuedFileFinishCalls = new AtomicInteger();
         AtomicInteger queuedFileAbortCalls = new AtomicInteger();
+        CountDownLatch queuedFilesAborted = new CountDownLatch(2);
+        Runnable queuedFileAbort =
+                () -> {
+                    queuedFileAbortCalls.incrementAndGet();
+                    queuedFilesAborted.countDown();
+                };
         List<StagedFileWriter> files =
                 Arrays.asList(
                         interruptIgnoringFile(
@@ -449,18 +480,10 @@ class StagedFileFinalizerTest {
                                 new AtomicInteger(),
                                 fatalFailure,
                                 () -> await(stalledFileStarted, "stalled file")),
-                        interruptIgnoringFile(
-                                "third",
-                                thirdFileStarted,
-                                releaseStalledFile,
-                                thirdFileInterrupted,
-                                thirdFileFinished),
                         failingFile(
-                                "fourth",
-                                queuedFileFinishCalls,
-                                null,
-                                () -> {},
-                                queuedFileAbortCalls::incrementAndGet));
+                                "third", queuedFileFinishCalls, null, () -> {}, queuedFileAbort),
+                        failingFile(
+                                "fourth", queuedFileFinishCalls, null, () -> {}, queuedFileAbort));
         ExecutorService caller = Executors.newSingleThreadExecutor();
         try {
             Future<?> finalization =
@@ -483,13 +506,179 @@ class StagedFileFinalizerTest {
             assertThat(stalledFileFinished.getCount()).isEqualTo(1);
             assertThat(stalledFileAbortCalls).hasValue(0);
             assertThat(callerInterruptedAfterFailure).isFalse();
+            // The worker that published the fatal failure may take a queued file before the
+            // caller claims it. Either owner aborts it, the worker possibly after the caller has
+            // returned, and neither finishes it.
+            assertThat(queuedFilesAborted.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(queuedFileFinishCalls).hasValue(0);
-            assertThat(queuedFileAbortCalls).hasValue(1);
+            assertThat(queuedFileAbortCalls).hasValue(2);
         } finally {
             releaseStalledFile.countDown();
             caller.shutdownNow();
         }
         assertThat(stalledFileFinished.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void workerDoesNotFinishAQueuedFileAfterAPeerPublishedAFatalFailure() {
+        OutOfMemoryError fatalFailure = new OutOfMemoryError("fatal failure");
+        AtomicInteger queuedFileFinishCalls = new AtomicInteger();
+        AtomicInteger queuedFileAbortCalls = new AtomicInteger();
+        List<StagedFileWriter> files =
+                Arrays.asList(
+                        failingFile("first", new AtomicInteger(), fatalFailure, () -> {}),
+                        failingFile(
+                                "second",
+                                queuedFileFinishCalls,
+                                null,
+                                () -> {},
+                                queuedFileAbortCalls::incrementAndGet));
+
+        // Running each task as it is submitted models a worker that dequeues the next file
+        // after its peer published the fatal failure and before the caller observes it.
+        assertThatThrownBy(
+                        () ->
+                                StagedFileFinalizer.finish(
+                                        files, 2, ignored -> {}, ignored -> callerRunsExecutor()))
+                .isSameAs(fatalFailure);
+
+        assertThat(queuedFileFinishCalls).hasValue(0);
+        assertThat(queuedFileAbortCalls).hasValue(1);
+    }
+
+    @Test
+    void workerDoesNotFinishAQueuedFileAfterAFatalSubmissionFailure() {
+        OutOfMemoryError fatalFailure = new OutOfMemoryError("fatal failure");
+        AtomicInteger finishCalls = new AtomicInteger();
+        AtomicInteger firstAbortCalls = new AtomicInteger();
+        AtomicInteger secondAbortCalls = new AtomicInteger();
+        AtomicInteger thirdAbortCalls = new AtomicInteger();
+        List<StagedFileWriter> files =
+                Arrays.asList(
+                        abortCountingFile("first", finishCalls, firstAbortCalls),
+                        abortCountingFile("second", finishCalls, secondAbortCalls),
+                        abortCountingFile("third", finishCalls, thirdAbortCalls));
+
+        // Each queued task runs just before its cancel lands, as a worker that dequeues it
+        // while the caller is still cancelling would.
+        assertThatThrownBy(
+                        () ->
+                                StagedFileFinalizer.finish(
+                                        files,
+                                        3,
+                                        ignored -> {},
+                                        ignored ->
+                                                new QueueingExecutor(2, fatalFailure) {
+                                                    @Override
+                                                    protected <T> RunnableFuture<T> newTaskFor(
+                                                            Callable<T> callable) {
+                                                        return new FutureTask<>(callable) {
+                                                            @Override
+                                                            public boolean cancel(
+                                                                    boolean mayInterrupt) {
+                                                                run();
+                                                                return super.cancel(mayInterrupt);
+                                                            }
+                                                        };
+                                                    }
+                                                }))
+                .isSameAs(fatalFailure);
+
+        assertThat(finishCalls).as("finish calls across all three files").hasValue(0);
+        assertThat(firstAbortCalls).hasValue(1);
+        assertThat(secondAbortCalls).hasValue(1);
+        assertThat(thirdAbortCalls).hasValue(1);
+    }
+
+    @Test
+    void fatalSubmissionFailureClaimsTheFilesNoWorkerStarted() {
+        OutOfMemoryError fatalFailure = new OutOfMemoryError("fatal failure");
+        AtomicInteger finishCalls = new AtomicInteger();
+        AtomicInteger firstAbortCalls = new AtomicInteger();
+        AtomicInteger secondAbortCalls = new AtomicInteger();
+        AtomicInteger thirdAbortCalls = new AtomicInteger();
+        List<StagedFileWriter> files =
+                Arrays.asList(
+                        abortCountingFile("first", finishCalls, firstAbortCalls),
+                        abortCountingFile("second", finishCalls, secondAbortCalls),
+                        abortCountingFile("third", finishCalls, thirdAbortCalls));
+
+        // No worker ever takes the two accepted files, so only the caller's claim aborts them.
+        assertThatThrownBy(
+                        () ->
+                                StagedFileFinalizer.finish(
+                                        files,
+                                        3,
+                                        ignored -> {},
+                                        ignored -> new QueueingExecutor(2, fatalFailure)))
+                .isSameAs(fatalFailure);
+
+        assertThat(finishCalls).as("finish calls across all three files").hasValue(0);
+        assertThat(firstAbortCalls).hasValue(1);
+        assertThat(secondAbortCalls).hasValue(1);
+        assertThat(thirdAbortCalls).hasValue(1);
+    }
+
+    @Test
+    void jvmFatalFailureOnTheCallingThreadAbandonsTheBatch() {
+        OutOfMemoryError fatalFailure = new OutOfMemoryError("fatal failure");
+        AtomicInteger finishCalls = new AtomicInteger();
+        AtomicInteger firstAbortCalls = new AtomicInteger();
+        AtomicInteger secondAbortCalls = new AtomicInteger();
+        List<StagedFileWriter> files =
+                Arrays.asList(
+                        abortCountingFile("first", finishCalls, firstAbortCalls),
+                        abortCountingFile("second", finishCalls, secondAbortCalls));
+
+        // The caller's own wait on the first future is interrupted once and then fails fatally,
+        // so no worker publishes the failure and the drain loop never records it. Each queued
+        // task runs just before its cancel lands, so abandoning must publish the failure first.
+        try {
+            assertThatThrownBy(
+                            () ->
+                                    StagedFileFinalizer.finish(
+                                            files,
+                                            2,
+                                            ignored -> {},
+                                            ignored ->
+                                                    new QueueingExecutor() {
+                                                        @Override
+                                                        protected <T> RunnableFuture<T> newTaskFor(
+                                                                Callable<T> callable) {
+                                                            return new FutureTask<>(callable) {
+                                                                private boolean interruptedOnce;
+
+                                                                @Override
+                                                                public T get(
+                                                                        long timeout, TimeUnit unit)
+                                                                        throws
+                                                                                InterruptedException {
+                                                                    if (!interruptedOnce) {
+                                                                        interruptedOnce = true;
+                                                                        throw new InterruptedException();
+                                                                    }
+                                                                    throw fatalFailure;
+                                                                }
+
+                                                                @Override
+                                                                public boolean cancel(
+                                                                        boolean mayInterrupt) {
+                                                                    run();
+                                                                    return super.cancel(
+                                                                            mayInterrupt);
+                                                                }
+                                                            };
+                                                        }
+                                                    }))
+                    .isSameAs(fatalFailure);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+
+        assertThat(finishCalls).as("finish calls across both files").hasValue(0);
+        assertThat(firstAbortCalls).hasValue(1);
+        assertThat(secondAbortCalls).hasValue(1);
     }
 
     @Test
@@ -627,31 +816,13 @@ class StagedFileFinalizerTest {
     }
 
     private static ExecutorService executorWhoseShutdownFailsWith(Throwable failure) {
-        return new AbstractExecutorService() {
-            @Override
-            public void shutdown() {}
-
+        return new FakeExecutorService() {
             @Override
             public List<Runnable> shutdownNow() {
                 if (failure instanceof RuntimeException) {
                     throw (RuntimeException) failure;
                 }
                 throw (Error) failure;
-            }
-
-            @Override
-            public boolean isShutdown() {
-                return false;
-            }
-
-            @Override
-            public boolean isTerminated() {
-                return false;
-            }
-
-            @Override
-            public boolean awaitTermination(long timeout, TimeUnit unit) {
-                return false;
             }
 
             @Override
@@ -662,31 +833,8 @@ class StagedFileFinalizerTest {
     }
 
     private static ExecutorService executorRejectingAfter(int acceptedTasks) {
-        return new AbstractExecutorService() {
+        return new FakeExecutorService() {
             private int submittedTasks;
-
-            @Override
-            public void shutdown() {}
-
-            @Override
-            public List<Runnable> shutdownNow() {
-                return List.of();
-            }
-
-            @Override
-            public boolean isShutdown() {
-                return false;
-            }
-
-            @Override
-            public boolean isTerminated() {
-                return false;
-            }
-
-            @Override
-            public boolean awaitTermination(long timeout, TimeUnit unit) {
-                return true;
-            }
 
             @Override
             public void execute(Runnable command) {
@@ -698,6 +846,68 @@ class StagedFileFinalizerTest {
                 worker.start();
             }
         };
+    }
+
+    private static ExecutorService callerRunsExecutor() {
+        return new FakeExecutorService() {
+            @Override
+            public void execute(Runnable command) {
+                command.run();
+            }
+        };
+    }
+
+    /** An executor whose lifecycle is inert, so a test scripts only how its tasks run. */
+    private abstract static class FakeExecutorService extends AbstractExecutorService {
+        @Override
+        public void shutdown() {}
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            return List.of();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return false;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return false;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) {
+            return true;
+        }
+    }
+
+    /**
+     * Keeps every accepted task queued, as a pool whose workers are all busy would, and throws
+     * {@code submissionFailure} on the submission after {@code acceptedTasks}.
+     */
+    private static class QueueingExecutor extends FakeExecutorService {
+        private final int acceptedTasks;
+        @Nullable private final Error submissionFailure;
+        private int submittedTasks;
+
+        /** Queues every task and never rejects one. */
+        QueueingExecutor() {
+            this(Integer.MAX_VALUE, null);
+        }
+
+        QueueingExecutor(int acceptedTasks, @Nullable Error submissionFailure) {
+            this.acceptedTasks = acceptedTasks;
+            this.submissionFailure = submissionFailure;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            if (submittedTasks++ == acceptedTasks) {
+                throw submissionFailure;
+            }
+        }
     }
 
     private static void awaitWaiting(Thread thread) {
@@ -725,6 +935,11 @@ class StagedFileFinalizerTest {
                     return committable(name);
                 },
                 abortOperation);
+    }
+
+    private static StagedFileWriter abortCountingFile(
+            String name, AtomicInteger finishCalls, AtomicInteger abortCalls) {
+        return failingFile(name, finishCalls, null, () -> {}, abortCalls::incrementAndGet);
     }
 
     private static StagedFileWriter failingFile(

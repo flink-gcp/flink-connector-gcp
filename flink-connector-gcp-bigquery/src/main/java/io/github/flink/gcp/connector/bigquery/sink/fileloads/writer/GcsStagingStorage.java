@@ -131,6 +131,13 @@ public final class GcsStagingStorage implements StagingStorage {
         }
     }
 
+    /**
+     * Builds the client on the HTTP transport, the {@code StorageOptions} default. Two things rely
+     * on that transport. {@link #deleteObjects(List)} calls {@code Storage.delete(BlobId...)},
+     * which the gRPC client rejects as HTTP-only. {@code StagedFileWriter.abort()} leaves the
+     * upload channel unclosed, which on HTTP holds only a heap buffer; what an abandoned gRPC write
+     * holds has not been checked. Revisit both before switching the transport.
+     */
     private Storage storage() throws IOException {
         if (storage == null) {
             storage =

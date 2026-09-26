@@ -253,7 +253,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   with `maxConcurrentCheckpointFinalizations`; it drains every submitted close before returning on
   success, ordinary failure, or interruption, and reports results and ordinary failures in input
   order on the task thread.
-  A JVM-fatal worker failure wakes the task thread, cancels its peers, and remains primary.
+  A JVM-fatal worker failure wakes the task thread, cancels its peers, and remains primary; a fatal
+  submission or task-thread failure abandons the batch the same way, and once it is published a
+  worker aborts rather than closes any file it starts afterwards (#1532).
+  `StagedFileWriter.abort()` discards: it closes nothing, so it does no I/O, cannot fail and
+  creates no object. Do not make it close the format writer or the staging stream; that encodes,
+  uploads and finalizes a file no load references, on the fatal path and on every writer close.
+  Not closing is safe only on the HTTP storage transport (the channel holds no connection between
+  chunks), with codecs that hold no resource between blocks or pages (Avro zstandard, Parquet
+  ZSTD and UNCOMPRESSED), and with Parquet's default heap allocator. Before switching
+  `GcsStagingStorage` to gRPC, adding a codec or giving the Parquet builder an allocator, check
+  what an unclosed writer or channel holds and revisit `abort()`; `deleteObjects` also calls
+  `Storage.delete(BlobId...)`, which the gRPC client rejects as HTTP-only.
   Finalization does not parallelize appends, size rolls, capacity evictions, or idle closes
   (`docs/adr/0146`).
   `maxPendingFiles` separately bounds the finished and open file metadata retained until the next

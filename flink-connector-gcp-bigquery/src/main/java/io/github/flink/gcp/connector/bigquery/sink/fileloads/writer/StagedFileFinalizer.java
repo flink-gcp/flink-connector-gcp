@@ -56,12 +56,16 @@ final class StagedFileFinalizer {
      * ownership of and finalizes the files, reporting successful committables in input order on the
      * calling thread.
      *
-     * <p>The method drains every submitted finalization before returning or throwing, except when a
-     * worker reports a JVM-fatal failure. That path cancels its peers so the fatal failure cannot
-     * remain hidden behind an earlier stalled finalization. An interrupt received while the files
-     * drain is remembered, restored on the calling thread, and reported after any file failures.
-     * This keeps no upload channel running after the writer advances to close or a later checkpoint
-     * in every non-fatal outcome.
+     * <p>The method drains every submitted finalization before returning or throwing, except after
+     * a JVM-fatal failure, whether a worker, a submission or the calling thread raised it. That
+     * path abandons the batch without waiting, so the fatal failure cannot remain hidden behind an
+     * earlier stalled finalization: it cancels the workers, and once the failure is published a
+     * worker that starts another file aborts it instead of finalizing it. Aborting does no I/O, so
+     * the calling thread discards the remaining files at once. Only a worker that had already
+     * checked for the failure before it was published may still finalize its file after this method
+     * returns. An interrupt received while the files drain is remembered, restored on the calling
+     * thread, and reported after any file failures. This keeps no upload channel running after the
+     * writer advances to close or a later checkpoint in every non-fatal outcome.
      *
      * @param files two or more staging files; the writer retains the serial path for smaller inputs
      */
@@ -108,16 +112,19 @@ final class StagedFileFinalizer {
         }
         List<Future<FileLoadsCommittable>> futures = new ArrayList<>(files.size());
         List<AtomicReference<OwnershipState>> ownership = new ArrayList<>(files.size());
-        AtomicReference<Throwable> fatalWorkerFailure = new AtomicReference<>();
+        AtomicReference<Throwable> fatalFailure = new AtomicReference<>();
         Throwable primaryFailure = null;
+        boolean interrupted = false;
+        // Set once the drain has settled on an outcome; before that, a fatal failure thrown on
+        // this thread still has the batch to abandon.
+        boolean outcomeDecided = false;
         try {
             for (StagedFileWriter file : files) {
                 AtomicReference<OwnershipState> fileOwnership =
                         new AtomicReference<>(OwnershipState.QUEUED);
                 try {
                     futures.add(
-                            executor.submit(
-                                    () -> finishFile(file, fileOwnership, fatalWorkerFailure)));
+                            executor.submit(() -> finishFile(file, fileOwnership, fatalFailure)));
                     ownership.add(fileOwnership);
                 } catch (RuntimeException | Error submissionFailure) {
                     primaryFailure = submissionFailure;
@@ -126,7 +133,6 @@ final class StagedFileFinalizer {
             }
 
             List<FileLoadsCommittable> finished = new ArrayList<>(futures.size());
-            boolean interrupted = false;
             boolean abortForFatal =
                     primaryFailure != null
                             && ExceptionUtils.isJvmFatalOrOutOfMemoryError(primaryFailure);
@@ -140,7 +146,7 @@ final class StagedFileFinalizer {
                     break;
                 }
                 while (true) {
-                    Throwable signalledFatal = fatalWorkerFailure.get();
+                    Throwable signalledFatal = fatalFailure.get();
                     if (signalledFatal != null) {
                         primaryFailure =
                                 recordFailurePreservingFatalPriority(
@@ -167,16 +173,9 @@ final class StagedFileFinalizer {
                     }
                 }
             }
+            outcomeDecided = true;
             if (abortForFatal) {
-                cancelAll(futures);
-                // Claim submitted files that no worker started before cancellation. A worker and
-                // this caller race through the same atomic transition, so an interrupt-ignoring
-                // finish() is never aborted concurrently.
-                abortQueued(files, ownership);
-                abortAll(files, futures.size());
-                if (interrupted) {
-                    Thread.currentThread().interrupt();
-                }
+                abandon(files, futures, ownership, fatalFailure, primaryFailure);
             } else {
                 // Every submitted worker has completed. A failed worker aborted its own file;
                 // unsubmitted files are still owned by this caller.
@@ -192,7 +191,6 @@ final class StagedFileFinalizer {
                     interrupted = true;
                 }
                 if (interrupted) {
-                    Thread.currentThread().interrupt();
                     primaryFailure =
                             recordFailure(
                                     primaryFailure,
@@ -200,14 +198,33 @@ final class StagedFileFinalizer {
                 }
             }
         } catch (Throwable failure) {
+            Throwable abandonFailure = null;
+            if (!outcomeDecided && ExceptionUtils.isJvmFatalOrOutOfMemoryError(failure)) {
+                // A fatal failure on this thread, such as an allocation failure while waiting,
+                // abandons the batch as a worker's would. Otherwise shutdownNow() below would drop
+                // the queued files without anything aborting them. Abandon before recording:
+                // recording may allocate, and a second allocation failure must not leave a queued
+                // file for a worker to start.
+                try {
+                    abandon(files, futures, ownership, fatalFailure, failure);
+                } catch (Throwable t) {
+                    abandonFailure = t;
+                }
+            }
             // Preserve any file or submission failure already selected above. In particular, an
             // allocation failure while recording results must not bypass executor shutdown.
             primaryFailure = recordFailurePreservingFatalPriority(primaryFailure, failure);
+            if (abandonFailure != null) {
+                primaryFailure =
+                        recordFailurePreservingFatalPriority(primaryFailure, abandonFailure);
+            }
         } finally {
             // Every successfully submitted future above is complete in non-fatal outcomes. A fatal
-            // worker failure cancels its peers before this final shutdown.
+            // failure has already abandoned the batch, cancelling the workers.
             primaryFailure = shutdownExecutor(executor, primaryFailure);
-            if (initiallyInterrupted) {
+            // Restored here rather than in each outcome, so an exit through the catch above keeps
+            // an interrupt the drain consumed.
+            if (initiallyInterrupted || interrupted) {
                 Thread.currentThread().interrupt();
             }
         }
@@ -233,19 +250,24 @@ final class StagedFileFinalizer {
     private static FileLoadsCommittable finishFile(
             StagedFileWriter file,
             AtomicReference<OwnershipState> ownership,
-            AtomicReference<Throwable> fatalWorkerFailure)
+            AtomicReference<Throwable> fatalFailure)
             throws IOException {
         if (!ownership.compareAndSet(OwnershipState.QUEUED, OwnershipState.STARTED)) {
             throw new IllegalStateException("Staging file was aborted before finalization started");
         }
         try {
+            if (fatalFailure.get() != null) {
+                // The batch is already abandoned. This worker owns the file now, so the catch
+                // below aborts it here rather than leaving it to the caller's claim.
+                throw new IllegalStateException("Staging file was abandoned after a fatal failure");
+            }
             FileLoadsCommittable committable = file.finish();
             ownership.set(OwnershipState.SUCCEEDED);
             return committable;
         } catch (Throwable failure) {
-            boolean fatalFailure = ExceptionUtils.isJvmFatalOrOutOfMemoryError(failure);
-            if (fatalFailure) {
-                fatalWorkerFailure.compareAndSet(null, failure);
+            boolean failureIsFatal = ExceptionUtils.isJvmFatalOrOutOfMemoryError(failure);
+            if (failureIsFatal) {
+                fatalFailure.compareAndSet(null, failure);
             }
             // The worker owns a file once it starts. Abort on that same worker so a failure that
             // races a fatal peer cannot fall between a caller-side scan and cancellation.
@@ -255,18 +277,38 @@ final class StagedFileFinalizer {
             } catch (Throwable abortFailure) {
                 // A fatal failure may already be visible to the caller. Do not mutate that
                 // published Throwable; it already dominates any cleanup failure.
-                if (!fatalFailure) {
+                if (!failureIsFatal) {
                     primaryFailure = recordFailurePreservingFatalPriority(failure, abortFailure);
                 }
             } finally {
                 ownership.set(OwnershipState.ABORTED);
             }
             if (ExceptionUtils.isJvmFatalOrOutOfMemoryError(primaryFailure)) {
-                fatalWorkerFailure.compareAndSet(null, primaryFailure);
+                fatalFailure.compareAndSet(null, primaryFailure);
             }
             rethrow(primaryFailure);
             throw new AssertionError("rethrow returned");
         }
+    }
+
+    /**
+     * Abandons the batch after a JVM-fatal failure without waiting for any worker. Publishing the
+     * failure first stops a worker that starts a file afterwards from finishing it, however far the
+     * cancellations have progressed. A worker publishes its own fatal failure, so this publishes
+     * only a submission or calling-thread failure.
+     */
+    private static void abandon(
+            List<StagedFileWriter> files,
+            List<? extends Future<?>> futures,
+            List<AtomicReference<OwnershipState>> ownership,
+            AtomicReference<Throwable> fatalFailure,
+            Throwable failure) {
+        fatalFailure.compareAndSet(null, failure);
+        cancelAll(futures);
+        // Claim submitted files that no worker started. A worker and this caller race through the
+        // same atomic transition, so an interrupt-ignoring finish() is never aborted concurrently.
+        abortQueued(files, ownership);
+        abortAll(files, futures.size());
     }
 
     private static void cancelAll(List<? extends Future<?>> futures) {

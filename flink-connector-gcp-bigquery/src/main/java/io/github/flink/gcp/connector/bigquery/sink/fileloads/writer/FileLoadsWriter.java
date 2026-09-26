@@ -358,7 +358,8 @@ public final class FileLoadsWriter<T>
     public void close() throws Exception {
         closed = true;
         // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
-        // too, even when aborting a staged file throws.
+        // too. Aborting a staged file closes nothing and does not fail, so the handler is the
+        // first entry that can.
         List<AutoCloseable> closeables = new ArrayList<>();
         for (DestinationState state : destinations.values()) {
             StagedFileWriter file = state.file;
@@ -372,8 +373,8 @@ public final class FileLoadsWriter<T>
         finishedFiles.clear();
         closeables.add(config.getFailureHandler()::close);
         // The staging client goes last because Closers.closeAll reports the *first* failure and
-        // suppresses the rest onto it: whatever an abort or the handler has to say outranks a
-        // teardown failure from a client this writer is finished with.
+        // suppresses the rest onto it: whatever the handler has to say outranks a teardown failure
+        // from a client this writer is finished with.
         closeables.add(storage::close);
         Closers.closeAll(closeables);
     }

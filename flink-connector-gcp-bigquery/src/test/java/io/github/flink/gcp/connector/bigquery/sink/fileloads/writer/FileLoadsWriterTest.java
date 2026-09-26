@@ -249,6 +249,24 @@ class FileLoadsWriterTest {
         }
     }
 
+    private static final class CloseFailingHandler implements FailureHandler<BigQueryFailure> {
+        private static final long serialVersionUID = 1L;
+
+        private final Error closeFailure;
+
+        private CloseFailingHandler(Error closeFailure) {
+            this.closeFailure = closeFailure;
+        }
+
+        @Override
+        public void handle(BigQueryFailure row) {}
+
+        @Override
+        public void close() {
+            throw closeFailure;
+        }
+    }
+
     static BigQuerySinkConfig<TestRow> config(FailureHandler<BigQueryFailure> handler) {
         return config(handler, SCHEMA);
     }
@@ -974,11 +992,10 @@ class FileLoadsWriterTest {
     }
 
     @Test
-    void closeStillClosesTheHandlerWhenAbortingAStagedFileThrowsAnError() throws Exception {
-        // #276: the handler is last after every open staged file, and Flink's IOUtils.closeAll
-        // rethrew an Error from inside its loop, leaving it open. StagedFileWriter.abort() swallows
-        // an IOException or a RuntimeException by design, so an Error is the only failure this list
-        // can carry at all — which is what makes the failure path pinnable here.
+    void closeDiscardsAnOpenFileWithoutFinalizingItsObject() throws Exception {
+        // #1532: an abort discards the file. Finalizing it would encode and upload data that no
+        // load job references, so the staged stream is never closed: the close failure scripted
+        // on it cannot fire, no object appears, and the handler and the client still close.
         CollectingHandler handler = new CollectingHandler();
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         FileLoadsWriter<TestRow> writer =
@@ -986,10 +1003,28 @@ class FileLoadsWriterTest {
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         storage.closeFailure = new NoClassDefFoundError("staged file close blew up");
 
-        assertThatThrownBy(writer::close)
-                .isInstanceOf(NoClassDefFoundError.class)
-                .hasMessage("staged file close blew up");
+        writer.close();
+
+        assertThat(storage.getObjects()).isEmpty();
         assertThat(handler.closed).isTrue();
+        assertThat(storage.getCloseCount()).isEqualTo(1);
+    }
+
+    @Test
+    void closeDiscardsAnOpenParquetFileWithoutFinalizingItsObject() throws Exception {
+        // Parquet encodes, compresses and uploads its whole buffered row group inside close(), so
+        // this is the format where finalizing an abandoned file would cost the most.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        parquetOptions(ParquetCompression.ZSTD));
+        writer.write(new TestRow("t1", "a", 1L), CONTEXT);
+
+        writer.close();
+
+        assertThat(storage.getObjects()).isEmpty();
     }
 
     @Test
@@ -1013,22 +1048,23 @@ class FileLoadsWriterTest {
     void aStagingStorageCloseFailureIsSuppressedOntoTheOneAlreadyBeingReported() throws Exception {
         // The staging client is last in the Closers.closeAll list, which reports the *first*
         // failure and suppresses the rest onto it. So a client this writer has finished with can
-        // never displace what an abort or the handler had to say — and the handler still closes.
-        CollectingHandler handler = new CollectingHandler();
+        // never displace what the handler had to say. Aborting a staged file does no I/O and
+        // cannot fail, so the handler is the earlier entry that can.
+        NoClassDefFoundError handlerFailure = new NoClassDefFoundError("handler close blew up");
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         FileLoadsWriter<TestRow> writer =
-                writer(config(handler), storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+                writer(
+                        config(new CloseFailingHandler(handlerFailure)),
+                        storage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
-        storage.closeFailure = new NoClassDefFoundError("staged file close blew up");
         IllegalStateException clientTeardown =
                 new IllegalStateException("staging client teardown blew up");
         storage.failOnClose(clientTeardown);
 
         assertThatThrownBy(writer::close)
-                .isInstanceOf(NoClassDefFoundError.class)
-                .hasMessage("staged file close blew up")
+                .isSameAs(handlerFailure)
                 .satisfies(e -> assertThat(e.getSuppressed()).containsExactly(clientTeardown));
-        assertThat(handler.closed).isTrue();
         assertThat(storage.getCloseCount()).isEqualTo(1);
     }
 
@@ -1391,8 +1427,8 @@ class FileLoadsWriterTest {
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.close();
 
-        // The aborted file may or may not have finalized an object; either way no committable
-        // references it, which is what keeps failed attempts out of load jobs.
+        // The aborted file finalizes no object, and no committable references it, which is what
+        // keeps failed attempts out of load jobs.
         assertThat(writer.prepareCommit()).isEmpty();
     }
 

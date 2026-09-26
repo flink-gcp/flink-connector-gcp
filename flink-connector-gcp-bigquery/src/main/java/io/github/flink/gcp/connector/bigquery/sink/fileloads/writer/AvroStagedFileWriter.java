@@ -69,6 +69,9 @@ final class AvroStagedFileWriter implements StagedFileWriter {
      * <p>The library is {@code com.github.luben:zstd-jni}, which Avro declares {@code optional} —
      * this module declares it at runtime scope, and a shaded distribution has to keep its native
      * libraries reachable.
+     *
+     * <p>{@link #abort()} never closes the writer, which is safe because this codec opens and
+     * closes its compression stream per block. Revisit that method before changing the codec.
      */
     private static final CodecFactory STAGING_CODEC =
             CodecFactory.zstandardCodec(CodecFactory.DEFAULT_ZSTANDARD_LEVEL);
@@ -94,18 +97,9 @@ final class AvroStagedFileWriter implements StagedFileWriter {
         DataFileWriter<GenericRecord> writer =
                 new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema))
                         .setCodec(STAGING_CODEC);
-        try {
-            this.avroWriter = writer.create(schema, countingStream);
-        } catch (IOException | RuntimeException e) {
-            // DataFileWriter.close() is a no-op before create() succeeds; close the staging
-            // stream directly so the upload channel does not leak.
-            try {
-                stream.close();
-            } catch (IOException | RuntimeException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw e;
-        }
+        // A failure here leaves the staging stream unclosed, as abort() does: closing it would
+        // finalize an object holding a partial header.
+        this.avroWriter = writer.create(schema, countingStream);
     }
 
     @Override
@@ -133,10 +127,8 @@ final class AvroStagedFileWriter implements StagedFileWriter {
 
     @Override
     public void abort() {
-        try {
-            avroWriter.close();
-        } catch (IOException | RuntimeException e) {
-            // The object is unreferenced garbage either way; nothing to do.
-        }
+        // Closing avroWriter would compress the pending block and finalize the object. The codec
+        // opens and closes its compression stream per block, so no native resource waits for
+        // close() either.
     }
 }

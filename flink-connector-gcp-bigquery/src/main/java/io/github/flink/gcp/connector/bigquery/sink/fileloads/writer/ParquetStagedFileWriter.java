@@ -68,38 +68,29 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
         this.destination = destination;
         this.uri = uri;
         this.countingStream = new CountingOutputStream(stream);
-        try {
-            this.parquetWriter =
-                    AvroParquetWriter.<GenericRecord>builder(new StreamOutputFile(countingStream))
-                            // Before any config(...) call: the builder allocates a
-                            // HadoopParquetConfiguration when none is set, and that instantiates
-                            // Hadoop's Configuration — which parses core-default.xml off the
-                            // classpath and defeats the point of the NONE codec being Hadoop-free.
-                            .withConf(new PlainParquetConfiguration())
-                            .withSchema(schema)
-                            // Explicit, for the same reason: AvroWriteSupport.init() reaches
-                            // getDataModel() only when no model was supplied, and that converts the
-                            // configuration back into a Hadoop one.
-                            .withDataModel(GenericData.get())
-                            .withCompressionCodec(codecOf(compression))
-                            .withRowGroupSize(rowGroupSize(maxStagingFileBytes))
-                            // Three-level LIST, not parquet-avro's legacy two-level default:
-                            // BigQuery's enableListInference reads the standard annotation, and a
-                            // two-level list would load as an empty array without an error.
-                            .config(AvroWriteSupport.WRITE_OLD_LIST_STRUCTURE, "false")
-                            .build();
-        } catch (IOException | RuntimeException | LinkageError e) {
-            // The builder opened the stream through StreamOutputFile.create(), so nothing else
-            // will close it if construction failed. LinkageError is caught deliberately: the
-            // Parquet and Hadoop classes are `provided`, and a classpath missing them fails here
-            // rather than at the builder's own checks.
-            try {
-                stream.close();
-            } catch (IOException | RuntimeException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw e;
-        }
+        // A failure here leaves the staging stream unclosed, as abort() does: closing it would
+        // finalize an object holding a partial file. The builder keeps Parquet's default heap
+        // allocator on purpose; abort() never closes the writer, so an allocator whose buffers
+        // need an explicit release would leak them.
+        this.parquetWriter =
+                AvroParquetWriter.<GenericRecord>builder(new StreamOutputFile(countingStream))
+                        // Before any config(...) call: the builder allocates a
+                        // HadoopParquetConfiguration when none is set, and that instantiates
+                        // Hadoop's Configuration — which parses core-default.xml off the
+                        // classpath and defeats the point of the NONE codec being Hadoop-free.
+                        .withConf(new PlainParquetConfiguration())
+                        .withSchema(schema)
+                        // Explicit, for the same reason: AvroWriteSupport.init() reaches
+                        // getDataModel() only when no model was supplied, and that converts the
+                        // configuration back into a Hadoop one.
+                        .withDataModel(GenericData.get())
+                        .withCompressionCodec(codecOf(compression))
+                        .withRowGroupSize(rowGroupSize(maxStagingFileBytes))
+                        // Three-level LIST, not parquet-avro's legacy two-level default:
+                        // BigQuery's enableListInference reads the standard annotation, and a
+                        // two-level list would load as an empty array without an error.
+                        .config(AvroWriteSupport.WRITE_OLD_LIST_STRUCTURE, "false")
+                        .build();
     }
 
     /**
@@ -122,6 +113,11 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
         return maxStagingFileBytes;
     }
 
+    /**
+     * Maps the option to a Parquet codec. A codec added here must hold no resource that only {@code
+     * close()} releases, because {@link #abort()} never closes the writer; a compressor borrowed
+     * from Hadoop's {@code CodecPool}, for example, would never be returned.
+     */
     private static CompressionCodecName codecOf(ParquetCompression compression) {
         switch (compression) {
             case ZSTD:
@@ -158,15 +154,10 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
 
     @Override
     public void abort() {
-        try {
-            parquetWriter.close();
-        } catch (IOException | RuntimeException | LinkageError e) {
-            // The object is unreferenced garbage either way; nothing to do. LinkageError is
-            // included for the same reason the constructor catches it: these classes are
-            // `provided`, so a classpath that satisfied the client's probe and not the
-            // TaskManager's can fail here — and abort() runs on the writer's own close path,
-            // where an escaping Error would mask whatever is already failing.
-        }
+        // Closing parquetWriter would encode, compress and upload the whole buffered row group
+        // and finalize the object. Both configured codecs hold no native resource between pages:
+        // UNCOMPRESSED has no compressor, and Parquet's ZstandardCodec creates none, opening and
+        // closing a compression stream per page instead.
     }
 
     /**
