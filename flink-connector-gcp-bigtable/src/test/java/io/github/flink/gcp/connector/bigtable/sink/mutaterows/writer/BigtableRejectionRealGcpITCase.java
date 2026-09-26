@@ -181,14 +181,19 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
             // NOT_FOUND, and fatal under the default CREATE_NEVER: a missing column family fails
             // every record shaped like this one, so it must never reach a handler that may drop
             // it. The failure names the disposition, since CREATE_IF_NEEDED is the knob that
-            // repairs this. Bigtable reports it per entry rather than rejecting the request, and
-            // reports it for the good entry too.
+            // repairs this. Bigtable reports it per entry rather than rejecting the request.
+            //
+            // What is asserted is the sink's outcome, not the service's rejection granularity,
+            // the choice the blast-radius case above and ADR-0045 make. The table's contents are
+            // left unasserted because the good entry's fate has varied: through 2026-09-19 the
+            // service failed it with the bad one and wrote nothing, and on 2026-09-26 it wrote the
+            // good row (#1534). The bad row cannot be stored under either answer, since its only
+            // cell names a family the table lacks.
             assertThatThrownBy(() -> writer.flush(false))
                     .hasMessageContaining(table.getTable())
                     .hasMessageContaining("createDisposition is CREATE_NEVER")
                     .hasStackTraceContaining("Requested column family not found");
             assertThat(handler.handled).isEmpty();
-            assertThat(readRows(table)).isEmpty();
         } finally {
             writer.close();
         }
