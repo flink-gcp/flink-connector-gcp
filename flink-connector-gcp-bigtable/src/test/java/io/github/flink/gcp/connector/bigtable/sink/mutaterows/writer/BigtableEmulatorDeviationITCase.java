@@ -236,8 +236,9 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
 
     @Test
     void answersInternalRatherThanNotFoundToAnUnknownColumnFamily() throws Exception {
-        // Real Bigtable: NOT_FOUND, and it fails the good entry of the batch too, so nothing is
-        // written. Here: INTERNAL, the offending entry only, and the good row lands.
+        // Real Bigtable: NOT_FOUND for the offending entry (whether the good entry is written has
+        // varied, #1534). Here: INTERNAL, the offending entry only, and the good row lands. The
+        // status is the deviation this pins.
         TableDestination table = createTable("deviation-unknown-family");
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer =

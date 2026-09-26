@@ -1584,11 +1584,13 @@ why nothing in `opentofu/` declares a Bigtable instance, only the API enablement
 
 ### Where the emulator differs from the service
 
-The real-Bigtable column was measured 2026-08-02 (the missing-table row 2026-08-09) in
+The real-Bigtable column was measured 2026-08-02 (the missing-table row 2026-08-09, the
+missing-family row re-measured 2026-09-26) in
 `us-central1`; the emulator column was re-measured 2026-09-03 when the pin moved from
 `google-cloud-cli:441.0.0-emulators` to `583.0.0-emulators`, for the same inputs on both sides.
-Every row is asserted from both sides, so an emulator image bump has to state what it changed
-rather than making this table quietly wrong. That bump moved three rows: the empty-row-key row
+Every row is asserted from both sides, except where a cell says the suite leaves part of it
+unasserted, so an emulator image bump has to state what it changed rather than making this table
+quietly wrong. That bump moved three rows: the empty-row-key row
 below, and two in the read table further down.
 
 | Input | Real Bigtable | Emulator |
@@ -1596,7 +1598,7 @@ below, and two in the read table further down.
 | Cell timestamp not a multiple of 1000, **explicitly set** | `INVALID_ARGUMENT`, the whole request rejected: every entry of the batch routed to the handler, nothing written | `INTERNAL` ("invalid timestamp 1234"), the offending entry only — the rest of the batch is written |
 | Cell timestamp not a multiple of 1000, **left to the client's writer clock** | accepted, and stored truncated to the table's millisecond granularity: the mutation carries `timestamp_origin = CLIENT_AUTO_GENERATED` and the service reads it | rejected, `invalid timestamp` — the emulator does not implement the field, so it treats the value as explicitly set. Measured 2026-09-03 under google-cloud-bigtable 2.82.0, which is the release that began marking it; reported upstream, and the harness stamps an explicit timestamp meanwhile |
 | Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty", the whole request rejected | `INTERNAL` wrapping the same wording, the offending entry only — the rest of the batch is written. Up to `441.0.0-emulators` the emulator **accepted** the write instead; it now refuses it on this path, and on single-row `MutateRow` it answers the service's own `INVALID_ARGUMENT` unwrapped. `ReadModifyWriteRow` still accepts one — see the read table |
-| Mutation naming a column family the table does not have | `NOT_FOUND`, reported for **every** entry of the batch, nothing written | `INTERNAL` ("unknown family"), the offending entry only |
+| Mutation naming a column family the table does not have | `NOT_FOUND`, the offending entry. The rest of the batch was failed with it and not written through 2026-09-19, and was written on 2026-09-26, so the suite asserts neither | `INTERNAL` ("unknown family"), the offending entry only |
 | Mutation against a table that does not exist | `NOT_FOUND`, for every entry — worded "No tables found for instance …" against an instance holding no tables | `NOT_FOUND` ("table ... not found") — the one rejection the emulator answers with the service's status, which is what lets the emulator suite drive the [auto-creation](#table-auto-creation) repair end-to-end; only the wording differs, and the sink classifies by status alone |
 
 The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling) to this sink while
