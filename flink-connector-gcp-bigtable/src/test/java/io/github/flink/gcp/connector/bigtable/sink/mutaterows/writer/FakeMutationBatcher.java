@@ -47,7 +47,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <b>every</b> entry of that request with {@code INVALID_ARGUMENT}, the good ones included. The
  * isolation pass's behaviour therefore emerges from the fake rather than being scripted step by
  * step — a writer that routed the batched report, or that re-submitted the park as a batch,
- * produces a visibly different outcome here.
+ * produces a visibly different outcome here. The one per-entry outcome is {@link #missingFamilies},
+ * because whether a missing column family also fails the rest of its request has varied (#1534); it
+ * applies only to a request no rejected row key has already failed whole.
  *
  * <p>Nothing completes until its request is sent, which is what lets a test hold the writer at its
  * in-flight caps: those tests never send. {@link #autoComplete} turns the per-request outcome off
@@ -83,10 +85,22 @@ final class FakeMutationBatcher implements MutationBatcher {
     boolean tableMissing;
 
     /**
-     * Sends up to this count fail with the real service's missing-family description. Zero (the
-     * default) disables it; {@link Integer#MAX_VALUE} keeps the family missing indefinitely.
+     * Sends up to this count fail every entry with the real service's missing-family description,
+     * the answer the service gave through 2026-09-19; {@link #missingFamilies} models the per-entry
+     * answer it gave later. Zero (the default) disables it; {@link Integer#MAX_VALUE} keeps the
+     * family missing indefinitely.
      */
     int columnFamilyMissingThroughSends;
+
+    /**
+     * Families the table lacks, decided per entry: an entry setting a cell in one fails with the
+     * missing-family description while the rest of its request is applied, as the service answered
+     * on 2026-09-26 (#1534). Only {@code SetCell} mutations are read, so an entry naming the family
+     * through a delete or an aggregate succeeds here. {@link #columnFamilyMissingThroughSends}
+     * models the other answer the service has given, failing every entry of the request. Cleared by
+     * the test, typically from a {@code FakeTableAdmin#onEnsure} hook.
+     */
+    final Set<String> missingFamilies = new HashSet<>();
 
     /**
      * Requests after this many sends fail as {@link #tableMissing} does — for the case where the
@@ -178,6 +192,12 @@ final class FakeMutationBatcher implements MutationBatcher {
                                         new RuntimeException(
                                                 "scripted rejection of the request carrying "
                                                         + rowKey(index))));
+            } else if (namesMissingFamily(index)) {
+                futures.get(index)
+                        .setException(
+                                apiException(
+                                        StatusCode.Code.NOT_FOUND,
+                                        missingFamilyDescription(index)));
             } else {
                 futures.get(index).set(null);
             }
@@ -250,6 +270,15 @@ final class FakeMutationBatcher implements MutationBatcher {
 
     private String rowKey(int index) {
         return entries.get(index).toProto().getRowKey().toStringUtf8();
+    }
+
+    private boolean namesMissingFamily(int index) {
+        return entries.get(index).toProto().getMutationsList().stream()
+                .anyMatch(
+                        mutation ->
+                                mutation.hasSetCell()
+                                        && missingFamilies.contains(
+                                                mutation.getSetCell().getFamilyName()));
     }
 
     /**
