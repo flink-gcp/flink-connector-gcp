@@ -48,11 +48,11 @@ force.
   handler's `flush()` after their drains, and their `close()` uses `Closers.closeAll`
   (`base.lifecycle`, never Flink's `IOUtils.closeAll` — [#276], whose record is the base
   module's) so the
-  handler is closed even when closing an appender or service, or aborting a staged file, throws.
-  On the FILE_LOADS path that promise is testable in exactly one shape — `StagedFileWriter
-  .abort()` swallows an `IOException` or a `RuntimeException` by design, so an `Error` is the
-  only failure that list can carry, which is what
-  `closeStillClosesTheHandlerWhenAbortingAStagedFileThrowsAnError` drives.
+  handler is closed even when closing an appender or service throws.
+  On the FILE_LOADS path, aborting a staged file closes nothing (ADR-0146), so it cannot fail,
+  and the handler is the first entry of that list that can; what that path still pins is that the
+  staging client's teardown failure is suppressed onto the handler's
+  (`aStagingStorageCloseFailureIsSuppressedOntoTheOneAlreadyBeingReported`).
 - **`findRowLevel` rejects a row-detailed error whose own status code is transient** ([#213]
   round-2 review): the SDK copies the response's status code verbatim onto
   `AppendSerializationError` after its in-stream retries, so row details under `UNAVAILABLE` &c.

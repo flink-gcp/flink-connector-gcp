@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0146: FILE_LOADS bounds writer checkpoint finalization concurrency
 
 - Status: Accepted
-- Date: 2026-08-30
-- Issues: [#1164] (measurement), [#38] (GKE Autopilot follow-up)
+- Date: 2026-08-30; revised by [#1532] (2026-09-26)
+- Issues: [#1164] (measurement), [#38] (GKE Autopilot follow-up), [#1532] (abandoning the batch
+  after a fatal failure)
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -154,6 +155,20 @@ failure, or interruption.
 Ordinary file failures retain input order as primary and suppressed failures; the task thread polls
 for a JVM-fatal failure, cancels its peers when one arrives, and keeps it primary so it cannot stay
 hidden behind an earlier stalled close and Flink can act on it.
+A fatal failure from a submission or from the task thread itself abandons the batch in the same
+way ([#1532]).
+Abandoning waits for no close.
+The fatal failure is published first, and a worker that starts a file after that aborts it instead
+of closing it.
+The task thread then aborts every file no worker started.
+An abort does no I/O: it leaves the staging upload unfinalized, so it creates no object, and Cloud
+Storage expires the unfinalized resumable upload on its own.
+Leaving the writer and channel unclosed is safe because the storage client uses the HTTP transport,
+whose upload channel holds no connection between chunk requests, because the staging codecs hold
+no resource between blocks or pages, and because Parquet keeps its default heap allocator; a change
+to any of them reopens this abort.
+Only a worker that had already checked for the failure before it was published may still close its
+file after the method returns.
 An interrupt received while the pool drains is remembered until the drain completes, restored on
 the task thread, and reported after file failures.
 A flag that was already set before the drain is preserved without changing the serial path's
@@ -195,3 +210,4 @@ Upload density alone therefore does not reopen the Avro default or the automatic
 
 [#38]: https://github.com/flink-gcp/flink-connector-gcp/issues/38
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
+[#1532]: https://github.com/flink-gcp/flink-connector-gcp/issues/1532

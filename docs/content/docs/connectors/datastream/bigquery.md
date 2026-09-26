@@ -2341,7 +2341,9 @@ example: delete objects after 1–7 days) so orphans from hard failures expire o
 the rule's age above the longest outage you intend to recover from: staged files referenced by a
 checkpoint *are* the data, and restoring a streaming job after the rule already expired them
 leaves the pending loads permanently failing (the poisoned committables can then only be dropped
-by starting without state).
+by starting without state). A file the writer discards before it starts finalizing that file (on
+cancellation, failover or a JVM-fatal failure) leaves no orphan: no object appears, and Cloud
+Storage expires the unfinalized upload within a week.
 
 **Errors.** `FailureHandler` covers serialization/Avro-conversion failures (row-level, before
 staging). A load job itself is all-or-nothing: there is no per-row policy at load time, and a
