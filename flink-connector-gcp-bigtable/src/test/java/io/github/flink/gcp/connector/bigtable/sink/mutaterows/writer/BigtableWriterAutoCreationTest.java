@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -264,6 +265,92 @@ class BigtableWriterAutoCreationTest {
         assertThat(batcher.sentRowKeys())
                 .containsExactly(List.of("row-1"), List.of("row-1"), List.of("row-1"));
         assertThat(writer.getParkedEntries()).isZero();
+    }
+
+    @Test
+    void aMissingFamilyReportedForOneEntryRepairsOnlyThatEntry() throws Exception {
+        // The service's answer on 2026-09-26 (#1534): the entry naming the missing family fails and
+        // the rest of its request is applied. The repair re-applies what failed, not the request
+        // it travelled in. The failing entry is written first, so the other entry's success is
+        // handled after the failure has parked for repair, and must not settle that repair.
+        TableCreateOptions createOptions =
+                TableCreateOptions.builder().columnFamily("cf").columnFamily("added").build();
+        admin.result = TableAdmin.EnsureResult.familiesAdded(1, Set.of("cf", "added"));
+        admin.onEnsure = batcher.missingFamilies::clear;
+        RecordingHandler handler = new RecordingHandler();
+        BigtableWriter<String> writer =
+                writerSplittingFamilies(
+                        handler, CreateDisposition.CREATE_IF_NEEDED, createOptions, "added");
+        batcher.missingFamilies.add("added");
+
+        writer.write("bad", TestContexts.NO_OP);
+        writer.write("good", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(admin.ensured).containsExactly(TABLE);
+        assertThat(admin.ensureOptions).containsExactly(createOptions);
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("bad", "good"), List.of("bad"));
+        assertThat(metricGroup.counterValue("numRecordsSend")).isEqualTo(2);
+        assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(1);
+        assertThat(metricGroup.counterValue("columnFamiliesAdded")).isEqualTo(1);
+        assertThat(metricGroup.counterValue("tablesCreated")).isZero();
+        assertThat(handler.handled).isEmpty();
+        assertThat(writer.getParkedEntries()).isZero();
+        assertThat(writer.getInFlightEntries()).isZero();
+    }
+
+    @Test
+    void createNeverFailsOnAMissingFamilyReportedForOneEntry() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        BigtableWriter<String> writer =
+                writerSplittingFamilies(handler, CreateDisposition.CREATE_NEVER, null, "absent");
+        batcher.missingFamilies.add("absent");
+
+        writer.write("bad", TestContexts.NO_OP);
+        writer.write("good", TestContexts.NO_OP);
+        // The batcher's own threshold or timer sends the request, and the idle mailbox runs both
+        // completions between records: the failure first, then the other entry's success. A drain
+        // inside flush would stop at the failure, so this is the order in which a success can
+        // follow a recorded failure, and it must not clear it.
+        batcher.sendOutstanding();
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("createDisposition is CREATE_NEVER")
+                .hasStackTraceContaining("Error while mutating the row 'bad'")
+                .hasStackTraceContaining(BigtableErrorClassifier.MISSING_COLUMN_FAMILY_PHRASE);
+        assertThat(admin.ensured).isEmpty();
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("bad", "good"));
+        assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(1);
+        assertThat(handler.handled).isEmpty();
+        assertThat(writer.getParkedEntries()).isZero();
+    }
+
+    @Test
+    void anUndeclaredFamilyReportedForOneEntryFailsAfterReapplyingOnlyThatEntry() throws Exception {
+        // No onEnsure hook, and the ensure finds the table with only the declared family: the
+        // undeclared one stays missing. The other entry was applied at the first send, so only the
+        // failing entry is re-applied, and its post-ensure verdict is what fails the flush.
+        admin.result = TableAdmin.EnsureResult.familiesAdded(0, Set.of("cf"));
+        RecordingHandler handler = new RecordingHandler();
+        BigtableWriter<String> writer =
+                writerSplittingFamilies(
+                        handler, CreateDisposition.CREATE_IF_NEEDED, CREATE_OPTIONS, "undeclared");
+        batcher.missingFamilies.add("undeclared");
+
+        writer.write("good", TestContexts.NO_OP);
+        writer.write("bad", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("column families [undeclared]")
+                .hasMessageContaining("tableCreateOptions")
+                .hasStackTraceContaining("Error while mutating the row 'bad'");
+        assertThat(admin.ensured).containsExactly(TABLE);
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("good", "bad"), List.of("bad"));
+        assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(2);
+        assertThat(handler.handled).isEmpty();
     }
 
     @Test
@@ -563,6 +650,29 @@ class BigtableWriterAutoCreationTest {
                 families);
     }
 
+    /**
+     * A writer whose record {@code good} sets a cell in {@code cf} and whose every other record
+     * sets one in {@code otherFamily}, so one request can carry an entry naming a family the table
+     * has beside one naming a family it lacks.
+     */
+    private BigtableWriter<String> writerSplittingFamilies(
+            FailureHandler<? super FailedMutation> handler,
+            CreateDisposition disposition,
+            TableCreateOptions createOptions,
+            String otherFamily) {
+        return writer(
+                BigtableWriterOptions.defaults(),
+                handler,
+                disposition,
+                createOptions,
+                (element, context) -> TABLE,
+                FAST_SCHEDULE,
+                (element, context) ->
+                        RowMutationEntry.create(element)
+                                .setCell(
+                                        "good".equals(element) ? "cf" : otherFamily, "q", element));
+    }
+
     /** The table the admin was last asked to ensure, for a hook clearing only that table's flag. */
     private TableDestination lastEnsured() {
         return admin.ensured.get(admin.ensured.size() - 1);
@@ -606,17 +716,34 @@ class BigtableWriterAutoCreationTest {
             DestinationResolver<String> resolver,
             RetrySchedule schedule,
             String... families) {
+        return writer(
+                options,
+                handler,
+                disposition,
+                createOptions,
+                resolver,
+                schedule,
+                (element, context) -> {
+                    RowMutationEntry entry = RowMutationEntry.create(element);
+                    for (String family : families) {
+                        entry.setCell(family, "q", element);
+                    }
+                    return entry;
+                });
+    }
+
+    private BigtableWriter<String> writer(
+            BigtableWriterOptions options,
+            FailureHandler<? super FailedMutation> handler,
+            CreateDisposition disposition,
+            TableCreateOptions createOptions,
+            DestinationResolver<String> resolver,
+            RetrySchedule schedule,
+            BigtableSerializationSchema<String> serializer) {
         BigtableSinkBuilder<String> builder =
                 BigtableSink.<String>builder()
                         .destinationResolver(resolver)
-                        .serializer(
-                                (element, context) -> {
-                                    RowMutationEntry entry = RowMutationEntry.create(element);
-                                    for (String family : families) {
-                                        entry.setCell(family, "q", element);
-                                    }
-                                    return entry;
-                                })
+                        .serializer(serializer)
                         .writerOptions(options)
                         .failedMutationHandler(handler)
                         .createDisposition(disposition);
