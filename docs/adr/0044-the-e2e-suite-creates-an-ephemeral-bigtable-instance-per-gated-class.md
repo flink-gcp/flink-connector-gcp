@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-02 ([#218]; the per-*class* deviation from that issue's settled design is
   recorded here)
-- Issues: [#218], [#245], [#246], [#533], [#1196], [#1199], [#1534]
+- Issues: [#218], [#245], [#246], [#533], [#1196], [#1199], [#1534], [#1538]
 - Modules: bigtable (tests, `opentofu/`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Testing; the root
   CLAUDE.md `just e2e`/`sweep-e2e` entries
@@ -63,11 +63,15 @@ that is not a multiple of 1000 ("Timestamp granularity mismatch"), and an empty 
 keys must be non-empty"). Fatal (`NOT_FOUND`): a mutation naming a column family the table lacks
 — and the service reports it for **every** entry of the batch, the good ones included.
 
-**The missing-family rejection no longer takes the rest of the batch with it** — refined
+**The missing-family rejection may or may not take the rest of the batch with it** — refined
 2026-09-26 against the service ([#1534]). Under the same client, 2.82.0, the last green E2E run,
 on 2026-09-19, still saw both entries of a two-entry batch fail `NOT_FOUND`, and the scheduled run
-on 2026-09-26 saw only the offending entry fail and the good row written. The sink's outcome is the
-same under either answer: the flush fails under `CREATE_NEVER` and nothing reaches the handler.
+on 2026-09-26 saw only the offending entry fail and the good row written. The Bigtable release
+notes record no change, and the [Data API reference] allows both answers: "Depending on how
+requests are batched during execution, it is possible for one Entry to fail due to an error with
+another Entry." So neither observation is taken as the service's lasting answer ([#1538]). The
+sink's outcome is the same under either answer: the flush fails under `CREATE_NEVER` and nothing
+reaches the handler.
 The gated case therefore asserts that outcome and leaves the table's contents unasserted, as
 ADR-0045 already does for the rejection's granularity.
 
@@ -140,6 +144,8 @@ made deletion succeed; that measured recovery sequence is now the order every cl
 [#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196
 [#1199]: https://github.com/flink-gcp/flink-connector-gcp/issues/1199
 [#1534]: https://github.com/flink-gcp/flink-connector-gcp/issues/1534
+[#1538]: https://github.com/flink-gcp/flink-connector-gcp/issues/1538
+[Data API reference]: https://docs.cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#mutaterowsresponse
 
 ## Cleanup reporting refinement (2026-09-19)
 
