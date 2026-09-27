@@ -28,6 +28,7 @@ from .common import (
     contains,
     digest,
     ha_metadata,
+    job_finished,
     ownership,
     quantity,
     reference,
@@ -333,7 +334,15 @@ class Cleanup:
                     "Unexpected object outside the baseline and run ownership graph"
                 )
         pods = [obj for obj in items if obj["kind"] == "Pod"]
-        if len(pods) > self.ceilings["pods"] or any(
+        # A supervisor attempt the Job retains after a disruption holds no
+        # capacity; the Job's backoff limit bounds how many there can be.
+        counted = [
+            pod
+            for pod in pods
+            if pod["metadata"]["uid"] not in groups["supervisor"]
+            or pod.get("status", {}).get("phase") not in ("Succeeded", "Failed")
+        ]
+        if len(counted) > self.ceilings["pods"] or any(
             obj["kind"] == "PersistentVolumeClaim" for obj in items
         ):
             raise Failure("Pod/PVC count ceiling exceeded")
@@ -467,16 +476,7 @@ class Cleanup:
         job = self.env.root("supervisor")
         if not job:
             return False
-        status = job.get("status", {})
-        finished = bool(
-            status.get("succeeded", 0)
-            or status.get("failed", 0)
-            or any(
-                c.get("status") == "True" and c.get("type") in ("Complete", "Failed")
-                for c in status.get("conditions", [])
-            )
-        )
-        return not finished
+        return not job_finished(job)
 
     def run(self, reason, success=False):
         self.env.namespaces()

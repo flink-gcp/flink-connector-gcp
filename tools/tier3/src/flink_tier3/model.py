@@ -716,6 +716,24 @@ TRANSITIONS = {
 }
 
 
+def open_for_replacement(record):
+    """Whether a replacement supervisor Pod may take this run over.
+
+    The measured preemption lands in a Pod's first seconds, and the runner can
+    reach `RUNNING` while the Pod it took is still terminating, so the window
+    runs to the holder's first act of supervision rather than to admission.
+    After that the run's cells, recovery stages and polling state belong to
+    the holder, and none of them can be resumed by another process. A run
+    already stopping has nothing for a replacement to carry on.
+    """
+    return (
+        record.phase in (Phase.APPROVED, Phase.READY, Phase.RUNNING)
+        and not record.stop_requested
+        and not record.evidence_failed
+        and not record.supervision_started
+    )
+
+
 @dataclass
 class RunRecord:
     nonce: str
@@ -736,6 +754,9 @@ class RunRecord:
     reason: str = ""
     final_log_attempted: bool = False
     recovery: dict | None = None
+    supervisor_pod: str | None = None
+    supervisor_claimed_at: str | None = None
+    supervision_started: bool = False
     queue_intent: bool = False
     queue: dict | None = None
     cells: dict = field(default_factory=dict)

@@ -1325,6 +1325,19 @@ def supervisor_pod(env, job):
     return pod
 
 
+def claim_as_supervisor(env, pod):
+    """What the supervisor Pod writes before the runner reads it as ready.
+
+    Its own `Records`, as the Pod's process has: claiming on the runner's
+    records would fence the runner's writes on the Pod's claim.
+    """
+    _kube, store, approval, clock = env
+    records = rt.Records(store, rt.Approval.from_dict(approval), clock)
+    records.claim_supervisor(pod["metadata"]["uid"])
+    records.heartbeat()
+    return records
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -2614,7 +2627,7 @@ def test_runner_admits_after_supervisor_readiness_and_settles_once(
         actual = create(value, dry_run)
         if not dry_run and value["kind"] == "Job":
             env[0].put(pod)
-            rt.Records(env[1], rt.Approval.from_dict(env[2])).heartbeat()
+            claim_as_supervisor(env, pod)
         if not dry_run and value["kind"] == "FlinkDeployment" and lost_response:
             raise rt.Failure("Lost application response")
         return actual
@@ -2725,7 +2738,7 @@ def ready_admission(env, monkeypatch, *, operator_ready=True):
         result = create(value, dry_run)
         if value["kind"] == "Job" and not dry_run:
             env[0].put(pod)
-            supervisor.env.records.heartbeat()
+            claim_as_supervisor(env, pod)
         return result
 
     def requested(method, path, *args, **kwargs):
@@ -2774,7 +2787,9 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
     def stop():
         nonlocal interrupted
         interrupted = True
-        supervisor.env.stopping = True
+        # A failure of the supervisor's own, not a signal: a signal leaves the
+        # run to the Job's replacement instead of stopping its admission.
+        supervisor.env.evidence_failed = True
         with pytest.raises(rt.Failure, match="Admission unfinished"):
             supervisor.supervise(pod["metadata"]["uid"])
         assert supervisor.env.refresh().phase == rt.Phase.READY

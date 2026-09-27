@@ -66,6 +66,61 @@ class Runner:
         if self.cloudtasks:
             admission_budget_open(self.env)
 
+    def supervisor_open(self):
+        """Refuse further admission once the supervisor Job has ended.
+
+        A supervisor signalled before supervision starts leaves the run open
+        rather than requesting a stop, so the Job ending is what says no
+        replacement is coming.
+        """
+        current = self.env.root("supervisor")
+        if not current or rt.job_finished(current):
+            raise rt.Failure("Supervisor stopped before application admission")
+
+    def supervisor_lost(self):
+        """Whether no Pod supervises the run and none is going to.
+
+        A Job waiting to replace a disrupted Pod is not finished, but a
+        replacement may never be scheduled, and after supervision starts it
+        could not claim the run anyway. Without this the runner would leave
+        the workload unsupervised until its own settlement deadline.
+        """
+        if self.env.refresh().supervisor_pod is None:
+            return False  # nothing has claimed it yet; the Job still decides
+        # Pods before the record: a replacement that claims in between is
+        # listed already, even if still Pending, and so reads as live.
+        items = self.cleanup.inventory()
+        control = self.env.refresh()
+        holder = control.supervisor_pod
+        owned = self.cleanup.owned(items, ["supervisor"])
+        if any(
+            obj["kind"] == "Pod"
+            and obj["metadata"]["uid"] in owned
+            and obj["metadata"]["uid"] == holder
+            and obj.get("status", {}).get("phase") not in ("Succeeded", "Failed")
+            for obj in items
+        ):
+            return False
+        if not control.supervision_started:
+            # A replacement may still claim the run; it gets the readiness
+            # allowance the first Pod had, from the holder's last sign of life.
+            since = max(
+                (
+                    rt.timestamp(value)
+                    for value in (control.heartbeat, control.supervisor_claimed_at)
+                    if value
+                ),
+                default=None,
+            )
+            if since is None:
+                return False  # no sign of life to time from; the Job decides
+            if self.env.clock() < self.env.schedule.readiness_until(since):
+                return False
+        # Deciding is a write conditional on the holder seen here, so a
+        # replacement claiming meanwhile keeps the run, and none can claim it
+        # once this stop lands.
+        return self.env.records.stop_if_held_by(holder)
+
     def create_application(self, application):
         if rt.digest(application) != self.env.approval.application_sha256:
             raise rt.Failure("Application differs from the approved manifest")
@@ -167,13 +222,15 @@ class Runner:
 
         def supervisor_ready():
             self.admission_open()
-            current = self.env.root("supervisor")
-            if not current or self.job_completed(current):
-                raise rt.Failure("Supervisor stopped before application admission")
+            self.supervisor_open()
             items, pods = self.cleanup.audit()
             owned = self.cleanup.owned(items, ["supervisor"])
-            return self.env.refresh().heartbeat and any(
+            control = self.env.refresh()
+            # The Pod that claimed the run, not merely some Pod of the Job: a
+            # replacement is not ready until it has claimed.
+            return control.heartbeat and any(
                 pod["metadata"]["uid"] in owned
+                and pod["metadata"]["uid"] == control.supervisor_pod
                 and pod.get("status", {}).get("phase") == "Running"
                 for pod in pods
             )
@@ -189,9 +246,7 @@ class Runner:
         def operator_ready():
             self.admission_open()
             self.cleanup.audit()
-            job = self.env.root("supervisor")
-            if not job or self.job_completed(job):
-                raise rt.Failure("Supervisor stopped before application admission")
+            self.supervisor_open()
             operator = self.env.kube.get("Deployment", rt.SYSTEM, rt.OPERATOR)
             return operator.get("status", {}).get("readyReplicas", 0) == 1
 
@@ -199,6 +254,7 @@ class Runner:
             operator_ready, self.env.schedule.readiness_until(self.env.clock())
         )
         self.admission_open()
+        self.supervisor_open()
         if self.cloudtasks:
             self.cleanup.quota(self.namespace, "session")
             self.admission_open()
@@ -210,22 +266,11 @@ class Runner:
                 self.bigquery.initialize()
                 self.bigquery.provision()
                 self.admission_open()
+                self.supervisor_open()
             self.cleanup.quota(self.namespace, "run")
             self.create_application(application)
         self.admission_open()
         self.env.records.set_phase(rt.Phase.RUNNING)
-
-    @staticmethod
-    def job_completed(job):
-        status = job.get("status", {})
-        return bool(
-            status.get("succeeded", 0)
-            or status.get("failed", 0)
-            or any(
-                c.get("status") == "True" and c.get("type") in ("Complete", "Failed")
-                for c in status.get("conditions", [])
-            )
-        )
 
     def settle(self, request_stop=False):
         # The admitting runner calls this only after start() has returned.
@@ -285,7 +330,10 @@ class Runner:
                 self.env.records.request_stop()
             job = self.env.root("supervisor")
             finished = (
-                not job or self.job_completed(job) or control.phase == rt.Phase.CLEANED
+                not job
+                or rt.job_finished(job)
+                or control.phase == rt.Phase.CLEANED
+                or self.supervisor_lost()
             )
             if self.bigquery is not None and not released:
                 if (
@@ -347,21 +395,21 @@ class Runner:
         ):
             # A cleaned record can precede process exit. Give the Job a bounded
             # grace period before attempting its one final log export.
-            if job and not self.job_completed(job):
+            if job and not rt.job_finished(job):
                 try:
 
-                    def job_finished():
+                    def ended():
                         current = self.env.root("supervisor")
-                        return not current or self.job_completed(current)
+                        return not current or rt.job_finished(current)
 
                     self.env.wait(
-                        job_finished,
+                        ended,
                         self.env.clock() + self.env.schedule.operator_grace,
                     )
                 except rt.Failure:
                     pass
             job = self.env.root("supervisor")
-            exported = bool(job and self.job_completed(job))
+            exported = bool(job and rt.job_finished(job))
             if exported:
                 try:
                     items = self.cleanup.inventory()

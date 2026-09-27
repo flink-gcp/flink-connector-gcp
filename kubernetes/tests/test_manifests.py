@@ -738,7 +738,31 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     assert "flink_tier3_analyze.py" not in config["data"]
     assert "flink_tier3_protocol_1246.toml" not in config["data"]
     assert job["metadata"]["namespace"] == "tier3-system"
-    assert job["spec"]["backoffLimit"] == 0
+    # Only a disrupted Pod is replaced, and only once it is terminal, so a
+    # replacement never runs beside the Pod it replaces; every other failure
+    # ends the Job as backoffLimit 0 did.
+    assert job["spec"]["backoffLimit"] == 2
+    assert job["spec"]["podReplacementPolicy"] == "Failed"
+    # The API server rejects a rule naming a container the template lacks.
+    assert [c["name"] for c in job["spec"]["template"]["spec"]["containers"]] == [
+        "supervisor"
+    ]
+    assert job["spec"]["podFailurePolicy"] == {
+        "rules": [
+            {
+                "action": "Count",
+                "onPodConditions": [{"type": "DisruptionTarget", "status": "True"}],
+            },
+            {
+                "action": "FailJob",
+                "onExitCodes": {
+                    "containerName": "supervisor",
+                    "operator": "NotIn",
+                    "values": [0],
+                },
+            },
+        ]
+    }
     assert job["spec"]["activeDeadlineSeconds"] == 3300
     pod = job["spec"]["template"]["spec"]
     mounted = {}

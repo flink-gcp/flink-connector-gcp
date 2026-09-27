@@ -222,6 +222,7 @@ The separately selected generic recovery exercise permits the two additional, ob
 Publish `running` only after the runner finishes admission and records the application UID.
 Before that phase, a supervisor failure requests stop and leaves settlement to the runner or completed-execution recovery; cleaning sooner could stop the Operator ahead of an in-flight application create.
 This uses the existing phase boundary rather than adding another claim or termination-proof protocol.
+Since [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396) a signal before supervision starts is the exception, leaving the run to the Job's replacement, and a claim in the control record fences the Pod a replacement displaces; the refinement further below records both.
 Admission retries revalidate phase/stop state, and settlement reconciles actual state even after an earlier `cleaned` record.
 This revises the initial supervisor-only admission decision, which required a Pod claim, persisted container termination proofs and a quarantine delay.
 Those protocols are removed; Job completion is used to retain final logs when possible, not as permission to begin cleanup.
@@ -957,6 +958,25 @@ The risk it guarded remains: on a one-node cluster kube-dns, which is system-cri
 In each of those five cases kube-dns took the supervisor about 30 seconds after it started, while the cluster scaled up and before application admission, so the run stopped with no BigQuery query spent and an immediate redispatch found the cluster already scaled up; a preemption later in a run would stop that run like any other supervisor loss.
 Declined: a required anti-affinity keeping the supervisor off kube-dns's node, because the scheduler may still preempt the lower-priority supervisor to place a later kube-dns replica on the supervisor's node, so it does not guarantee the protection; and a rig-created placeholder Pod forcing a second node, for the RBAC, cleanup and deadline handling it would add.
 The node listing and its one-permission `tier3NodeReader` custom IAM role are removed with the refusal.
+
+A supervisor Pod the infrastructure takes away is replaced, and the replacement may carry the run until supervision starts ([#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396)).
+A `podFailurePolicy` counts a Pod with the `DisruptionTarget` condition, which preemption, eviction and Pod garbage collection set, against a `backoffLimit` of two, and fails the Job on any other non-zero exit, so a crash still ends the run at once.
+With that policy the Job's `podReplacementPolicy` is `Failed`: a replacement starts only after the Pod it replaces is terminal, when the system quota's one supervisor slot is free again.
+Each supervisor Pod claims the run in the control record, and every control write it makes after the claim checks it inside the record's compare-and-set, so a write from a Pod that has lost the claim is refused against the very generation it would have replaced.
+That refusal is deliberately not a lifecycle failure: cleanup records a failed control write and keeps deleting, which would let a displaced Pod delete the holder's workload and queue, whereas the refusal leaves the process before cleanup acts.
+For the same reason a supervisor about to clean up a run still open for replacement first closes it with a stop request, and stops without cleaning if that write fails.
+The takeover window closes when a stop, an evidence failure or cleanup is recorded, or when the heartbeat that sees admission complete records that supervision has started; that heartbeat is fenced like any other write, so of a holder and a racing replacement exactly one proceeds.
+A Pod displaced before then stops at its next write.
+A Pod signalled before then leaves the run open instead of requesting a stop, because the signal is the infrastructure taking the Pod rather than a verdict on the run; the exception is a run with provisioned BigQuery resources, which only the supervisor's handoff can clean, so that Pod still stops and cleans.
+The runner stops admitting once the supervisor Job has ended, and settles it as before if no replacement comes.
+A Job waiting to replace a Pod is not finished, and a replacement may stay unscheduled, so the runner also settles once no live Pod holds the claim: at once after supervision has started, when no replacement could claim the run, and before that once the later of the claim and the last heartbeat is older than the readiness allowance a first supervisor gets.
+That decision is itself a stop request written only if the Pod the runner saw still holds the claim, so a replacement that claims in between keeps the run, and none can claim it after the stop lands.
+The runner and recovery never claim, so their writes are not fenced, and the runner reads a supervisor as ready only when the Pod holding the claim is running.
+Every cell's ledger claim comes after supervision starts, so only the holder can take a cell.
+The Pod ceiling does not count a supervisor attempt the Job retains once it is terminal, since it holds no capacity and the backoff limit bounds how many there are.
+A preemption after supervision starts still ends the run, because the cells, recovery stages and polling state it holds live only in its process.
+Declined: resuming a session between cells, which would have to persist the per-cell meter, the outcomes and any cell in flight; and a plain `backoffLimit`, which retries a crash as readily as a preemption and starts the replacement while the old Pod terminates, where the system quota refuses it.
+The measured cause is unchanged and the supervisor's whole-node request still addresses it; this change makes a preemption survivable, not rarer.
 
 The BigQuery exercise waits 1200 seconds from the approved start for input to flow; admission keeps its 600-second startup window.
 Pilot `bq1312-alo-10-a4` started from no nodes and was admitted four minutes in, after which Autopilot provisioned a node for the JobManager, following a zonal quota refusal, and then one for the TaskManagers; its first input progress was logged 16 seconds before the 600-second budget expired, and the next supervisor poll found the budget spent, so the run stopped at its baseline stage with no query spent.

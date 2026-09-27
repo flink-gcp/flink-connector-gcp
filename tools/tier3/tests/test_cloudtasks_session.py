@@ -21,8 +21,14 @@ from pathlib import Path
 import pytest
 from flink_tier3 import cloudtasks as ct
 from flink_tier3 import lifecycle as cli
+from test_tier3_lifecycle import (
+    claim_as_supervisor,
+    obj,
+    prepared_supervisor,
+    rt,
+    supervisor_pod,
+)
 from test_tier3_lifecycle import env as env  # noqa: PLC0414 - re-export pytest fixture
-from test_tier3_lifecycle import obj, prepared_supervisor, rt, supervisor_pod
 
 ROOT = Path(__file__).resolve().parents[3]
 DIGEST = "sha256:" + "e" * 64
@@ -1214,8 +1220,7 @@ def test_runner_admits_session_only_after_a_ready_supervisor(env, monkeypatch):
         current = env[0].get("Job", rt.SYSTEM, "supervisor")
         if current and not env[0].items("Pod", rt.SYSTEM):
             calls_before_supervisor.extend(queues.calls)
-            supervisor_pod(env, current)
-            runner.env.records.heartbeat()
+            claim_as_supervisor(env, supervisor_pod(env, current))
         sleep(seconds)
 
     monkeypatch.setattr(runner.env, "sleep", publish)
@@ -1433,8 +1438,7 @@ def test_runner_refuses_a_session_whose_cell_is_already_running_before_any_queue
     def publish(seconds):
         current = env[0].get("Job", rt.SYSTEM, "supervisor")
         if current and not env[0].items("Pod", rt.SYSTEM):
-            supervisor_pod(env, current)
-            runner.env.records.heartbeat()
+            claim_as_supervisor(env, supervisor_pod(env, current))
         sleep(seconds)
 
     monkeypatch.setattr(runner.env, "sleep", publish)
@@ -1604,8 +1608,7 @@ def cli_session(env, monkeypatch, tmp_path, expires_in, complete_job=True):
         def publish(seconds):
             current = env[0].get("Job", rt.SYSTEM, "supervisor")
             if current and not env[0].items("Pod", rt.SYSTEM):
-                supervisor_pod(env, current)
-                made.records.heartbeat()
+                claim_as_supervisor(env, supervisor_pod(env, current))
             sleep(seconds)
 
         made.sleep = publish

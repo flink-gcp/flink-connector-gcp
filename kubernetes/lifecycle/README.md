@@ -79,6 +79,7 @@ The estimate is `estimated_cost` over the window for smoke and generic recovery,
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
 The run workflow can check out another rig commit through `rig_sha`, which must equal the approved `reviewed_sha` and head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
+The Job replaces a disrupted supervisor Pod, and the replacement carries the run if supervision had not started; the admission handshake below describes the claim that makes that safe.
 The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES` verbatim.
 Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
 The last 15 minutes are reserved for cleanup, leaving at most 45 minutes for startup and the 30-minute smoke job.
@@ -129,7 +130,7 @@ What a replacement costs the measurement is scenario-specific; for a Cloud Tasks
 | Budget | Ceiling or stop condition |
 | --- | --- |
 | Duration | Absolute expiry within 60 minutes; begin cleanup 15 minutes before it |
-| Pods | Five total: two in each namespace, and one slot a replacement occupies while the Pod it replaces terminates |
+| Pods | Five total: two in each namespace, and one slot a replacement occupies while the Pod it replaces terminates; a supervisor attempt the Job retains once terminal holds no capacity and is not counted |
 | PVCs | Zero throughout admission and cleanup |
 | State | Stop on observed usage above 1 GiB or 10,000 objects in the run prefix |
 | Logs | Stop at 100 MiB collected; stop if any 1 MiB read would truncate |
@@ -156,12 +157,18 @@ The ConfigMap creation intent retains a hash of its data alongside the submitted
 Lost-response adoption verifies that hash before recording the ConfigMap UID.
 Once a root UID is recorded, cleanup uses that identity without re-adopting the resource against its original submitted fields; server-side template changes therefore cannot block shutdown.
 The approval pins the source hash, application hash, run nonce, workflow execution, namespace/Operator/quota UIDs, baseline object UIDs and original quotas.
-The runner opens enough system quota for one supervisor, then creates its Job with no retry and an active deadline calculated from three minutes before expiry.
-The supervisor waits for its recorded Job UID, verifies its Pod belongs to that Job, and reports its heartbeat while waiting for the runner to complete admission.
-The runner requires that heartbeat and a running, UID-owned supervisor Pod before opening full quotas, scaling the Operator to one, waiting for Operator readiness and creating the fixed FlinkDeployment.
+The runner opens enough system quota for one supervisor, then creates its Job once, without retrying the create, with an active deadline calculated from three minutes before expiry.
+The supervisor waits for its recorded Job UID, verifies its Pod belongs to that Job, claims the run in the control record with its Pod UID, and reports its heartbeat while waiting for the runner to complete admission.
+The runner requires that heartbeat and a running, UID-owned supervisor Pod holding the claim before opening full quotas, scaling the Operator to one, waiting for Operator readiness and creating the fixed FlinkDeployment.
 It persists the application UID and changes the control phase to `running` only after admission completes.
 While the phase is `approved` or `ready`, the supervisor reports its heartbeat without auditing an application whose creation or UID publication may still be in flight.
 If supervision fails in that phase, it requests stop and exits; the runner settles after its last admission call returns.
+A signal is the exception: it means the infrastructure is taking the Pod, so a supervisor signalled before supervision starts records a `supervisor-replaceable` event, leaves the run open, even in `running`, and exits; a run with provisioned BigQuery resources, which only the supervisor can clean, is still stopped and cleaned.
+The Job replaces a Pod with the `DisruptionTarget` condition twice at most, only once that Pod is terminal, and fails on any other non-zero exit; the runner stops admitting once the Job has ended.
+The replacement claims the run, which is allowed until a stop, an evidence failure or cleanup is recorded, or until the heartbeat that sees admission complete records that supervision has started; later it is refused, exits, and the runner settles the ended Job.
+The runner does not wait on a replacement that is never scheduled: once no live Pod holds the claim it settles the run, at once after supervision has started and otherwise when the later of the claim and the last heartbeat is older than the ten-minute readiness allowance; it decides by requesting a stop only if the Pod it saw still holds the claim.
+Every control write a supervisor makes is refused once another Pod holds the claim, and that refusal ends the Pod without a stop request or any cleanup; its log ends with `Another supervisor Pod holds this run`, and a replacement refused the claim ends with `This run cannot be claimed by another supervisor Pod`.
+A supervisor that would clean up a run still open for replacement first requests a stop, and exits without cleaning if that write fails.
 A lost runner before that handoff requires completed-execution recovery, so admission-stage shutdown depends on that recovery path.
 Once `running` is published, admission makes no further Kubernetes writes and the supervisor can clean independently of the runner.
 Each quota/scale admission retry rechecks stop and phase as well as identity and lock ownership.
@@ -267,7 +274,7 @@ The measurement application is published for both lines from `339d0a90675dffee74
 | --- | --- |
 | Duration | Absolute expiry within 300 minutes; begin cleanup 15 minutes before it |
 | Cells | At most 20 per session, each with a unique ID that is not `running` or `completed` in the campaign ledger |
-| Pods | Five total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system`, and one slot a replacement occupies while the Pod it replaces terminates |
+| Pods | Five total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system`, and one slot a replacement occupies while the Pod it replaces terminates; a supervisor attempt the Job retains once terminal holds no capacity and is not counted |
 | Task creations | Planning bound over the session: each cell's per-creator attempt limit times its subtasks times the four incarnations one JobMaster's fixed-delay strategy allows, at most 12,000,000; the expected count is the cells' record totals, and an attempt limit must at least cover the busiest creator's records (all of them at parallelism 1, nine tenths under skew, an even share otherwise) |
 | Queue administration | At most six queue writes per actor (create, pause and delete are the only ones issued, none retried); zero dispatches, checked on every poll |
 | Reads | At most 60,000 metered Cloud Tasks, Flink REST and evidence-storage requests per actor, counted one per listing, receipt, part and rewrite; the chunk reads behind a part and the metadata read after a rewrite are not counted separately. A poll costs about ten, a session about 12,000 |

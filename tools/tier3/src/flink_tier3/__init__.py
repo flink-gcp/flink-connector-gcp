@@ -32,11 +32,13 @@ from .common import USABLE as USABLE
 from .common import ApiError as ApiError
 from .common import Failure as Failure
 from .common import IdlePending as IdlePending
+from .common import Superseded as Superseded
 from .common import command as command
 from .common import contains as contains
 from .common import digest as digest
 from .common import encoded as encoded
 from .common import ha_metadata as ha_metadata
+from .common import job_finished as job_finished
 from .common import json_bytes as json_bytes
 from .common import ownership as ownership
 from .common import quantity as quantity
