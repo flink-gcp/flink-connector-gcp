@@ -103,6 +103,14 @@ page = "docs/content/docs/connectors/table/cloudtasks.md"
 source = "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connector/bigquery/table/BigQueryConnectorOptions.java"
 page = "docs/content/docs/connectors/table/bigquery.md"
 
+# The catalog's keys share the connector's page, in its own section; the
+# heading is what keeps each class's rows from reading as stale against the
+# other's.
+[[config_options]]
+source = "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connector/bigquery/table/BigQueryCatalogOptions.java"
+page = "docs/content/docs/connectors/table/bigquery.md"
+heading = "Catalog"
+
 [[config_options]]
 source = "flink-connector-gcp-bigtable/src/main/java-flink2/io/github/flink/gcp/connector/bigtable/table/function/BigtableSqlFunctionOptions.java"
 page = "docs/content/docs/connectors/table/bigtable-functions.md"

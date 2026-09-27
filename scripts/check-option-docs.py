@@ -33,6 +33,13 @@ the whole selection rule, and it is what keeps this check off the metadata,
 type-mapping and policy tables the same pages carry — naming a table's first
 column `Option` is how you opt it in.
 
+Two `[[config_options]]` classes may document their keys on one page when one
+of them names a `heading`: that entry owns only the option tables in the
+section under that heading, and the entries without one own the rest of the
+page. A Table connector page documents its catalog's options this way (#1213),
+beside the connector's own — each class's rows would otherwise read as stale
+against the other's.
+
 The reference pages are hand-written rather than generated, decided on #89:
 their tables group knobs (one Pub/Sub row covers eight `retry*` setters) and
 carry defaults the sources do not hold (an unset knob's default belongs to the
@@ -200,11 +207,47 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def option_table_entries(page: Path) -> dict[str, int]:
+HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+
+
+def section_lines(page: Path, heading: str) -> range:
+    """The 1-based lines of the section under `heading`, the heading included.
+
+    A section runs to the next heading of the same or a higher level. A heading
+    the page does not carry is a config-authoring error: an entry scoped to a
+    section that is not there would own nothing and pass.
+    """
+    lines = read(page).splitlines()
+    fenced = False
+    start = level = None
+    for number, line in enumerate(lines, start=1):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        match = None if fenced else HEADING.match(line)
+        if not match:
+            continue
+        if start is not None and len(match.group(1)) <= level:
+            return range(start, number)
+        if start is None and match.group(2) == heading:
+            start, level = number, len(match.group(1))
+    if start is None:
+        infra(
+            f'{page.relative_to(ROOT)} has no heading "{heading}"; a '
+            f"[[config_options]] entry in {CONFIG.name} scopes to it."
+        )
+    return range(start, len(lines) + 1)
+
+
+def option_table_entries(
+    page: Path, within: range | None = None, outside: tuple[range, ...] = ()
+) -> dict[str, int]:
     """Options named in the first column of the page's `Option`-headed tables.
 
     Returns each name mapped to the 1-based line it was found on, so a failure
-    can point at the row rather than at the file.
+    can point at the row rather than at the file. `within` keeps only the rows
+    on those lines, and `outside` drops the rows on any of those — the sections
+    a heading-scoped entry owns.
     """
     entries: dict[str, int] = {}
     in_table = False
@@ -216,6 +259,11 @@ def option_table_entries(page: Path) -> dict[str, int]:
             in_table = False
             continue
         if fenced or not line.startswith("|"):
+            in_table = False
+            continue
+        if (within is not None and number not in within) or any(
+            number in section for section in outside
+        ):
             in_table = False
             continue
         cells = line.split("|")
@@ -434,6 +482,10 @@ def load_config() -> dict:
     for entry in config.get("config_options", []):
         if "source" not in entry or "page" not in entry:
             infra(f"a [[config_options]] entry in {CONFIG.name} lacks source or page.")
+        if "heading" in entry and not isinstance(entry["heading"], str):
+            infra(
+                f"the heading of a [[config_options]] entry in {CONFIG.name} is not a string."
+            )
         entry["source"] = os.path.normpath(entry["source"])
     return config
 
@@ -516,12 +568,25 @@ def main() -> int:
             )
         counts.append((entry["page"], len(real)))
 
+    # The sections heading-scoped entries own, per page; the unscoped entries of
+    # the same page read around them.
+    scoped: dict[str, list[range]] = {}
+    for entry in config.get("config_options", []):
+        if "heading" in entry:
+            entry["section"] = section_lines(ROOT / entry["page"], entry["heading"])
+            scoped.setdefault(entry["page"], []).append(entry["section"])
+
     for entry in config.get("config_options", []):
         source, page = ROOT / entry["source"], ROOT / entry["page"]
         keys = config_option_keys(parse_java(source, read(source)))
         if not keys:
             infra(f"{entry['source']} declares no ConfigOptions.key(...) entries.")
-        documented = option_table_entries(page)
+        if "heading" in entry:
+            documented = option_table_entries(page, within=entry["section"])
+        else:
+            documented = option_table_entries(
+                page, outside=tuple(scoped.get(entry["page"], ()))
+            )
         for key in sorted(keys - set(documented)):
             problems.append(
                 f"{entry['page']}: `{key}` is a ConfigOption but no `Option`-headed "

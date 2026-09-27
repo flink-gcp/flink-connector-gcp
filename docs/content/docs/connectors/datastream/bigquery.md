@@ -465,9 +465,10 @@ reading a [`query(...)`](#reading-a-query-or-a-view), or one that asked for `mat
 does make one — the query job, and the view lookup — and takes `emulatorRestEndpoint(...)` as well,
 the same split the sink has.
 
-The query path is not covered against the emulator. Where the result of a destination-less query
-lands is BigQuery's own mechanism rather than an API this connector drives, so the gated real-GCP
-case is its only coverage.
+A view materialized into a named `queryResultDataset` is covered against the emulator, by the
+Table catalog's integration test. Where the result of a destination-less query lands is BigQuery's
+own mechanism rather than an API this connector drives, so the gated real-GCP case is its only
+coverage.
 
 The emulator is a convenience, never evidence about the service. Measured against
 goccy/bigquery-emulator 0.8.1 (2026-08-09), its read path differs in four ways that matter:

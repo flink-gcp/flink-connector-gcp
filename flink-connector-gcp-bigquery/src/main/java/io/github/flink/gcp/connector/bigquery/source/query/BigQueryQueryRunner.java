@@ -21,7 +21,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
-import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
@@ -33,7 +32,6 @@ import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import org.slf4j.Logger;
@@ -459,10 +457,10 @@ public final class BigQueryQueryRunner implements QueryRunner {
     /**
      * The REST client, opened on first use.
      *
-     * <p>The emulator options are the sink's, not a second copy: the argument for requiring a
-     * project id there — {@code BigQueryOptions} refuses to build without one it can determine, and
-     * an emulator offers no environment to determine it from — holds identically here, and a second
-     * spelling of it is a second thing to keep true.
+     * <p>The client is built by {@code BigQueryTableAdmin.restClient}, not a second copy: the
+     * argument for requiring a project id there — {@code BigQueryOptions} refuses to build without
+     * one it can determine, and an emulator offers no environment to determine it from — holds
+     * identically here, and a second spelling of it is a second thing to keep true.
      *
      * <p>Guarded, though {@link #run} is called once per job and from one thread: a global failover
      * before the first checkpoint builds a second enumerator over this same object, and its
@@ -475,13 +473,8 @@ public final class BigQueryQueryRunner implements QueryRunner {
      */
     private synchronized BigQuery client(String project) throws IOException {
         if (client == null) {
-            if (emulatorEndpoint != null) {
-                client = BigQueryTableAdmin.emulatorOptions(emulatorEndpoint, project).getService();
-            } else if (serviceAccountKeyFile == null) {
-                client = BigQueryOptions.getDefaultInstance().getService();
-            } else {
-                client = BigQueryCredentials.bigQueryOptions(serviceAccountKeyFile).getService();
-            }
+            client =
+                    BigQueryTableAdmin.restClient(serviceAccountKeyFile, emulatorEndpoint, project);
         }
         return client;
     }

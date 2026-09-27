@@ -80,8 +80,9 @@ def write_config(
         for sources in rest:
             lines += ["sources = [", *(f'  "{s}",' for s in sources), "]"]
         lines += [""]
-    for source, page in config_options:
-        lines += ["[[config_options]]", f'source = "{source}"', f'page = "{page}"', ""]
+    for source, page, *heading in config_options:
+        lines += ["[[config_options]]", f'source = "{source}"', f'page = "{page}"']
+        lines += [f'heading = "{h}"' for h in heading] + [""]
     lines += ["[exempt]", *(f'"{key}" = "because."' for key in exempt), ""]
     lines += ["[extra]", *(f'"{key}" = "because."' for key in extra), ""]
     lines += [
@@ -470,6 +471,128 @@ def test_a_config_options_source_with_no_keys_is_infrastructure(
         root,
         builders=[("conn", builder_page)],
         config_options=[(source, table_page)],
+    )
+    assert exit_code(check_option_docs) == 2
+
+
+# --- two ConfigOption classes on one page: a heading-scoped section (#1213) ---
+#
+# A Table connector page documents its catalog's options in a `Catalog` section
+# beside the connector's own. Unscoped, each class's rows read as stale against
+# the other's; the heading is what divides the page between them.
+
+CATALOG_SOURCE = """package io.github.x;
+
+public final class CatalogOptions {
+  public static final ConfigOption<String> A =
+      ConfigOptions.key("default-database").stringType().noDefaultValue();
+}
+"""
+
+
+def shared_page_tree(
+    root, catalog_rows, connector_rows=("`topic.id`", "`sink.retries`")
+):
+    write_source(root, "conn", "AOptions.java", options_class("AOptions", "topic"))
+    builder_page = write_page(root, "conn.md", option_page("`topic`"))
+    connector = write_source(
+        root,
+        "conn",
+        "ConnectorOptions.java",
+        CONFIG_OPTIONS_SOURCE.format(first="topic.id", second="sink.retries"),
+    )
+    catalog = write_source(root, "conn", "CatalogOptions.java", CATALOG_SOURCE)
+    page = "\n".join(
+        [
+            option_page(*connector_rows, title="# Connector").rstrip("\n"),
+            "",
+            "## Catalog",
+            "",
+            "### Catalog options",
+            "",
+            "| Option | Default | Description |",
+            "|---|---|---|",
+            *(f"| {row} | none | Sets it. |" for row in catalog_rows),
+            "",
+            "## Sink",
+            "",
+            "| Option | Default | Description |",
+            "|---|---|---|",
+            "| `sink.retries` | none | Sets it. |",
+        ]
+    )
+    table_page = write_page(root, "table.md", page + "\n")
+    return builder_page, connector, catalog, table_page
+
+
+def test_a_heading_divides_one_page_between_two_config_option_classes(
+    root, check_option_docs
+):
+    builder_page, connector, catalog, table_page = shared_page_tree(
+        root, ["`default-database`"], connector_rows=("`topic.id`",)
+    )
+    write_config(
+        root,
+        builders=[("conn", builder_page)],
+        config_options=[(connector, table_page), (catalog, table_page, "Catalog")],
+    )
+    assert exit_code(check_option_docs) == 0
+
+
+def test_without_the_heading_the_two_classes_read_as_stale_against_each_other(
+    root, check_option_docs, capsys
+):
+    builder_page, connector, catalog, table_page = shared_page_tree(
+        root, ["`default-database`"], connector_rows=("`topic.id`",)
+    )
+    write_config(
+        root,
+        builders=[("conn", builder_page)],
+        config_options=[(connector, table_page), (catalog, table_page)],
+    )
+    assert exit_code(check_option_docs) == 1
+    err = capsys.readouterr().err
+    assert "`default-database`, which ConnectorOptions.java does not declare" in err
+    assert "`topic.id`, which CatalogOptions.java does not declare" in err
+
+
+def test_a_key_documented_outside_its_section_does_not_cover_it(
+    root, check_option_docs, capsys
+):
+    # The catalog's key sits in the connector's table: the section is empty, so
+    # the catalog's key is undocumented and the connector's row is stale.
+    builder_page, connector, catalog, table_page = shared_page_tree(
+        root, [], connector_rows=("`topic.id`", "`default-database`")
+    )
+    write_config(
+        root,
+        builders=[("conn", builder_page)],
+        config_options=[(connector, table_page), (catalog, table_page, "Catalog")],
+    )
+    assert exit_code(check_option_docs) == 1
+    err = capsys.readouterr().err
+    assert "`default-database` is a ConfigOption but no" in err
+    assert "which ConnectorOptions.java does not declare" in err
+
+
+def test_the_section_spans_its_subsections_and_ends_at_the_next_heading_of_its_level(
+    root, check_option_docs
+):
+    # `## Catalog` on line 8 holds `### Catalog options` and its table, and ends
+    # before `## Sink` on line 16, whose `sink.retries` row is the connector's.
+    _, _, _, table_page = shared_page_tree(root, ["`default-database`"])
+    page = root / table_page
+    assert list(check_option_docs.section_lines(page, "Catalog")) == list(range(8, 16))
+
+
+def test_a_heading_the_page_lacks_is_an_infrastructure_error(root, check_option_docs):
+    builder_page, connector, catalog, table_page = shared_page_tree(
+        root, ["`default-database`"], connector_rows=("`topic.id`",)
+    )
+    write_config(
+        root,
+        builders=[("conn", builder_page)],
+        config_options=[(connector, table_page), (catalog, table_page, "Catalogue")],
     )
     assert exit_code(check_option_docs) == 2
 

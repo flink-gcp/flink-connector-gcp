@@ -62,6 +62,7 @@ Using the shipped `GenericRecord` deserializer needs `flink-avro` on the job's c
 | Table-creation options (`sink.table-create.*`): time partitioning and clustering | Implemented ([#289](https://github.com/flink-gcp/flink-connector-gcp/issues/289)) |
 | Bounded `DynamicTableSource` over table, query, and view-materialization reads, with top-level projection and conservative filter pushdown | Implemented ([#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542), [#1137](https://github.com/flink-gcp/flink-connector-gcp/issues/1137)) |
 | CDC upsert/delete changelog ingestion with a declared primary key and `sink.write-method=storage-api-at-least-once` | Implemented ([#626](https://github.com/flink-gcp/flink-connector-gcp/issues/626)); Experimental ([#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706)) |
+| Read-only `bigquery` catalog: a project's datasets as databases, tables and views resolved from their BigQuery schemas and primary keys | Implemented ([#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213)) |
 | `flink-sql-connector-gcp-bigquery` shaded uber-jar | Implemented ([#290](https://github.com/flink-gcp/flink-connector-gcp/issues/290)) |
 
 ## Documentation

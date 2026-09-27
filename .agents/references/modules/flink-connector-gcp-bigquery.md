@@ -341,7 +341,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   use their resulting bytes. Null predicates are independent of length (ADR-0100).
   String inequality and ordered comparisons are not translated.
   BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
-  Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot detect those
+  Planning a hand-written table does not fetch the BigQuery schema, and a catalog table resolves
+  `JSON` and `GEOGRAPHY` as plain `STRING`, so a Flink `STRING` column cannot detect those
   unsupported physical types before the Storage Read session is created.
   Collated `STRING` equality may admit extra rows, which the Flink residual removes.
   `CHAR`, nested fields, complex types, casts,
@@ -413,6 +414,33 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the JDK-interface SPI filters that were found here; this module's pom carries its
   `<relocations>`, its surefire override, `japicmp.skip` and its dependencies. A change to the
   shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
+
+## Catalog (`docs/adr/0168`, `docs/adr/0169`)
+
+- The catalog is read-only and implements Flink's `Catalog` directly: `AbstractCatalog` and
+  `CatalogDatabaseImpl` are `@Internal`. A method only one supported Flink major declares
+  (`listMaterializedTables`) carries no `@Override`, so the one source root compiles on both.
+- `BigQueryCatalogFactory` and `BigQueryCatalog.open()` make no request and load no credentials; the
+  REST client is built on the first metadata call through `BigQueryTableAdmin.restClient`, the one
+  spelling of the emulator/key-file/ADC branches. The docs harness plans `CREATE CATALOG` offline
+  and depends on this.
+- `getTable` emits the connector identity options plus the catalog's carried options under the
+  connector's keys; tuning stays per statement. Never add a catalog-level default for a scan or sink
+  option: an `OPTIONS` hint is how a statement tunes a catalog table.
+- The type mapping is `BigQuerySchemaToFlinkConverter`, the inverse of the connector page's table;
+  the page's "Read back through the catalog as" column and `BigQueryCatalogITCase`'s round trip
+  move with it. A type the connector cannot carry fails `getTable` naming the column path; never
+  drop a column.
+- Primary-key columns are forced `NOT NULL` (Flink rejects a nullable key column, and the sink's own
+  CDC tables have `NULLABLE` keys). Views resolve as tables carrying `scan.materialize-views`;
+  `listViews` stays empty. Statistics stay `UNKNOWN` until ADR-0169's reopen condition holds.
+- Catalog option keys are `BigQueryCatalogOptions`, spelled as their `BigQueryConnectorOptions`
+  counterparts; their `Option` table is the page's `Catalog` section, scoped by `heading` in
+  `option-docs.toml`. The factory reuses `BigQueryDynamicTableFactory.checkCredentials` and
+  `validateEmulatorEndpoints` rather than restating them, and refuses either emulator endpoint
+  without the other.
+- The emulator's Storage Read serves a view directly, so a view test proves materialization only by
+  the query job's result table in a named `scan.query-result-dataset`, never by its rows.
 
 ## Source (`docs/adr/0079`, `0083`, `0084`)
 
