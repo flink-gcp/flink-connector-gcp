@@ -559,22 +559,15 @@ def recover(args, store):
         if approval["lock_owner"] != owner:
             raise rt.Failure("Immutable approval does not match lock holder")
         wf.save(args.directory / "approval.json", approval)
-        control, _ = store.read(f"_control/runs/{owner['run_id']}.json")
+        runner = runner_for(approval, kube, store)
+        control, _ = store.read(runner.env.records.path)
         if control is None:
             # No admission occurs before this record exists. A finalization
-            # crash can also leave only the environment lock.
+            # crash can also leave only the environment lock, with the final
+            # receipt still carrying the snapshot it deleted.
             bootstrap.Cluster(args.kubeconfig).preflight()
-            store.write(
-                f"_control/runs/{owner['run_id']}.json",
-                {
-                    "nonce": approval["nonce"],
-                    "phase": "cleaned",
-                    "idle": True,
-                    "state_clean": False,
-                    "success": False,
-                },
-            )
-        runner_for(approval, kube, store).settle(request_stop=True)
+            runner.restore_control()
+        runner.settle(request_stop=True)
     elif owner["kind"] == "run":
         wf.snapshot(kube)
     # Infrastructure recovery already passed the idle preflight. A previous

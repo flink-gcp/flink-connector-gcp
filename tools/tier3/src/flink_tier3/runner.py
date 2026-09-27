@@ -22,6 +22,9 @@ from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
 from .pubsub_lifecycle import require_pubsub_clean
 from .records import write_artifact
 
+# Scenarios whose finalization retry compares the whole receipt.
+SERVICE_TRIALS = ("bigquery-recovery", "pubsub-recovery")
+
 
 class Runner:
     def __init__(self, env, bigquery=None, *, pubsub=None):
@@ -469,20 +472,8 @@ class Runner:
         owned = self.cleanup.owned(items, ["supervisor", "config"])
         return not any(obj["metadata"]["uid"] in owned for obj in items)
 
-    def finalize(self, plans):
-        rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
-        control = self.env.refresh()
-        require_pubsub_clean(control)
-        require_bigquery_clean(control)
-        if (
-            plans.get("nonce") != self.env.approval.nonce
-            or plans.get("roots") != ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
-            or not plans.get("empty")
-        ):
-            raise rt.Failure("All three refreshed empty plans are required")
-        rt.verify_idle(self.env)
-        if self.cleanup.remaining_state():
-            raise rt.Failure("Run state reappeared")
+    def receipt(self, control, plans):
+        """The final receipt this run control record and plans produce."""
         cells = control.cells
         result = {
             "nonce": self.env.approval.nonce,
@@ -511,8 +502,8 @@ class Runner:
                         # A completed recovery alone is not the claim here.
                         # `recovery` is durable JSON that nothing types on the
                         # way in, so a malformed record must read as not-usable
-                        # rather than raise: this runs inside `finalize`, which
-                        # releases the environment lock only at its end.
+                        # rather than raise: `finalize` and `restore_control`
+                        # run this while the environment lock is retained.
                         and isinstance(control.recovery, dict)
                         and control.recovery.get("verdict") == rt.USABLE
                     )
@@ -545,8 +536,8 @@ class Runner:
                 operations=control.operations,
                 benchmark_evidence_retained=self.cleanup.retained_evidence(),
                 # The session-level export summary, which the control record
-                # carries and this receipt outlives: the control record is
-                # deleted a few lines below.
+                # carries and this receipt outlives: `finalize` deletes the
+                # control record once the receipt is written.
                 exported={
                     cell_id: {
                         key: summary.get(key)
@@ -566,6 +557,23 @@ class Runner:
             result["pubsub"] = control.pubsub
         if control.bigquery is not None:
             result["bigquery"] = control.bigquery
+        return result
+
+    def finalize(self, plans):
+        rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
+        control = self.env.refresh()
+        require_pubsub_clean(control)
+        require_bigquery_clean(control)
+        if (
+            plans.get("nonce") != self.env.approval.nonce
+            or plans.get("roots") != ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
+            or not plans.get("empty")
+        ):
+            raise rt.Failure("All three refreshed empty plans are required")
+        rt.verify_idle(self.env)
+        if self.cleanup.remaining_state():
+            raise rt.Failure("Run state reappeared")
+        result = self.receipt(control, plans)
         path = f"runs/{self.env.approval.run_id}/result.json"
         previous, _ = self.env.store.read(path)
         prior, expected = previous, result
@@ -598,8 +606,7 @@ class Runner:
             or not previous.get("idle")
             or (
                 (
-                    self.env.approval.scenario
-                    in ("bigquery-recovery", "pubsub-recovery")
+                    self.env.approval.scenario in SERVICE_TRIALS
                     or control.pubsub is not None
                     or previous.get("pubsub") is not None
                     or control.bigquery is not None
@@ -613,7 +620,7 @@ class Runner:
             result = previous
         current, generation = self.env.records.read()
         if (
-            self.env.approval.scenario in ("bigquery-recovery", "pubsub-recovery")
+            self.env.approval.scenario in SERVICE_TRIALS
             or control.pubsub is not None
             or current.pubsub is not None
             or control.bigquery is not None
@@ -623,3 +630,60 @@ class Runner:
         self.env.store.delete(self.env.records.path, generation)
         rt.EnvironmentLock(self.env.store).release(self.env.approval.lock_owner)
         return result["success"]
+
+    def restore_control(self):
+        """Write the run control record recovery found missing.
+
+        Finalization deletes the record after writing the final receipt and
+        before releasing the environment lock, so a crash between the two leaves
+        only the lock. For a service scenario the receipt carries what its own
+        derivation takes from the record, with an evidence failure folded into
+        its success flag, and a retry compares that derivation with the
+        receipt, so a record without the cleaned service portion can never
+        finalize. The snapshot is restored only when this
+        derivation reproduces the stored receipt exactly; anything else is not
+        this run's finalization and is refused without writing.
+
+        Without a receipt, or for a scenario whose retry compares only the
+        nonce and idle claim, a minimal cleaned record is written: no receipt
+        means finalization never started, so no service state was deleted.
+        """
+        approval = self.env.approval
+        record = rt.RunRecord(approval.nonce, phase=rt.Phase.CLEANED, idle=True)
+        stored = None
+        if approval.scenario in SERVICE_TRIALS:
+            stored, _ = self.env.store.read(f"runs/{approval.run_id}/result.json")
+        if stored is not None:
+            if not isinstance(stored, dict) or not isinstance(
+                stored.get("plans"), dict
+            ):
+                raise rt.Failure(
+                    "Final receipt is malformed; investigate before any repair"
+                )
+            record = rt.RunRecord(
+                approval.nonce,
+                phase=rt.Phase.CLEANED,
+                stop_requested=True,
+                success=stored.get("success") is True,
+                idle=True,
+                recovery=stored.get("recovery"),
+                bigquery=stored.get("bigquery"),
+                pubsub=stored.get("pubsub"),
+            )
+            try:
+                require_pubsub_clean(record)
+                require_bigquery_clean(record)
+            except rt.Failure as error:
+                raise rt.Failure(
+                    "Final receipt carries uncleaned service state; investigate "
+                    "before any repair"
+                ) from error
+            if rt.json_bytes(self.receipt(record, stored["plans"])) != rt.json_bytes(
+                stored
+            ):
+                raise rt.Failure(
+                    "Final receipt does not reproduce from a restored control "
+                    "snapshot; investigate before any repair"
+                )
+        # Create-only: a record that reappeared since recovery read it wins.
+        self.env.store.write(self.env.records.path, record.to_dict())

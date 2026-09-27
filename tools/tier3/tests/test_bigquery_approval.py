@@ -325,6 +325,37 @@ def test_resource_controller_cannot_substitute_plan(prepared, field, value):
     ],
 )
 def test_real_environment_and_handoff_complete_owned_cleanup(prepared, stored):
+    environment, runner, api, supervisor = service_cleaned(prepared, stored)
+    assert not api.tables
+    assert supervisor.refresh().phase == Phase.CLEANED
+    assert supervisor.refresh().bigquery["cleaned"]
+    verify_idle(supervisor)
+    runner.finalize(
+        {
+            "nonce": environment.approval.nonce,
+            "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
+            "empty": True,
+        }
+    )
+    receipt, _ = environment.store.read(
+        f"runs/{environment.approval.run_id}/result.json"
+    )
+    assert receipt["idle"]
+    # A completion flag alone is not the claim; the exercise's verdict is, and
+    # a record that is not a record reads as not usable rather than raising.
+    usable = isinstance(stored, dict) and stored.get("verdict") == rt.USABLE
+    assert receipt["success"] is usable
+    assert receipt["scenario"] == "bigquery-recovery"
+    assert receipt["bigquery_trial"] == environment.approval.bigquery_trial
+    assert receipt["recovery"] == stored
+
+    assert receipt["bigquery"]["cleaned"]
+    assert environment.store.read(environment.records.path)[0] is None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is None
+
+
+def service_cleaned(prepared, stored):
+    """A run whose BigQuery portion is cleaned, with `stored` as its verdict."""
     environment, application, *_ = prepared
     runner = Runner(environment)
     api = Resources(environment.approval.bigquery_plan)
@@ -361,38 +392,13 @@ def test_real_environment_and_handoff_complete_owned_cleanup(prepared, stored):
     Cleanup(supervisor, bigquery=observer, quiesce=lambda: True).run(
         "synthetic cleanup"
     )
-    assert not api.tables
-    assert supervisor.refresh().phase == Phase.CLEANED
-    assert supervisor.refresh().bigquery["cleaned"]
-    verify_idle(supervisor)
     # A completion flag from the generic executor must not authorize this trial.
     control, generation = environment.records.read()
     control.success = True
     control.evidence_failed = False
     environment.store.write(environment.records.path, control.to_dict(), generation)
     assert not environment.evidence_failed
-    runner.finalize(
-        {
-            "nonce": environment.approval.nonce,
-            "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-            "empty": True,
-        }
-    )
-    receipt, _ = environment.store.read(
-        f"runs/{environment.approval.run_id}/result.json"
-    )
-    assert receipt["idle"]
-    # A completion flag alone is not the claim; the exercise's verdict is, and
-    # a record that is not a record reads as not usable rather than raising.
-    usable = isinstance(stored, dict) and stored.get("verdict") == rt.USABLE
-    assert receipt["success"] is usable
-    assert receipt["scenario"] == "bigquery-recovery"
-    assert receipt["bigquery_trial"] == environment.approval.bigquery_trial
-    assert receipt["recovery"] == stored
-
-    assert receipt["bigquery"]["cleaned"]
-    assert environment.store.read(environment.records.path)[0] is None
-    assert environment.store.read(rt.ENVIRONMENT)[0] is None
+    return environment, runner, api, supervisor
 
 
 def test_an_actor_without_its_authenticated_handoff_refuses_before_mutation(
@@ -710,6 +716,22 @@ def test_final_receipt_retry_after_control_deleted_before_lock_release(
     environment, *_ = prepared
     runner = Runner(environment)
     runner.cleanup.run("stopped before creation")
+    plans = lose_lock_release(environment, runner, monkeypatch)
+    recovery = Runner(environment)
+    recovery.restore_control()
+    recovery.settle(request_stop=True)
+    plans = {**plans, "at": "2026-09-21T01:37:31Z"}
+    assert Runner(environment).finalize(plans) is False
+    assert environment.store.read(environment.records.path)[0] is None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is None
+    receipt, _ = environment.store.read(
+        f"runs/{environment.approval.run_id}/result.json"
+    )
+    assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
+
+
+def lose_lock_release(environment, runner, monkeypatch):
+    """Finalize with the lock release failing, after control was deleted."""
     plans = {
         "nonce": environment.approval.nonce,
         "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
@@ -718,34 +740,173 @@ def test_final_receipt_retry_after_control_deleted_before_lock_release(
     }
     original_delete = environment.store.delete
 
-    def lose_lock_release(name, *args, **kwargs):
+    def fail_lock(name, *args, **kwargs):
         if name == rt.ENVIRONMENT:
             raise Failure("lock release unavailable")
         return original_delete(name, *args, **kwargs)
 
-    monkeypatch.setattr(environment.store, "delete", lose_lock_release)
+    monkeypatch.setattr(environment.store, "delete", fail_lock)
     with pytest.raises(Failure, match="lock release unavailable"):
         runner.finalize(plans)
+    monkeypatch.setattr(environment.store, "delete", original_delete)
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-    environment.store.write(
-        environment.records.path,
-        {
-            "nonce": environment.approval.nonce,
-            "phase": "cleaned",
-            "idle": True,
-            "state_clean": False,
-            "success": False,
-        },
+    return plans
+
+
+@pytest.mark.parametrize("verdict", [rt.USABLE, INCONCLUSIVE])
+def test_recovery_restores_a_cleaned_bigquery_snapshot(prepared, monkeypatch, verdict):
+    stored = {"stage": "complete", "verdict": verdict}
+    environment, runner, *_ = service_cleaned(prepared, stored)
+    control = environment.refresh().to_dict()
+    plans = lose_lock_release(environment, runner, monkeypatch)
+    recovery = Runner(environment)
+    recovery.restore_control()
+    restored = environment.refresh()
+    assert restored.bigquery == control["bigquery"]
+    assert restored.recovery == stored
+    assert restored.success is (verdict == rt.USABLE)
+    recovery.settle(request_stop=True)
+    assert Runner(environment).finalize({**plans, "at": "2026-09-21T01:37:31Z"}) is (
+        verdict == rt.USABLE
     )
-    monkeypatch.setattr(environment.store, "delete", original_delete)
-    plans = {**plans, "at": "2026-09-21T01:37:31Z"}
-    assert Runner(environment).finalize(plans) is False
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
     receipt, _ = environment.store.read(
         f"runs/{environment.approval.run_id}/result.json"
     )
+    assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
+    assert receipt["bigquery"] == control["bigquery"]
+
+
+def test_recovery_without_a_receipt_writes_the_minimal_record(prepared):
+    environment, *_ = prepared
+    control, generation = environment.store.read(environment.records.path)
+    assert control["phase"] == "approved"
+    environment.store.delete(environment.records.path, generation)
+    Runner(environment).restore_control()
+    assert (
+        environment.store.read(environment.records.path)[0]
+        == (
+            rt.RunRecord(environment.approval.nonce, phase=rt.Phase.CLEANED, idle=True)
+        ).to_dict()
+    )
+
+
+@pytest.mark.parametrize("change", ["success", "cleaned", "released", "trial"])
+def test_recovery_refuses_a_bigquery_receipt_that_does_not_reproduce(
+    prepared, monkeypatch, change
+):
+    stored = {"stage": "complete", "verdict": INCONCLUSIVE}
+    environment, runner, *_ = service_cleaned(prepared, stored)
+    lose_lock_release(environment, runner, monkeypatch)
+    path = f"runs/{environment.approval.run_id}/result.json"
+    receipt, generation = environment.store.read(path)
+    if change == "success":
+        # Success needs the exercise's verdict, which this run did not reach.
+        receipt["success"] = True
+    elif change == "cleaned":
+        receipt["bigquery"]["cleaned"] = False
+    elif change == "released":
+        receipt["bigquery"]["handoff"]["released"] = False
+    elif change == "trial":
+        receipt["bigquery_trial"]["destinations"] = 50
+    environment.store.write(path, receipt, generation)
+    with pytest.raises(Failure, match="investigate before any repair"):
+        Runner(environment).restore_control()
+    assert environment.store.objects("_control/runs/") == []
+    assert environment.store.read(rt.ENVIRONMENT)[0] is not None
+
+
+@pytest.mark.parametrize("tampered", [False, True])
+def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
+    prepared, monkeypatch, tmp_path, tampered
+):
+    from types import SimpleNamespace
+
+    from flink_tier3 import lifecycle as cli
+
+    stored = {"stage": "complete", "verdict": rt.USABLE}
+    environment, runner, *_ = service_cleaned(prepared, stored)
+    approval = environment.approval.to_dict()
+    environment.store.write(
+        f"runs/{environment.approval.run_id}/approval.json", approval
+    )
+    plans = lose_lock_release(environment, runner, monkeypatch)
+    if tampered:
+        path = f"runs/{environment.approval.run_id}/result.json"
+        receipt, generation = environment.store.read(path)
+        receipt["bigquery_trial"]["destinations"] = 50
+        environment.store.write(path, receipt, generation)
+    owner = approval["lock_owner"]
+    monkeypatch.setenv("GITHUB_RUN_ID", "456")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(cli.wf, "external", lambda _path, **kwargs: environment.kube)
+    monkeypatch.setattr(
+        cli.wf,
+        "github_run",
+        lambda _id: {
+            "repository": {"full_name": rt.REPOSITORY},
+            "path": ".github/workflows/tier3-run.yaml",
+            "event": "workflow_dispatch",
+            "head_sha": owner["sha"],
+            "run_attempt": 1,
+            "head_branch": "main",
+            "status": "completed",
+        },
+    )
+    preflights = []
+    monkeypatch.setattr(
+        cli.bootstrap,
+        "Cluster",
+        lambda path: SimpleNamespace(preflight=lambda: preflights.append(path)),
+    )
+    real = rt.Environment
+    monkeypatch.setattr(
+        rt,
+        "Environment",
+        lambda kube, store, approval, **kwargs: real(
+            kube, store, approval, environment.clock, environment.sleep, **kwargs
+        ),
+    )
+    args = SimpleNamespace(
+        source_id=owner["github_run_id"],
+        directory=tmp_path,
+        kubeconfig=tmp_path / "kubeconfig",
+    )
+    if tampered:
+        # Refused on every attempt, without a record, until investigated.
+        for _ in range(2):
+            with pytest.raises(Failure, match="investigate before any repair"):
+                cli.recover(args, environment.store)
+        assert preflights == [args.kubeconfig] * 2
+        assert environment.store.objects("_control/runs/") == []
+        assert environment.store.read(rt.ENVIRONMENT)[0] == owner
+        with pytest.raises(rt.ApiError):
+            rt.EnvironmentLock(environment.store).acquire(
+                {**owner, "nonce": "f" * 32, "github_run_id": "789"}
+            )
+        return
+    cli.recover(args, environment.store)
+    assert preflights == [args.kubeconfig]
+    restored = environment.store.read(environment.records.path)[0]
+    assert restored["bigquery"]["cleaned"]
+    # Settlement ran over the restored record and rechecked state cleanup.
+    assert restored["state_clean"]
+    assert environment.store.read(rt.ENVIRONMENT)[0] == owner
+    (tmp_path / "plans.json").write_text(
+        json.dumps({**plans, "at": "2026-09-21T01:37:31Z"})
+    )
+    for root in cli.wf.ROOTS:
+        (tmp_path / (root + "-plan.log")).write_text("No changes.")
+    cli.finish(args, environment.store)
+    assert environment.store.read(environment.records.path)[0] is None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is None
+    receipt, _ = environment.store.read(
+        f"runs/{environment.approval.run_id}/result.json"
+    )
+    assert receipt["success"] is True
     assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
 
 
