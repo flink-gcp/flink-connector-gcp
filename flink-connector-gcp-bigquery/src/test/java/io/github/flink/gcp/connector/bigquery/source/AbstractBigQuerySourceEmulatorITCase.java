@@ -65,6 +65,11 @@ public abstract class AbstractBigQuerySourceEmulatorITCase {
         return BigQueryEmulatorContainers.grpcEndpoint(EMULATOR);
     }
 
+    /** The emulator's REST endpoint, for a caller that reaches BigQuery metadata itself. */
+    public static String restEndpoint() {
+        return BigQueryEmulatorContainers.restEndpoint(EMULATOR);
+    }
+
     /** Returns the destination of a table in the emulator's dataset. */
     public static TableDestination destination(String table) {
         return TableDestination.of(PROJECT, DATASET, table);

@@ -481,15 +481,45 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     private BigQuery client(TableDestination destination) throws IOException {
         if (client == null) {
-            if (emulatorEndpoint != null) {
-                client = emulatorOptions(emulatorEndpoint, destination.getProject()).getService();
-            } else if (serviceAccountKeyFile == null) {
-                client = BigQueryOptions.getDefaultInstance().getService();
-            } else {
-                client = BigQueryCredentials.bigQueryOptions(serviceAccountKeyFile).getService();
-            }
+            client = restClient(serviceAccountKeyFile, emulatorEndpoint, destination.getProject());
         }
         return client;
+    }
+
+    /**
+     * Builds a BigQuery REST client: the emulator's when an endpoint is given, otherwise one
+     * carrying the key file's credentials, otherwise one on application-default credentials.
+     *
+     * <p>Public because the source's query runner and the catalog open their REST clients the same
+     * way, and one spelling of the three branches is one thing to keep true. It reaches no
+     * published surface: this class is {@code @Internal}.
+     *
+     * <p>The project is the client's in every branch, not only the emulator's. Every request made
+     * through these clients names its project in full, so it changes no request; what it removes is
+     * the builder's own failure where the environment names no project — no {@code
+     * GOOGLE_CLOUD_PROJECT}, no gcloud configuration, and credentials that carry none, as an
+     * authorized user's or an external account's do — which told a caller that had configured a
+     * project to configure one.
+     *
+     * @param serviceAccountKeyFile the configured key-file path, or {@code null} for ADC
+     * @param emulatorEndpoint the emulator's REST endpoint, or {@code null} for the service
+     * @param project the project the client's requests name; see {@link #emulatorOptions}
+     * @return the client
+     * @throws IOException if the configured key file cannot be loaded
+     */
+    public static BigQuery restClient(
+            @Nullable String serviceAccountKeyFile,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            String project)
+            throws IOException {
+        if (emulatorEndpoint != null) {
+            return emulatorOptions(emulatorEndpoint, project).getService();
+        }
+        BigQueryOptions.Builder options = BigQueryOptions.newBuilder().setProjectId(project);
+        if (serviceAccountKeyFile != null) {
+            options.setCredentials(BigQueryCredentials.load(serviceAccountKeyFile));
+        }
+        return options.build().getService();
     }
 
     /**
@@ -505,15 +535,14 @@ public class BigQueryTableAdmin implements TableAdmin {
      * since every request made here names its table in full (see {@link #toTableId}); that is also
      * why one cached client stays correct across destinations in several projects.
      *
-     * <p>Public because the source's query runner builds its REST client the same way, and a second
-     * spelling of the paragraph above is a second thing to keep true. It reaches no published
-     * surface: this class is {@code @Internal}.
+     * <p>The emulator branch of {@link #restClient}; visible for its test.
      *
      * @param endpoint the emulator's REST endpoint
      * @param project the project id to satisfy the builder with
      * @return the options
      */
-    public static BigQueryOptions emulatorOptions(EmulatorEndpoint endpoint, String project) {
+    @VisibleForTesting
+    static BigQueryOptions emulatorOptions(EmulatorEndpoint endpoint, String project) {
         return BigQueryOptions.newBuilder()
                 .setHost("http://" + endpoint.getTarget())
                 .setProjectId(project)

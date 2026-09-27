@@ -490,7 +490,15 @@ public class BigQueryDynamicTableFactory
         }
     }
 
-    private static void checkCredentials(ReadableConfig config) {
+    /**
+     * Rejects a blank key file, and a key file beside either emulator endpoint.
+     *
+     * <p>Public because the catalog factory applies the same rule to the same keys, and one message
+     * is one thing to keep true.
+     *
+     * @param config the table or catalog options
+     */
+    public static void checkCredentials(ReadableConfig config) {
         Optional<String> keyFile =
                 config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         if (keyFile.isPresent() && keyFile.get().isBlank()) {
@@ -547,8 +555,12 @@ public class BigQueryDynamicTableFactory
      * this factory declares none, because one factory serves a sink, a direct table source and a
      * query source, which need different ones. Calling it here keeps the answer the same: a table
      * that has not said where it points hears that first.
+     *
+     * <p>Public because the catalog factory parses the same two keys under the same rule.
+     *
+     * @param config the table or catalog options
      */
-    private static void validateEmulatorEndpoints(ReadableConfig config) {
+    public static void validateEmulatorEndpoints(ReadableConfig config) {
         for (ConfigOption<String> option :
                 Arrays.asList(
                         BigQueryConnectorOptions.EMULATOR_ENDPOINT,

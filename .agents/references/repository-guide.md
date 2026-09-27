@@ -146,7 +146,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   offline — the rule that also put `check-skill-frontmatter` in `verify.yaml`
 - `just check-option-docs` — holds the hand-written option reference to public builder setters and
   Table API keys in both directions. A first-column `Option` header opts a table in; module mappings
-  catch new option classes, explicit `sources` reach exceptional builder names, `[exempt]` and
+  catch new option classes, a `heading` lets a second class own one section of a shared page (the
+  catalog options beside their connector's, #1213), explicit `sources` reach exceptional builder names, `[exempt]` and
   `[extra]` point in opposite directions, and an entry that never fires fails. It compares names,
   not defaults or meanings, so those still move with the source change. Its own `verify.yaml` job
   is recorded in ADR-0058; the checker design is ADR-0116, and every failure routes through
@@ -315,8 +316,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   copying that job
 - The target DataStream connector-page order is overview and setup, source, sink, delivery
   guarantees, error handling, metrics and tuning, then testing, scope and provenance. The target
-  Table connector-page order is overview and setup, schema and type mapping, source, sink, lookup,
-  CDC, options, then delivery guarantees, design decisions and testing
+  Table connector-page order is overview and setup, schema and type mapping, catalog, source, sink,
+  lookup, CDC, options, then delivery guarantees, design decisions and testing. The catalog section
+  follows the type mapping it inverts and carries its own heading-scoped `Option` table (ADR-0168)
 - Metadata stays with the direction that produces or consumes it: readable metadata with its
   source, writable metadata with its sink, and Change Streams metadata with CDC. Reordering never
   copies option or metric rows out of the tables and pages governed by their checkers

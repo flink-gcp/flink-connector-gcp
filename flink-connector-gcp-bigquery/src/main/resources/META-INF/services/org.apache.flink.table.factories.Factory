@@ -13,3 +13,4 @@
 # limitations under the License.
 
 io.github.flink.gcp.connector.bigquery.table.BigQueryDynamicTableFactory
+io.github.flink.gcp.connector.bigquery.table.catalog.BigQueryCatalogFactory

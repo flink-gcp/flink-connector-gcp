@@ -65,9 +65,10 @@ import java.util.Map;
  * The parts of {@link BigQuery} this module's REST callers read, with everything else unsupported —
  * so a new dependency on the client shows up as a failing test rather than as a silent null.
  *
- * <p>Seven methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
+ * <p>Nine methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
  * #create(TableInfo, TableOption...)}, {@link #delete(TableId)}, {@link #getTable(TableId,
- * TableOption...)}, {@link #getDataset(DatasetId, DatasetOption...)}, and {@link
+ * TableOption...)}, {@link #getDataset(DatasetId, DatasetOption...)}, {@link #listDatasets(String,
+ * DatasetListOption...)}, {@link #listTables(DatasetId, TableListOption...)}, and {@link
  * #query(QueryJobConfiguration, JobId, JobOption...)}), plus {@link #getOptions()}, which no caller
  * invokes itself — {@link Job}'s constructor does, so a stub throwing there fails on the first
  * submitted job. The other methods throw.
@@ -75,7 +76,7 @@ import java.util.Map;
  * <p>It lives here, beside {@link RealBigQuery}, rather than in one caller's package, because it
  * has two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
  * BigQueryTableAdmin}'s, which need a failing {@code create(TableInfo)} to pin how a REST failure
- * is typed. A third consumer earns its methods here the same way.
+ * is typed. The catalog's tests earned the two listing methods the same way.
  *
  * <p>{@code getJob} answers <em>positionally</em> — the first call takes the first scripted answer
  * — because the runner's calls are a sequence, not a lookup: a submit probes {@code base}, {@code
@@ -138,6 +139,21 @@ public final class StubBigQuery implements BigQuery {
 
     /** Thrown by {@code getDataset} when set. */
     @Nullable public BigQueryException getDatasetFailure;
+
+    /** Every project {@code listDatasets(String)} was called with, in order. */
+    public final List<String> listDatasetsCalls = new ArrayList<>();
+
+    /** What {@code listDatasets(String)} answers: the dataset ids of the project asked about. */
+    public final List<String> listedDatasets = new ArrayList<>();
+
+    /** Thrown by {@code listDatasets(String)} when set. */
+    @Nullable public BigQueryException listDatasetsFailure;
+
+    /**
+     * What {@code listTables(DatasetId)} answers, by dataset; an unscripted dataset fails with the
+     * 404 the service answers for a dataset that does not exist.
+     */
+    private final Map<DatasetId, List<String>> listedTables = new HashMap<>();
 
     /** Thrown by the query overload used by CDC provisioning when set. */
     @Nullable public BigQueryException queryFailure;
@@ -249,6 +265,7 @@ public final class StubBigQuery implements BigQuery {
         @Nullable private final Map<String, String> labels;
         @Nullable private final TableDefinition definition;
         @Nullable private final List<String> primaryKeyColumns;
+        @Nullable private String description;
 
         private TableAnswer(
                 boolean present,
@@ -306,6 +323,19 @@ public final class StubBigQuery implements BigQuery {
                     primaryKeyColumns == null ? null : new ArrayList<>(primaryKeyColumns));
         }
 
+        /**
+         * Answers with a live table carrying a definition, a description and, optionally, a primary
+         * key — the shape the catalog resolves.
+         */
+        public static TableAnswer described(
+                TableDefinition definition,
+                @Nullable String description,
+                @Nullable List<String> primaryKeyColumns) {
+            TableAnswer answer = existing(definition, null, null, primaryKeyColumns);
+            answer.description = description;
+            return answer;
+        }
+
         /** Fails the lookup, as the client does once its own retries are exhausted. */
         public static TableAnswer failing(BigQueryException failure) {
             return new TableAnswer(false, failure, null, null);
@@ -325,6 +355,11 @@ public final class StubBigQuery implements BigQuery {
      */
     public void tablesAnswering(TableAnswer... answers) {
         getTableAnswers.addAll(List.of(answers));
+    }
+
+    /** Scripts {@code listTables(DatasetId)} to answer the given table ids for the dataset. */
+    public void tablesListed(DatasetId datasetId, String... tables) {
+        listedTables.put(datasetId, List.of(tables));
     }
 
     /** Scripts {@code getDataset} to answer a dataset in the given location. */
@@ -488,7 +523,15 @@ public final class StubBigQuery implements BigQuery {
 
     @Override
     public Page<Dataset> listDatasets(String projectId, DatasetListOption... options) {
-        throw unsupported("listDatasets(String)");
+        listDatasetsCalls.add(projectId);
+        if (listDatasetsFailure != null) {
+            throw listDatasetsFailure;
+        }
+        List<Dataset> datasets = new ArrayList<>();
+        for (String dataset : listedDatasets) {
+            datasets.add(TestJobs.dataset(this, DatasetId.of(projectId, dataset), "US"));
+        }
+        return new SinglePage<>(datasets);
     }
 
     @Override
@@ -577,13 +620,17 @@ public final class StubBigQuery implements BigQuery {
             return null;
         }
         if (answer.definition != null) {
-            return TestJobs.table(
-                    this,
-                    tableId,
-                    answer.definition,
-                    answer.etag,
-                    answer.labels,
-                    answer.primaryKeyColumns);
+            Table table =
+                    TestJobs.table(
+                            this,
+                            tableId,
+                            answer.definition,
+                            answer.etag,
+                            answer.labels,
+                            answer.primaryKeyColumns);
+            return answer.description == null
+                    ? table
+                    : table.toBuilder().setDescription(answer.description).build();
         }
         return answer.etag == null
                 ? TestJobs.table(this, tableId)
@@ -627,7 +674,55 @@ public final class StubBigQuery implements BigQuery {
 
     @Override
     public Page<Table> listTables(DatasetId datasetId, TableListOption... options) {
-        throw unsupported("listTables(DatasetId)");
+        List<String> names = listedTables.get(datasetId);
+        if (names == null) {
+            throw new BigQueryException(404, "Not found: Dataset " + datasetId.getDataset());
+        }
+        List<Table> tables = new ArrayList<>();
+        for (String name : names) {
+            tables.add(
+                    TestJobs.table(
+                            this,
+                            TableId.of(datasetId.getProject(), datasetId.getDataset(), name)));
+        }
+        return new SinglePage<>(tables);
+    }
+
+    /** A listing answered in one page, as a short listing is. */
+    private static final class SinglePage<T> implements Page<T> {
+
+        private final List<T> values;
+
+        SinglePage(List<T> values) {
+            this.values = values;
+        }
+
+        @Override
+        public boolean hasNextPage() {
+            return false;
+        }
+
+        @Override
+        @Nullable
+        public String getNextPageToken() {
+            return null;
+        }
+
+        @Override
+        @Nullable
+        public Page<T> getNextPage() {
+            return null;
+        }
+
+        @Override
+        public Iterable<T> iterateAll() {
+            return values;
+        }
+
+        @Override
+        public Iterable<T> getValues() {
+            return values;
+        }
     }
 
     @Override

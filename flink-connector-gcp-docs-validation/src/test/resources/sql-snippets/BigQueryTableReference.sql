@@ -31,6 +31,16 @@ SELECT id, amount, event_ts, ROW(source, version) FROM staged_events;
 SELECT id, amount FROM events WHERE amount > 0;
 -- end::overview[]
 
+-- tag::catalog[]
+CREATE CATALOG bq WITH (
+  'type' = 'bigquery',
+  'project' = 'my-project',
+  'default-database' = 'analytics'
+);
+
+USE CATALOG bq;
+-- end::catalog[]
+
 -- tag::query-source[]
 CREATE TABLE recent_events (
   id STRING,

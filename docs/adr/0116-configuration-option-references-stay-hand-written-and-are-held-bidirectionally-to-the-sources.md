@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0116: Configuration option references stay hand-written and are held bidirectionally to the sources
 
 - Status: Accepted
-- Date: 2026-08-01; revised by [#328] (2026-08-08)
+- Date: 2026-08-01; revised by [#328] (2026-08-08); heading-scoped sections added by [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213) (2026-09-27)
 - Issues: [#89], [#328]
 - Modules: all connectors (documentation tooling)
 - Current behavior: [`check-option-docs.py`](../../scripts/check-option-docs.py),
@@ -52,6 +52,10 @@ The check runs in both directions:
 Mappings are module-wide rather than a list of option classes.
 A new `*Options`, `*SinkBuilder`, or `*SourceBuilder` class therefore joins the check as soon as it exists, and a module declaring options without a mapping fails instead of remaining invisible.
 An `@Internal` top-level type is the only source-level exemption from the public-builder reach rule.
+
+Two `ConfigOption` classes may document one page when one of them names a `heading`.
+That class owns only the option tables in the section under the heading, and the page's unscoped class reads around it; a heading the page lacks is a configuration error.
+A Table connector page documents its catalog's options this way (ADR-0168).
 
 The two allowlists point in opposite directions.
 `[exempt]` forgives a source-side setter with no documentation row, while `[extra]` forgives a page-side row with no declaration in the mapped sources.

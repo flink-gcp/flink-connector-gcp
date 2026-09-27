@@ -24,6 +24,7 @@ limitations under the License.
 
 The `bigquery` connector provides a bounded [source](#source) for BigQuery tables and query results, and a [sink](#sink) for all three write methods through the module `flink-connector-gcp-bigquery`.
 The sink also supports experimental [CDC ingestion](#change-data-capture): upserts and deletes with a declared primary key, using only the at-least-once default-stream write method.
+A read-only [catalog](#catalog) resolves tables from the schemas BigQuery holds, so a statement can use them without a `CREATE TABLE`.
 It maps onto the DataStream source and sink documented in
 [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) — that page carries the design,
 the delivery guarantees and the error handling; this one carries the DDL surface. Per-feature
@@ -162,28 +163,30 @@ A sink derives the BigQuery column type from the SQL declaration and uses that s
 creates a missing table.
 A source reads the Storage Read API's Avro field by physical name and converts it to the declared
 SQL type.
-The DDL must therefore agree with the source table or query result because planning does not fetch
-the live schema.
+A hand-written DDL must therefore agree with the source table or query result because planning
+does not fetch the live schema.
+A [catalog](#catalog) table is derived from that schema instead; the last column gives the Flink
+type each BigQuery column resolves to.
 
-| Flink declaration | BigQuery source column | BigQuery sink column |
-|---|---|---|
-| `CHAR`, `VARCHAR`, `STRING` | `STRING`, `JSON` or `GEOGRAPHY` | `STRING`, or `JSON` / `GEOGRAPHY` when marked |
-| `BOOLEAN` | `BOOL` | `BOOL` |
-| `BINARY`, `VARBINARY`, `BYTES` | `BYTES` | `BYTES` |
-| `TINYINT`, `SMALLINT`, `INT`, `BIGINT` | `INT64` | `INT64` |
-| `FLOAT`, `DOUBLE` | `FLOAT64` | `FLOAT64` |
-| `DECIMAL(p, s)` | A fitting `NUMERIC` or `BIGNUMERIC` value | `NUMERIC` when `s <= 9` and `p - s <= 29`; otherwise `BIGNUMERIC` |
-| `DATE` | `DATE` | `DATE` |
-| `TIME(p)` | `TIME`; Flink 1.20 and 2.2 resolve SQL `p` to `0`, while 2.3 retains it through `3` | `TIME`; the same Flink-version boundary applies |
-| `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected | `DATETIME`; `p > 6` is rejected |
-| `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected | `TIMESTAMP`; `p > 6` is rejected |
-| `ROW` | `STRUCT`, recursively | `STRUCT`, recursively, or `JSON` when marked |
-| `` ROW<`start` DATE, `end` DATE> `` | `RANGE<DATE>`; source only | `STRUCT<start DATE, end DATE>` |
-| `` ROW<`start` TIMESTAMP(p), `end` TIMESTAMP(p)> `` | `RANGE<DATETIME>`; source only | `STRUCT<start DATETIME, end DATETIME>` |
-| `` ROW<`start` TIMESTAMP_LTZ(p), `end` TIMESTAMP_LTZ(p)> `` | `RANGE<TIMESTAMP>`; source only | `STRUCT<start TIMESTAMP, end TIMESTAMP>` |
-| `ARRAY<T>` | `REPEATED T`; declarations may use nullable elements although BigQuery values contain none | `REPEATED T`; nested arrays and nullable element declarations are rejected |
-| `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` | `REPEATED STRUCT<key, value>` |
-| `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected | rejected |
+| Flink declaration | BigQuery source column | BigQuery sink column | Read back through the catalog as |
+|---|---|---|---|
+| `CHAR`, `VARCHAR`, `STRING` | `STRING`, `JSON` or `GEOGRAPHY` | `STRING`, or `JSON` / `GEOGRAPHY` when marked | `STRING` |
+| `BOOLEAN` | `BOOL` | `BOOL` | `BOOLEAN` |
+| `BINARY`, `VARBINARY`, `BYTES` | `BYTES` | `BYTES` | `BYTES` |
+| `TINYINT`, `SMALLINT`, `INT`, `BIGINT` | `INT64` | `INT64` | `BIGINT` |
+| `FLOAT`, `DOUBLE` | `FLOAT64` | `FLOAT64` | `DOUBLE` |
+| `DECIMAL(p, s)` | A fitting `NUMERIC` or `BIGNUMERIC` value | `NUMERIC` when `s <= 9` and `p - s <= 29`; otherwise `BIGNUMERIC` | `DECIMAL(p, s)`; a `NUMERIC` without parameters as `DECIMAL(38, 9)`; a `BIGNUMERIC` without parameters or wider than 38 digits fails the lookup |
+| `DATE` | `DATE` | `DATE` | `DATE` |
+| `TIME(p)` | `TIME`; Flink 1.20 and 2.2 resolve SQL `p` to `0`, while 2.3 retains it through `3` | `TIME`; the same Flink-version boundary applies | `TIME(3)` |
+| `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected | `DATETIME`; `p > 6` is rejected | `TIMESTAMP(6)` |
+| `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected | `TIMESTAMP`; `p > 6` is rejected | `TIMESTAMP_LTZ(6)` |
+| `ROW` | `STRUCT`, recursively | `STRUCT`, recursively, or `JSON` when marked | `ROW`, recursively; a marked one as `STRING` |
+| `` ROW<`start` DATE, `end` DATE> `` | `RANGE<DATE>`; source only | `STRUCT<start DATE, end DATE>` | The same `ROW` |
+| `` ROW<`start` TIMESTAMP(p), `end` TIMESTAMP(p)> `` | `RANGE<DATETIME>`; source only | `STRUCT<start DATETIME, end DATETIME>` | The same `ROW`, at `p = 6` |
+| `` ROW<`start` TIMESTAMP_LTZ(p), `end` TIMESTAMP_LTZ(p)> `` | `RANGE<TIMESTAMP>`; source only | `STRUCT<start TIMESTAMP, end TIMESTAMP>` | The same `ROW`, at `p = 6` |
+| `ARRAY<T>` | `REPEATED T`; declarations may use nullable elements although BigQuery values contain none | `REPEATED T`; nested arrays and nullable element declarations are rejected | `ARRAY<T NOT NULL>` |
+| `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` | `REPEATED STRUCT<key, value>` | `ARRAY<ROW<key, value> NOT NULL>` |
+| `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected | rejected | A BigQuery `INTERVAL` column fails the lookup |
 
 Unsupported Flink logical types are rejected on the client when the job graph is built.
 A DDL that disguises BigQuery `INTERVAL` as a `ROW` is rejected from the live writer schema before
@@ -268,6 +271,68 @@ The selected write method decides when that union is applied.
 For `file-loads`, `write-append` and `write-truncate-data` jobs also carry BigQuery's native schema-update options, `write-empty` relies on the connector's pre-load reconciliation, `write-truncate-data` preserves the live schema and constraints, and `write-truncate` replaces the table schema instead of reconciling it.
 
 See [Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) on the DataStream page for the nullability result table, failure behavior, propagation waits and serializer compatibility rules.
+
+## Catalog
+
+A `bigquery` catalog resolves tables from the schemas BigQuery already holds, so a statement reads or writes a table without a `CREATE TABLE`.
+One catalog covers one project: its datasets are the catalog's databases, and the tables and views in them are the catalog's tables.
+The catalog is read-only, like the JDBC connector's.
+
+{{< sql-snippet file="flink/BigQueryTableReference.sql" tag="catalog" >}}
+
+After `USE CATALOG bq`, `events` names `my-project.analytics.events`, and `staging.events` names the table of that name in the `staging` dataset.
+`SHOW DATABASES`, `SHOW TABLES` and `DESCRIBE` list and describe what BigQuery holds.
+
+### What a catalog table carries
+
+A table the catalog resolves behaves as the equivalent hand-written `CREATE TABLE` would, for `SELECT` and `INSERT INTO` alike.
+
+- **Options**: `connector`, `project`, `dataset` and `table`, plus the catalog's `service-account-key-file`, emulator endpoints and `scan.parent-project` when those are set.
+  Every other option is per statement, through an `OPTIONS` hint, which also overrides a carried value: `SELECT * FROM events /*+ OPTIONS('scan.row-restriction' = 'amount > 0') */`.
+- **Schema**: each column resolves as the last column of the [type mapping](#type-mapping) gives, `REQUIRED` as `NOT NULL`, and BigQuery descriptions become the table and column comments.
+  A sink-created table therefore reads back with the lossy cases that column names: an `INT` declaration as `BIGINT`, a `VARCHAR(n)` as `STRING`, and a `NOT NULL` as nullable unless `sink.derive-required-columns` made the column `REQUIRED`.
+- **Primary key**: a BigQuery primary key becomes a `PRIMARY KEY ... NOT ENFORCED` whose columns are `NOT NULL`, as a primary key in Flink DDL makes them.
+  A key column that holds a `NULL` all the same breaks that declaration, as it would for a hand-written table: BigQuery does not enforce the key.
+  An upsert `INSERT INTO` then takes the [CDC](#change-data-capture) path once the statement adds `/*+ OPTIONS('sink.cdc.enabled' = 'true') */`.
+
+A column the connector cannot carry fails the lookup, naming the table, the column path and the BigQuery type; the table never resolves with the column missing.
+Those are `INTERVAL`, a `BIGNUMERIC` without parameters or wider than 38 digits, a `TIMESTAMP` finer than microseconds, and a type the client does not know, such as `FOREIGN`.
+For those, a hand-written query source that casts the column, as [`INTERVAL` remains unsupported](#interval-remains-unsupported) describes, is the way to read the table.
+
+`TIME` resolves as `TIME(3)`, the finest precision the source converts.
+On Flink 1.20 and 2.2, `DESCRIBE` shows `TIME(3)` while queries treat the column as `TIME(0)`; the connector still receives milliseconds, as the [`TIME` note](#sql-time-precision-depends-on-the-flink-version) describes.
+
+### Views
+
+A logical or materialized view is listed by `SHOW TABLES` and resolves as a table, never as a Flink view: its definition is GoogleSQL, which Flink cannot expand.
+`SHOW VIEWS` therefore lists nothing.
+The view resolves with `scan.materialize-views` set, so a read runs a billed BigQuery query job and reads its result.
+`scan.reuse-query-result-within` in a hint can adopt an earlier job's result instead; its conditions, and the stale result a redeploy under the same job name can read, are under [reusing the query job across a failover]({{< relref "docs/connectors/datastream/bigquery" >}}#reusing-the-query-job-across-a-failover).
+Naming the view in a statement is the opt-in that the option otherwise asks for.
+`INSERT INTO` a view plans like any table and then fails when BigQuery refuses the write.
+
+### What the catalog leaves out
+
+`CREATE`, `DROP` and `ALTER` of tables and databases through the catalog are refused; the sink's [table creation](#table-creation) and BigQuery itself create tables.
+Time and range partitioning and clustering do not become Flink partition keys, for the reason `PARTITIONED BY` is [rejected](#design-decisions).
+Table statistics are unknown to the planner: BigQuery's row count omits rows still in the streaming buffer, and the planner would ask for it again on every lookup.
+
+`CREATE CATALOG` and `USE CATALOG` make no request and need no credentials.
+A statement that names a catalog table asks BigQuery whether its dataset exists and fetches the table's metadata, and the planner may look one table up more than once.
+
+### Catalog options
+
+| Option | Required | Type | Meaning |
+|---|---|---|---|
+| `project` | yes | String | The project whose datasets are listed and whose tables resolve; carried as each table's `project` |
+| `default-database` | yes | String | The dataset a table name without a database resolves against |
+| `service-account-key-file` | no | String | A service-account JSON key-file path, read where the statement is planned and carried to every table; absent uses ADC. Rejected with either emulator endpoint |
+| `emulator-endpoint` | no | String | The emulator's gRPC endpoint as `host:port`, unused by the catalog itself and carried to every table for its rows |
+| `emulator-rest-endpoint` | no | String | The emulator's REST endpoint as `host:port`, used for the catalog's metadata requests and carried to every table. The two endpoints are set together or not at all: either alone would send one half of the catalog to BigQuery itself |
+| `scan.parent-project` | no | String | Carried to every table as the Storage Read billing project; see [Source options](#source-options) |
+
+A tuning option in `CREATE CATALOG` is rejected as unknown: a catalog-level default would apply to statements that never mention it.
+The keys are those of the table options they are carried as, and `project`, `default-database` and `scan.parent-project` are checked as resource-path components.
 
 ## Source
 
@@ -918,6 +983,14 @@ The sink exposes only the sequence metadata documented under
 DataStream API; a SQL `INSERT INTO` names one table, and a table-name pattern is deferred until a
 concrete need appears.
 
+**The catalog derives tables and never creates them.** It follows the JDBC connector's read-only
+catalog, so a table's schema stays owned by BigQuery or by the sink that created it, and each table
+it resolves is configured exactly as a hand-written one would be.
+[ADR-0168]({{< param BookRepo >}}/blob/main/docs/adr/0168-connector-catalogs-are-read-only-views-of-the-service-schema.md)
+records the shape every connector's catalog shares, and
+[ADR-0169]({{< param BookRepo >}}/blob/main/docs/adr/0169-the-bigquery-catalog-maps-a-projects-datasets-and-rest-schemas-to-flink-tables.md)
+the BigQuery mapping, the view answer and the declined statistics.
+
 **Enum options carry their DDL spelling in `toString()`**, so `sink.write-method` takes
 `storage-api-at-least-once` rather than the Java constant. Flink resolves an enum-valued option by
 matching `toString()` case-insensitively and normalizing nothing else.
@@ -932,6 +1005,12 @@ the production factory rather than a test seam. That Table source round trip cov
 `STRING`; the underlying DataStream source has gated real-GCP coverage, but it returns
 `GenericRecord` and therefore does not independently prove the Table source's conversion of
 emulator-unsupported types.
+
+The catalog's unit tests drive it against a stubbed REST client, including a primary key over
+nullable columns and every refused type. `BigQueryCatalogITCase` then runs it through the planner
+against the emulator: `CREATE CATALOG`, listing, `DESCRIBE`, a read compared with a hand-written
+table's, a write, a primary key, a view read through materialization, and a table the sink created
+read back as the last column of the type mapping says.
 
 `sink.table-create.*` needs both levels, and for a reason the emulator states by omission: it
 stores a create request's partitioning and clustering verbatim and **validates nothing**, so

@@ -27,6 +27,7 @@ rejection names the key the caller typed rather than the setter it reaches (ADR-
 | `[[builders]]` | module → page | Which reference page must document this module's builder setters |
 | its `sources` | source file → that page | A public builder the globs cannot see, named one per line |
 | `[[config_options]]` | source file → page | Which page must document this `ConfigOption` class's keys |
+| its `heading` | source file → one section | The section of a shared page this class owns: a catalog's keys beside its connector's. The page's unscoped class reads around it |
 | `[exempt]` | **source side** | A setter that exists and deliberately has *no* row. Keyed `Class.setter` |
 | `[extra]` | **page side** | A row that exists and has *no* setter or key behind it. Keyed by the name as the table writes it |
 | `[value_builders]` | **neither side** | A public builder that builds a *value*, so no row could exist for it. Keyed by repo-relative path |

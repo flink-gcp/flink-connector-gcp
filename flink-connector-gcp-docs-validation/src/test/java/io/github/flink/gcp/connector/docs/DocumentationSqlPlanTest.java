@@ -459,6 +459,11 @@ public class DocumentationSqlPlanTest {
                                         + "CAST('2026-01-01 00:00:00.000000' AS TIMESTAMP_LTZ(6)) "
                                         + "AS event_ts, 'source' AS source, 1 AS version"),
                         snippet("flink/BigQueryTableReference.sql", "overview")),
+                // Stops at the catalog boundary: a table lookup through the catalog asks BigQuery,
+                // which this test does not reach, while creating and selecting it asks nothing.
+                scenario(
+                        "BigQuery table reference catalog",
+                        snippet("flink/BigQueryTableReference.sql", "catalog")),
                 scenario(
                         "BigQuery table reference query source",
                         withFollowup(
