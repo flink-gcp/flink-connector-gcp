@@ -194,9 +194,19 @@ delivery: resources: {
 		kind:       "Job"
 		metadata: sharedMetadata & {name: "lifecycle-\(runID)"}
 		spec: {
-			parallelism:           1
-			completions:           1
-			backoffLimit:          0
+			parallelism: 1
+			completions: 1
+			// The infrastructure can take the supervisor Pod away; kube-dns has
+			// preempted it within its first half minute. A disrupted Pod is
+			// replaced, twice at most and only once it is terminal; any other
+			// failure ends the Job. The control record's claim fences the Pod
+			// a replacement displaces.
+			backoffLimit: 2
+			podFailurePolicy: rules: [
+				{action: "Count", onPodConditions: [{type: "DisruptionTarget", status: "True"}]},
+				{action: "FailJob", onExitCodes: {containerName: "supervisor", operator: "NotIn", values: [0]}},
+			]
+			podReplacementPolicy:  "Failed"
 			activeDeadlineSeconds: activeSeconds
 			template: {
 				metadata: sharedMetadata & {

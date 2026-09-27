@@ -39,6 +39,34 @@ class TransportError(Failure):
     """A Kubernetes transport failure, distinct from an invariant violation."""
 
 
+class Superseded(RuntimeError):
+    """Another supervisor Pod holds this run, so this one must not act on it.
+
+    Deliberately not a `Failure`. Cleanup records a failed control write and
+    carries on deleting, which is right for a write that lost to storage and
+    wrong for one that lost to the holder: the workload and the queue it would
+    delete are the holder's. Nothing that handles a `Failure` handles this.
+    """
+
+
+def job_finished(job):
+    """Whether a Kubernetes Job is over, rather than between Pod attempts.
+
+    A disrupted attempt with replacements left is counted in
+    ``status.failed`` while the controller starts another Pod, so that
+    counter is not an end. Only a success or a ``Complete``/``Failed``
+    condition is.
+    """
+    status = job.get("status", {})
+    return bool(
+        status.get("succeeded", 0)
+        or any(
+            c.get("status") == "True" and c.get("type") in ("Complete", "Failed")
+            for c in status.get("conditions", [])
+        )
+    )
+
+
 # A measurement that can carry its claim, and one that cannot. Shared because
 # the analyzer reads them offline and a scenario decides them in the Pod, and
 # the analyzer itself is not part of what the supervisor mounts.

@@ -21,8 +21,8 @@ import time
 import uuid
 
 from .bigquery_handoff import require_bigquery_clean
-from .common import ApiError, Failure, json_bytes, utc
-from .model import Phase, RunRecord
+from .common import ApiError, Failure, Superseded, json_bytes, utc
+from .model import Phase, RunRecord, open_for_replacement
 from .policy import BIGQUERY_CEILINGS, CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
 from .pubsub_lifecycle import require_pubsub_clean
 
@@ -88,6 +88,9 @@ class Records:
         self.store, self.approval, self.clock = store, approval, clock
         self.path = "_control/runs/" + approval.run_id + ".json"
         self.cache = RunRecord(approval.nonce)
+        # The Pod UID this process claimed the run as. The runner and recovery
+        # never claim, so their writes are not fenced.
+        self.claimed_as = None
 
     def read(self):
         value, generation = self.store.read(self.path)
@@ -96,12 +99,64 @@ class Records:
         self.cache = RunRecord.from_dict(value)
         return self.cache, generation
 
-    def _change(self, edit):
+    def displaced(self, record):
+        """Whether another supervisor Pod has claimed the run from this one."""
+        return self.claimed_as is not None and record.supervisor_pod != self.claimed_as
+
+    def _update(self, edit):
         record = conditional_update(
             self.store, self.path, self.read, edit, lambda record: record.to_dict()
         )
         self.cache = record
         return record
+
+    def _change(self, edit):
+        def fenced(record):
+            # Inside the edit, so every retry re-checks the claim against the
+            # generation its write is conditional on.
+            if self.displaced(record):
+                raise Superseded("Another supervisor Pod holds this run")
+            edit(record)
+
+        return self._update(fenced)
+
+    def claim_supervisor(self, pod_uid):
+        """Make `pod_uid` the only supervisor Pod whose writes this run accepts.
+
+        The first Pod claims an unclaimed run whatever its state. A replacement
+        may displace the claim only while `open_for_replacement` holds, and
+        every later write of the displaced Pod is refused.
+        """
+        if not pod_uid:
+            raise Failure("Supervisor Pod has no UID to claim the run with")
+
+        def edit(record):
+            displacing = record.supervisor_pod not in (None, pod_uid)
+            if displacing and not open_for_replacement(record):
+                raise Failure("This run cannot be claimed by another supervisor Pod")
+            record.supervisor_pod = pod_uid
+            record.supervisor_claimed_at = utc(self.clock())
+
+        record = self._update(edit)
+        self.claimed_as = pod_uid
+        return record
+
+    def stop_if_held_by(self, pod_uid):
+        """Stop the run if `pod_uid` still holds it, in one compare-and-set."""
+
+        class Displaced(Exception):
+            pass
+
+        def edit(record):
+            if record.supervisor_pod != pod_uid:
+                raise Displaced
+            record.stop_requested = True
+
+        try:
+            self._change(edit)
+        except Displaced:
+            return False
+        return True
 
     @staticmethod
     def _remember(current, additions):
@@ -172,9 +227,12 @@ class Records:
 
         return self._change(edit)
 
-    def heartbeat(self, operations=None):
+    def heartbeat(self, operations=None, *, started=False):
+        """Report the supervisor alive; `started` closes the takeover window."""
+
         def edit(record):
             record.heartbeat = utc(self.clock())
+            record.supervision_started |= started
             if operations is not None:
                 record.operations["supervisor"] = dict(operations)
 

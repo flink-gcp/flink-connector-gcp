@@ -23,9 +23,17 @@ import uuid
 from .bigquery_exercise import BigQueryExercise, require_handoff
 from .cleanup import Cleanup
 from .cloudtasks import transient, verify_queue
-from .common import ApiError, Failure, TransportError, contains, ha_metadata, utc
+from .common import (
+    ApiError,
+    Failure,
+    Superseded,
+    TransportError,
+    contains,
+    ha_metadata,
+    utc,
+)
 from .exercise import RecoveryExercise
-from .model import Phase, cell_budget_seconds
+from .model import Phase, cell_budget_seconds, open_for_replacement
 from .policy import CLOUDTASKS, CLOUDTASKS_POLICY, MIB, NONCE, POLL, SMOKE
 
 
@@ -277,6 +285,9 @@ class Supervisor:
         own = self.cleanup.owned(self.cleanup.inventory(), ["supervisor"])
         if pod_uid not in own:
             raise Failure("Supervisor Pod is not owned by the approved Job")
+        # Every later control write is fenced on this claim, which the Job's
+        # replacement may take over until the start is recorded below.
+        self.env.records.claim_supervisor(pod_uid)
         reason, success = "interrupted", False
         try:
 
@@ -290,12 +301,13 @@ class Supervisor:
                     or control.phase in (Phase.CLEANING, Phase.CLEANED)
                 ):
                     raise Failure("Cancellation or recovery requested")
-                self.env.records.heartbeat()
-                if self.session:
-                    return control.phase == Phase.RUNNING and bool(control.queue)
-                return control.phase == Phase.RUNNING and bool(
-                    control.roots.get("application")
+                ready = control.phase == Phase.RUNNING and bool(
+                    control.queue if self.session else control.roots.get("application")
                 )
+                # The heartbeat that sees admission complete records the
+                # start, so the takeover window closes without another write.
+                self.env.records.heartbeat(started=ready)
+                return ready
 
             self.env.wait(
                 admitted,
@@ -394,30 +406,59 @@ class Supervisor:
         except (Failure, OSError, ValueError) as error:
             reason = str(error)
         finally:
-            control = self.env.refresh()
-            if control.phase in (Phase.APPROVED, Phase.READY):
-                # Admission may still have an in-flight Kubernetes write. The
-                # runner settles after start returns; completed-execution
-                # recovery handles a runner that disappears before this handoff.
-                if self.env.evidence_failed:
-                    self.env.records.mark_evidence_failed()
-                self.env.records.request_stop()
-                # The reason otherwise survives only in this process, which
-                # may end in the wait below without reporting it. The stop is
-                # durable first, so this write cannot delay it.
-                self.env.emit("admission-stopped", {"reason": reason})
-                if (
-                    self.env.approval.scenario != "bigquery-recovery"
-                    or self.env.refresh().bigquery is None
-                ):
-                    raise Failure(
-                        "Admission unfinished; runner settlement required: " + reason
-                    )
-                # The original runner releases only from settlement, after
-                # start() has returned. Let admission record confirmed creation
-                # before teardown; release does not settle an unknown outcome.
-                self.env.wait(self.bigquery.released, self.env.schedule.cleanup_at)
-            self.cleanup.run(reason, success)
+            self.conclude(reason, success)
+
+    def conclude(self, reason, success):
+        """Hand the run on, stop its admission, or return it to idle."""
+        control = self.env.refresh()
+        if self.env.records.displaced(control):
+            # The run is the holder's; a Pod that stopped for its own reason
+            # may learn only here that it was displaced.
+            raise Superseded("Another supervisor Pod holds this run")
+        if (
+            self.env.stopping
+            and not self.env.evidence_failed
+            and open_for_replacement(control)
+            # BigQuery resources are cleaned only through this Pod's handoff,
+            # so once provisioned they are not left to a replacement that may
+            # never come.
+            and control.bigquery is None
+        ):
+            # A signal before supervision is the infrastructure taking this
+            # Pod, so the run is left to the Job's replacement; if none comes,
+            # the runner settles the ended Job. The record decides whether
+            # supervision started, so a start whose response was lost counts.
+            self.env.emit("supervisor-replaceable", {"reason": reason})
+            raise Failure(
+                "Supervisor Pod was terminated before supervision began: " + reason
+            )
+        if control.phase in (Phase.APPROVED, Phase.READY):
+            # Admission may still have an in-flight Kubernetes write. The
+            # runner settles after start returns; completed-execution
+            # recovery handles a runner that disappears before this handoff.
+            if self.env.evidence_failed:
+                self.env.records.mark_evidence_failed()
+            self.env.records.request_stop()
+            # The reason otherwise survives only in this process, which
+            # may end in the wait below without reporting it. The stop is
+            # durable first, so this write cannot delay it.
+            self.env.emit("admission-stopped", {"reason": reason})
+            if (
+                self.env.approval.scenario != "bigquery-recovery"
+                or self.env.refresh().bigquery is None
+            ):
+                raise Failure(
+                    "Admission unfinished; runner settlement required: " + reason
+                )
+            # The original runner releases only from settlement, after
+            # start() has returned. Let admission record confirmed creation
+            # before teardown; release does not settle an unknown outcome.
+            self.env.wait(self.bigquery.released, self.env.schedule.cleanup_at)
+        elif open_for_replacement(control):
+            # Cleanup absorbs a failed write of its own and keeps deleting, so
+            # the window closes first, where a failure stops this Pod instead.
+            self.env.records.request_stop()
+        self.cleanup.run(reason, success)
 
 
 class CellSession:

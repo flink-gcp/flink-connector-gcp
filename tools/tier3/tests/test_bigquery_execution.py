@@ -35,8 +35,8 @@ from test_bigquery_lifecycle import Resources
 from test_bigquery_plan import inputs as inputs  # noqa: PLC0414
 from test_bigquery_plan import renderer as renderer  # noqa: PLC0414
 from test_bigquery_plan import trial as trial  # noqa: PLC0414
+from test_tier3_lifecycle import claim_as_supervisor, obj, rt, supervisor_pod
 from test_tier3_lifecycle import env as env  # noqa: PLC0414
-from test_tier3_lifecycle import obj, rt, supervisor_pod
 
 
 def handoff(environment, resources, application):
@@ -574,7 +574,7 @@ def test_runner_provisions_before_application_admission(prepared, monkeypatch, f
             assert len(resources.tables) == resources.plan.trial.destinations
         result = create(manifest, dry_run)
         if manifest["kind"] == "Job" and not dry_run:
-            supervisor_pod(
+            pod = supervisor_pod(
                 (
                     kube,
                     environment.store,
@@ -583,7 +583,15 @@ def test_runner_provisions_before_application_admission(prepared, monkeypatch, f
                 ),
                 result,
             )
-            environment.records.heartbeat()
+            claim_as_supervisor(
+                (
+                    kube,
+                    environment.store,
+                    environment.approval.to_dict(),
+                    environment.clock,
+                ),
+                pod,
+            )
         return result
 
     def after_create(_destination):
@@ -820,6 +828,7 @@ def test_failed_admission_keeps_supervisor_for_released_cleanup(
                     actual,
                 )
             )
+            observer_env.records.claim_supervisor(pods[-1]["metadata"]["uid"])
             observer_env.records.heartbeat()
         if (
             value["kind"] == "FlinkDeployment"
@@ -895,7 +904,9 @@ def test_unfinished_admission_waits_before_any_workload_teardown(
         control.roots.pop("application")
 
     world.env.records._change(admitting)
-    world.env.stopping = True
+    # The runner stops the run while its admission is still in flight. A
+    # signal would instead leave the run to the Job's replacement.
+    world.runner_env.records.request_stop()
     slept = []
 
     def admission_returns(seconds):
@@ -953,7 +964,18 @@ def test_stop_racing_resource_initialization_keeps_supervisor_cleanup(
         job,
     )
     observer_env.records.set_phase(Phase.READY)
-    observer_env.stopping = True
+    # The supervisor's own admission wait expires. A signal would instead
+    # leave the run to the Job's replacement, which is covered elsewhere.
+    wait = observer_env.wait
+    waits = []
+
+    def admission_expires(predicate, deadline):
+        waits.append(deadline)
+        if len(waits) == 1:
+            raise Failure("Bounded wait expired")
+        return wait(predicate, deadline)
+
+    monkeypatch.setattr(observer_env, "wait", admission_expires)
     stop = observer_env.records.request_stop
     raced = []
 
