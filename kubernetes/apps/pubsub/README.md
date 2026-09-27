@@ -302,10 +302,7 @@ When either active control or a prior receipt carries Pub/Sub, reuse requires eq
 A receipt invalidated by a concurrent evidence failure remains a conflict on retry; it cannot restore a stale success verdict or release the lock.
 Before deleting active control, Pub/Sub finalization compares its complete current record with the snapshot used for the receipt, then deletes against that observed generation.
 A concurrent cleanup or evidence update retains the record and lock for retry; runs with no Pub/Sub state in either snapshot keep their existing behavior.
-When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) writes a placeholder control record in place of the deleted one — the nonce, `phase: cleaned`, `idle: true`, `state_clean: false` and `success: false`, and nothing else.
-That record finalizes only a run that never reached service intent: a measured retry shows that a run whose cleaned Pub/Sub portion it omits fails the receipt comparison, reports `Final receipt conflicts with approval`, and deliberately retains both the record and the lock.
-The retry that would succeed needs the verified snapshot restored first; the receipt written before the deletion still carries that Pub/Sub portion, but no implemented path rebuilds the record from it, so admitted execution owes that procedure.
-Until it exists, an administrator investigates before any separately approved repair: editing `runs/<run-id>/result.json` discards the portion a restoration reads, and deleting the environment lock strands the placeholder record instead of clearing it, because recovery then finds no retained lock and every later run is refused for an unfinished run record.
+When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) restores the deleted record from the receipt, which still carries the cleaned Pub/Sub portion, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
 Deployed supervisor handoff, integrated message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
@@ -554,4 +551,4 @@ Earlier internal fixtures without version 5 retain the strict full-receipt compa
 
 The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
 Version 5 therefore does not enable an approval-generating CLI, runner admission or supervisor execution.
-Complete execution accounting, approval-bound delivery, external fault observations, a control-snapshot recovery procedure and deployed orchestration remain prerequisites to the live trials under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+Complete execution accounting, approval-bound delivery, external fault observations and deployed orchestration remain prerequisites to the live trials under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).

@@ -412,6 +412,23 @@ Exhausting the shared plan budget retains the lock and requires investigation be
 A timeout preserves available output in the local root/operation log and emits up to 64 KiB from its tail to the workflow log.
 The failure names the timed-out operation and retains the lock for recovery.
 
+### Stranded environment lock
+
+Finalization writes the receipt `runs/<run-id>/result.json`, deletes the run control record, and only then releases the environment lock.
+A failure between the deletion and the release leaves the lock held with no control record, and the run workflow fails.
+The recovery that the run's completion starts writes a replacement record before settling and finalizing again, and the retry keeps the original receipt; the dispatch above repeats it for the same execution ID.
+
+For a BigQuery or Pub/Sub trial with a receipt, recovery restores the deleted snapshot from it: the cleaned service portion, the recovery observations and the success verdict, with stop requested and the phase cleaned as finalization last saw them.
+It writes that record only when the service portion passes the cleanup gates finalization requires and finalization's own receipt derivation reproduces the stored receipt byte for byte, which binds the nonce, scenario and trial to the approval and the success flag to the recorded verdict.
+Every other case receives a record carrying only the nonce and a cleaned phase, because other scenarios' retries compare only the nonce and the idle claim.
+A missing record without a receipt was never created, since only finalization deletes one and writes the receipt first, and no admission precedes that creation.
+The write creates a new object, so a record that reappeared since recovery read it is never replaced.
+
+A refusal names the receipt and investigation; it writes no record and retains the lock.
+Two repairs make the stranded lock worse rather than clearing it.
+Editing `result.json` changes the only copy of the deleted snapshot: restoration trusts the receipt as finalization wrote it and cannot tell an edited receipt from the original.
+Deleting the environment lock by hand strands any run record recovery already wrote, because recovery then stops at "Environment has no retained lock" while that record refuses every later acquisition.
+
 ## Shared infrastructure ownership
 
 All three CI plan/apply roots acquire `_control/environment.json` using `ifGenerationMatch=0` before Kubernetes preflight or OpenTofu init and retain it through their operations and post-apply checks.

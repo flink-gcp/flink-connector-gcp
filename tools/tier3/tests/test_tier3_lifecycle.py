@@ -3074,6 +3074,23 @@ def test_cli_completed_recovery_reaches_idle_and_retains_lock_for_plans(
     assert bool(snapshots) == (not has_approval)
 
 
+@pytest.mark.parametrize("receipt", [False, True])
+def test_recovery_writes_the_minimal_record_outside_service_trials(env, receipt):
+    """A smoke retry compares only nonce and idle, so no receipt is restored."""
+    runner = lifecycle(env, cli.runner_api.Runner)
+    _, generation = env[1].read(runner.env.records.path)
+    env[1].delete(runner.env.records.path, generation)
+    if receipt:
+        env[1].write(
+            "runs/test-1310/result.json",
+            {"nonce": env[2]["nonce"], "idle": True, "success": True, "plans": {}},
+        )
+    runner.restore_control()
+    assert env[1].read(runner.env.records.path)[0] == (
+        rt.RunRecord(env[2]["nonce"], phase=rt.Phase.CLEANED, idle=True).to_dict()
+    )
+
+
 @pytest.mark.parametrize("lost_response", [False, True])
 def test_cli_start_settles_once_after_the_last_admission_call(
     env, monkeypatch, tmp_path, lost_response

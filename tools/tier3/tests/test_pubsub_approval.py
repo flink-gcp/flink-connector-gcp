@@ -21,7 +21,7 @@ from flink_tier3 import pubsub_plan as plan
 from flink_tier3.cleanup import Cleanup, verify_idle
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
-from flink_tier3.model import Approval, Phase
+from flink_tier3.model import Approval, Phase, open_for_replacement
 from flink_tier3.policy import PUBSUB, PUBSUB_CEILINGS, PUBSUB_STATE, RECOVERY
 from flink_tier3.pubsub_handoff import PubSubHandoff
 from flink_tier3.pubsub_lifecycle import PubSubLifecycle
@@ -478,11 +478,8 @@ def test_concurrent_control_change_retains_control_and_lock(prepared):
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
 
-@pytest.mark.parametrize("service_intent", [False, True])
-def test_retry_after_lock_failure_uses_reconstructed_control(
-    prepared, monkeypatch, service_intent
-):
-    environment, runner = settled(prepared, service_intent)
+def lose_lock_release(environment, runner, monkeypatch):
+    """Finalize with the lock release failing, after control was deleted."""
     control = environment.refresh().to_dict()
     plans = {
         "nonce": environment.approval.nonce,
@@ -500,67 +497,90 @@ def test_retry_after_lock_failure_uses_reconstructed_control(
     monkeypatch.setattr(environment.store, "delete", fail_lock)
     with pytest.raises(Failure, match="lock release unavailable"):
         runner.finalize(plans)
+    monkeypatch.setattr(environment.store, "delete", original_delete)
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-    # `lifecycle.recover` writes this placeholder record when control is missing.
-    # It finalizes a run that never reached service intent, and cannot reproduce
-    # a cleaned Pub/Sub portion, so a run that created one still needs the
-    # verified snapshot from a recovery procedure this test does not provide.
-    environment.store.write(
-        environment.records.path,
-        control
-        if service_intent
-        else {
-            "nonce": environment.approval.nonce,
-            "phase": "cleaned",
-            "idle": True,
-            "state_clean": False,
-            "success": False,
-        },
+    return control, plans
+
+
+@pytest.mark.parametrize("service_intent", [False, True])
+def test_recovery_restores_the_control_snapshot_the_receipt_carries(
+    prepared, monkeypatch, service_intent
+):
+    environment, runner = settled(prepared, service_intent)
+    environment.records._change(
+        lambda record: setattr(record, "recovery", {"stage": "complete"})
     )
-    monkeypatch.setattr(environment.store, "delete", original_delete)
+    control, plans = lose_lock_release(environment, runner, monkeypatch)
+    recovery = Runner(environment)
+    recovery.restore_control()
+    restored = environment.refresh()
+    assert restored.pubsub == control["pubsub"]
+    assert restored.recovery == control["recovery"] == {"stage": "complete"}
+    assert restored.success is control["success"] is False
+    assert restored.phase == Phase.CLEANED and restored.stop_requested
+    # Stopped and cleaned: nothing reopens the restored run for a takeover.
+    assert not open_for_replacement(restored)
+    recovery.settle(request_stop=True)
     assert (
         Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"}) is False
     )
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
+    receipt, _ = environment.store.read(
+        f"runs/{environment.approval.run_id}/result.json"
+    )
+    assert receipt["plans"]["at"] == "2026-09-21T01:00:00Z"
 
 
-def test_minimal_recovery_record_cannot_finalize_a_cleaned_service(
-    prepared, monkeypatch
+@pytest.mark.parametrize(
+    "change", ["nonce", "idle", "plans", "trial", "success", "stage", "recovery"]
+)
+def test_recovery_refuses_a_receipt_that_does_not_reproduce(
+    prepared, monkeypatch, change
 ):
     environment, runner = settled(prepared, True)
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:00:00Z",
-    }
-    original_delete = environment.store.delete
+    lose_lock_release(environment, runner, monkeypatch)
+    path = f"runs/{environment.approval.run_id}/result.json"
+    receipt, generation = environment.store.read(path)
+    if change == "nonce":
+        receipt["nonce"] = "0" * 32
+    elif change == "idle":
+        receipt["idle"] = False
+    elif change == "plans":
+        receipt["plans"] = None
+    elif change == "trial":
+        receipt["pubsub_trial"]["trial"] = "jm-replacement"
+    elif change == "success":
+        receipt["success"] = True
+    elif change == "stage":
+        receipt["pubsub"]["stage"] = "cleaning"
+    elif change == "recovery":
+        receipt.pop("recovery")
+    environment.store.write(path, receipt, generation)
+    with pytest.raises(Failure, match="investigate before any repair"):
+        Runner(environment).restore_control()
+    assert environment.store.objects("_control/runs/") == []
+    assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
-    def fail_lock(name, *args, **kwargs):
-        if name == rt.ENVIRONMENT:
-            raise Failure("lock release unavailable")
-        return original_delete(name, *args, **kwargs)
 
-    monkeypatch.setattr(environment.store, "delete", fail_lock)
-    with pytest.raises(Failure, match="lock release unavailable"):
-        runner.finalize(plans)
-    assert environment.store.read(environment.records.path)[0] is None
-    environment.store.write(
-        environment.records.path,
-        {
-            "nonce": environment.approval.nonce,
-            "phase": "cleaned",
-            "idle": True,
-            "state_clean": False,
-            "success": False,
-        },
-    )
-    monkeypatch.setattr(environment.store, "delete", original_delete)
-    with pytest.raises(Failure, match="Final receipt conflicts"):
-        Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"})
-    assert environment.store.read(environment.records.path)[0] is not None
+@pytest.mark.parametrize("reappeared", ["before", "during"])
+def test_recovery_restoration_never_replaces_a_record_that_reappeared(
+    prepared, monkeypatch, reappeared
+):
+    environment, runner = settled(prepared, True)
+    lose_lock_release(environment, runner, monkeypatch)
+    other = {"nonce": environment.approval.nonce, "phase": "cleaning"}
+    if reappeared == "before":
+        environment.store.write(environment.records.path, other)
+    else:
+        environment.store.before_write = lambda: environment.store.write(
+            environment.records.path, other
+        )
+    with pytest.raises(rt.ApiError) as error:
+        Runner(environment).restore_control()
+    assert error.value.status == 412
+    assert environment.store.read(environment.records.path)[0] == other
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
 

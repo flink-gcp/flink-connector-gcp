@@ -640,14 +640,16 @@ Preserve earlier scenarios' ceilings and inventory scopes.
 Include the trial and recovery observations in final receipts, including runs stopped before service initialization; compare the receipt and current control snapshot before deleting active control.
 For version 5, a finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires current empty plans for the same nonce and all three foundation roots.
 A local injected control-deletion failure reproduced refusal of a valid retry when only that timestamp changed; the repaired tests cover failures before control deletion and after deletion but before lock release.
-Recovery's placeholder control record finalizes a run that never reached service intent, and a measured retry proves it cannot finalize one whose cleaned Pub/Sub portion it does not carry.
-That run's retry needs the verified snapshot restored first, which no implemented path rebuilds from the receipt that still carries it.
+Recovery's placeholder control record finalizes a run that never reached service intent, and a measured retry proved it cannot finalize one whose cleaned Pub/Sub portion it does not carry; the BigQuery trial has the same shape, and its receipt can also carry a success verdict the placeholder does not.
+Refined under [#1437](https://github.com/flink-gcp/flink-connector-gcp/issues/1437): when control is missing and a BigQuery or Pub/Sub receipt exists, recovery restores the deleted snapshot from the receipt, which still carries the service portion, the recovery observations and the verdict, and only if finalization's own receipt derivation reproduces that receipt; anything else is refused and retains the lock.
+The [lifecycle runbook](../../kubernetes/lifecycle/README.md#stranded-environment-lock) holds the exact conditions.
+Declined: a separate operator command for the restoration, because the existing recovery dispatch already carries the lock-holder authentication a restoration needs; and restoring for every scenario, because only the two service trials compare the whole receipt.
 Earlier internal Pub/Sub fixtures keep their strict full-receipt contract.
 Keep the Pub/Sub success verdict false until fault/recovery evidence and its oracle are implemented.
 
 This refines the previous blanket refusal to deserialize Pub/Sub, not the prohibition on paid execution.
 The selected dollar cap remains unestimated, the total-request cap is not an aggregate meter, and shared schema validation does not authenticate approval.
-Keep runner and supervisor entrypoints disabled and the offline delivery approval empty until complete accounting, approval-bound delivery, external fault observations, a control-snapshot recovery procedure and independent orchestration are reviewed.
+Keep runner and supervisor entrypoints disabled and the offline delivery approval empty until complete accounting, approval-bound delivery, external fault observations and independent orchestration are reviewed.
 The [internal approval runbook](../../kubernetes/apps/pubsub/README.md#internal-approval-contract) records the exact limits and remaining boundaries.
 
 ### Pub/Sub lifecycle IAM preparation
