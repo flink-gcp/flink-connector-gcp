@@ -451,6 +451,7 @@ Recorded BigQuery state also gates Operator shutdown, the `CLEANED` transition, 
 The final receipt retains the complete BigQuery control snapshot, including table receipts and query evidence pointers.
 A conflicting receipt or a concurrent control change leaves the control record and lock in place.
 When finalization deleted the control record but did not release the lock, recovery restores that snapshot from the receipt, including a success verdict the receipt records, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
+A failure of recovery's own settlement after a success receipt fails that recovery and keeps the verdict rather than lowering it, whether or not the record was restored.
 These tests use synthetic actors and services; authenticated admission, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
 The internal recovery schedule is described below.
 

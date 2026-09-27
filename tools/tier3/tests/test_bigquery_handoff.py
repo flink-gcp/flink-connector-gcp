@@ -938,7 +938,7 @@ def test_real_handoff_is_serviced_by_runner_settlement(actors):
     class Settled(Exception):
         pass
 
-    def after_wait(_reason, _success):
+    def after_wait(_reason, _success, **_kwargs):
         from flink_tier3.bigquery_handoff import require_bigquery_clean
 
         require_bigquery_clean(a.env.refresh())
