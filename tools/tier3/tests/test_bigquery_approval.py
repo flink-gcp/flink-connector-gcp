@@ -647,22 +647,7 @@ def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, chang
     environment, *_ = prepared
     runner = Runner(environment)
     runner.cleanup.run("stopped before creation")
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:30:00Z",
-    }
-    original_delete = environment.store.delete
-
-    def lose_control_delete(name, *args, **kwargs):
-        if name == environment.records.path:
-            raise Failure("control deletion unavailable")
-        return original_delete(name, *args, **kwargs)
-
-    monkeypatch.setattr(environment.store, "delete", lose_control_delete)
-    with pytest.raises(Failure, match="control deletion unavailable"):
-        runner.finalize(plans)
+    plans = lose_control_delete(environment, runner, monkeypatch)
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt, generation = environment.store.read(path)
     assert "bigquery" not in receipt
@@ -678,7 +663,6 @@ def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, chang
     elif change == "plans":
         receipt["plans"]["roots"] = ["unapproved"]
     environment.store.write(path, receipt, generation)
-    monkeypatch.setattr(environment.store, "delete", original_delete)
     plans = {**plans, "at": "2026-09-21T01:37:31Z"}
     if change == "none":
         assert runner.finalize(plans) is False
@@ -779,6 +763,264 @@ def test_recovery_restores_a_cleaned_bigquery_snapshot(prepared, monkeypatch, ve
     assert receipt["bigquery"] == control["bigquery"]
 
 
+def lose_control_delete(environment, runner, monkeypatch):
+    """Finalize with the control deletion failing, after the receipt was written."""
+    plans = {
+        "nonce": environment.approval.nonce,
+        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
+        "empty": True,
+        "at": "2026-09-21T01:30:00Z",
+    }
+    original_delete = environment.store.delete
+
+    def fail_control(name, *args, **kwargs):
+        if name == environment.records.path:
+            raise Failure("control deletion unavailable")
+        return original_delete(name, *args, **kwargs)
+
+    monkeypatch.setattr(environment.store, "delete", fail_control)
+    with pytest.raises(Failure, match="control deletion unavailable"):
+        runner.finalize(plans)
+    monkeypatch.setattr(environment.store, "delete", original_delete)
+    assert environment.store.read(environment.records.path)[0] is not None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is not None
+    return plans
+
+
+def recovery_runner(environment):
+    """A runner in a new recovery process, which starts with no local failure."""
+    return Runner(
+        Environment(
+            environment.kube,
+            environment.store,
+            environment.approval,
+            environment.clock,
+            environment.sleep,
+        )
+    )
+
+
+def fail_event(store, monkeypatch, event):
+    """Fail every evidence write of `event`; returns the restoring call."""
+    write = store.write
+
+    def failing(name, data, *args, **kwargs):
+        if isinstance(data, dict) and data.get("event") == event:
+            raise Failure("Evidence unavailable")
+        return write(name, data, *args, **kwargs)
+
+    monkeypatch.setattr(store, "write", failing)
+    return lambda: monkeypatch.setattr(store, "write", write)
+
+
+def stranded_receipt(prepared, monkeypatch, lost, verdict=rt.USABLE):
+    """A run whose receipt exists while finalization retained the lock.
+
+    `lost` names the write finalization lost: `control`, so the record
+    survives, or `lock`, after which recovery restores the deleted record.
+    """
+    stored = {"stage": "complete", "verdict": verdict}
+    environment, runner, *_ = service_cleaned(prepared, stored)
+    if lost == "control":
+        plans = lose_control_delete(environment, runner, monkeypatch)
+    else:
+        plans = lose_lock_release(environment, runner, monkeypatch)
+        recovery_runner(environment).restore_control()
+    receipt, _ = environment.store.read(
+        f"runs/{environment.approval.run_id}/result.json"
+    )
+    assert receipt["success"] is (verdict == rt.USABLE)
+    return environment, {**plans, "at": "2026-09-21T01:37:31Z"}
+
+
+def assert_retained(environment):
+    assert environment.store.read(environment.records.path)[0] is not None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is not None
+
+
+def assert_released(environment):
+    assert environment.store.read(environment.records.path)[0] is None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is None
+
+
+@pytest.mark.parametrize("lost", ["control", "lock"])
+@pytest.mark.parametrize("event", ["cleanup-start", "cleanup-ready", "idle"])
+def test_recovery_evidence_failure_keeps_a_success_verdict(
+    prepared, monkeypatch, lost, event
+):
+    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    restore = fail_event(environment.store, monkeypatch, event)
+    first = recovery_runner(environment)
+    with pytest.raises(Failure, match="success receipt"):
+        first.settle(request_stop=True)
+    restore()
+    assert first.env.evidence_failed
+    control = environment.refresh()
+    assert control.success is True
+    assert not control.evidence_failed
+    # The failure blocked finalization; the next recovery settles cleanly.
+    recovery_runner(environment).settle(request_stop=True)
+    assert recovery_runner(environment).finalize(plans) is True
+    assert_released(environment)
+
+
+@pytest.mark.parametrize("lost", ["control", "lock"])
+def test_recovery_state_cleanup_failure_keeps_a_success_verdict(
+    prepared, monkeypatch, lost
+):
+    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    first = recovery_runner(environment)
+    calls = []
+
+    def unavailable(cell_ids=None):
+        calls.append(cell_ids)
+        raise OSError("state listing unavailable")
+
+    monkeypatch.setattr(first.cleanup, "clean_state", unavailable)
+    # Nothing remains, so the settlement's own remaining-state check passes.
+    first.settle(request_stop=True)
+    assert calls == [None]
+    control = environment.refresh()
+    assert control.success is True
+    assert not control.state_clean
+    assert recovery_runner(environment).finalize(plans) is True
+    assert_released(environment)
+
+
+@pytest.mark.parametrize("lost", ["control", "lock"])
+def test_recovery_evidence_failure_under_an_unsuccessful_receipt_still_finalizes(
+    prepared, monkeypatch, lost
+):
+    environment, plans = stranded_receipt(prepared, monkeypatch, lost, INCONCLUSIVE)
+    # No success to keep: the failure is recorded as before, here by the final
+    # settled write alone, and the receipt derived from it is the stored one.
+    restore = fail_event(environment.store, monkeypatch, "idle")
+    recovery_runner(environment).settle(request_stop=True)
+    restore()
+    assert environment.refresh().evidence_failed
+    assert recovery_runner(environment).finalize(plans) is False
+    assert_released(environment)
+
+
+@pytest.mark.parametrize("lost", ["control", "lock"])
+def test_recovery_refuses_remaining_state_without_lowering_the_verdict(
+    prepared, monkeypatch, lost
+):
+    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    state = f"runs/{environment.approval.run_id}/checkpoint"
+    environment.store.write(state, {"saved": True}, bucket=BIGQUERY_STATE)
+    original_delete = environment.store.delete
+
+    def keep_state(name, generation, bucket=rt.EVIDENCE):
+        if bucket == BIGQUERY_STATE:
+            raise OSError("state deletion unavailable")
+        return original_delete(name, generation, bucket)
+
+    monkeypatch.setattr(environment.store, "delete", keep_state)
+    with pytest.raises(Failure, match="Run state remains"):
+        recovery_runner(environment).settle(request_stop=True)
+    assert environment.refresh().success is True
+    with pytest.raises(Failure, match="Run state reappeared"):
+        recovery_runner(environment).finalize(plans)
+    assert_retained(environment)
+    # Once the state can be deleted, the receipt's verdict finalizes.
+    monkeypatch.setattr(environment.store, "delete", original_delete)
+    recovery_runner(environment).settle(request_stop=True)
+    assert recovery_runner(environment).finalize(plans) is True
+    assert_released(environment)
+
+
+@pytest.mark.parametrize("lost", ["control", "lock"])
+def test_recovery_refuses_an_unexpected_object(prepared, monkeypatch, lost):
+    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    environment.kube.put(obj("ConfigMap", "stray", BIGQUERY))
+    with pytest.raises(Failure, match="non-baseline object remains"):
+        recovery_runner(environment).settle(request_stop=True)
+    assert environment.refresh().success is True
+    with pytest.raises(Failure, match="non-baseline object remains"):
+        recovery_runner(environment).finalize(plans)
+    assert_retained(environment)
+
+
+def test_settlement_tears_down_when_the_receipt_cannot_be_read(prepared, monkeypatch):
+    environment, plans = stranded_receipt(prepared, monkeypatch, "control")
+    run_id = environment.approval.run_id
+    read = environment.store.read
+
+    def unavailable(name, *args, **kwargs):
+        if name == f"runs/{run_id}/result.json":
+            raise Failure("receipt read unavailable")
+        return read(name, *args, **kwargs)
+
+    monkeypatch.setattr(environment.store, "read", unavailable)
+    runner = recovery_runner(environment)
+    cleanups = []
+    run = runner.cleanup.run
+
+    def counted(*args, **kwargs):
+        cleanups.append(kwargs)
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(runner.cleanup, "run", counted)
+    runner.settle(request_stop=True)
+    # The failed read neither skipped teardown nor kept a verdict it could
+    # not read; finalization reads the receipt itself.
+    assert cleanups == [{"keep_verdict": False}]
+    events = [
+        read(obj["name"])[0]
+        for obj in environment.store.objects(f"runs/{run_id}/runner/")
+    ]
+    assert [e["payload"] for e in events if e["event"] == "receipt-read-failed"] == [
+        {"cause": "receipt read unavailable"}
+    ]
+    monkeypatch.setattr(environment.store, "read", read)
+    assert recovery_runner(environment).finalize(plans) is True
+    assert_released(environment)
+
+
+def test_recovery_keeps_an_evidence_failure_another_writer_recorded(
+    prepared, monkeypatch
+):
+    stored = {"stage": "complete", "verdict": rt.USABLE}
+    environment, runner, *_ = service_cleaned(prepared, stored)
+    plans = {
+        "nonce": environment.approval.nonce,
+        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
+        "empty": True,
+        "at": "2026-09-21T01:30:00Z",
+    }
+    # Another writer records an evidence failure as the receipt is written.
+    environment.store.before_write = environment.records.mark_evidence_failed
+    with pytest.raises(Failure, match="Run control changed"):
+        runner.finalize(plans)
+    receipt, _ = environment.store.read(
+        f"runs/{environment.approval.run_id}/result.json"
+    )
+    assert receipt["success"] is True
+    recovery_runner(environment).settle(request_stop=True)
+    assert environment.refresh().evidence_failed
+    with pytest.raises(Failure, match="Final receipt conflicts"):
+        recovery_runner(environment).finalize({**plans, "at": "2026-09-21T01:37:31Z"})
+    assert_retained(environment)
+
+
+def test_recovery_does_not_keep_a_foreign_success_receipt(prepared, monkeypatch):
+    environment, plans = stranded_receipt(prepared, monkeypatch, "control")
+    path = f"runs/{environment.approval.run_id}/result.json"
+    receipt, generation = environment.store.read(path)
+    receipt["nonce"] = "0" * 32
+    environment.store.write(path, receipt, generation)
+    # Finalization refuses this receipt anyway; settlement records its own
+    # failure rather than send the operator into a retry that cannot pass.
+    restore = fail_event(environment.store, monkeypatch, "idle")
+    recovery_runner(environment).settle(request_stop=True)
+    restore()
+    assert environment.refresh().evidence_failed
+    with pytest.raises(Failure, match="Final receipt conflicts"):
+        recovery_runner(environment).finalize(plans)
+    assert_retained(environment)
+
+
 def test_recovery_without_a_receipt_writes_the_minimal_record(prepared):
     environment, *_ = prepared
     control, generation = environment.store.read(environment.records.path)
@@ -818,9 +1060,9 @@ def test_recovery_refuses_a_bigquery_receipt_that_does_not_reproduce(
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
 
-@pytest.mark.parametrize("tampered", [False, True])
+@pytest.mark.parametrize("case", ["clean", "tampered", "evidence"])
 def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
-    prepared, monkeypatch, tmp_path, tampered
+    prepared, monkeypatch, tmp_path, case
 ):
     from types import SimpleNamespace
 
@@ -833,7 +1075,7 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
         f"runs/{environment.approval.run_id}/approval.json", approval
     )
     plans = lose_lock_release(environment, runner, monkeypatch)
-    if tampered:
+    if case == "tampered":
         path = f"runs/{environment.approval.run_id}/result.json"
         receipt, generation = environment.store.read(path)
         receipt["bigquery_trial"]["destinations"] = 50
@@ -875,7 +1117,7 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
         directory=tmp_path,
         kubeconfig=tmp_path / "kubeconfig",
     )
-    if tampered:
+    if case == "tampered":
         # Refused on every attempt, without a record, until investigated.
         for _ in range(2):
             with pytest.raises(Failure, match="investigate before any repair"):
@@ -888,6 +1130,18 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
                 {**owner, "nonce": "f" * 32, "github_run_id": "789"}
             )
         return
+    if case == "evidence":
+        # Recovery's own idle receipt fails: the recover step fails before it
+        # reports idle, so the workflow never reaches finish.
+        restore = fail_event(environment.store, monkeypatch, "idle")
+        with pytest.raises(Failure, match="success receipt"):
+            cli.recover(args, environment.store)
+        restore()
+        assert not (tmp_path / "recovered.json").exists()
+        assert environment.store.read(environment.records.path)[0]["success"]
+        assert environment.store.read(rt.ENVIRONMENT)[0] == owner
+        # A later recovery execution finds the restored record and settles.
+        monkeypatch.setenv("GITHUB_RUN_ID", "457")
     cli.recover(args, environment.store)
     assert preflights == [args.kubeconfig]
     restored = environment.store.read(environment.records.path)[0]

@@ -366,7 +366,7 @@ The Operator's normal finalizer is responsible for removing it.
 Leftover unowned metadata blocks the final idle check and lock release, requiring an administrator to investigate its provenance before any separately approved repair.
 
 Once owned workload objects are absent, cleanup deletes only generation-checked state objects under the exact run prefix, scales the Operator to zero, verifies its Pods have stopped, and restores the exact original quotas.
-Evidence or state export failures mark the run failed while allowing paid workload shutdown to continue.
+Evidence or state export failures mark the run failed while allowing paid workload shutdown to continue; after a success receipt, a recovery's own failures block finalization instead, as [Stranded environment lock](#stranded-environment-lock) describes.
 The supervisor exits with its Job/Pod retained so the external runner can wait for Job completion, attempt the final log export, and delete the temporary Job and source ConfigMap.
 The final log attempt is recorded after Job completion and is not a prerequisite for shutdown; missing logs or a failed export keep the evidence outcome failed across retries.
 The finalizer requires no workload Pods, PVCs or Flink objects, no non-baseline resources except zero-replica Operator ReplicaSets, and quotas observed back at their original values.
@@ -424,8 +424,16 @@ Every other case receives a record carrying only the nonce and a cleaned phase, 
 A missing record without a receipt was never created, since only finalization deletes one and writes the receipt first, and no admission precedes that creation.
 The write creates a new object, so a record that reappeared since recovery read it is never replaced.
 
+Recovery settles again before finalizing, whether it restored the record or found it.
+Over a success receipt whose nonce matches the approval, that settlement's own failures cannot lower the recorded verdict, since the retry compares the receipt with the verdict the record derives.
+A failed evidence or control write of its own fails recovery instead, naming the success receipt; the record keeps its `success` and `evidence_failed` values, the lock stays held, and dispatching recovery again is the repair.
+A state cleanup failure that leaves nothing behind does not fail recovery, while remaining state or a failed idle check still does until it clears.
+A settlement that cannot read the receipt records `receipt-read-failed`, still tears down, and records its own failures as before, so a failed write in that same recovery can still lower the verdict.
+An evidence failure recorded on the record by another writer is different: it invalidated the receipt, and the retry keeps refusing with "Final receipt conflicts with approval".
+
 A refusal names the receipt and investigation; it writes no record and retains the lock.
-Two repairs make the stranded lock worse rather than clearing it.
+Three repairs make the stranded lock worse rather than clearing it.
+Deleting the run control record to force a restoration launders a receipt that a recorded evidence failure invalidated: restoration rebuilds the record from the receipt, whose success flag predates that failure.
 Editing `result.json` changes the only copy of the deleted snapshot: restoration trusts the receipt as finalization wrote it and cannot tell an edited receipt from the original.
 Deleting the environment lock by hand strands any run record recovery already wrote, because recovery then stops at "Environment has no retained lock" while that record refuses every later acquisition.
 

@@ -478,7 +478,15 @@ class Cleanup:
             return False
         return not job_finished(job)
 
-    def run(self, reason, success=False):
+    def run(self, reason, success=False, *, keep_verdict=False):
+        """Clean the run's resources and record the cleaned phase.
+
+        `keep_verdict` means a success receipt already fixed the verdict, so
+        this pass records its state observation but leaves `success` and
+        `evidence_failed` unchanged, and `success` only informs the
+        `cleanup-ready` evidence; the caller fails on its own evidence
+        failure instead of recording it.
+        """
         self.env.namespaces()
         self.env.assert_owner()
         self.env.refresh()
@@ -636,12 +644,15 @@ class Cleanup:
             },
         )
         try:
-            self.env.records.set_phase(
-                Phase.CLEANED,
-                success=clean,
-                state_clean=state_clean,
-                evidence_failed=self.env.evidence_failed,
-            )
+            if keep_verdict:
+                self.env.records.set_phase(Phase.CLEANED, state_clean=state_clean)
+            else:
+                self.env.records.set_phase(
+                    Phase.CLEANED,
+                    success=clean,
+                    state_clean=state_clean,
+                    evidence_failed=self.env.evidence_failed,
+                )
         except Failure:
             self.env.evidence_failed = True
 

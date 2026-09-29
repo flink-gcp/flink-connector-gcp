@@ -533,6 +533,27 @@ def test_recovery_restores_the_control_snapshot_the_receipt_carries(
     assert receipt["plans"]["at"] == "2026-09-21T01:00:00Z"
 
 
+def test_recovery_evidence_failure_over_a_pubsub_receipt_still_finalizes(
+    prepared, monkeypatch
+):
+    environment, runner = settled(prepared, True)
+    _control, plans = lose_lock_release(environment, runner, monkeypatch)
+    Runner(environment).restore_control()
+    # A Pub/Sub receipt never records success, so there is no verdict for
+    # recovery's own evidence failure to lower: it is recorded, not raised.
+    environment.store.fail_evidence = True
+    Runner(environment).settle(request_stop=True)
+    environment.store.fail_evidence = False
+    assert environment.refresh().evidence_failed
+    # Finalization runs in a new process, without this one's local failure.
+    environment.evidence_failed = False
+    assert (
+        Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"}) is False
+    )
+    assert environment.store.read(environment.records.path)[0] is None
+    assert environment.store.read(rt.ENVIRONMENT)[0] is None
+
+
 @pytest.mark.parametrize(
     "change", ["nonce", "idle", "plans", "trial", "success", "stage", "recovery"]
 )

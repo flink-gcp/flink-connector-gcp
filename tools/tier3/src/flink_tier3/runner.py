@@ -384,11 +384,31 @@ class Runner:
             self.env.roots
         ):
             self.cleanup.adopt_intended_cell(self.cleanup.inventory())
+        # A success receipt fixed the verdict when it was written, and a
+        # finalization retry compares it with the one the record derives. A
+        # failure of this settlement's own writes is not the run's, so it must
+        # not lower the record; it raises at the end instead, which keeps
+        # finalization from running. A failure another writer recorded stays.
+        # Read after the releases, and never let a failed read skip them or
+        # the teardown below. An unread receipt keeps the earlier behaviour
+        # of recording this settlement's failures: before any receipt exists
+        # they are the run's own, and finalization reads the receipt again.
+        try:
+            stored = self.stored_receipt()
+        except (rt.Failure, OSError, ValueError) as error:
+            stored = None
+            self.env.emit("receipt-read-failed", {"cause": str(error)})
+        keep_verdict = (
+            isinstance(stored, dict)
+            and stored.get("nonce") == self.env.approval.nonce
+            and stored.get("success") is True
+        )
         # Reconcile actual state even after an earlier actor recorded cleanup.
         # A cleaned record alone is not a current idle observation.
         self.cleanup.run(
             "external settlement",
             control.success and not query_failed and not pubsub_failed,
+            keep_verdict=keep_verdict,
         )
 
         job = self.env.root("supervisor")
@@ -465,7 +485,12 @@ class Runner:
         self.env.emit("idle", snapshot)
         if self.cloudtasks:
             self.env.records.operations("runner", self.env.queues.meter.snapshot())
-        self.env.records.settled(self.env.evidence_failed)
+        self.env.records.settled(self.env.evidence_failed and not keep_verdict)
+        if keep_verdict and self.env.evidence_failed:
+            raise rt.Failure(
+                "Settlement evidence failed after a success receipt; the receipt "
+                "keeps its verdict, retry recovery"
+            )
 
     def temporary_gone(self):
         items = self.cleanup.inventory()
@@ -631,6 +656,17 @@ class Runner:
         rt.EnvironmentLock(self.env.store).release(self.env.approval.lock_owner)
         return result["success"]
 
+    def stored_receipt(self):
+        """The final receipt of a service trial, or None.
+
+        Only the service trials restore a control record from their receipt
+        or keep its verdict through a later settlement.
+        """
+        if self.env.approval.scenario not in SERVICE_TRIALS:
+            return None
+        stored, _ = self.env.store.read(f"runs/{self.env.approval.run_id}/result.json")
+        return stored
+
     def restore_control(self):
         """Write the run control record recovery found missing.
 
@@ -650,9 +686,7 @@ class Runner:
         """
         approval = self.env.approval
         record = rt.RunRecord(approval.nonce, phase=rt.Phase.CLEANED, idle=True)
-        stored = None
-        if approval.scenario in SERVICE_TRIALS:
-            stored, _ = self.env.store.read(f"runs/{approval.run_id}/result.json")
+        stored = self.stored_receipt()
         if stored is not None:
             if not isinstance(stored, dict) or not isinstance(
                 stored.get("plans"), dict
