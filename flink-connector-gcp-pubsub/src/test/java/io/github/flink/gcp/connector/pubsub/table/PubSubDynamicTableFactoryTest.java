@@ -162,6 +162,23 @@ class PubSubDynamicTableFactoryTest {
                 .hasStackTraceContaining("The other six 'sink.retry.*' options are unaffected");
     }
 
+    /**
+     * The retry pair check fires at factory creation, in DDL keys (#1570). The needle is the key
+     * beside its value in the check's own format: {@code FactoryUtil}'s message dumps every {@code
+     * WITH} option, so the bare key would be found with the mapper's check deleted.
+     */
+    @Test
+    void rejectsARetryMaxRpcTimeoutBelowTheSdkInitialRpcTimeout() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("sink.retry.max-rpc-timeout", "1 s");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "'sink.retry.max-rpc-timeout' (PT1S) must not be shorter than"
+                                + " 'sink.retry.initial-rpc-timeout' (PT5S, the SDK default");
+    }
+
     @Test
     void rejectsAnEmptyTopic() {
         Map<String, String> options = minimalSinkOptions();

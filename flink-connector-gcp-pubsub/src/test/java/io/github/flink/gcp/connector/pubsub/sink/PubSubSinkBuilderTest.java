@@ -26,6 +26,8 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -53,6 +55,48 @@ class PubSubSinkBuilderTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage(
                         "A destination is required: set topic(...) or destinationResolver(...).");
+    }
+
+    /**
+     * The retry pair check runs when the sink is built, on the client, rather than when a writer
+     * first opens a publisher on a TaskManager (#1570).
+     */
+    @Test
+    void rejectsARetryMaxDelayBelowTheSdkInitialDelayBeforeSubmission() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder().retryMaxDelay(Duration.ZERO).build();
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .publisherOptions(options)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageStartingWith(
+                        "retryMaxDelay (PT0S) must not be shorter than retryInitialDelay (PT0.1S,"
+                                + " the SDK default because it is unset).");
+    }
+
+    @Test
+    void rejectsARetryInitialRpcTimeoutAboveTheSdkMaximumBeforeSubmission() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryInitialRpcTimeout(Duration.ofSeconds(90))
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .publisherOptions(options)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageStartingWith(
+                        "retryMaxRpcTimeout (PT1M, the SDK default because it is unset) must not"
+                                + " be shorter than retryInitialRpcTimeout (PT1M30S).");
     }
 
     @Test
