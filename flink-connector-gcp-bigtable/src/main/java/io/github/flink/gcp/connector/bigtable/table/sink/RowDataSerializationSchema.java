@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.table.data.ArrayData;
+import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
@@ -31,6 +33,8 @@ import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalReques
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -53,6 +57,11 @@ import java.util.List;
  * DataStream serializer that builds its own {@code RowMutationEntry} owns its timestamps, and
  * nothing here rewrites one a user handed over.
  *
+ * <p>A {@code MAP} family writes one cell per entry, keyed by the entry's key; a null value is
+ * encoded as a null qualifier of a {@code ROW} family is. Its other qualifiers are left as they
+ * are, unless the sink replaces map families, in which case the entry first deletes the whole
+ * family and the family reads back as the written map (ADR-0172). A null key fails the record.
+ *
  * <p>Keep-latest deletes all versions of each written cell immediately before setting it, in the
  * same entry. Null families and undeclared qualifiers remain untouched.
  *
@@ -72,10 +81,10 @@ import java.util.List;
  *   <li>An absent or empty row key. Bigtable has no such row, so failing here is what keeps the job
  *       honest about what it wrote. Flink's HBase connector drops the record instead, which leaves
  *       an incomplete table under a green job.
- *   <li>A row whose every column family is null, which would produce an entry carrying no mutation
- *       at all. The service answers that with an {@code INVALID_ARGUMENT} naming neither the row
- *       nor the reason, so it is refused here where both can be said. A partial column list in an
- *       {@code INSERT} is the ordinary way to reach it.
+ *   <li>A row whose every column family is null, or an empty map a merge writes nothing for, which
+ *       would produce an entry carrying no mutation at all. The service answers that with an {@code
+ *       INVALID_ARGUMENT} naming neither the row nor the reason, so it is refused here where both
+ *       can be said. A partial column list in an {@code INSERT} is the ordinary way to reach it.
  * </ul>
  */
 @Internal
@@ -91,6 +100,12 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     private final boolean truncateCellTimestampToMillis;
     private final boolean keepLatest;
     private final boolean deleteDeclaredFamilies;
+
+    /**
+     * Whether a {@code MAP} family's write deletes the family first. A field added after 1.0.0 that
+     * a restored job graph lacks restores as {@code false}, which is the merge that graph wrote.
+     */
+    private final boolean replaceMapFamilies;
 
     /**
      * Transient and restored in {@link #readObject}, not because it holds lambdas but because it is
@@ -161,17 +176,25 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                 truncateCellTimestampToMillis,
                 keepLatest,
                 false,
+                false,
                 clock);
     }
 
-    /** Keeps reserved markers by limiting SQL deletes to the DDL's data families. */
+    /**
+     * The table sink's constructor.
+     *
+     * @param deleteDeclaredFamilies whether a delete removes the DDL's data families alone, which
+     *     keeps staged delivery's reserved markers
+     * @param replaceMapFamilies whether a {@code MAP} family's write deletes the family first
+     */
     RowDataSerializationSchema(
             BigtableTableSchema schema,
             String nullStringLiteral,
             WritableMetadata[] metadata,
             boolean truncateCellTimestampToMillis,
             boolean keepLatest,
-            boolean deleteDeclaredFamilies) {
+            boolean deleteDeclaredFamilies,
+            boolean replaceMapFamilies) {
         this(
                 schema,
                 nullStringLiteral,
@@ -179,6 +202,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                 truncateCellTimestampToMillis,
                 keepLatest,
                 deleteDeclaredFamilies,
+                replaceMapFamilies,
                 new WallClock());
     }
 
@@ -189,10 +213,12 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             boolean truncateCellTimestampToMillis,
             boolean keepLatest,
             boolean deleteDeclaredFamilies,
+            boolean replaceMapFamilies,
             CellClock clock) {
         this.clock = clock;
         this.keepLatest = keepLatest;
         this.deleteDeclaredFamilies = deleteDeclaredFamilies;
+        this.replaceMapFamilies = replaceMapFamilies;
         this.rowKeyIndex = schema.getRowKeyIndex();
         this.rowKeyName = schema.getRowKeyName();
         this.timestampMetadataIndex =
@@ -283,11 +309,27 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         writeCells(
                 element,
                 key,
-                (family, qualifier, timestamp, value) -> {
-                    if (keepLatest) {
-                        entry.deleteCells(family, qualifier);
+                replaceMapFamilies,
+                new CellConsumer() {
+                    @Override
+                    public void deleteFamily(String family) {
+                        entry.deleteFamily(family);
                     }
-                    entry.setCell(family, qualifier, timestamp, value);
+
+                    @Override
+                    public void setCell(
+                            String family,
+                            ByteString qualifier,
+                            long timestamp,
+                            ByteString value,
+                            boolean familyDeleted) {
+                        // Behind a family delete in the same entry, a column delete removes
+                        // nothing more and would spend one of the entry's mutations.
+                        if (keepLatest && !familyDeleted) {
+                            entry.deleteCells(family, qualifier);
+                        }
+                        entry.setCell(family, qualifier, timestamp, value);
+                    }
                 });
         return entry;
     }
@@ -301,16 +343,33 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         }
         ByteString key = rowKey(element);
         List<ConditionalMutation> cells = new ArrayList<>();
+        // Never replacing: the row this request writes is absent, so there is no family to delete,
+        // and the factory refuses the option for this mode.
         writeCells(
                 element,
                 key,
-                (family, qualifier, timestamp, value) ->
-                        cells.add(
-                                ConditionalMutation.setCell(family, qualifier, timestamp, value)));
+                false,
+                new CellConsumer() {
+                    @Override
+                    public void deleteFamily(String family) {
+                        throw new IllegalStateException("insert-if-absent never deletes a family");
+                    }
+
+                    @Override
+                    public void setCell(
+                            String family,
+                            ByteString qualifier,
+                            long timestamp,
+                            ByteString value,
+                            boolean familyDeleted) {
+                        cells.add(ConditionalMutation.setCell(family, qualifier, timestamp, value));
+                    }
+                });
         return ConditionalRequest.of(key, ConditionalFilter.rowExists(), List.of(), cells);
     }
 
-    private void writeCells(RowData element, ByteString key, CellConsumer consumer)
+    private void writeCells(
+            RowData element, ByteString key, boolean replaceMaps, CellConsumer consumer)
             throws IOException {
         boolean hasExplicitTimestamp =
                 timestampMetadataIndex >= 0 && !element.isNullAt(timestampMetadataIndex);
@@ -320,6 +379,18 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             if (element.isNullAt(family.index)) {
                 continue;
             }
+            if (family.map) {
+                written +=
+                        writeMap(
+                                element,
+                                key,
+                                family,
+                                replaceMaps,
+                                hasExplicitTimestamp,
+                                timestampMicros,
+                                consumer);
+                continue;
+            }
             RowData cells = element.getRow(family.index, family.qualifiers.length);
             for (int i = 0; i < family.qualifiers.length; i++) {
                 ByteString value = ByteString.copyFrom(family.encoders[i].encode(cells, i));
@@ -327,26 +398,78 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                         family.name,
                         family.qualifiers[i],
                         hasExplicitTimestamp ? timestampMicros : clock.micros(),
-                        value);
+                        value,
+                        false);
             }
             written += family.qualifiers.length;
         }
         if (written == 0) {
             throw new IOException(
                     String.format(
-                            "Every column family of the row with key '%s' is null, so the mutation"
-                                    + " would carry no cell. Bigtable rejects such a request with"
-                                    + " INVALID_ARGUMENT and a message that names neither the row"
-                                    + " nor the reason, so it is refused here instead. A row with"
-                                    + " nothing but a key is not a Bigtable row; write at least"
-                                    + " one column family, or filter the record out upstream.",
+                            "Every column family of the row with key '%s' is null or an empty map,"
+                                    + " so the mutation would carry no cell. Bigtable rejects such"
+                                    + " a request with INVALID_ARGUMENT and a message that names"
+                                    + " neither the row nor the reason, so it is refused here"
+                                    + " instead. A row with nothing but a key is not a Bigtable"
+                                    + " row; write at least one column family, or filter the"
+                                    + " record out upstream.",
                             RowRanges.format(key)));
         }
     }
 
-    @FunctionalInterface
+    /**
+     * Writes one {@code MAP} family and returns how many cells it wrote, plus one for a family
+     * delete — the count the empty-row rejection reads.
+     */
+    private int writeMap(
+            RowData element,
+            ByteString key,
+            Family family,
+            boolean replace,
+            boolean hasExplicitTimestamp,
+            long timestampMicros,
+            CellConsumer consumer)
+            throws IOException {
+        MapData map = element.getMap(family.index);
+        ArrayData keys = map.keyArray();
+        ArrayData values = map.valueArray();
+        if (replace) {
+            // First, so the entry's cells land in an emptied family: a row entry's mutations
+            // apply in order and atomically. An empty map therefore clears the family, which is
+            // what replacing it with nothing means.
+            consumer.deleteFamily(family.name);
+        }
+        for (int i = 0; i < map.size(); i++) {
+            if (keys.isNullAt(i)) {
+                // The key is the qualifier, and there is no null qualifier to address. The row
+                // key is escaped because it is whatever the job wrote (RowRanges' rendering rule).
+                throw new IOException(
+                        String.format(
+                                "The MAP column family '%s' of the row with key '%s' holds a null"
+                                        + " key. A key is a qualifier, and a cell has no null"
+                                        + " qualifier.",
+                                family.name, RowRanges.format(key)));
+            }
+            consumer.setCell(
+                    family.name,
+                    ByteString.copyFrom(family.keyEncoder.encode(keys, i)),
+                    hasExplicitTimestamp ? timestampMicros : clock.micros(),
+                    ByteString.copyFrom(family.valueEncoder.encode(values, i)),
+                    replace);
+        }
+        return map.size() + (replace ? 1 : 0);
+    }
+
     private interface CellConsumer {
-        void setCell(String family, ByteString qualifier, long timestamp, ByteString value);
+
+        void deleteFamily(String family);
+
+        void setCell(
+                String family,
+                ByteString qualifier,
+                long timestamp,
+                ByteString value,
+                boolean familyDeleted);
     }
 
     long cellTimestampMicros(RowData element) throws IOException {
@@ -394,7 +517,13 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         return key;
     }
 
-    /** One column family's qualifiers and their encoders, resolved once. */
+    /**
+     * One column family's qualifiers and their encoders, resolved once — or, for a {@code MAP}
+     * family, its key and value encoders.
+     *
+     * <p>The map fields were added after 1.0.0; a job graph written before them restores {@code
+     * map} as {@code false}, which is the only kind of family such a graph could hold.
+     */
     private static final class Family implements Serializable {
 
         private static final long serialVersionUID = 1L;
@@ -403,10 +532,21 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         private final int index;
         private final ByteString[] qualifiers;
         private final CellValueCodec.FieldEncoder[] encoders;
+        private final boolean map;
+        @Nullable private final CellValueCodec.ElementEncoder keyEncoder;
+        @Nullable private final CellValueCodec.ElementEncoder valueEncoder;
 
         private Family(BigtableTableSchema.Family family, byte[] nullStringBytes) {
             this.name = family.getName();
             this.index = family.getIndex();
+            this.map = family.isMap();
+            // The plain encoder for the key: a null key is refused above rather than encoded.
+            this.keyEncoder = map ? CellValueCodec.elementEncoder(family.getMapKeyType()) : null;
+            this.valueEncoder =
+                    map
+                            ? CellValueCodec.nullableElementEncoder(
+                                    family.getMapValueType(), nullStringBytes)
+                            : null;
             List<BigtableTableSchema.Qualifier> declared = family.getQualifiers();
             this.qualifiers = new ByteString[declared.size()];
             this.encoders = new CellValueCodec.FieldEncoder[declared.size()];

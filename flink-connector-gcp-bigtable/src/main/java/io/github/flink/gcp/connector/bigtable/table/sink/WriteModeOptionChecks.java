@@ -79,6 +79,7 @@ public final class WriteModeOptionChecks {
                                     BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
                                     BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE,
                                     BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE,
+                                    BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE,
                                     BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
                                     BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
                                     BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES,
@@ -107,6 +108,7 @@ public final class WriteModeOptionChecks {
         if (mode == WriteMode.AGGREGATE) {
             rejected = new ArrayList<>(rejected);
             rejected.add(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE);
+            rejected.add(BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE);
             rejected.add(BigtableConnectorOptions.NULL_STRING_LITERAL);
         }
         for (ConfigOption<?> option : rejected) {

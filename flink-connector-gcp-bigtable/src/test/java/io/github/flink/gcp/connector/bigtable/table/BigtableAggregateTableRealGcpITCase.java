@@ -170,6 +170,96 @@ class BigtableAggregateTableRealGcpITCase extends AbstractBigtableRealGcpITCase 
         assertThat(readRows(destination)).isEmpty();
     }
 
+    /**
+     * Aggregate state read back through the three shapes that claim to read it: a {@code MAP}
+     * family DDL (ADR-0172), a {@code ROW} family DDL (ADR-0156's read DDL), and GoogleSQL for
+     * Bigtable, which presents a family as a map of latest values. The emulator has no aggregate
+     * families, so this is the only place the claim that the codec's {@code BIGINT} layout is the
+     * service's Int64 aggregate encoding is measured.
+     */
+    @Test
+    void aggregateStateReadsBackAlikeThroughMapRowAndGoogleSql() throws Exception {
+        String id = "aggregate-map-read";
+        TableDestination destination = tableDestination(id);
+        TableEnvironment env = environment();
+        env.executeSql(ddl(id, true, true, false));
+        env.executeSql(
+                        "INSERT INTO bt VALUES "
+                                + "('r', ROW(CAST(3 AS BIGINT)), ROW(CAST(3 AS BIGINT)), ROW(CAST(3 AS BIGINT)), ROW(CAST(3 AS BIGINT)), TO_TIMESTAMP_LTZ(1000, 3)),"
+                                + "('r', ROW(CAST(5 AS BIGINT)), ROW(CAST(5 AS BIGINT)), ROW(CAST(5 AS BIGINT)), ROW(CAST(5 AS BIGINT)), TO_TIMESTAMP_LTZ(1000, 3))")
+                .await();
+        Row raw = readRows(destination).get(0);
+        byte[] hll = raw.getCells("users", "q").get(0).getValue().toByteArray();
+        String read =
+                ") WITH ('connector'='bigtable', 'project'='"
+                        + PROJECT
+                        + "', 'instance'='"
+                        + destination.getInstance()
+                        + "', 'table'='"
+                        + id
+                        + "')";
+
+        env.executeSql(
+                "CREATE TABLE as_maps (rowkey STRING, totals MAP<BYTES, BIGINT>, "
+                        + "minimums MAP<BYTES, BIGINT>, maximums MAP<BYTES, BIGINT>, "
+                        + "users MAP<BYTES, BYTES>"
+                        + read);
+        org.apache.flink.types.Row fromMaps =
+                single(
+                        env,
+                        "SELECT rowkey, totals[x'71'], minimums[x'71'], maximums[x'71'], "
+                                + "users[x'71'], CARDINALITY(totals) FROM as_maps");
+        assertThat(fromMaps.getField(0)).isEqualTo("r");
+        assertThat(fromMaps.getField(1)).isEqualTo(8L);
+        assertThat(fromMaps.getField(2)).isEqualTo(3L);
+        assertThat(fromMaps.getField(3)).isEqualTo(5L);
+        assertThat((byte[]) fromMaps.getField(4)).isEqualTo(hll);
+        assertThat(fromMaps.getField(5)).isEqualTo(1);
+
+        env.executeSql(
+                "CREATE TABLE as_rows (rowkey STRING, totals ROW<q BIGINT>, "
+                        + "minimums ROW<q BIGINT>, maximums ROW<q BIGINT>, users ROW<q BYTES>"
+                        + read);
+        org.apache.flink.types.Row fromRows =
+                single(
+                        env,
+                        "SELECT rowkey, totals.q, minimums.q, maximums.q, users.q FROM as_rows");
+        assertThat(fromRows.getField(1)).isEqualTo(8L);
+        assertThat(fromRows.getField(2)).isEqualTo(3L);
+        assertThat(fromRows.getField(3)).isEqualTo(5L);
+        assertThat((byte[]) fromRows.getField(4)).isEqualTo(hll);
+
+        try (BigtableDataClient client =
+                        BigtableDataClient.create(PROJECT, destination.getInstance());
+                ResultSet result =
+                        client.executeQuery(
+                                client.prepareStatement(
+                                                "SELECT totals['q'] AS t, minimums['q'] AS mn,"
+                                                        + " maximums['q'] AS mx FROM `"
+                                                        + id
+                                                        + "`",
+                                                Map.of())
+                                        .bind()
+                                        .build())) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getLong("t")).isEqualTo(8L);
+            assertThat(result.getLong("mn")).isEqualTo(3L);
+            assertThat(result.getLong("mx")).isEqualTo(5L);
+            assertThat(result.next()).isFalse();
+        }
+    }
+
+    private static org.apache.flink.types.Row single(TableEnvironment env, String query)
+            throws Exception {
+        java.util.List<org.apache.flink.types.Row> rows = new java.util.ArrayList<>();
+        try (org.apache.flink.util.CloseableIterator<org.apache.flink.types.Row> it =
+                env.executeSql(query).collect()) {
+            it.forEachRemaining(rows::add);
+        }
+        assertThat(rows).hasSize(1);
+        return rows.get(0);
+    }
+
     private static TableEnvironment environment() {
         TableEnvironment env = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
         env.getConfig().getConfiguration().setString("restart-strategy.type", "none");

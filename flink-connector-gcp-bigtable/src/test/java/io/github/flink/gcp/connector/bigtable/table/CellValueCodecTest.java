@@ -18,12 +18,17 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.GenericArrayData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.data.binary.BinaryArrayData;
+import org.apache.flink.table.runtime.typeutils.ArrayDataSerializer;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.util.InstantiationUtil;
@@ -33,8 +38,10 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -629,6 +636,135 @@ class CellValueCodecTest {
         }
     }
 
+    /**
+     * A {@code MAP} family's keys and values are array elements, read through Flink's element
+     * getter and encoded by the field encoder. This holds the two paths to the same bytes, type by
+     * type and for both array representations, so the golden vectors cover both.
+     */
+    @Nested
+    class ElementEncoding {
+
+        @Test
+        void anElementEncodesToTheBytesAFieldOfTheSameValueDoes() {
+            int compared = 0;
+            for (Map.Entry<LogicalTypeRoot, LogicalType> sample : SAMPLES.entrySet()) {
+                LogicalType type = sample.getValue();
+                Object value = sampleValue(type);
+                if (value == null) {
+                    continue;
+                }
+                byte[] field = CellValueCodec.encoder(type).encode(GenericRowData.of(value), 0);
+                byte[] element =
+                        CellValueCodec.elementEncoder(type)
+                                .encode(new GenericArrayData(new Object[] {value}), 0);
+                assertThat(hex(element))
+                        .as("element bytes for root %s", sample.getKey())
+                        .isEqualTo(hex(field));
+                compared++;
+            }
+            // Every root checkSupported accepts has a sample value, so none passes unchecked.
+            long supported =
+                    SAMPLES.values().stream()
+                            .filter(
+                                    type -> {
+                                        try {
+                                            CellValueCodec.checkSupported("c", type);
+                                            return true;
+                                        } catch (ValidationException e) {
+                                            return false;
+                                        }
+                                    })
+                            .count();
+            assertThat((long) compared).isEqualTo(supported).isEqualTo(18L);
+        }
+
+        @Test
+        void aBinaryArrayElementEncodesAsItsGenericTwinDoes() {
+            // After a shuffle a map arrives as a BinaryMapData, whose decimal and timestamp
+            // accessors read the layout the declared precision selects — including a decimal too
+            // wide for the compact form.
+            List<LogicalType> types = new ArrayList<>();
+            for (LogicalType type : SAMPLES.values()) {
+                if (sampleValue(type) != null) {
+                    types.add(type);
+                }
+            }
+            types.add(DataTypes.DECIMAL(20, 2).getLogicalType());
+            for (LogicalType type : types) {
+                Object value =
+                        type.is(LogicalTypeRoot.DECIMAL)
+                                        && ((DecimalType) type).getPrecision() == 20
+                                ? DecimalData.fromBigDecimal(
+                                        new BigDecimal("-123456789012345678.90"), 20, 2)
+                                : sampleValue(type);
+                GenericArrayData generic = new GenericArrayData(new Object[] {value});
+                ArrayData binary = new ArrayDataSerializer(type).toBinaryArray(generic);
+                CellValueCodec.ElementEncoder encoder = CellValueCodec.elementEncoder(type);
+                assertThat(binary).isInstanceOf(BinaryArrayData.class);
+                assertThat(hex(encoder.encode(binary, 0)))
+                        .as("binary element bytes for %s", type)
+                        .isEqualTo(hex(encoder.encode(generic, 0)));
+            }
+        }
+
+        @Test
+        void aNullElementIsWrittenAsANullFieldIs() {
+            GenericArrayData nulls = new GenericArrayData(new Object[] {null});
+            assertThat(
+                            CellValueCodec.nullableElementEncoder(
+                                            DataTypes.STRING().getLogicalType(), NULL_STRING)
+                                    .encode(nulls, 0))
+                    .isEqualTo(NULL_STRING);
+            assertThat(
+                            CellValueCodec.nullableElementEncoder(
+                                            DataTypes.BIGINT().getLogicalType(), NULL_STRING)
+                                    .encode(nulls, 0))
+                    .isEmpty();
+            assertThat(
+                            CellValueCodec.nullableElementEncoder(
+                                            DataTypes.BYTES().getLogicalType(), NULL_STRING)
+                                    .encode(nulls, 0))
+                    .isEmpty();
+        }
+
+        /** A value of {@code type}'s internal representation, or null for an unsupported root. */
+        private Object sampleValue(LogicalType type) {
+            switch (type.getTypeRoot()) {
+                case CHAR:
+                case VARCHAR:
+                    return StringData.fromString("h\u00e9");
+                case BOOLEAN:
+                    return true;
+                case BINARY:
+                case VARBINARY:
+                    return new byte[] {0x00, (byte) 0xff, 0x7f};
+                case DECIMAL:
+                    return DecimalData.fromBigDecimal(new BigDecimal("-123.45"), 5, 2);
+                case TINYINT:
+                    return (byte) -2;
+                case SMALLINT:
+                    return (short) -300;
+                case INTEGER:
+                case DATE:
+                case INTERVAL_YEAR_MONTH:
+                case TIME_WITHOUT_TIME_ZONE:
+                    return -123_456;
+                case BIGINT:
+                case INTERVAL_DAY_TIME:
+                    return -1_234_567_890_123L;
+                case FLOAT:
+                    return -1.5f;
+                case DOUBLE:
+                    return -2.25d;
+                case TIMESTAMP_WITHOUT_TIME_ZONE:
+                case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                    return TimestampData.fromEpochMillis(1_700_000_000_123L);
+                default:
+                    return null;
+            }
+        }
+    }
+
     @Nested
     class Rejections {
 
@@ -680,6 +816,19 @@ class CellValueCodecTest {
                                             "cf.ts", DataTypes.TIMESTAMP_LTZ(9).getLogicalType()))
                     .isInstanceOf(ValidationException.class)
                     .hasMessageContaining("the cell stores milliseconds");
+        }
+
+        @Test
+        void aMapValueWithNoCellEncodingIsRejectedNamingItsColumn() {
+            assertThatThrownBy(
+                            () ->
+                                    CellValueCodec.checkMapValueSupported(
+                                            "m", DataTypes.ARRAY(DataTypes.INT()).getLogicalType()))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessage(
+                            "The map value of column 'm' has type ARRAY<INT>, which has no"
+                                    + " Bigtable cell encoding.");
+            CellValueCodec.checkMapValueSupported("m", DataTypes.BYTES().getLogicalType());
         }
 
         @Test
@@ -762,8 +911,10 @@ class CellValueCodecTest {
                 for (Object codec :
                         Arrays.asList(
                                 CellValueCodec.encoder(type),
+                                CellValueCodec.elementEncoder(type),
                                 CellValueCodec.decoder(type, TrailingBytes.IGNORE),
                                 CellValueCodec.nullableEncoder(type.copy(true), NULL_STRING),
+                                CellValueCodec.nullableElementEncoder(type.copy(true), NULL_STRING),
                                 CellValueCodec.nullableDecoder(
                                         type.copy(true), NULL_STRING, TrailingBytes.IGNORE))) {
                     assertThat(

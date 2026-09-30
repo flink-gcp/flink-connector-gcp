@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
 import org.junit.jupiter.api.Test;
@@ -183,20 +184,209 @@ class BigtableTableSchemaTest {
 
     @Test
     void anUnencodableRowKeyIsRejectedToo() {
-        // The row key goes through the same check as a cell, which is what keeps a MAP or an ARRAY
-        // from being read as "the atomic column" merely because it is not a ROW.
+        // The row key goes through the same check as a cell, which is what keeps an ARRAY from
+        // being read as "the atomic column" merely because it is neither a ROW nor a MAP.
         assertThatThrownBy(
                         () ->
                                 BigtableTableSchema.of(
                                         rowType(
                                                 DataTypes.FIELD(
                                                         "rowkey",
-                                                        DataTypes.MAP(
-                                                                DataTypes.STRING(),
-                                                                DataTypes.INT())))))
+                                                        DataTypes.ARRAY(DataTypes.STRING())))))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("'rowkey'")
                 .hasMessageContaining("no Bigtable cell encoding");
+    }
+
+    @Test
+    void aMapColumnIsAColumnFamilyBesideARowColumn() {
+        BigtableTableSchema schema =
+                BigtableTableSchema.of(
+                        rowType(
+                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                DataTypes.FIELD(
+                                        "cf1",
+                                        DataTypes.ROW(DataTypes.FIELD("q", DataTypes.STRING()))),
+                                DataTypes.FIELD(
+                                        "m", DataTypes.MAP(DataTypes.STRING(), DataTypes.BYTES())),
+                                DataTypes.FIELD(
+                                        "counts",
+                                        DataTypes.MAP(DataTypes.BYTES(), DataTypes.BIGINT()))));
+
+        assertThat(schema.getRowKeyIndex()).isZero();
+        assertThat(schema.getFieldCount()).isEqualTo(4);
+        assertThat(schema.getFamilies())
+                .extracting(BigtableTableSchema.Family::getName)
+                .containsExactly("cf1", "m", "counts");
+        BigtableTableSchema.Family row = schema.getFamilies().get(0);
+        BigtableTableSchema.Family map = schema.getFamilies().get(1);
+        BigtableTableSchema.Family counts = schema.getFamilies().get(2);
+        assertThat(row.isMap()).isFalse();
+        assertThat(map.isMap()).isTrue();
+        assertThat(map.getIndex()).isEqualTo(2);
+        assertThat(map.getQualifiers()).isEmpty();
+        assertThat(map.getMapKeyType()).isEqualTo(DataTypes.STRING().getLogicalType());
+        assertThat(map.getMapValueType()).isEqualTo(DataTypes.BYTES().getLogicalType());
+        assertThat(counts.getMapKeyType()).isEqualTo(DataTypes.BYTES().getLogicalType());
+        assertThat(counts.getMapValueType()).isEqualTo(DataTypes.BIGINT().getLogicalType());
+        assertThatThrownBy(row::getMapKeyType)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("'cf1' is not a MAP");
+    }
+
+    @Test
+    void twoSchemasDifferingOnlyInAMapValueTypeAreNotEqual() {
+        // The sink's equality rides on the schema's; a lost value type would let the planner
+        // reuse a sink that encodes the other type's layout.
+        BigtableTableSchema strings =
+                BigtableTableSchema.of(
+                        rowType(
+                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                DataTypes.FIELD(
+                                        "m",
+                                        DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()))));
+        BigtableTableSchema longs =
+                BigtableTableSchema.of(
+                        rowType(
+                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                DataTypes.FIELD(
+                                        "m",
+                                        DataTypes.MAP(DataTypes.STRING(), DataTypes.BIGINT()))));
+
+        assertThat(strings).isNotEqualTo(longs);
+        assertThat(strings.getFamilies().get(0)).isNotEqualTo(longs.getFamilies().get(0));
+    }
+
+    @Test
+    void anArrayMapValueOutsideTheHistoryShapeIsMerelyUnencodable() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableTableSchema.of(
+                                        rowType(
+                                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "m",
+                                                        DataTypes.MAP(
+                                                                DataTypes.STRING(),
+                                                                DataTypes.ARRAY(
+                                                                        DataTypes.INT()))))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("The map value of column 'm' has type ARRAY<INT>")
+                .hasMessageNotContaining("every version");
+    }
+
+    @Test
+    void aMapIsNotTheAtomicColumn() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableTableSchema.of(
+                                        rowType(
+                                                DataTypes.FIELD(
+                                                        "m",
+                                                        DataTypes.MAP(
+                                                                DataTypes.STRING(),
+                                                                DataTypes.BYTES())))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("needs one atomic column")
+                .hasMessageContaining("MAP<...>");
+    }
+
+    @Test
+    void aMapKeyIsAStringOrBytesOfAnyLength() {
+        for (DataType key :
+                new DataType[] {DataTypes.INT(), DataTypes.CHAR(3), DataTypes.BINARY(4)}) {
+            assertThatThrownBy(
+                            () ->
+                                    BigtableTableSchema.of(
+                                            rowType(
+                                                    DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                    DataTypes.FIELD(
+                                                            "m",
+                                                            DataTypes.MAP(
+                                                                    key, DataTypes.BYTES())))))
+                    .as("key type %s", key)
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Column 'm' is a MAP with key type")
+                    .hasMessageContaining("STRING or BYTES");
+        }
+    }
+
+    @Test
+    void aMapValueWithNoCellEncodingIsRejectedNamingTheColumn() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableTableSchema.of(
+                                        rowType(
+                                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "m",
+                                                        DataTypes.MAP(
+                                                                DataTypes.STRING(),
+                                                                DataTypes.ROW(
+                                                                        DataTypes.FIELD(
+                                                                                "a",
+                                                                                DataTypes
+                                                                                        .INT())))))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("The map value of column 'm' has type")
+                .hasMessageContaining("no Bigtable cell encoding");
+        assertThatThrownBy(
+                        () ->
+                                BigtableTableSchema.of(
+                                        rowType(
+                                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "m",
+                                                        DataTypes.MAP(
+                                                                DataTypes.STRING(),
+                                                                DataTypes.TIMESTAMP(6))))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("The map value of column 'm' has type")
+                .hasMessageContaining("precision");
+    }
+
+    @Test
+    void aVersionHistoryMapIsRejectedAsUnsupported() {
+        // GoogleSQL's with_history shape; recorded as a later form, not an unencodable value.
+        assertThatThrownBy(
+                        () ->
+                                BigtableTableSchema.of(
+                                        rowType(
+                                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "m",
+                                                        DataTypes.MAP(
+                                                                DataTypes.BYTES(),
+                                                                DataTypes.ARRAY(
+                                                                        DataTypes.ROW(
+                                                                                DataTypes.FIELD(
+                                                                                        "timestamp",
+                                                                                        DataTypes
+                                                                                                .TIMESTAMP(
+                                                                                                        3)),
+                                                                                DataTypes.FIELD(
+                                                                                        "value",
+                                                                                        DataTypes
+                                                                                                .BYTES()))))))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Column 'm' is a MAP whose values are")
+                .hasMessageContaining("reading every version of a cell is not supported");
+    }
+
+    @Test
+    void aMapFamilyNameWithAColonIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableTableSchema.of(
+                                        rowType(
+                                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "ns:m",
+                                                        DataTypes.MAP(
+                                                                DataTypes.STRING(),
+                                                                DataTypes.BYTES())))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'ns:m' contains ':'");
     }
 
     @Test
