@@ -23,7 +23,7 @@ limitations under the License.
 # Dynamic destinations
 
 One sink instance can route records to many tables, topics or queues without splitting the stream into one sink per destination.
-BigQuery, Cloud Pub/Sub, Cloud Tasks and Bigtable express that choice through a `destinationResolver`, while Spanner takes the table from each serialized `Mutation`.
+BigQuery, Cloud Pub/Sub, Cloud Tasks and Bigtable express that choice through a `destinationResolver`, while Spanner takes the table from each serialized `Mutation` and Firestore takes the document path from each serialized `FirestoreWrite`.
 
 The examples below start from each connector's [Quickstart]({{< relref "docs/quickstart" >}}) job and replace its fixed destination with record-driven routing.
 The connector example pages carry the surrounding job and the detailed options.
@@ -58,6 +58,7 @@ The resolver cache holds names, while the sink creates the client-side resource 
 | Cloud Tasks | `QueueDestination` from `destinationResolver` | None; one client serves every queue | Not needed | Not supported |
 | Bigtable | `TableDestination` from `destinationResolver` | One bulk mutation batcher per table; data clients are shared by project and instance | Yes | Opt-in with a declared table schema |
 | Spanner | Table name in the serialized `Mutation` | None per table; one database client and one shared mutation batch | Not needed | Not supported |
+| Firestore | Document path in the serialized `FirestoreWrite` | None per collection; one client and one `BulkWriter` | Not needed | Not needed; a collection exists once it holds a document |
 
 Parallel sink subtasks own these resources independently.
 For example, four subtasks that each see ten Pub/Sub topics can hold forty publishers even though every subtask uses the same resolver code.
@@ -71,7 +72,7 @@ FILE_LOADS finishes an idle destination file after its configured timeout, finis
 Bigtable sweeps idle table batchers after a successful non-end-of-input flush and rebuilds one transparently if the table becomes active again.
 Pub/Sub similarly sweeps clean idle publishers, releases the least-recently-used clean publisher when its active limit is reached, and recreates one transparently if the topic becomes active again.
 If the pinned Pub/Sub SDK does not finish a running-task publisher shutdown within its configured budget, the writer fails before opening a replacement rather than letting destination churn accumulate abandoned resources.
-Cloud Tasks and Spanner have no per-routed-destination service client state to evict.
+Cloud Tasks, Spanner and Firestore have no per-routed-destination service client state to evict.
 
 ## BigQuery tables
 
@@ -130,6 +131,16 @@ The writer batches mutations from several tables together and reads cell weights
 Every table must already exist, and the serializer must preserve the sink's at-least-once idempotence requirements for each mutation.
 The [Spanner examples]({{< relref "docs/examples/spanner" >}}#writing-to-several-tables-from-one-sink) cover deletes, skipped records and failure routing beside the same table-selection mechanism.
 
+## Firestore collections
+
+Firestore fixes the sink to one database and takes the document path, and so the collection, from the `FirestoreWrite` returned by the serializer.
+There is no resolver SPI for the same reason as Spanner's: a second routing decision could disagree with the path the write names.
+
+{{< java-snippet file="DynamicDestinationsFirestoreCollections.java" tag="firestore-collections" >}}
+
+Firestore creates a collection with its first document, so a generated collection needs no provisioning, and a path may name a subcollection under any document.
+The [Firestore examples]({{< relref "docs/examples/firestore" >}}) cover merges, deletes and failure routing beside the same path-based routing.
+
 ## Creating generated destinations
 
 Auto-creation applies to the complete set the resolver can produce, not only to the destination present when the job starts.
@@ -139,6 +150,7 @@ The configuration attached to the sink is reused whenever a generated destinatio
 - **Pub/Sub topics**: the create disposition decides whether a missing topic is created, and one `TopicCreateOptions` value applies to every created topic.
 - **Bigtable tables**: creation is opt-in and requires one `TableCreateOptions` schema whose declared column families apply to every created table.
 - **Cloud Tasks queues and Spanner tables**: the sinks do not create them, so every generated name must exist before records are routed to it.
+- **Firestore collections**: nothing to create, since a collection exists once a document is written to it; the database itself must exist.
 
 A resolver over an unconstrained tenant ID can turn one configuration mistake into one resource per input value.
 Bound the destination set before enabling creation, and use each connector page's creation section to choose the required service settings and permissions.

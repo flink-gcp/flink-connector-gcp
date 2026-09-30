@@ -37,7 +37,7 @@ limitations under the License.
     </properties>
 
     <dependencies>
-        <!-- The snippets exercise the public DataStream APIs of all five connectors. Test scope
+        <!-- The snippets exercise the public DataStream APIs of all six connectors. Test scope
              keeps this internal module from becoming an API dependency aggregator. -->
         <dependency>
             <groupId>io.github.flink-gcp</groupId>
@@ -66,6 +66,12 @@ limitations under the License.
         <dependency>
             <groupId>io.github.flink-gcp</groupId>
             <artifactId>flink-connector-gcp-spanner</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-firestore</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0160: Lineage reports configured resources through a shared listener contract
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Bigtable adoption (2026-09-07)
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272)
-- Modules: base, test-utils, pubsub, cloudtasks, bigtable, all SQL connector artifacts
+- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27)
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540)
+- Modules: base, test-utils, bigquery, pubsub, cloudtasks, bigtable, spanner, firestore, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
 
@@ -220,3 +220,10 @@ The MutateRows copy also retains the aggregate mode's initial destination and ex
 All six write modes keep their existing `SinkV2Provider` routing, and both scan families keep `SourceProvider`.
 The Change Streams envelope and selected-cell modes identify only the data table; coordinator state stays in Flink checkpoints under ADR-0097.
 Lookup joins and result-emitting Async I/O/SQL functions remain outside this Source/Sink contract.
+
+## Firestore adoption
+
+The Firestore sink ([#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540)) implements `LineageVertexProvider` through `Lineage.sink` with an empty resource list.
+Its configuration names a database, and each `FirestoreWrite` names its own document path, so the collections a job writes are the serializer's and extraction never invokes it; this is the Spanner mutations-sink case.
+No Firestore resource kind is added to `LineageIdentifiers` yet: the first configuration that names a fixed collection is the Table API sink ([#1544](https://github.com/flink-gcp/flink-connector-gcp/issues/1544)), which adds the kind together with its first use.
+`FirestoreBulkWriterSinkTest` inspects the builder result before and after a serialization round trip with an unreadable key-file path, and `FirestoreLineageGraphTest` exercises Flink 2.x DataStream extraction.

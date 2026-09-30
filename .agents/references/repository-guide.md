@@ -6,7 +6,7 @@ the build, CI, compatibility policy, packaging, documentation architecture, or i
 
 ## Project overview
 
-GCP connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
+GCP connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 Independent OSS project — not affiliated with the Apache Software Foundation or Google.
 Maven multi-module build based on `org.apache.flink:flink-connector-parent`, with Google Cloud
 dependencies managed through `com.google.cloud:libraries-bom`.
@@ -646,7 +646,10 @@ facts); the rules a session needs:
   three tagged `.sql` sources of the source-backed SQL snippets, together with the two plan
   expectations in `DocumentationSqlPlanTest` that quote those jar names. That class's
   `releaseDocSurfacesNameOneReleasedVersion` holds all of those surfaces to one version, so a
-  partial bump fails. The bump merges before the tag, because the tag freezes those surfaces
+  partial bump fails. A release that first publishes a module also removes that module's
+  "not released yet" markers (the README modules table, the site front page's connector table, the
+  quickstart index, and the module's quickstart and DataStream pages) and adds it to the quickstart's list of artifact ids; no test holds those. The
+  bump merges before the tag, because the tag freezes those surfaces
   on that release's documentation line (ADR-0159). A follow-up PR then bumps the working tree to the next
   `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
   rides the CI Maven cache — measured on #728, the cache archives the whole local repository
@@ -669,7 +672,7 @@ facts); the rules a session needs:
   lines: bare `X.Y.Z` built for the 2.x range (ADR-0053's one artifact) and `X.Y.Z-1.20` built
   for the 1.x LTS — the recipe adds `-Dflink.compat=flink1` itself, requires the matching
   `-Dflink.version=1.20.<patch>`, and refuses a mislabelled pairing in either direction. The
-  published set per line is 12 artifacts — the parent POM, base, five connectors, five SQL
+  published set per line is 13 artifacts — the parent POM, base, six connectors, five SQL
   uber-jars; `flink-connector-gcp-test-utils`
   skips itself in its own POM (test-scope-only consumption; freezing its API buys users
   nothing), and the signing key is a dedicated project release key read from
@@ -951,6 +954,11 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   edition, what the service turned out to answer where only the emulator had been asked, and the
   measured 100 MiB batch-write request ceiling (#441).
   Recorded in ADRs (`docs/adr/0075`–`0077`, `0085`, `0088`)
+- `.agents/references/modules/flink-connector-gcp-firestore.md` — one module with two package roots
+  for Firestore Native and Datastore modes (#355), and the Native-mode sink (#1540): the
+  `BulkWriter` write path, the two client-library defects it works around, solo confirmation of
+  `INVALID_ARGUMENT`, the routed set and `preconditionFailurePolicy`. Recorded in ADRs
+  (`docs/adr/0170`, `0171`)
 - `.agents/references/modules/flink-connector-gcp-test-utils.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

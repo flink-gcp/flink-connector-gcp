@@ -25,10 +25,11 @@ import org.testcontainers.utility.DockerImageName;
  * The Bigtable emulator image shared by every harness that starts the emulator, so they cannot
  * drift apart.
  *
- * <p>The sibling of {@code testutils.pubsub.PubSubEmulatorContainers}, which pins the same gcloud
- * CLI image in a constant of its own — emulator fixtures are deliberately not unified (issue #27) —
- * so a bump here moves the two Bigtable harnesses only, and a bump meant to move every emulator
- * edits both classes.
+ * <p>The sibling of {@code testutils.pubsub.PubSubEmulatorContainers} and {@code
+ * testutils.firestore.FirestoreEmulatorContainers}, which pin the same gcloud CLI image in
+ * constants of their own — emulator fixtures are deliberately not unified (issue #27) — so a bump
+ * here moves the two Bigtable harnesses only, and a bump meant to move every emulator edits all
+ * three classes.
  */
 @Internal
 public final class BigtableEmulatorContainers {
@@ -41,8 +42,8 @@ public final class BigtableEmulatorContainers {
      * oldest surviving tag was {@code 537.0.0-emulators} and the newest {@code 583.0.0-emulators}.
      *
      * <p>A bump has to run this module's deviation suites and say what moved — the 2026-09-01
-     * rotation moved three measured rows. {@code PubSubEmulatorContainers} pins the same image
-     * separately and has to move with it.
+     * rotation moved three measured rows. {@code PubSubEmulatorContainers} and {@code
+     * FirestoreEmulatorContainers} pin the same image separately and have to move with it.
      */
     private static final DockerImageName IMAGE =
             DockerImageName.parse(

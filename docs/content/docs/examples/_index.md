@@ -41,6 +41,7 @@ says which advanced cases this section currently contains.
 | Cloud Tasks: [Quickstart]({{< relref "docs/quickstart/cloudtasks" >}}), [Examples]({{< relref "docs/examples/cloudtasks" >}}), [DataStream]({{< relref "docs/connectors/datastream/cloudtasks" >}}), [Table]({{< relref "docs/connectors/table/cloudtasks" >}}) | Task delivery | Dynamic queue destinations; HTTP and App Engine targets | HTTP or App Engine sink; writable task and request metadata |
 | Bigtable: [Quickstart]({{< relref "docs/quickstart/bigtable" >}}), DataStream [source]({{< relref "docs/examples/bigtable" >}}#datastream-source) and [sink]({{< relref "docs/examples/bigtable" >}}#datastream-sink), Table [source]({{< relref "docs/examples/bigtable" >}}#table-source), [sink]({{< relref "docs/examples/bigtable" >}}#table-sink), and [lookup]({{< relref "docs/examples/bigtable" >}}#lookup-joins), [Change Streams]({{< relref "docs/examples/bigtable" >}}#change-streams), [DataStream reference]({{< relref "docs/connectors/datastream/bigtable" >}}), [Table reference]({{< relref "docs/connectors/table/bigtable" >}}) | Wide-column store | Row-range splits; dynamic table destinations; Change Streams | Scan pushdown; upsert and insert-only sink modes; writable cell timestamps; lookup modes and caching; envelope and selected-cell CDC composition |
 | Spanner: [Quickstart]({{< relref "docs/quickstart/spanner" >}}), [Examples]({{< relref "docs/examples/spanner" >}}), [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}), [Table]({{< relref "docs/connectors/table/spanner" >}}) | Relational database | Partitioned snapshots and queries; mutation table routing; Change Streams | Scan pushdown; lookup modes and caching; keyed CDC-to-upsert composition |
+| Firestore: [Quickstart]({{< relref "docs/quickstart/firestore" >}}), [Examples]({{< relref "docs/examples/firestore" >}}), [DataStream]({{< relref "docs/connectors/datastream/firestore" >}}) | Document database | Document-path routing; at-least-once throttled writes | Not applicable yet ([#1544]({{< param BookRepo >}}/issues/1544)) |
 
 The Bigtable and Spanner Table paths describe compatible changelog shapes, not a stronger
 replication guarantee; see the [Table capability map]({{< relref "docs/connectors/table" >}}) for
@@ -50,20 +51,21 @@ the endpoint caveat.
 
 | Page | Covers |
 |---|---|
-| [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) | The shared resolver contract, per-destination resources, idle eviction, auto-creation and Pub/Sub ordering across all five sinks |
+| [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) | The shared resolver contract, per-destination resources, idle eviction, auto-creation and Pub/Sub ordering across all six sinks |
 | [BigQuery]({{< relref "docs/examples/bigquery" >}}) | DataStream table, query, view, snapshot and public-dataset reads; dynamic destinations, both exactly-once write methods, redeployment and table auto-creation; a bounded Table source and an append-only Table sink with all three write methods; Debezium MySQL, Debezium PostgreSQL, TiCDC and Spanner analytics-replica CDC; and the emulator |
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | DataStream subscription and topic creation, dynamic topics, Table source startup and ordering, readable and writable message metadata, and the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Dynamic queues; App Engine, Cloud Run function and external API tasks; Pub/Sub events enriched from Bigtable; JSON, CSV, raw and Avro bodies; the emulator |
 | [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Bounded and filtered DataStream reads; multi-cell and dynamic-table writes, skipping and dropping records; Table scans, upsert and insert-only sinks, writable timestamps, and lookup joins; Pub/Sub attribute enrichment into Cloud Tasks; envelope CDC and a selected-cell BigQuery analytics replica; application profiles and the emulator |
 | [Spanner]({{< relref "docs/examples/spanner" >}}) | DataStream key-range, fixed-timestamp and Data Boost reads; multi-table routing, deletes, skipping, refusal handling and batching; bounded Table scans, upsert writes and lookup joins; full and keyed Change Streams with observable Spanner-to-Spanner materialization; and the emulator |
+| [Firestore]({{< relref "docs/examples/firestore" >}}) | DataStream merges, deletes, conditional updates, dropping refused writes, and the emulator |
 
-Two things cut across most of them, and are stated once here rather than five times.
+Two things cut across most of them, and are stated once here rather than six times.
 
 ## Dynamic per-record destinations share one shape
 
 The [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) guide expands this
-shared shape into one implementation path for all five sinks.
-It covers the resolver contract, Spanner's mutation-inherent table routing, destination identity,
+shared shape into one implementation path for all six sinks.
+It covers the resolver contract, Spanner's mutation-inherent table routing, Firestore's write-inherent document routing, destination identity,
 resource lifetimes, idle eviction, auto-creation and Pub/Sub ordering.
 
 ## An emulator is a convenience, not an authority

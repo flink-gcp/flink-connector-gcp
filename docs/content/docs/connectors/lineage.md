@@ -26,12 +26,12 @@ The shared lineage contract describes the physical resources known from a connec
 It does not discover resources at runtime or infer them by inspecting records.
 [BigQuery DataStream]({{< relref "docs/connectors/datastream/bigquery#lineage" >}}) and [Table/SQL]({{< relref "docs/connectors/table/bigquery#lineage" >}}) implement this contract for configured table inputs and fixed outputs, including explicitly named view materialization and default-stream CDC.
 [Bigtable DataStream]({{< relref "docs/connectors/datastream/bigtable#lineage" >}}) and [Table/SQL]({{< relref "docs/connectors/table/bigtable#lineage" >}}) implement configured-table lineage for scans, Change Streams and all sink write modes.
-Connector adoption remains tracked separately for [Pub/Sub]({{< param BookRepo >}}/issues/1271), [Spanner]({{< param BookRepo >}}/issues/1273), and [Cloud Tasks]({{< param BookRepo >}}/issues/1274).
 The common graph and listener tests establish the shared contract.
 Pub/Sub and Bigtable also test extraction against their builder-returned Source/Sink objects and SQL planners.
 Pub/Sub covers multiple subscriptions and ordering-key routing; Bigtable covers scans, bounded and unbounded Change Streams, and every Table write mode.
 Spanner implements the contract for the paths documented in its [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}) and [Table]({{< relref "docs/connectors/table/spanner" >}}) references.
 The [Cloud Tasks guide]({{< relref "docs/connectors/datastream/cloudtasks" >}}#lineage) describes its fixed-queue coverage for DataStream and Table/SQL; its connector tests exercise the builder-returned sink, listener delivery and planner facets.
+The [Firestore sink]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) reports an empty dataset list, because its serializer, not its configuration, names the collections it writes.
 
 ## Metadata and resource identities
 

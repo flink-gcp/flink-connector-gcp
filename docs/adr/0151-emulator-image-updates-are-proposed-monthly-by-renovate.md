@@ -46,7 +46,7 @@ The repository guard uses its immutable ID so forks stay excluded after a reposi
 
 One regex manager reads the complete image literals from the `IMAGE` declarations in `*EmulatorContainers.java`, including both String and DockerImageName initializers.
 Docker versioning preserves the `-emulators` compatibility suffix.
-The five declarations describe four images: Bigtable and Pub/Sub share the Cloud SDK image and update together.
+The six declarations describe four images: Bigtable, Pub/Sub and Firestore share the Cloud SDK image and update together.
 All updates share one branch and pull request, including updates Renovate classifies as major; a monthly run need not create a new pull request if there are no updates or one is already open.
 The other managers, dependency dashboard and onboarding stay disabled.
 The workflow supplies global log remaps for Docker package lookup failures, `Host error`, `Git error - aborting`, and missing, disabled or invalid repository configuration, so these paths produce a non-zero exit.
@@ -70,7 +70,7 @@ A hosted Renovate App would add an installation when the existing App already gr
 ## Consequences
 
 Updates arrive as draft pull requests in the repository's WHAT/WHY format.
-Their bodies ask for the Bigtable deviation suites' verdict (ADR-0044) and, when Spanner changes, the pinned-emulator measurements recorded in ADR-0075 and ADR-0077.
+Their bodies ask for the Bigtable deviation suites' verdict (ADR-0044), the Firestore rejection and defect suites' verdicts (ADR-0171) and, when Spanner changes, the pinned-emulator measurements recorded in ADR-0075 and ADR-0077.
 They also ask reviewers to update the current `docker run` instructions in the Spanner and Cloud Tasks example pages when those images move; the manager updates only the Java declarations.
 The existing CI selection follows changes in test-utils through its consumers; a human reviews the results and merges, and automerge stays disabled.
 
