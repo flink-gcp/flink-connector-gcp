@@ -110,6 +110,30 @@ SELECT rowkey, CAST(profile[CAST('name' AS BYTES)] AS STRING) AS name
 FROM profiles_as_maps;
 -- end::map-families[]
 
+-- tag::aggregate-map-family[]
+CREATE TABLE page_activity (
+  rowkey STRING,
+  visits MAP<STRING, BIGINT>,
+  visitors MAP<STRING, BIGINT>,
+  bucket TIMESTAMP_LTZ(6) METADATA FROM 'timestamp'
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'pages',
+  'sink.write-mode' = 'aggregate',
+  'sink.aggregate.column-family-types' = 'visits:int64-sum,visitors:int64-hll'
+);
+
+-- The day and the campaign are data: each entry adds to the qualifier its key names.
+-- A fixed bucket timestamp makes every contribution address the same cell version.
+INSERT INTO page_activity
+VALUES ('page-1',
+        MAP['2026-09-30', CAST(1 AS BIGINT)],
+        MAP['spring-sale', CAST(4211 AS BIGINT)],
+        TO_TIMESTAMP_LTZ(0, 3));
+-- end::aggregate-map-family[]
+
 -- tag::change-stream-envelope[]
 CREATE TABLE profile_mutations (
   row_key BYTES,

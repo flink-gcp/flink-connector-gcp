@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0155: Read-modify-write rules preserve order and return changed cells
 
 - Status: Accepted
-- Date: 2026-09-06
+- Date: 2026-09-06; refined 2026-09-30 (`MAP` column families, [#1569](https://github.com/flink-gcp/flink-connector-gcp/issues/1569))
 - Issue: [#1180](https://github.com/flink-gcp/flink-connector-gcp/issues/1180)
 - Refines: ADR-0148
 
@@ -59,7 +59,8 @@ It retains the existing row-key and family/qualifier schema.
 Append accepts CHAR, VARCHAR, BINARY and VARBINARY cells using the existing codec; increment accepts BIGINT cells as signed increments.
 The DDL types describe each input operand, not a bound on the accumulated stored value.
 Rules follow family and qualifier declaration order.
-NULL families and cells omit operations, regardless of `null-string-literal`; an input with no remaining rule fails.
+A `MAP` column family (ADR-0172) contributes one rule per entry, addressed by the qualifier its key encodes, in the order the map presents its entries; its value type is the operand type and is checked as a qualifier's is.
+NULL families, cells and map values omit operations, regardless of `null-string-literal`; an input with no remaining rule, empty maps included, fails.
 A null or empty row key and an empty append value fail too.
 Only INSERT input is accepted, preserving repeated inputs rather than materializing an upsert.
 The SQL sink waits for completion and discards the returned row; result-emitting SQL functions remain in [#1181](https://github.com/flink-gcp/flink-connector-gcp/issues/1181).

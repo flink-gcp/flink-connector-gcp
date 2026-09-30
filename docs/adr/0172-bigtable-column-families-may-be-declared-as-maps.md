@@ -17,10 +17,12 @@ limitations under the License.
 # ADR-0172: Bigtable column families may be declared as maps
 
 - Status: Accepted
-- Date: 2026-09-27; refined 2026-09-28 (option name, keep-latest mutation counts, real-Bigtable measurement)
+- Date: 2026-09-27; refined 2026-09-28 (option name, keep-latest mutation counts, real-Bigtable measurement);
+  refined 2026-09-30 (map families in `aggregate`, `append` and `increment`)
 - Issues: [#1215](https://github.com/flink-gcp/flink-connector-gcp/issues/1215) (under
   [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212); prerequisite of
-  [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216))
+  [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216));
+  [#1569](https://github.com/flink-gcp/flink-connector-gcp/issues/1569) (the per-entry modes)
 - Modules: bigtable, docs-validation
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -71,9 +73,22 @@ The explicit `timestamp` metadata applies to every entry and its absence takes A
 Keep-latest deletes each written column under `merge`; behind a family delete the column delete removes nothing more, so `replace` omits it.
 The staged runtime (ADR-0163) accepts `DeleteFromFamily` on a data family, and its `-D` already deletes every declared family, a map family included.
 
-**Map families are written in `upsert`, `keep-latest` and `insert-if-absent` and under checkpoint-owned delivery.**
-`append`, `increment` and `aggregate` reject a map family: their per-qualifier rules would need a per-entry form, and a family with no declared qualifiers would otherwise pass their type checks vacuously.
+**Map families are written in every mode but `conditional`, and under checkpoint-owned delivery.**
 The update-mode option is rejected under every mode but `upsert` and `keep-latest` (under `insert-if-absent` the row is absent, so there is nothing to replace), and on a table that declares no map family, where it could change nothing.
+
+**`aggregate`, `append` and `increment` write one operation per entry** (#1569, 2026-09-30).
+Each non-null entry becomes one `AddToCell` under `aggregate`, and one read-modify-write rule under `append` and `increment`, addressed by the qualifier its key encodes.
+The operand type these modes check per `ROW` qualifier is checked on the map's value type at planning: an integer type for `aggregate` (ADR-0156), `BIGINT` for `increment` and a character-string or binary type for `append` (ADR-0155).
+A map family with no declared qualifiers therefore gets the same type check as a `ROW` family instead of passing it vacuously, which is why these modes rejected it before.
+A null value contributes nothing, as a null `ROW` qualifier does, and a null key fails the record with the message the other modes use.
+An input left with no operation fails with each mode's existing rejection, which now names empty maps too.
+`aggregate` stamps each entry with the explicit timestamp or, when it is absent, reads the writer clock once per entry (ADR-0149).
+Read-modify-write rules follow the family declaration order and, inside a map family, the order the map presents its entries. Distinct keys address distinct cells, so for them that order changes no result; a `BYTES`-keyed map built outside SQL can hold two equal keys, since a `byte[]` hashes by identity, and those become two rules on one cell, applied in map order.
+
+Two questions the issue left open were settled with the design:
+
+- `sink.map-family.update-mode` stays rejected in these modes. A contribution and a rule add to the current cell rather than replace it, and `replace` would need a `DeleteFromFamily` ahead of the rules, which a `ReadModifyWriteRow` request cannot carry.
+- The read-modify-write SQL sink gains no way to report changed cells. It already discards the `ReadModifyWriteRow` answer (ADR-0155); the DataStream `ReadModifyWriteRequest` already takes any binary qualifier; and the async SQL functions (ADR-0161) build their rules from named templates rather than from the table's family schema, so a map family reaches none of them.
 
 ## Evidence
 
@@ -95,12 +110,28 @@ Measured 2026-09-27 against the pom-pinned Flink 2.2.1 and the Bigtable emulator
 - The array-element encoder reads an element through Flink's `ArrayData.createElementGetter` and encodes it with the field encoder of the same type, so there is one layout switch; `CellValueCodecTest` holds both paths to the same bytes for every supported type root, from a generic and from a binary array, including a decimal too wide for the compact layout.
 - A map family makes the mutations per entry data-dependent, and google-cloud-bigtable 2.82.0 bounds them twice: `Mutation` refuses the 100,001st as it is added ("Too many mutations per row"), and `RowMutationEntry.toProto()` checks the same bound again. `Mutation` also refuses a mutation that would take the entry past 200 MiB ("Byte size of mutations is too large") at the same point, so a map of few but large values fails the same way. The first fires inside `serialize()`, so the writer routes an oversized map as a serialization failure, never reaching the `toProto()` it calls outside that path; the serializer adds no check of its own. The staged writer (ADR-0163) has no routing path and bounds a staged entry at 99,999 mutations plus its marker, so there an oversized map fails the job. The test pins that an entry at the bound builds its proto and one past it fails inside `serialize()`.
 
+Measured 2026-09-30 for the per-entry modes, against the same Flink and client, real Bigtable and the emulator:
+
+- **Aggregate contributions through a map family** (real Bigtable, gated
+  `BigtableAggregateTableRealGcpITCase.mapFamiliesContributeToQualifiersThatAreData`, an ephemeral
+  one-node instance, all six cases of the class passing): two inputs through map families typed
+  SUM, MIN, MAX and HLL, one entry carrying a null value, read SUM 8 and 4 for two day keys, MIN 3
+  and MAX 5 through `MAP<BYTES, BIGINT>`, with the null-valued key absent. GoogleSQL agreed on every
+  value, and `HLL_COUNT.EXTRACT` counted 2 and 1 distinct inputs for two campaign keys. The class
+  took 1,939 s against about 334 s on 2026-09-28; the unchanged cases slowed alike
+  (`aggregateStateReadsBackAlikeThroughMapRowAndGoogleSql` 502 s against 81 s), so the slowdown is
+  not attributed to this change, and its cause was not investigated.
+
+- `AddToCell` counts toward the client's per-entry bound as `SetCell` does: google-cloud-bigtable 2.82.0's `Mutation.addToCell` goes through the same `addMutation` check. An aggregate entry of 100,000 map contributions builds its proto, and the 100,001st fails inside `serialize()` with "Too many mutations per row", so the writer routes it as a serialization failure (`RowDataAggregateSerializationSchemaTest`).
+- `ReadModifyWriteRequest` holds at most 100,000 rules; a map of 100,001 non-null entries fails in its constructor, inside `serialize()`, where `SingleRowRequestWriter` routes any exception as a serialization failure. The serializer adds no check of its own.
+- On the emulator, increments of three inputs for one row (one carrying a null value) and an append to a pre-existing cell read back through a `MAP` read DDL as the sums, the appended string and an untouched undeclared qualifier; a map holding only null values fails the record with the existing message (`BigtableReadModifyWriteTableITCase`).
+
 ## Alternatives declined
 
 - **`BYTES` values only.** It is enough for a catalog, but a Flink query could then read no number out of a map family.
 - **`merge` only, or `replace` only.** Each loses a real use: `merge` cannot remove an entry from SQL, and `replace` cannot accumulate qualifiers. The owner chose the option with the conservative default.
 - **An empty map for a family with no cell.** It would make the pushed `m IS NOT NULL` prefilter drop rows the residual predicate keeps.
-- **Map families in `append`, `increment` and `aggregate`.** Deferred until asked for; each needs a per-entry rule and its own tests.
+- **Keeping `append`, `increment` and `aggregate` closed to map families.** Declined on 2026-09-30 (#1569): without a per-entry form SQL cannot contribute to a qualifier that is data, such as a counter per day or an HLL per campaign, which is the shape aggregate families are built for.
 - **Naming the option `sink.map-family.write-semantics`.** No other option in the repository uses `-semantics`, and the Bigtable sink options nearest it in shape, `sink.write-mode` and `sink.insert-only-input-mode`, end in `-mode`, so the owner chose `update-mode` (2026-09-28); `write-mode` was avoided because `sink.write-mode` already selects the operation. Enum options are not uniformly suffixed (`sink.delivery-guarantee`, `sink.create-disposition` and `decode.trailing-bytes` are among the exceptions), so this follows the nearest siblings rather than a repository-wide rule.
 - **An update-mode setting per family.** `sink.aggregate.column-family-types` shows the connector can key an option by family, but no case yet needs one table to merge one map family and replace another; a per-family option can be added later beside the table-wide one.
 

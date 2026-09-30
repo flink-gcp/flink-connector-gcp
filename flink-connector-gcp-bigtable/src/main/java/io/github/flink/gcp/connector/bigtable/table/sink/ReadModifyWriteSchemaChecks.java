@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
@@ -40,32 +41,29 @@ public final class ReadModifyWriteSchemaChecks {
         }
         for (BigtableTableSchema.Family family : schema.getFamilies()) {
             if (family.isMap()) {
-                // Not yet a read-modify-write input (ADR-0172): its rules would be per entry, and
-                // a family with no declared qualifiers must not pass the loop below vacuously.
-                throw new ValidationException(
-                        "Bigtable 'sink.write-mode' = '"
-                                + mode
-                                + "' does not support MAP column family '"
-                                + family.getName()
-                                + "'; declare its qualifiers as a ROW<...>.");
-            }
-            for (BigtableTableSchema.Qualifier qualifier : family.getQualifiers()) {
-                LogicalTypeRoot type = qualifier.getType().getTypeRoot();
-                boolean valid =
-                        mode == WriteMode.INCREMENT
-                                ? type == LogicalTypeRoot.BIGINT
-                                : type == LogicalTypeRoot.CHAR
-                                        || type == LogicalTypeRoot.VARCHAR
-                                        || type == LogicalTypeRoot.BINARY
-                                        || type == LogicalTypeRoot.VARBINARY;
-                if (!valid) {
+                // A map's rules are per entry (ADR-0172), so its value type is the operand type.
+                LogicalType type = family.getMapValueType();
+                if (!accepts(mode, type)) {
                     throw new ValidationException(
                             "Bigtable 'sink.write-mode' = '"
                                     + mode
                                     + "' requires "
-                                    + (mode == WriteMode.INCREMENT
-                                            ? "BIGINT"
-                                            : "CHAR, VARCHAR, BINARY or VARBINARY")
+                                    + accepted(mode)
+                                    + " values; MAP column family '"
+                                    + family.getName()
+                                    + "' has value type "
+                                    + type.asSummaryString()
+                                    + ".");
+                }
+                continue;
+            }
+            for (BigtableTableSchema.Qualifier qualifier : family.getQualifiers()) {
+                if (!accepts(mode, qualifier.getType())) {
+                    throw new ValidationException(
+                            "Bigtable 'sink.write-mode' = '"
+                                    + mode
+                                    + "' requires "
+                                    + accepted(mode)
                                     + " cells; column '"
                                     + family.getName()
                                     + "."
@@ -76,5 +74,19 @@ public final class ReadModifyWriteSchemaChecks {
                 }
             }
         }
+    }
+
+    private static boolean accepts(WriteMode mode, LogicalType type) {
+        LogicalTypeRoot root = type.getTypeRoot();
+        return mode == WriteMode.INCREMENT
+                ? root == LogicalTypeRoot.BIGINT
+                : root == LogicalTypeRoot.CHAR
+                        || root == LogicalTypeRoot.VARCHAR
+                        || root == LogicalTypeRoot.BINARY
+                        || root == LogicalTypeRoot.VARBINARY;
+    }
+
+    private static String accepted(WriteMode mode) {
+        return mode == WriteMode.INCREMENT ? "BIGINT" : "CHAR, VARCHAR, BINARY or VARBINARY";
     }
 }

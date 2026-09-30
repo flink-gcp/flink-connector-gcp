@@ -161,7 +161,8 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   keep the nested row serializer snapshot in its explicit Flink serializer. No callback is repeated
   to construct output. Empty append values fail; zero and negative increments remain operations.
 - SQL uses the ordinary family/qualifier schema and one write mode per DDL. Append accepts string
-  and binary cells; increment accepts BIGINT. NULL cells/families omit rules, all-null rows fail,
+  and binary cells; increment accepts BIGINT; a MAP family's entries become rules with its value
+  type checked the same way (ADR-0172). NULL cells/families/map values omit rules, all-null rows fail,
   INSERT-only input is preserved, and timestamp metadata is unavailable. Keep mode-specific
   validation in `ReadModifyWriteSchemaChecks` and `WriteModeOptionChecks`.
 - Delegate increment arithmetic and overflow to Bigtable. No pre-read, saturation, retry or
@@ -622,8 +623,12 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   in an unsigned-order tree map: a `byte[]` hashes by identity, and a hash map keeps one entry per
   version (measured). Writes follow `sink.map-family.update-mode`: `merge` sets cells only,
   `replace` puts `DeleteFromFamily` first in the same entry. `append`, `increment` and `aggregate`
-  reject a map family explicitly rather than letting their qualifier loops pass it vacuously; any
-  new loop over `Family.getQualifiers()` must decide what a map family means there. A map makes
+  write one rule or `AddToCell` per non-null entry and check the map's value type where they check a
+  qualifier's (#1569), so a map family never passes their type loops vacuously; any new loop over
+  `Family.getQualifiers()` must decide what a map family means there. A null map key fails through
+  the one shared `RowDataSerializationSchema.nullMapKey` message, and an error naming a map key
+  renders it with `RowRanges.format`, never `toStringUtf8()`. `sink.map-family.update-mode` stays
+  rejected in the three modes. A map makes
   the mutations per entry data-dependent; the client's `Mutation` refuses the 100,001st (or one past
   200 MiB) inside `serialize()`, so an oversized map is a routed serialization failure (the count bound
   measured; the byte bound read from the client source); the staged writer bounds an
@@ -792,7 +797,7 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
 
 ## Aggregate Table writes and typed families (`docs/adr/0156`)
 
-- Keep SQL aggregate input INSERT-only, with all declared families mapped to INT64 SUM/MIN/MAX/HLL and all integer contributions expressed through AddToCell.
+- Keep SQL aggregate input INSERT-only, with all declared families mapped to INT64 SUM/MIN/MAX/HLL and all integer contributions expressed through AddToCell; a MAP family contributes one per non-null entry and its value type is the integer input type (ADR-0172).
   Skip null families and cells, reject an empty contribution, and preserve repeated same-key inserts.
 - Preserve ADR-0149 timestamp behavior: explicit bucket timestamps or a per-cell writer clock when absent/null.
   Do not describe a fixed timestamp as deduplicating an aggregate input.

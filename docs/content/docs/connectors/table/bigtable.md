@@ -278,7 +278,7 @@ That predicate is pushed to the server as a family-existence prefilter and also 
 An entry access such as `m['plan'] = 'pro'` is evaluated by Flink and never pushed.
 Row membership follows the family filter as it does for `ROW` families: a query that projects only a map family omits rows with no cell in it.
 
-A write turns each entry into one cell.
+In the `upsert`, `keep-latest` and `insert-if-absent` modes, a write turns each entry into one cell; the accumulating modes are described below.
 A null value is written as a null `ROW` qualifier is, a null key fails the record, and a null map leaves the family untouched.
 A row that would carry more than 100,000 mutations or 200 MiB of them, the client's limits for one row entry, fails as a serialization failure, which the sink routes like any other; under `merge`, keep-latest adds a column delete to each entry, which halves the number of entries a map can hold, while `replace` costs one family delete plus one mutation per entry in either write mode. Under [checkpoint-owned delivery](#checkpoint-owned-delivery) the staged marker takes one mutation, so the bound is 99,999, and exceeding it fails the job.
 The writable `timestamp` metadata, or the writer clock when it is absent, stamps each entry as it stamps each qualifier (see [Cell timestamps](#cell-timestamps)).
@@ -287,9 +287,22 @@ A map contains only the qualifiers it writes, so what happens to the family's ot
 - **`merge`** (the default): writes the entries and leaves every other qualifier as it is. This is how a Bigtable write behaves and how a `ROW` family treats undeclared qualifiers. It suits a family that accumulates qualifiers across writes, and it means that no SQL write removes an entry; a delete removes the whole row. An empty map writes nothing, and a row that writes nothing is rejected like a row whose families are all null.
 - **`replace`**: deletes the family, then writes the entries, in the same row mutation. Bigtable applies a row's mutations in order and atomically, so the family reads back as the written map. An empty map clears the family. Two writes of one row in the same batch still have [no defined winner](#two-rows-for-one-key-in-one-batch-have-no-defined-winner).
 
-Map families are written in the `upsert`, `keep-latest` and `insert-if-absent` modes and under checkpoint-owned delivery.
+Map families are written in every write mode except `conditional`, and under checkpoint-owned delivery.
 Keep-latest deletes each written qualifier's older versions under `merge`; under `replace` the family delete already removes them.
-The `append`, `increment` and `aggregate` modes reject a map family, and the option is rejected in every mode except `upsert` and `keep-latest`, and on a table that declares no map family.
+The option is rejected in every mode except `upsert` and `keep-latest`, and on a table that declares no map family.
+
+The `aggregate`, `append` and `increment` modes turn each entry into one operation on the qualifier its key names, which is how SQL contributes to a qualifier that is data, such as a counter per day or an HLL per campaign:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="aggregate-map-family" >}}
+
+- **`aggregate`** adds one `AddToCell` per entry. The value type must be `TINYINT`, `SMALLINT`, `INT` or `BIGINT`, and the family needs a type in `sink.aggregate.column-family-types` like any other family (see [Aggregate contributions](#aggregate-contributions)).
+- **`append` and `increment`** add one read-modify-write rule per entry, after the rules of the families declared before the map. `increment` requires a `BIGINT` value and `append` a `CHAR`, `VARCHAR`, `BINARY` or `VARBINARY` value, as for a `ROW` qualifier (see [Append and increment](#append-and-increment)).
+
+In all three modes a null value contributes nothing, and a null key fails the record.
+A row left with no operation, because its families are null and its maps are empty or hold only null values, fails the record, as a row whose cells are all null does.
+The entry-level limits still apply: an aggregate entry holds at most 100,000 contributions, and a read-modify-write request at most 100,000 rules.
+A map that takes its row past either limit fails as a serialization failure, which the sink routes like any other; the limits count every family of the row, not the map alone. Under checkpoint-owned delivery the staged marker takes one of an aggregate entry's mutations, so the bound is 99,999, and exceeding it fails the job.
+`sink.map-family.update-mode` stays rejected in these modes, because a contribution and a rule add to a cell rather than replace it, and `replace` would need a family delete that a read-modify-write request cannot carry.
 The design record is [ADR-0172]({{< param BookRepo >}}/blob/main/docs/adr/0172-bigtable-column-families-may-be-declared-as-maps.md).
 
 ## Source
@@ -455,7 +468,7 @@ whole table.
 
 Set `sink.write-mode = aggregate` to contribute integer inputs to Bigtable aggregate cells.
 The required `sink.aggregate.column-family-types` map assigns each physical family one of `int64-sum`, `int64-min`, `int64-max`, or `int64-hll`.
-Every qualifier must be `TINYINT`, `SMALLINT`, `INT`, or `BIGINT`; inputs widen losslessly to INT64 and all four types use `AddToCell`.
+Every qualifier, and the value type of every [map family](#map-column-families), must be `TINYINT`, `SMALLINT`, `INT`, or `BIGINT`; inputs widen losslessly to INT64 and all four types use `AddToCell`.
 HLL accepts an integer to count, without a client-side sketch library.
 Raw families, missing or extra family declarations, and unsupported input types fail when the statement is planned.
 
@@ -662,8 +675,8 @@ For workloads that can use aggregate cells, prefer [AddToCell](https://cloud.goo
 
 One DDL selects one operation and fixes its project, instance, table and sink application profile.
 Mixed or incompatible cell types fail during planning.
-Each family and qualifier becomes a rule in declaration order.
-NULL families and cells omit rules; `null-string-literal` does not change this behavior.
+Each family and qualifier becomes a rule in declaration order, and a [map family](#map-column-families) becomes one rule per entry, keyed by the entry's key, with its value type checked as a cell type is.
+NULL families, cells and map values omit rules; `null-string-literal` does not change this behavior.
 A row with no remaining rule, a null or empty row key, or an empty append value fails.
 The cell type describes the input operand rather than a maximum length or range for accumulated state.
 Bigtable performs increment arithmetic, including overflow, without a connector-side read or overflow policy.
