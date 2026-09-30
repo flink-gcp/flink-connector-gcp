@@ -23,6 +23,7 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 		phase:                  *"initial" | "upgrade"
 		recordsPerSubscription: *1000 | (int & >=1 & <=10000)
 		parallelism:            *1 | 2
+		entryPoint:             *"datastream" | "table"
 	}
 	let storage = "gs://flink-gcp-tier3-pubsub/runs/\(run.id)"
 	let containerResources = {
@@ -77,7 +78,8 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 				args: ["--run-id=\(run.id)", "--phase=\(run.phase)",
 					"--records-per-subscription=\(run.recordsPerSubscription)",
 					"--parallelism=\(run.parallelism)",
-					"--require-restored=\(run.phase == "upgrade")"]
+					"--require-restored=\(run.phase == "upgrade")",
+					"--entry-point=\(run.entryPoint)"]
 			}
 		}
 	}

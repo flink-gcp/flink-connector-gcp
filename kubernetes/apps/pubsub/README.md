@@ -1,7 +1,8 @@
-# Pub/Sub Tier-3 DataStream recovery application
+# Pub/Sub Tier-3 recovery application
 
-This internal Flink 2.2.1 / Java 17 application prepares the DataStream part of [issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+This internal Flink 2.2.1 / Java 17 application prepares the DataStream and Table entry points of [issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 It relays two pre-created subscriptions through the production Pub/Sub source and publisher sink into a pre-created output topic.
+The `--entry-point` argument selects whether the relay reaches them through the DataStream API or through the Table connector.
 It is an unbounded streaming job over a bounded logical input domain: receiving every expected ID does not stop the job, Pods or Operator.
 An independently supervised lifecycle must bound execution and perform cleanup before deployment is admitted.
 
@@ -14,6 +15,7 @@ mise x -- just tier3-pubsub-verify
 The opt-in `tier3-pubsub` Maven profile keeps the application outside published connector artifacts.
 The build produces `target/pubsub-recovery.jar` and copies runtime dependencies with their original licenses/notices into `target/image-lib/`.
 The Dockerfile adds these files to `/opt/flink/usrlib/` over the reviewed Flink image and enables its bundled GCS filesystem plugin.
+The Table entry point uses the Table API, planner loader and Table runtime in the image's `lib/` rather than packaging its own, and the Dockerfile refuses a base image without them.
 The entry point is `io.github.flink.gcp.connector.tier3.pubsub.PubSubRecoveryJob`.
 The [image publication workflow](../../../.github/workflows/tier3-images.yaml) packages it as `pubsub-recovery` on the fixed Flink 2.2.1 / Java 17 AMD64 base.
 The application CI lane builds the Dockerfile without publishing; its context admits only the Dockerfile, application JAR and packaged runtime dependency JARs.
@@ -21,15 +23,17 @@ The [first publication](https://github.com/flink-gcp/flink-connector-gcp/actions
 The reusable deployment definition below consumes a supplied digest; it does not select or admit an active run.
 
 Unit tests cover argument and input bounds, serialization, missing/foreign restored state, contradictory evidence, missing IDs and duplicate classification.
-MiniCluster tests use production source/sink RPCs against the Pub/Sub emulator, replace TaskManagers after a completed checkpoint and restore savepoints at parallelism 1→2 and 2→1.
+They also pin each entry point's operator UIDs, the Table ones across repeated translations and both parallelisms.
+MiniCluster tests run each entry point with production source/sink RPCs against the Pub/Sub emulator, replace TaskManagers after a completed checkpoint and restore savepoints at parallelism 1→2 and 2→1.
+They also refuse a savepoint of one entry point in the other and check that neither sink creates a missing output topic.
 They publish new input to both subscriptions after the disruption and require output from restored attempts.
 These are local wiring and state-continuity checks; they do not measure real-service redelivery, ACK deadlines, lease expiry, ordering, GCS access, GKE scheduling or Operator reconciliation.
 
 ## Deployment definition
 
-[`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the DataStream relay on Flink 2.2.1 / Java 17.
-A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription` and `parallelism` inputs.
-The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade and parallelism 1/2 combination.
+[`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the relay on Flink 2.2.1 / Java 17.
+A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription`, `parallelism` and `entryPoint` inputs.
+The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade, parallelism 1/2 and entry-point combination.
 The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal); there is no committed executable Pub/Sub run delivery or runnable admission yet.
 
 The first verified image reference is:
@@ -56,18 +60,19 @@ That phase does not locate a savepoint or prove a checkpoint boundary: the later
 The logical input domain and restart count do not bound elapsed execution or billable service operations.
 
 Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
-Table entry points and deployed recovery acceptance remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+Deployed recovery acceptance, including deployed trials of the Table entry point, remains on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
 ## Offline trial proposal
 
-Render one unapproved DataStream trial with the existing application and lifecycle delivery packages:
+Render one unapproved trial with the existing application and lifecycle delivery packages:
 
 ```bash
 cat > /tmp/pubsub-trial.json <<'JSON'
 {
-  "version": 2,
+  "version": 3,
   "trial": "rescale-out",
+  "entry_point": "datastream",
   "records_per_subscription": 1000,
   "traffic_limits": {
     "publish_calls": 20,
@@ -114,7 +119,8 @@ Publish each range in ascending batches of at most 100, without crossing the ran
 The output records exact logical messages, payload bytes and required publication calls.
 These ranges do not identify the processed-but-not-checkpoint-confirmed replay population: that requires a later fault-boundary protocol and external evidence.
 
-The input file requires exactly the six fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
+The input file requires exactly the seven fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
+`entry_point` is `datastream` or `table` and applies to both manifests, so a trial never changes the entry point between phases.
 `traffic_limits` supplies every counter in the [shared reservation contract](#shared-traffic-reservations), within its existing ceilings.
 The renderer refuses caps too small for one complete input/output pass; extra pulls, duplicates, ambiguous calls and evidence sizes can exhaust otherwise valid proposals.
 Input bytes exclude service framing; output messages count reserved deliveries, including collector redelivery and empty-pull reservations.
@@ -130,7 +136,7 @@ Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 cons
 The proposal's `cost` is `unestimated`: spend is approved from an estimate before dispatch, and a runnable trial still needs one.
 A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
-CLI admission, fault injection, savepoint orchestration, replay evidence and Table entry-point trials remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+CLI admission, fault injection, savepoint orchestration, replay evidence and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Run identity and service resources
 
@@ -141,13 +147,14 @@ CLI admission, fault injection, savepoint orchestration, replay evidence and Tab
 | `--parallelism` | 1 or 2; defaults to 1 |
 | `--phase` | `initial` by default, or `upgrade` |
 | `--require-restored` | `false` by default; `upgrade` requires `true` |
+| `--entry-point` | `datastream` by default, or `table`; fixed for every phase of a run |
 
 Arguments use `--name=value`; unknown or repeated arguments fail.
 The fixed project is `flink-gcp`.
 Input index `i` is 0 or 1; its topic and subscription both have ID `t3-<run-id>-in-<i>`.
 The output topic and independent observer subscription both have ID `t3-<run-id>-out`.
 All three subscriptions must exist before any corresponding publication, including the output observer before starting the relay.
-The job uses ADC, provides no key-file option, never creates a subscription and sets the sink to `CREATE_NEVER`.
+The job uses ADC, provides no key-file option, never creates a subscription and sets the sink to `CREATE_NEVER` (`'sink.create-disposition' = 'create-never'` on the Table entry point).
 The emulator endpoint is a package-private test seam, absent from the deployed CLI.
 
 ### Owned resource operations
@@ -477,14 +484,22 @@ A successful synthetic cleanup is not a recovery verdict; final Pub/Sub success 
 ## Payload and restoration
 
 Each UTF-8 input payload is `v1|<run-id>|<input-index>|<sequence>` with canonical decimal numbers and sequence in `[0, records-per-subscription)`.
-The deserializer rejects foreign runs, wrong subscriptions, invalid UTF-8, payloads over 128 bytes and absent service message IDs.
+Both entry points apply one input check, which rejects foreign runs, wrong subscriptions, invalid UTF-8, payloads over 128 bytes and absent service message IDs.
 It does not discard or deduplicate replayed input.
 The logical count is not a cap on service deliveries, retries, bytes billed, output publications or elapsed time.
 Those require separately approved execution ceilings and an independent stop path.
 
-The source, observer and sink have fixed UIDs `pubsub-input-v1`, `pubsub-observer-v1` and `pubsub-output-v1`.
-The main entry point fixes maximum parallelism at 128 and enables checkpoints every 30 seconds with at most one in flight.
+On the DataStream entry point, the source, observer and sink have fixed UIDs `pubsub-input-v1`, `pubsub-observer-v1` and `pubsub-output-v1`.
+The `main` method fixes maximum parallelism at 128 and enables checkpoints every 30 seconds with at most one in flight.
+
+The Table entry point reads both subscriptions through one `pubsub` table with the `raw` format and the `message-id` and `subscription` metadata columns.
+It converts that table to a DataStream for the input check (`pubsub-table-tagger-v1`) and the observer (`pubsub-table-observer-v1`), then writes the observations through the Table sink into a single `STRING` column, so both entry points publish the same payload bytes.
+Outside a persisted compiled plan, the planner assigns explicit UIDs to its own operators only under `table.exec.uid.generation: ALWAYS`, and its default UID format numbers them from a JVM-wide counter, which differs between translations.
+The entry point therefore sets `ALWAYS` with a fixed format for each of its two translations, `pubsub-table-input-v1-<type>-<transformation>` and `pubsub-table-output-v1-<type>-<transformation>`.
+A repeated UID within one translation fails job graph generation with a hash collision rather than sharing state.
+
 The observer keeps version/project/run ID/input-domain identity in union operator state, accepting rescaling but refusing missing or incompatible restored identity.
+The two entry points share no operator UID, so with `allowNonRestoredState: false` a savepoint written by one entry point does not restore the other: Flink refuses its unclaimed state before either observer runs.
 Only phase, parallelism and the restoration requirement may change between phases of the same run.
 The source's enumerator owns subscription reassignment; its readers checkpoint neither payloads nor split ownership, so unacknowledged delivery is recovered through the service.
 The publisher flushes on checkpoints and remains at-least-once.
@@ -512,6 +527,7 @@ java -cp 'target/pubsub-recovery.jar:target/image-lib/*' \
 
 The tool rejects files over 64 MiB, more than 200,000 observations, oversized records, conflicting identity reuse, foreign runs and missing logical input IDs.
 Its counts describe the supplied evidence, not a complete service inventory or future deliveries after collection stops.
+It reconciles either entry point's output, since both write the same payload.
 
 | Counter | Counted population |
 | --- | --- |
@@ -525,7 +541,7 @@ The collector must preserve output message IDs: discarding them would conflate i
 Completeness alone does not establish recovery, exactly-once processing/output, strict replay ordering or a checkpoint-confirmed fault boundary.
 The later trial controller must retain a completed checkpoint, publish a separately identified post-checkpoint cohort, prove no later checkpoint completed before the fault, and require that cohort to reappear with preserved input message IDs and new processing observations after restore.
 It must also observe continued progress and later completed checkpoints, and retain both missing-ID and replay-population negative controls.
-Table source/sink entry points, JM replacement, real-service replay and the complete deployment/cleanup workflow remain on the parent issue.
+Deployed Table trials, JM replacement, real-service replay and the complete deployment/cleanup workflow remain on the parent issue.
 
 ### Internal approval contract
 

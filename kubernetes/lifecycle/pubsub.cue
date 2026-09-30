@@ -21,8 +21,9 @@ import (
 )
 
 // Offline inputs only; serialized approval still refuses Pub/Sub execution.
-pubsubTrial:   *"jm-replacement" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(pubsub_trial)
-pubsubRecords: *1000 | (int & >=2 & <=10000)                                       @tag(pubsub_records,type=int)
+pubsubTrial:      *"jm-replacement" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(pubsub_trial)
+pubsubRecords:    *1000 | (int & >=2 & <=10000)                                       @tag(pubsub_records,type=int)
+pubsubEntryPoint: *"datastream" | "table"                                             @tag(pubsub_entry_point)
 
 if scenario == "pubsub-recovery" {
 	_applications: [for recovery in [false, true] {
@@ -30,7 +31,7 @@ if scenario == "pubsub-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-pubsub", image: applicationImage}
 			delivery: resources: app: (pubsub.#Application & {
 				run: {
-					id: runID, image: applicationImage, recordsPerSubscription: pubsubRecords
+					id: runID, image: applicationImage, recordsPerSubscription: pubsubRecords, entryPoint: pubsubEntryPoint
 					if pubsubTrial == "rescale-out" && !recovery || pubsubTrial == "rescale-in" && recovery {parallelism: 1}
 					if pubsubTrial == "rescale-out" && recovery || pubsubTrial == "rescale-in" && !recovery || pubsubTrial == "jm-replacement" || pubsubTrial == "tm-replacement" {parallelism: 2}
 					if recovery && (pubsubTrial == "rescale-out" || pubsubTrial == "rescale-in") {phase: "upgrade"}

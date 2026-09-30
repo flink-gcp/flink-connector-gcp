@@ -1715,6 +1715,7 @@ def pubsub_delivery(module, **inputs):
         "phase": "initial",
         "recordsPerSubscription": 1000,
         "parallelism": 1,
+        "entryPoint": "datastream",
         **inputs,
     }
     path = leaf(module, "runs/pubsub", {"run": run})
@@ -1727,9 +1728,16 @@ def pubsub_delivery(module, **inputs):
 @pytest.mark.parametrize("phase", ["initial", "upgrade"])
 @pytest.mark.parametrize("parallelism", [1, 2])
 @pytest.mark.parametrize("records", [1, 10000])
-def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records):
+@pytest.mark.parametrize("entry_point", ["datastream", "table"])
+def test_pubsub_recovery_deployment_contract(
+    module, phase, parallelism, records, entry_point
+):
     path = pubsub_delivery(
-        module, phase=phase, parallelism=parallelism, recordsPerSubscription=records
+        module,
+        phase=phase,
+        parallelism=parallelism,
+        recordsPerSubscription=records,
+        entryPoint=entry_point,
     )
     result = cue(module, "cmd", "render", path)
     assert result.returncode == 0, result.stderr
@@ -1759,6 +1767,7 @@ def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records
         f"--records-per-subscription={records}",
         f"--parallelism={parallelism}",
         f"--require-restored={str(phase == 'upgrade').lower()}",
+        f"--entry-point={entry_point}",
     ]
     config = spec["flinkConfiguration"]
     assert config["taskmanager.numberOfTaskSlots"] == "1"
@@ -1803,6 +1812,8 @@ def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records
         {"parallelism": 0},
         {"parallelism": 3},
         {"parallelism": "1"},
+        {"entryPoint": "sql"},
+        {"entryPoint": "Table"},
         {"image": f"{PUBSUB_IMAGE}:latest"},
         {"image": f"{PUBSUB_IMAGE}@sha256:{'a' * 63}"},
         {"image": f"{PUBSUB_IMAGE}@sha256:{'A' * 64}"},
@@ -1830,6 +1841,7 @@ def test_pubsub_rejects_invalid_run_inputs(module, inputs):
         {"job": {"upgradeMode": "stateless"}},
         {"job": {"allowNonRestoredState": True}},
         {"job": {"args": ["--run-id=foreign"]}},
+        {"job": {"entryClass": "io.github.flink.gcp.connector.tier3.pubsub.Other"}},
         {"jobManager": {"replicas": 2}},
         {"taskManager": {"replicas": 2}},
         {"flinkConfiguration": {"taskmanager.numberOfTaskSlots": "2"}},
@@ -2135,6 +2147,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
     ],
 )
 @pytest.mark.parametrize("records", [2, 1001, 10000])
+@pytest.mark.parametrize("entry_point", ["datastream", "table"])
 def test_pubsub_proposal_from_real_cue(
     module,
     monkeypatch,
@@ -2143,6 +2156,7 @@ def test_pubsub_proposal_from_real_cue(
     recovery_parallelism,
     phase,
     records,
+    entry_point,
 ):
     root = module.parent
     module.rename(root / "kubernetes")
@@ -2157,8 +2171,9 @@ def test_pubsub_proposal_from_real_cue(
         "revision": "b" * 40,
         "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         "trial": {
-            "version": 2,
+            "version": 3,
             "trial": trial,
+            "entry_point": entry_point,
             "records_per_subscription": records,
             "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
             "total_request_limit": 100000,
@@ -2175,6 +2190,9 @@ def test_pubsub_proposal_from_real_cue(
     assert initial["spec"]["job"]["parallelism"] == initial_parallelism
     assert recovery["spec"]["job"]["parallelism"] == recovery_parallelism
     assert f"--phase={phase}" in recovery["spec"]["job"]["args"]
+    for app in (initial, recovery):
+        # The entry point is fixed across phases: state from one variant cannot restore the other.
+        assert app["spec"]["job"]["args"][-1] == f"--entry-point={entry_point}"
     assert (initial == recovery) == trial.endswith("replacement")
     for app in (initial, recovery):
         assert app["metadata"]["namespace"] == "tier3-pubsub"

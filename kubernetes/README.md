@@ -32,7 +32,7 @@ kubernetes/
   pkg/smoke/application.cue      # Generic stateful smoke application contract
   pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
   pkg/cloudtasks/application.cue # Cloud Tasks measurement cell contract
-  pkg/pubsub/application.cue     # Pub/Sub DataStream recovery contract
+  pkg/pubsub/application.cue     # Pub/Sub recovery contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
   apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
@@ -222,7 +222,7 @@ The [trial publication](images/README.md#bigquery-trial-publication) carries the
 
 ## Pub/Sub recovery application
 
-The [internal DataStream relay and output oracle](apps/pubsub/README.md) prepare [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) using the production connector and local emulator recovery tests.
+The [internal DataStream/Table relay and output oracle](apps/pubsub/README.md) prepare [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) using the production connector and local emulator recovery tests.
 Build them with `just tier3-pubsub-verify`.
 The [first image publication](apps/pubsub/README.md#deployment-definition) is complete.
 The [offline trial proposal](apps/pubsub/README.md#offline-trial-proposal) freezes one JM/TM replacement or savepoint rescaling trial, with unapproved numeric limits and exact manifests.

@@ -25,6 +25,7 @@ let application = pubsub.#Application & {
 		phase:                  inputs.phase
 		recordsPerSubscription: inputs.recordsPerSubscription
 		parallelism:            inputs.parallelism
+		entryPoint:             inputs.entryPoint
 	}
 }
 

@@ -475,9 +475,9 @@ Helm adds only the Pub/Sub Operator Role and RoleBinding, bringing its rendered 
 The runner and supervisor retain their trusted Operator-administrator role, now reaching Pub/Sub namespace Secrets and Pod creation through the Operator KSA.
 Application admission and service permissions remain separate from this idle scope extension.
 
-### Pub/Sub DataStream application preparation
+### Pub/Sub recovery application preparation
 
-The [DataStream recovery application](../../kubernetes/apps/pubsub/README.md) follows the applied namespace and idle Operator foundation for [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The [recovery application](../../kubernetes/apps/pubsub/README.md) follows the applied namespace and idle Operator foundation for [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 Its opt-in build targets the Flink 2.2.1 / Java 17 runtime and relays two pre-created input subscriptions into one pre-created output topic with production source/sink builders and workload ADC.
 The job has no resource-administration authority; the external provisioner must record exclusive run ownership and settings before admission, and cleanup must refuse unproved ownership.
 Service permissions, workload admission and independent lifecycle supervision remain subsequent implementation.
@@ -488,9 +488,16 @@ The offline oracle checks completeness and reports all four duplicate population
 Its evidence limits bound local analysis, not service cost or workload execution.
 
 The checkpointed union-state guard fixes the run and logical input domain while permitting parallelism one/two rescaling with stable operator UIDs.
-Local emulator/MiniCluster tests exercise both DataStream RPC paths, TaskManager-loss checkpoint recovery and savepoint restoration in both directions.
+Local emulator/MiniCluster tests exercise the source and sink RPC paths of both entry points, TaskManager-loss checkpoint recovery and savepoint restoration in both directions.
 They establish neither service replay timing nor deployed recovery; a later independently observed trial must prove the fault's completed-checkpoint boundary and expected replay cohort.
-Table entry points and actual service-resource lifecycle remain separate acceptance work on the parent.
+Actual service-resource lifecycle remains separate acceptance work on the parent.
+
+The Table entry point ([#1428](https://github.com/flink-gcp/flink-connector-gcp/issues/1428)) reaches the same subscriptions and topic through the production Pub/Sub Table source and sink.
+The `--entry-point` argument selects it, and the two entry points share no operator UID, so with `allowNonRestoredState: false` a savepoint written by one entry point cannot restore the other.
+The source table is converted to a DataStream so that the same input check and observer apply, and the sink writes the same payload bytes, so one oracle reconciles either entry point.
+A SQL-only pipeline from a persisted compiled plan was declined, because the observer's union-state guard and its restored-state observation have no SQL equivalent.
+The planner's default UID format numbers operators from a JVM-wide counter, so the entry point sets `table.exec.uid.generation: ALWAYS` with a fixed UID format for each of its two translations.
+A unit test pins the resulting UIDs across repeated translations and both parallelisms.
 
 The manual image workflow verifies and packages the relay as `pubsub-recovery` on the fixed Flink 2.2.1 AMD64 base, independently of the Cloud Tasks runtime selection.
 Its Docker context admits only the Dockerfile and packaged JARs; the application CI lane builds the same Dockerfile from the public base without publishing.
@@ -611,7 +618,8 @@ The [shared settlement runbook](../../kubernetes/apps/pubsub/README.md#shared-se
 
 ### Offline Pub/Sub trial proposals
 
-Before enabling runnable Pub/Sub admission, render one unapproved DataStream trial with the existing CUE application and supervisor delivery.
+Before enabling runnable Pub/Sub admission, render one unapproved trial with the existing CUE application and supervisor delivery.
+The trial names one entry point and applies it to both manifests.
 Keep JM and active-TM replacement separate, with unchanged manifests at parallelism two; savepoint rescaling changes one to two or two to one and requires restored state in the upgrade phase.
 Freeze the run/nonce, supplied source/image identities, installed runtime digest, exact manifests, service settings and grants.
 Divide each subscription's finite sequence domain into disjoint pre-recovery and post-recovery cohorts, using at most 100 messages per publication.

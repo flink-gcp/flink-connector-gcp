@@ -25,8 +25,9 @@ from flink_tier3.model import validate_approval
 @pytest.fixture
 def trial():
     return {
-        "version": 2,
+        "version": 3,
         "trial": "rescale-out",
+        "entry_point": "datastream",
         "records_per_subscription": 1000,
         "traffic_limits": dict(plan.COUNTER_CEILINGS),
         "total_request_limit": 100000,
@@ -55,7 +56,11 @@ def inputs(trial, monkeypatch):
     [
         ("version", True),
         ("version", 1),
+        ("version", 2),
         ("trial", "combined"),
+        ("entry_point", "sql"),
+        ("entry_point", "Table"),
+        ("entry_point", None),
         ("trial", None),
         ("records_per_subscription", 1),
         ("records_per_subscription", 10001),
@@ -168,6 +173,7 @@ def test_missing_unknown_fields_and_file(trial, tmp_path):
     for candidate in (
         {**trial, "approved": True},
         {k: v for k, v in trial.items() if k != "version"},
+        {k: v for k, v in trial.items() if k != "entry_point"},
     ):
         with pytest.raises(Failure):
             plan.validate_trial(candidate)
