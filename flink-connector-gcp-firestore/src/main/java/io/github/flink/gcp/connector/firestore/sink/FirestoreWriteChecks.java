@@ -1,0 +1,159 @@
+/*
+ * Copyright 2026 The flink-gcp authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.firestore.sink;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
+
+import com.google.cloud.Timestamp;
+import com.google.cloud.firestore.Blob;
+import com.google.cloud.firestore.GeoPoint;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * The checks {@link FirestoreWrite} applies when it is built: the document path's grammar and the
+ * closed value vocabulary.
+ *
+ * <p>Both exist for what the sink does with the value, not for what the service might refuse
+ * (ADR-0127). The path is parsed here and composed into a document reference, so it is checked
+ * against the grammar that reads it. The values are handed to the client library, which fails
+ * synchronously on a value it cannot encode in a way that corrupts the rest of its request
+ * (ADR-0171), so a value is accepted only if the library is known to encode it.
+ *
+ * <p>A field's path is built only for an error message, or once per nested map or list: the copy
+ * runs for every record, and most values are scalars that need none.
+ */
+@Internal
+final class FirestoreWriteChecks {
+
+    private FirestoreWriteChecks() {}
+
+    /**
+     * Checks a document path relative to the documents root: an even number of {@code /}-separated
+     * segments, none of them empty.
+     */
+    static void checkDocumentPath(String documentPath) {
+        Preconditions.checkNotNull(documentPath, "documentPath must not be null");
+        String[] segments = documentPath.split("/", -1);
+        for (String segment : segments) {
+            if (segment.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Document path '"
+                                + documentPath
+                                + "' has an empty segment. A path alternates collection and"
+                                + " document ids separated by single '/' characters, with no"
+                                + " leading or trailing '/'.");
+            }
+        }
+        if (segments.length % 2 != 0) {
+            throw new IllegalArgumentException(
+                    "Document path '"
+                            + documentPath
+                            + "' has "
+                            + segments.length
+                            + " segment(s). A document path alternates collection and document"
+                            + " ids, so it has an even number of segments, for example"
+                            + " 'users/alice'.");
+        }
+    }
+
+    /** Checks and copies a document's fields into unmodifiable, serializable collections. */
+    static Map<String, Object> copyFields(Map<String, ?> fields) {
+        return copyMap(fields, "", 0);
+    }
+
+    /**
+     * Copies a map whose own path is {@code path} (empty for the document) at nesting {@code
+     * depth}.
+     */
+    private static Map<String, Object> copyMap(Map<?, ?> map, String path, int depth) {
+        Map<String, Object> copy = new LinkedHashMap<>(map.size() * 2);
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            Object key = entry.getKey();
+            if (!(key instanceof String) || ((String) key).isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Field names must be non-empty strings, but "
+                                + (path.isEmpty() ? "the document" : "field '" + path + "'")
+                                + " has the name "
+                                + (key == null ? "null" : "'" + key + "'")
+                                + ".");
+            }
+            String name = (String) key;
+            copy.put(name, copyValue(entry.getValue(), path, name, -1, depth + 1));
+        }
+        return Collections.unmodifiableMap(copy);
+    }
+
+    /**
+     * Copies one value: the field {@code name} of the container at {@code parent}, or its element
+     * {@code index} when {@code name} is {@code null}.
+     */
+    private static Object copyValue(
+            Object value, String parent, String name, int index, int depth) {
+        if (depth > FirestoreWrite.MAX_NESTING_DEPTH) {
+            throw new IllegalArgumentException(
+                    "Field '"
+                            + childPath(parent, name, index)
+                            + "' is nested deeper than "
+                            + FirestoreWrite.MAX_NESTING_DEPTH
+                            + " levels.");
+        }
+        if (value == null
+                || value instanceof String
+                || value instanceof Long
+                || value instanceof Double
+                || value instanceof Boolean
+                || value instanceof Timestamp
+                || value instanceof GeoPoint
+                || value instanceof Blob) {
+            return value;
+        }
+        if (value instanceof Map) {
+            return copyMap((Map<?, ?>) value, childPath(parent, name, index), depth);
+        }
+        if (value instanceof List) {
+            List<?> list = (List<?>) value;
+            String path = childPath(parent, name, index);
+            List<Object> copy = new ArrayList<>(list.size());
+            for (int i = 0; i < list.size(); i++) {
+                copy.add(copyValue(list.get(i), path, null, i, depth + 1));
+            }
+            return Collections.unmodifiableList(copy);
+        }
+        throw new IllegalArgumentException(
+                "Field '"
+                        + childPath(parent, name, index)
+                        + "' has a value of type "
+                        + value.getClass().getName()
+                        + ", which a Firestore write does not accept. Use String, Long, Double,"
+                        + " Boolean, com.google.cloud.Timestamp, GeoPoint, Blob, a List or a Map"
+                        + " with String keys: an int is written as a Long, a float as a Double,"
+                        + " and bytes as Blob.fromBytes(...).");
+    }
+
+    private static String childPath(String parent, String name, int index) {
+        if (name == null) {
+            return parent + "[" + index + "]";
+        }
+        return parent.isEmpty() ? name : parent + "." + name;
+    }
+}

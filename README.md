@@ -1,7 +1,7 @@
 # GCP Connectors for Apache Flink
 
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/):
-BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
+BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 
 > **Status: released.** Artifacts are on
 > [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp) under the
@@ -23,6 +23,7 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
 | `flink-sql-connector-gcp-bigtable` | The Bigtable connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-spanner` | Spanner sink, bounded source and Change Streams source (both dialects), with Table API / SQL sink, scan, lookup, and change-stream CDC support |
 | `flink-sql-connector-gcp-spanner` | The Spanner connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
+| `flink-connector-gcp-firestore` | Firestore sink for Native-mode databases, through the client library's `BulkWriter`. Not released yet ([#1547](https://github.com/flink-gcp/flink-connector-gcp/issues/1547)) |
 
 ## Build
 

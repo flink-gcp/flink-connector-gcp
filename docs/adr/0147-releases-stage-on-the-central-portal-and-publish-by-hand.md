@@ -75,7 +75,7 @@ final effective model — the only place no probe/deploy divergence can exist.
 `japicmp.referenceVersion` tracks the bare line only; the LTS
 jar keeps ADR-0054's per-major stance, and no cross-major binary claim is added.
 
-**The published set per line is 12 artifacts**: the parent POM, `flink-connector-gcp-base`, the five
+**The published set per line is 13 artifacts**: the parent POM, `flink-connector-gcp-base`, the six
 connectors, and the five SQL uber-jars. `flink-connector-gcp-test-utils` stays reactor-only:
 every dependent consumes it in `test` scope, which no consumer resolves, and publishing it would
 freeze its `Fake*` doubles under the same compatibility discipline as the connector API for no

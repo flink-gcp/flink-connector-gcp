@@ -50,8 +50,8 @@ just verify-module flink-connector-gcp-pubsub    # the module-wide build, when a
 ## Emulator image updates
 
 The `Renovate emulator images` workflow proposes a grouped draft pull request on the first day of each month at 03:23 UTC.
-It updates the image constants in test-utils; Bigtable and Pub/Sub share a pin and move together.
-Review the Bigtable deviation suites' verdict and, for a Spanner bump, recheck the measurements named in the pull request before merging.
+It updates the image constants in test-utils; Bigtable, Pub/Sub and Firestore share a pin and move together.
+Review the Bigtable and Firestore deviation suites' verdicts and, for a Spanner bump, recheck the measurements named in the pull request before merging.
 A green emulator suite does not establish real-service behavior.
 
 For an initial run or recovery, dispatch the workflow on `main`:

@@ -66,6 +66,10 @@ page = "docs/content/docs/connectors/datastream/bigtable.md"
 module = "flink-connector-gcp-spanner"
 page = "docs/content/docs/connectors/datastream/spanner.md"
 
+[[connectors]]
+module = "flink-connector-gcp-firestore"
+page = "docs/content/docs/connectors/datastream/firestore.md"
+
 # The base module's subgroup registrars: each opens one addGroup segment and
 # registers fixed leaves under it on a connector's behalf, so the pages write
 # those rows with a placeholder middle segment (`errorClass.CODE.errors`,

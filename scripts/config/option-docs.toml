@@ -88,6 +88,10 @@ sources = [
 module = "flink-connector-gcp-spanner"
 page = "docs/content/docs/reference/spanner.md"
 
+[[builders]]
+module = "flink-connector-gcp-firestore"
+page = "docs/content/docs/reference/firestore.md"
+
 # The Table API surface is real ConfigOptions rather than builder setters, and
 # is documented beside the DDL it is used from rather than beside the builders
 # it maps onto — the mapping is the thing worth reading there.

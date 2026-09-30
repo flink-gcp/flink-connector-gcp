@@ -41,6 +41,7 @@ MODULES = [
     "flink-sql-connector-gcp-bigtable",
     "flink-connector-gcp-spanner",
     "flink-sql-connector-gcp-spanner",
+    "flink-connector-gcp-firestore",
 ]
 
 POM = """<?xml version="1.0" encoding="UTF-8"?>
@@ -693,7 +694,14 @@ def test_a_skill_edit_beside_a_module_change_still_builds_that_module(tmp_path):
 # --- the two-lane split (issue #453) ---
 
 
-CONNECTOR_LANES = ["bigquery", "bigtable", "cloudtasks", "pubsub", "spanner"]
+CONNECTOR_LANES = [
+    "bigquery",
+    "bigtable",
+    "cloudtasks",
+    "firestore",
+    "pubsub",
+    "spanner",
+]
 
 
 def lane_members(ci_maven_args, built):

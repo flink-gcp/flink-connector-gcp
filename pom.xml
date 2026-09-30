@@ -42,7 +42,7 @@ limitations under the License.
     <!-- name, description, url, licenses, developers and scm are the POM metadata Maven
          Central validates on every published artifact (#724). Modules carry their own
          name and description; the rest is inherited from here. -->
-    <description>Independent Google Cloud connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, and Spanner. It is not affiliated with, endorsed by, or supported by the Apache Software Foundation or Google. Apache Flink, Flink, and the Flink logo are trademarks of the Apache Software Foundation.</description>
+    <description>Independent Google Cloud connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner, and Firestore. It is not affiliated with, endorsed by, or supported by the Apache Software Foundation or Google. Apache Flink, Flink, and the Flink logo are trademarks of the Apache Software Foundation.</description>
     <packaging>pom</packaging>
     <inceptionYear>2026</inceptionYear>
 
@@ -113,6 +113,7 @@ limitations under the License.
         <module>flink-sql-connector-gcp-bigtable</module>
         <module>flink-connector-gcp-spanner</module>
         <module>flink-sql-connector-gcp-spanner</module>
+        <module>flink-connector-gcp-firestore</module>
     </modules>
 
     <properties>
@@ -1165,7 +1166,7 @@ limitations under the License.
             </modules>
         </profile>
         <!-- The documentation examples are test sources in an internal-only module. Keeping the
-             module behind an explicit profile prevents its five connector dependencies from
+             module behind an explicit profile prevents its six connector dependencies from
              widening every connector's ordinary reactor build. The module also refuses deploy;
              it is validation infrastructure, never a Maven Central artifact. -->
         <profile>

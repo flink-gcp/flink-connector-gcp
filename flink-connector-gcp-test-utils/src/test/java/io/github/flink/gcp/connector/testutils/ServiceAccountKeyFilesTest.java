@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * carrying a JSON-significant character would corrupt the document and surface as a parse error
  * inside the auth library, far from the call that caused it. Everything else about the type — that
  * the key parses as a service account, the scopes it earns, the sentinel round trip — is exercised
- * for real by the credential tests in all five connector modules, and so is deliberately not
+ * for real by the credential tests in all six connector modules, and so is deliberately not
  * repeated here.
  */
 class ServiceAccountKeyFilesTest {

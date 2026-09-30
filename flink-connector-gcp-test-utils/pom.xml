@@ -135,7 +135,7 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <!-- The PubSub/Bigtable/Spanner emulator container types behind the shared
+            <!-- The PubSub/Bigtable/Spanner/Firestore emulator container types behind the shared
                  image holders. -->
             <groupId>org.testcontainers</groupId>
             <artifactId>gcloud</artifactId>

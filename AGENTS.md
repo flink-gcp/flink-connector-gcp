@@ -3,7 +3,7 @@
 ## Project
 
 This repository contains independent Google Cloud connectors for Apache Flink: BigQuery,
-Cloud Pub/Sub, Cloud Tasks, Bigtable, and Spanner. It is not affiliated with the Apache Software
+Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner, and Firestore. It is not affiliated with the Apache Software
 Foundation or Google. The Maven reactor is based on `flink-connector-parent`; Google Cloud
 versions come from `libraries-bom`.
 

@@ -166,7 +166,7 @@ jobs:
           just verify -fae ${CLOUDTASKS_PROFILE:+"$CLOUDTASKS_PROFILE"} -Dtest.excluded.groups=gated
           ${{ steps.resolve.outputs.args }}
 
-      # The documentation examples depend on all five connectors, so -fae alone
+      # The documentation examples depend on all six connectors, so -fae alone
       # would still skip them whenever any connector fails. That is how #1322, a
       # Bigtable SQL example that no longer planned on the ceiling, went
       # unreported. This step plans them on every row whatever the build above
