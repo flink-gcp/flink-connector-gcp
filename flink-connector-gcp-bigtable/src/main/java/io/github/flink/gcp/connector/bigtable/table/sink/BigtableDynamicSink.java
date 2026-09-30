@@ -47,6 +47,7 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOpti
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
+import io.github.flink.gcp.connector.bigtable.table.MapFamilyUpdateMode;
 import io.github.flink.gcp.connector.bigtable.table.WriteMode;
 
 import javax.annotation.Nullable;
@@ -97,6 +98,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private final boolean keyOnlyDeletesAreSafe;
     private final InsertOnlyInputMode insertOnlyInputMode;
     private final boolean truncateCellTimestampToMillis;
+    private final MapFamilyUpdateMode mapFamilyUpdateMode;
 
     /** Metadata keys the planner selected, in {@link WritableMetadata#listAll()} order. */
     private List<String> metadataKeys;
@@ -129,6 +131,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 Preconditions.checkNotNull(
                         builder.insertOnlyInputMode, "insertOnlyInputMode must not be null");
         this.truncateCellTimestampToMillis = builder.truncateCellTimestampToMillis;
+        this.mapFamilyUpdateMode =
+                Preconditions.checkNotNull(
+                        builder.mapFamilyUpdateMode, "mapFamilyUpdateMode must not be null");
         this.metadataKeys =
                 Preconditions.checkNotNull(builder.metadataKeys, "metadataKeys must not be null");
     }
@@ -273,7 +278,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                                                 selected,
                                                 truncateCellTimestampToMillis,
                                                 writeMode == WriteMode.KEEP_LATEST,
-                                                staged));
+                                                staged,
+                                                mapFamilyUpdateMode
+                                                        == MapFamilyUpdateMode.REPLACE));
         if (staged) {
             builder.deliveryGuarantee(deliveryGuarantee).stagedOptions(stagedOptions);
         } else {
@@ -341,6 +348,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .keyOnlyDeletesAreSafe(keyOnlyDeletesAreSafe)
                 .insertOnlyInputMode(insertOnlyInputMode)
                 .truncateCellTimestampToMillis(truncateCellTimestampToMillis)
+                .mapFamilyUpdateMode(mapFamilyUpdateMode)
                 .metadataKeys(metadataKeys)
                 .build();
     }
@@ -379,6 +387,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && keyOnlyDeletesAreSafe == that.keyOnlyDeletesAreSafe
                 && insertOnlyInputMode == that.insertOnlyInputMode
                 && truncateCellTimestampToMillis == that.truncateCellTimestampToMillis
+                && mapFamilyUpdateMode == that.mapFamilyUpdateMode
                 && metadataKeys.equals(that.metadataKeys);
     }
 
@@ -405,6 +414,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 keyOnlyDeletesAreSafe,
                 insertOnlyInputMode,
                 truncateCellTimestampToMillis,
+                mapFamilyUpdateMode,
                 metadataKeys);
     }
 
@@ -431,6 +441,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private boolean keyOnlyDeletesAreSafe;
         private InsertOnlyInputMode insertOnlyInputMode;
         private boolean truncateCellTimestampToMillis;
+        private MapFamilyUpdateMode mapFamilyUpdateMode = MapFamilyUpdateMode.MERGE;
         private List<String> metadataKeys = Collections.emptyList();
 
         @Nullable private String lineageTableName;
@@ -610,6 +621,16 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder truncateCellTimestampToMillis(boolean truncateCellTimestampToMillis) {
             this.truncateCellTimestampToMillis = truncateCellTimestampToMillis;
+            return this;
+        }
+
+        /**
+         * @param mapFamilyUpdateMode what a write does with the qualifiers of a {@code MAP} family
+         *     that the written map does not contain
+         * @return this builder
+         */
+        public Builder mapFamilyUpdateMode(MapFamilyUpdateMode mapFamilyUpdateMode) {
+            this.mapFamilyUpdateMode = mapFamilyUpdateMode;
             return this;
         }
 

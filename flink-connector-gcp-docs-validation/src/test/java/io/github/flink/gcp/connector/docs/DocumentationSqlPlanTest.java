@@ -495,6 +495,9 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/BigtableTableReference.sql", "overview"),
                         snippet("flink/BigtableTableReference.sql", "lookup-join")),
                 scenario(
+                        "Bigtable table reference map families",
+                        snippet("flink/BigtableTableReference.sql", "map-families")),
+                scenario(
                         "Bigtable table reference keep-latest versus GC",
                         snippet("flink/BigtableTableReference.sql", "keep-latest-versus-gc")),
                 scenario(

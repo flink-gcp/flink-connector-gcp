@@ -440,6 +440,8 @@ final class BigtableFilterPushDown {
     private static Optional<Filters.Filter> cellReference(
             BigtableTableSchema schema, ResolvedExpression expression) {
         if (expression instanceof FieldReferenceExpression) {
+            // A MAP family too: it reads as NULL exactly when it has no cell, as a ROW family
+            // does when none of its declared qualifiers has one — and a MAP declares them all.
             int index = ((FieldReferenceExpression) expression).getFieldIndex();
             for (BigtableTableSchema.Family family : schema.getFamilies()) {
                 if (family.getIndex() == index) {
@@ -460,6 +462,8 @@ final class BigtableFilterPushDown {
             return Optional.empty();
         }
         for (BigtableTableSchema.Family family : schema.getFamilies()) {
+            // Never a MAP family, whose qualifier list is empty: an entry access is an ITEM call
+            // rather than a nested field reference, and it stays residual.
             if (family.getIndex() == indexes[0]
                     && indexes[1] >= 0
                     && indexes[1] < family.getQualifiers().size()) {

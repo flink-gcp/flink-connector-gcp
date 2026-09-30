@@ -18,7 +18,9 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
@@ -40,7 +42,8 @@ import java.math.RoundingMode;
 import java.util.Arrays;
 
 /**
- * Turns a {@code RowData} field into the bytes of a Bigtable cell, and back.
+ * Turns a {@code RowData} field, or an element of a {@code MAP} family's value array, into the
+ * bytes of a Bigtable cell, and back.
  *
  * <p><b>The encoding is the HBase ecosystem's, and that is normative here.</b> A Bigtable cell is
  * an uninterpreted byte string, so some convention has to be picked; this connector inherits users
@@ -121,6 +124,25 @@ public final class CellValueCodec {
     }
 
     /**
+     * Reads one element of an array as the bytes of a cell: a {@code MAP} family's key or value.
+     *
+     * <p>The array counterpart of {@link FieldEncoder}, writing the same bytes for the same value.
+     */
+    @FunctionalInterface
+    @Internal
+    public interface ElementEncoder extends Serializable {
+
+        /**
+         * Encodes the element at {@code pos}.
+         *
+         * @param array the array to read
+         * @param pos the element's position in it
+         * @return the cell bytes
+         */
+        byte[] encode(ArrayData array, int pos);
+    }
+
+    /**
      * Rejects a column whose type has no cell encoding, naming the column.
      *
      * <p>Called while the DDL is parsed rather than left to {@link #encoder(LogicalType)}, so that
@@ -133,6 +155,21 @@ public final class CellValueCodec {
      * @throws ValidationException if the type cannot be stored in a cell
      */
     public static void checkSupported(String column, LogicalType type) {
+        checkSupportedAs(String.format("Column '%s'", column), type);
+    }
+
+    /**
+     * Rejects a {@code MAP} family whose value type has no cell encoding, naming the column.
+     *
+     * @param column the column's name, for the message
+     * @param valueType the map's declared value type
+     * @throws ValidationException if the type cannot be stored in a cell
+     */
+    public static void checkMapValueSupported(String column, LogicalType valueType) {
+        checkSupportedAs(String.format("The map value of column '%s'", column), valueType);
+    }
+
+    private static void checkSupportedAs(String subject, LogicalType type) {
         switch (type.getTypeRoot()) {
             case CHAR:
             case VARCHAR:
@@ -151,32 +188,31 @@ public final class CellValueCodec {
             case DOUBLE:
                 return;
             case TIME_WITHOUT_TIME_ZONE:
-                checkPrecision(column, type, ((TimeType) type).getPrecision());
+                checkPrecision(subject, type, ((TimeType) type).getPrecision());
                 return;
             case TIMESTAMP_WITHOUT_TIME_ZONE:
-                checkPrecision(column, type, ((TimestampType) type).getPrecision());
+                checkPrecision(subject, type, ((TimestampType) type).getPrecision());
                 return;
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                checkPrecision(column, type, ((LocalZonedTimestampType) type).getPrecision());
+                checkPrecision(subject, type, ((LocalZonedTimestampType) type).getPrecision());
                 return;
             default:
                 throw new ValidationException(
                         String.format(
-                                "Column '%s' has type %s, which has no Bigtable cell encoding.",
-                                column, type));
+                                "%s has type %s, which has no Bigtable cell encoding.",
+                                subject, type));
         }
     }
 
-    private static void checkPrecision(String column, LogicalType type, int precision) {
+    private static void checkPrecision(String subject, LogicalType type, int precision) {
         if (precision < MIN_TIME_PRECISION || precision > MAX_TIME_PRECISION) {
             // The cell holds milliseconds, so a finer precision would be silently truncated on the
             // way out and could never be read back. The bound is the HBase connector's too.
             throw new ValidationException(
                     String.format(
-                            "Column '%s' has type %s, whose precision is outside the range [%d,"
-                                    + " %d] a Bigtable cell can hold: the cell stores"
-                                    + " milliseconds.",
-                            column, type, MIN_TIME_PRECISION, MAX_TIME_PRECISION));
+                            "%s has type %s, whose precision is outside the range [%d, %d] a"
+                                    + " Bigtable cell can hold: the cell stores milliseconds.",
+                            subject, type, MIN_TIME_PRECISION, MAX_TIME_PRECISION));
         }
     }
 
@@ -255,6 +291,28 @@ public final class CellValueCodec {
                 // the invariant's backstop rather than as a second user-facing message.
                 throw new IllegalStateException("No cell encoding for type " + type);
         }
+    }
+
+    /**
+     * Returns an element encoder that writes a null as {@link #nullableEncoder(LogicalType,
+     * byte[])} does: an empty cell, or {@code nullStringBytes} for a character string.
+     *
+     * @param type the declared element type
+     * @param nullStringBytes the {@code null-string-literal}, UTF-8 encoded
+     * @return the encoder
+     */
+    public static ElementEncoder nullableElementEncoder(LogicalType type, byte[] nullStringBytes) {
+        return new FieldElementEncoder(type, nullableEncoder(type, nullStringBytes));
+    }
+
+    /**
+     * Returns an encoder for an array element that is known to be present.
+     *
+     * @param type the declared element type
+     * @return the encoder
+     */
+    public static ElementEncoder elementEncoder(LogicalType type) {
+        return new FieldElementEncoder(type, encoder(type));
     }
 
     /**
@@ -458,6 +516,40 @@ public final class CellValueCodec {
         @Override
         public byte[] encode(RowData row, int pos) {
             return delegate.encode(row, pos);
+        }
+    }
+
+    /**
+     * An array element read through Flink's own element getter and encoded by the field encoder of
+     * the same type, so the two paths cannot disagree about a layout: there is one switch, and the
+     * getter reads a binary array's decimal and timestamp at the declared precision. The getter is
+     * rebuilt on restore rather than serialized, because {@code ArrayData.createElementGetter}
+     * returns a lambda.
+     */
+    private static final class FieldElementEncoder implements ElementEncoder {
+
+        private static final long serialVersionUID = 1L;
+
+        private final LogicalType type;
+        private final FieldEncoder delegate;
+
+        private transient ArrayData.ElementGetter getter;
+
+        FieldElementEncoder(LogicalType type, FieldEncoder delegate) {
+            this.type = type;
+            this.delegate = delegate;
+            this.getter = ArrayData.createElementGetter(type);
+        }
+
+        private void readObject(ObjectInputStream input)
+                throws IOException, ClassNotFoundException {
+            input.defaultReadObject();
+            this.getter = ArrayData.createElementGetter(type);
+        }
+
+        @Override
+        public byte[] encode(ArrayData array, int pos) {
+            return delegate.encode(GenericRowData.of(getter.getElementOrNull(array, pos)), 0);
         }
     }
 

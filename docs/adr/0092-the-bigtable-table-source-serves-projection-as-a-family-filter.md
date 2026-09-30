@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0092: The Bigtable table source serves projection as a family filter
 
 - Status: Accepted
-- Date: 2026-08-11
+- Date: 2026-08-11; refined by ADR-0172 ([#1215](https://github.com/flink-gcp/flink-connector-gcp/issues/1215), 2026-09-27)
 - Issues: [#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459),
   [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217); ADR-0086 holds the
@@ -97,6 +97,8 @@ everything into `Serializable` state at construction because the schema itself i
   wire regression came from. It remains a compatible follow-up (an added chain link).
 - **A family none of whose declared qualifiers has a cell reads as a null field** — the mirror of
   the sink, whose null family writes no cells, so a sink round trip restores what was written.
+  A `MAP` family declares every qualifier, so it reads as a null field exactly when it has no
+  cell, never as an empty map (ADR-0172).
   This diverges from `HBaseSerde`, which always builds the nested row; a row of nulls was declined
   because it erases the one distinction the sink's contract keeps.
 - A declared qualifier's empty cell is `NULL` — for a character string the `null-string-literal`

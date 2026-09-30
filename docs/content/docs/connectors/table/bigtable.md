@@ -142,12 +142,15 @@ The write-only [conditional command schema](#ddl-defined-conditional-commands) i
 The DDL model is Flink's HBase connector's, so a table definition moves between the two with its
 schema intact and a table written by either is readable by the other:
 
-- **Exactly one column is not a `ROW`, and that column is the row key.** It may be declared
-  anywhere among the columns. Its type decides how the key bytes are formed, so a `BIGINT` key is
-  eight big-endian bytes rather than its decimal text.
+- **Exactly one column is neither a `ROW` nor a `MAP`, and that column is the row key.** It may be
+  declared anywhere among the columns. Its type decides how the key bytes are formed, so a `BIGINT`
+  key is eight big-endian bytes rather than its decimal text.
 - **Every `ROW` column is one column family**, and the column's name is the family's. Its nested
   fields are the qualifiers, one cell each. A nested `ROW` is rejected: a cell holds bytes, not a
   structure.
+- **Every `MAP` column is one column family too**, declared without its qualifiers: each entry is
+  a qualifier and its latest cell. The HBase connector has no such form; it is described under
+  [Map column families](#map-column-families).
 - A family name containing `:` is rejected. Bigtable's family filter is a regular expression that
   refuses a colon even escaped, so such a family could be written but never selectively read.
 
@@ -223,8 +226,10 @@ Aggregate writes use integer contributions and skip nulls as described in [Aggre
 | `DOUBLE` | Eight bytes: the IEEE 754 bits, big-endian |
 | `TIMESTAMP(p)`, `TIMESTAMP_LTZ(p)` | Eight bytes, big-endian, milliseconds since the epoch |
 
-`ARRAY`, `MAP`, `MULTISET`, a nested `ROW`, `RAW` and `TIMESTAMP WITH TIME ZONE` have no encoding
-and are rejected — but see below for *when*.
+`ARRAY`, `MULTISET`, a nested `ROW`, `RAW` and `TIMESTAMP WITH TIME ZONE` have no encoding and
+are rejected — but see below for *when*. A `MAP` has no cell encoding either: a top-level `MAP`
+column is a whole column family, as [Map column families](#map-column-families) describes, and is
+never the row key, while a `MAP` qualifier inside a `ROW` family is rejected.
 
 ### Precision stops at milliseconds
 
@@ -248,6 +253,44 @@ as a null; pick a literal the data cannot contain.
 
 A read reverses the convention through the same option —
 [What a read produces](#what-a-read-produces) below.
+
+## Map column families
+
+A `ROW` family needs its qualifiers and their types in the DDL, and Bigtable stores neither: a table's metadata names its column families and nothing inside them.
+GoogleSQL for Bigtable therefore presents each family as a map from qualifier to latest value, and this connector accepts the same shape.
+A top-level column declared `MAP<STRING, V>` or `MAP<BYTES, V>` is the column family of that name, and one DDL may mix it with `ROW` families:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="map-families" >}}
+
+The key is a qualifier.
+`BYTES` (or `VARBINARY`) keeps the qualifier's bytes as they are, which is GoogleSQL's shape, and `STRING` (or `VARCHAR`) reads them as UTF-8 without validating them.
+`CHAR`, `BINARY` and every other key type are rejected, because a qualifier has no fixed length.
+
+The value type `V` is any type in the [type mapping](#type-mapping), with the same byte layout and the same [null convention](#nulls), and every value of the family has that one type.
+`MAP<BYTES, BYTES>` reads any family.
+A typed value is how Flink reads a number out of a cell, since Flink has no `CAST` from `BYTES` to a numeric type: `MAP<BYTES, BIGINT>` reads a family of eight-byte integers, which includes the state of an `int64-sum`, `int64-min` or `int64-max` aggregate family, and `MAP<BYTES, BYTES>` reads HLL state.
+A cell the value type cannot decode fails the read with a message naming the cell, as it does for a `ROW` qualifier.
+A map value that is itself an `ARRAY`, a `MAP` or a `ROW` is rejected, and so is GoogleSQL's `with_history` shape `MAP<key, ARRAY<ROW<timestamp, value>>>`: only the latest version of a cell is read.
+
+A read produces one entry per qualifier that has a cell, holding that qualifier's latest version.
+A family with no cell at all reads as `NULL`, never as an empty map, which is the rule a `ROW` family follows and which makes `m IS NOT NULL` mean that the family has a cell.
+That predicate is pushed to the server as a family-existence prefilter and also kept as a residual, like every [cell predicate](#filter-pushdown).
+An entry access such as `m['plan'] = 'pro'` is evaluated by Flink and never pushed.
+Row membership follows the family filter as it does for `ROW` families: a query that projects only a map family omits rows with no cell in it.
+
+A write turns each entry into one cell.
+A null value is written as a null `ROW` qualifier is, a null key fails the record, and a null map leaves the family untouched.
+A row that would carry more than 100,000 mutations or 200 MiB of them, the client's limits for one row entry, fails as a serialization failure, which the sink routes like any other; under `merge`, keep-latest adds a column delete to each entry, which halves the number of entries a map can hold, while `replace` costs one family delete plus one mutation per entry in either write mode. Under [checkpoint-owned delivery](#checkpoint-owned-delivery) the staged marker takes one mutation, so the bound is 99,999, and exceeding it fails the job.
+The writable `timestamp` metadata, or the writer clock when it is absent, stamps each entry as it stamps each qualifier (see [Cell timestamps](#cell-timestamps)).
+A map contains only the qualifiers it writes, so what happens to the family's other qualifiers is a choice, made by `sink.map-family.update-mode`:
+
+- **`merge`** (the default): writes the entries and leaves every other qualifier as it is. This is how a Bigtable write behaves and how a `ROW` family treats undeclared qualifiers. It suits a family that accumulates qualifiers across writes, and it means that no SQL write removes an entry; a delete removes the whole row. An empty map writes nothing, and a row that writes nothing is rejected like a row whose families are all null.
+- **`replace`**: deletes the family, then writes the entries, in the same row mutation. Bigtable applies a row's mutations in order and atomically, so the family reads back as the written map. An empty map clears the family. Two writes of one row in the same batch still have [no defined winner](#two-rows-for-one-key-in-one-batch-have-no-defined-winner).
+
+Map families are written in the `upsert`, `keep-latest` and `insert-if-absent` modes and under checkpoint-owned delivery.
+Keep-latest deletes each written qualifier's older versions under `merge`; under `replace` the family delete already removes them.
+The `append`, `increment` and `aggregate` modes reject a map family, and the option is rejected in every mode except `upsert` and `keep-latest`, and on a table that declares no map family.
+The design record is [ADR-0172]({{< param BookRepo >}}/blob/main/docs/adr/0172-bigtable-column-families-may-be-declared-as-maps.md).
 
 ## Source
 
@@ -349,7 +392,8 @@ reverse the write-side convention: an empty cell is `NULL` — except in a chara
 where the `null-string-literal` is `NULL` and an empty cell is an empty string. A column family
 none of whose declared qualifiers has a cell is a `NULL` field, mirroring the sink, whose null
 family writes no cells; a family with some cells is a `ROW` whose absent qualifiers are null.
-(Flink's HBase connector differs here: it always builds the nested row.)
+(Flink's HBase connector differs here: it always builds the nested row.) A `MAP` family reads as
+[Map column families](#map-column-families) describes.
 
 Three more read-side facts worth knowing:
 
@@ -574,6 +618,7 @@ Command-template options are rejected in every other write mode.
 
 Set `sink.write-mode` to `keep-latest` to replace all versions of each cell the input writes.
 For each target qualifier, the sink appends an unbounded column delete immediately followed by its replacement `SetCell` in one `RowMutationEntry`.
+A `MAP` family written with `sink.map-family.update-mode = replace` needs no column deletes, because the family delete ahead of its cells already removed every version.
 Multiple qualifiers remain one atomic row operation, following Google's [delete-then-write recommendation](https://docs.cloud.google.com/bigtable/docs/keep-only-latest-value).
 
 A scalar null still writes the existing empty-byte or `null-string-literal` encoding and replaces that cell's history.
@@ -598,7 +643,7 @@ The [cell timestamp rules](#cell-timestamps) are unchanged: absent or null metad
 Reapplying a record replaces the cells again, so a new writer timestamp does not accumulate another version.
 It can still change the stored timestamp, overwrite a newer event, and produce repeated Change Streams mutations.
 Keep-latest provides neither compare-and-set nor latest-event-time-wins, and it does not order separate entries for one row or change at-least-once delivery.
-Each written cell consumes two mutations; the SDK's mutation limits still apply, while batching and in-flight entry limits continue to count row entries.
+Each written cell of a `ROW` family, or of a merged `MAP` family, consumes two mutations, and a replaced `MAP` family consumes one per entry plus its family delete; the SDK's mutation limits still apply, while batching and in-flight entry limits continue to count row entries.
 Age-based GC can remove a replacement carrying an old explicit timestamp.
 [ADR-0153]({{< param BookRepo >}}/blob/main/docs/adr/0153-the-table-keep-latest-mode-replaces-only-written-cells.md) records the decisions.
 
@@ -681,6 +726,7 @@ same row)". So when a job produces two changelog rows for the same key close eno
 share a request, which one lands last is not defined — and if they share a millisecond they also
 share a cell timestamp, so ordinary upserts collapse to one version rather than two.
 Keep-latest removes prior versions regardless of timestamp, but does not define the winner.
+A `MAP` family written with `replace` is the same: each entry replaces the family atomically, so the family reads back as one of the two maps, never a mixture, but not necessarily the later one.
 
 **Separate requests are not the fix**, and setting `sink.batching.element-count-threshold` to `1`
 to force one entry per request is the shape that looks like it. The batcher sends each request
@@ -752,10 +798,12 @@ Each of these fails the record through the sink's failure handler rather than sk
   erase the row the following `UPDATE_AFTER` is about to rewrite.
 - A row key that is null or encodes to zero bytes. Bigtable has no such row; Flink's HBase connector
   drops the record instead, which leaves an incomplete table under a green job.
-- A row whose every column family is null, which would produce a mutation with no cell in it. The
-  service refuses that with an `INVALID_ARGUMENT` naming neither the row nor the reason, so the
-  connector refuses it where both can be said. A partial column list — `INSERT INTO t (rowkey)
-  VALUES (...)` — is the ordinary way to reach it.
+- A row whose every column family is null, or an empty map a `merge` writes nothing for, which
+  would produce a mutation with no cell in it. The service refuses that with an `INVALID_ARGUMENT`
+  naming neither the row nor the reason, so the connector refuses it where both can be said. A
+  partial column list — `INSERT INTO t (rowkey) VALUES (...)` — is the ordinary way to reach it.
+
+A `MAP` family's null key fails the record too, since a cell has no null qualifier.
 
 Retries, error classification and the failure handler are the DataStream sink's and are described on
 its [page]({{< relref "docs/connectors/datastream/bigtable" >}}). A SQL table has no failure-policy
@@ -1068,6 +1116,7 @@ DataStream builder.
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement. Accepted with `upsert` and `keep-latest`; rejected in other write modes |
+| `sink.map-family.update-mode` | Enum | What a write does with a `MAP` family's qualifiers the written map does not contain: `merge` (default) leaves them, `replace` deletes the family first in the same row mutation. Accepted with `upsert` and `keep-latest` on a table that declares a `MAP` family; rejected otherwise. See [Map column families](#map-column-families) |
 | `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
 | `sink.batching.element-count-threshold` | Long | `BigtableWriterOptions.batchElementCountThreshold(...)`. Counts **entries** — one row's mutations — not mutations |
 | `sink.batching.request-byte-threshold` | MemorySize | `BigtableWriterOptions.batchRequestByteThreshold(...)` |
@@ -1089,8 +1138,8 @@ DataStream builder.
 | `sink.table-create.gc-rule.max-versions` | Integer | `GcRule.maxVersions(...)` for every family the sink creates |
 | `sink.table-create.gc-rule.max-age` | Duration | `GcRule.maxAge(...)` for every family the sink creates. Set beside the version limit, the two are combined as a **union** — a cell goes when it is either too old or too far down the version list |
 
-**The families come from the DDL, not from a key.** A `ROW<...>` column already says a family
-exists, so naming the same families again in the `WITH` clause would only create a way for the two
+**The families come from the DDL, not from a key.** A `ROW<...>` or `MAP<...>` column already
+says a family exists, so naming the same families again in the `WITH` clause would only create a way for the two
 lists to disagree.
 
 **The garbage-collection rule does not.** A `GcRule` is a tree of unions and intersections to any
@@ -1165,6 +1214,11 @@ qualifier its own type and ties a family to a format; it was weighed and decline
 [#34]({{< param BookRepo >}}/issues/34). `apache/flink-connector-hbase` has no Flink 2.x release, so
 the population this model serves has nowhere else to go.
 
+**Map column families are this connector's addition to that model**
+([ADR-0172]({{< param BookRepo >}}/blob/main/docs/adr/0172-bigtable-column-families-may-be-declared-as-maps.md)).
+They follow GoogleSQL for Bigtable, whose map-per-family shape Bigtable's metadata alone can describe, and they are what a catalog over Bigtable tables can derive.
+A DDL using one does not move to the HBase connector.
+
 **The encoding is normative.** It exists to be byte-compatible with the HBase ecosystem, so it is
 pinned to exact byte arrays by a golden-vector test rather than round-tripped through this
 connector's own code, which would pass while the interop was broken.
@@ -1200,6 +1254,9 @@ inspect every affected client settings family.
 
 The gated suite also checks immediate keep-latest replacement and reapplication with writer-clock
 and explicit SQL timestamps, plus server timestamps supplied by a DataStream serializer.
+It reads the state an aggregate write leaves through a `MAP` family DDL, a `ROW` family DDL and
+GoogleSQL for Bigtable and requires all three to agree, which the emulator cannot show because it
+has no aggregate families.
 Those tests read all stored versions without a latest-version filter or GC rule, and check that
 SQL writes preserve omitted families and undeclared qualifiers.
 

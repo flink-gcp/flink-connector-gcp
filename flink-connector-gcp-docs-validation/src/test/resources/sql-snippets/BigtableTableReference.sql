@@ -77,6 +77,39 @@ SELECT user_id, ROW(name, email), ROW(requests, last_seen) FROM staged_profiles;
 SELECT rowkey, profile FROM profiles;
 -- end::overview[]
 
+-- tag::map-families[]
+CREATE TABLE profile_attributes (
+  rowkey STRING,
+  profile ROW<name STRING>,
+  attributes MAP<STRING, STRING>,
+  PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles',
+  'sink.insert-only-input-mode' = 'insert-only'
+);
+
+INSERT INTO profile_attributes
+VALUES ('user-1', ROW('Alice'), MAP['plan', 'pro', 'region', 'eu']);
+
+-- The GoogleSQL shape of the same families: qualifiers and values as bytes, cast in the query.
+CREATE TABLE profiles_as_maps (
+  rowkey STRING,
+  profile MAP<BYTES, BYTES>,
+  attributes MAP<BYTES, BYTES>
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles'
+);
+
+SELECT rowkey, CAST(profile[CAST('name' AS BYTES)] AS STRING) AS name
+FROM profiles_as_maps;
+-- end::map-families[]
+
 -- tag::change-stream-envelope[]
 CREATE TABLE profile_mutations (
   row_key BYTES,

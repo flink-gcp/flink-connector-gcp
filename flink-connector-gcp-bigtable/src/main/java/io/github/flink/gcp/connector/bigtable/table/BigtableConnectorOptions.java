@@ -699,6 +699,26 @@ public final class BigtableConnectorOptions {
                                     + " millisecond granularity.");
 
     /**
+     * What a write does with the qualifiers of a MAP column family that the written map does not
+     * contain. 'merge' writes each entry as a cell and leaves every other qualifier as it is.
+     * 'replace' deletes the family and writes the entries in the same row mutation, so the family
+     * reads back as the written map. Applies to upsert and keep-latest writes of a table that
+     * declares a MAP column family.
+     */
+    public static final ConfigOption<MapFamilyUpdateMode> SINK_MAP_FAMILY_UPDATE_MODE =
+            ConfigOptions.key("sink.map-family.update-mode")
+                    .enumType(MapFamilyUpdateMode.class)
+                    .defaultValue(MapFamilyUpdateMode.MERGE)
+                    .withDescription(
+                            "What a write does with the qualifiers of a MAP column family that"
+                                    + " the written map does not contain. 'merge' writes each entry"
+                                    + " as a cell and leaves every other qualifier as it is."
+                                    + " 'replace' deletes the family and writes the entries in the"
+                                    + " same row mutation, so the family reads back as the written"
+                                    + " map. Applies to upsert and keep-latest writes of a table"
+                                    + " that declares a MAP column family.");
+
+    /**
      * The garbage-collection rule a created column family takes: keep at most this many versions of
      * a cell. Applied to every family the DDL declares, and combined with
      * 'sink.table-create.gc-rule.max-age' as a union when both are set. A rule tree of the shape

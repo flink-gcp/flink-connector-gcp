@@ -57,7 +57,9 @@ secret exposure or lifecycle contracts that the path-only use case does not requ
 
 **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
 normative.** Exactly one column is not a `ROW` and is the row key; every `ROW` column is a column
-family whose nested fields are its qualifiers; cell bytes are `org.apache.hadoop.hbase.util.Bytes`
+family whose nested fields are its qualifiers (**refined by ADR-0172**,
+[#1215](https://github.com/flink-gcp/flink-connector-gcp/issues/1215), 2026-09-27: a top-level
+`MAP` column is a column family too, and the row key is the one column that is neither); cell bytes are `org.apache.hadoop.hbase.util.Bytes`
 as `HBaseSerde` applies it, plus `null-string-literal`. The encoding is reproduced rather than
 depended on — `hbase-common` drags in Hadoop — and it has the status ADR-0026 gives the protobuf
 mapping: a golden-vector test pins each type to an exact byte array, because a round trip through

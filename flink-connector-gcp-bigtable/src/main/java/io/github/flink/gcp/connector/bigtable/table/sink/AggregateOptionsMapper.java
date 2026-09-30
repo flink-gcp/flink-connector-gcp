@@ -50,6 +50,18 @@ public final class AggregateOptionsMapper {
             }
             return Collections.emptyMap();
         }
+        for (BigtableTableSchema.Family family : schema.getFamilies()) {
+            if (family.isMap()) {
+                // Not yet an aggregate input (ADR-0172); a family with no declared qualifiers must
+                // not pass the type loop below vacuously. Checked before the required option, so a
+                // table this mode cannot write is not first asked for a key it can never use.
+                // Reading aggregate state as a MAP is supported, through a separate read DDL.
+                throw new ValidationException(
+                        "'sink.write-mode' = 'aggregate' does not support MAP column family '"
+                                + family.getName()
+                                + "'; declare its qualifiers as a ROW<...>.");
+            }
+        }
         if (declared == null) {
             throw new ValidationException(
                     "'sink.write-mode' = 'aggregate' requires '" + key + "'.");

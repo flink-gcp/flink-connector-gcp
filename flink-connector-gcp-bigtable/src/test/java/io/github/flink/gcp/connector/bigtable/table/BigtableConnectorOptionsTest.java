@@ -56,7 +56,8 @@ class BigtableConnectorOptionsTest {
                             BigtableConnectorOptions.LOOKUP_ASYNC.key(),
                             BigtableConnectorOptions.SINK_WRITE_MODE.key(),
                             BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.key(),
-                            BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS.key()));
+                            BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS.key(),
+                            BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE.key()));
 
     private static final Set<String> FLINK_OWNED =
             new HashSet<>(

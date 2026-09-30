@@ -330,6 +330,9 @@ class BigtableOptionParityTest {
                 BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.key(),
                 "configures the changelog mode the table sink advertises to the planner");
         map.put(
+                BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE.key(),
+                "configures whether the table layer's serializer deletes a MAP family first");
+        map.put(
                 BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED.key(),
                 "builds the one ByteStringRange that rowRange(...) takes");
         map.put(

@@ -39,6 +39,16 @@ public final class ReadModifyWriteSchemaChecks {
             return;
         }
         for (BigtableTableSchema.Family family : schema.getFamilies()) {
+            if (family.isMap()) {
+                // Not yet a read-modify-write input (ADR-0172): its rules would be per entry, and
+                // a family with no declared qualifiers must not pass the loop below vacuously.
+                throw new ValidationException(
+                        "Bigtable 'sink.write-mode' = '"
+                                + mode
+                                + "' does not support MAP column family '"
+                                + family.getName()
+                                + "'; declare its qualifiers as a ROW<...>.");
+            }
             for (BigtableTableSchema.Qualifier qualifier : family.getQualifiers()) {
                 LogicalTypeRoot type = qualifier.getType().getTypeRoot();
                 boolean valid =

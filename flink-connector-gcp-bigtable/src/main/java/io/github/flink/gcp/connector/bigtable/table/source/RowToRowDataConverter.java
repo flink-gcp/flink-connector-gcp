@@ -17,7 +17,9 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.table.data.GenericMapData;
 import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
@@ -31,9 +33,12 @@ import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Turns a Bigtable row into one {@code RowData}, per the table's {@link BigtableTableSchema} and
@@ -58,6 +63,10 @@ import java.util.Map;
  *       cell reads as a {@code ROW} whose absent qualifiers are null.
  *   <li>A declared qualifier's empty cell is a SQL {@code NULL} — or, for a character string, the
  *       {@code null-string-literal} is, and the empty cell is an empty string.
+ *   <li>A {@code MAP} family declares every qualifier: each one with a cell becomes an entry
+ *       holding its latest value, decoded as a {@code ROW} family's qualifier of the value type is.
+ *       A family with no cell reads as a {@code null} field, never an empty map, so {@code m IS NOT
+ *       NULL} means the same thing for either form (ADR-0172).
  * </ul>
  */
 @Internal
@@ -73,6 +82,11 @@ final class RowToRowDataConverter implements Serializable {
     @Nullable private final CellValueCodec.FieldDecoder rowKeyDecoder;
     private final FamilySlot[] familySlots;
     private final Map<String, Integer> familySlotsByName;
+
+    /**
+     * Whether any projected slot is a {@code MAP} family, so a ROW-only read allocates nothing new.
+     */
+    private final boolean hasMapSlot;
 
     /**
      * Creates the converter, resolving the schema into serializable state.
@@ -121,9 +135,12 @@ final class RowToRowDataConverter implements Serializable {
         this.familySlots = new FamilySlot[slotCount];
         System.arraycopy(slots, 0, this.familySlots, 0, slotCount);
         this.familySlotsByName = new HashMap<>();
+        boolean hasMapSlot = false;
         for (int s = 0; s < slotCount; s++) {
             familySlotsByName.put(this.familySlots[s].name, s);
+            hasMapSlot |= this.familySlots[s].map;
         }
+        this.hasMapSlot = hasMapSlot;
     }
 
     private static BigtableTableSchema.Family familyAt(
@@ -171,6 +188,8 @@ final class RowToRowDataConverter implements Serializable {
             }
         }
         GenericRowData[] familyRows = new GenericRowData[familySlots.length];
+        @SuppressWarnings("unchecked")
+        Map<Object, Object>[] familyMaps = hasMapSlot ? new Map[familySlots.length] : null;
         // A per-row seen-marker rather than a contiguity assumption: the timestamp order within a
         // qualifier is what latest-wins leans on, but an interleave filter may emit duplicate or
         // regrouped cells, so "the same qualifier never reappears later" is not a guarantee worth
@@ -182,6 +201,13 @@ final class RowToRowDataConverter implements Serializable {
                 continue;
             }
             FamilySlot slot = familySlots[s];
+            if (slot.map) {
+                if (familyMaps[s] == null) {
+                    familyMaps[s] = slot.newMap();
+                }
+                putLatest(familyMaps[s], slot, cell, row);
+                continue;
+            }
             int q = slot.qualifierIndex(cell.getQualifier());
             if (q < 0) {
                 continue;
@@ -219,12 +245,47 @@ final class RowToRowDataConverter implements Serializable {
             }
         }
         for (int s = 0; s < familySlots.length; s++) {
-            out.setField(familySlots[s].outputPosition, familyRows[s]);
+            out.setField(
+                    familySlots[s].outputPosition,
+                    familySlots[s].map
+                            ? (familyMaps[s] == null ? null : new GenericMapData(familyMaps[s]))
+                            : familyRows[s]);
         }
         return out;
     }
 
-    /** One projected column family's qualifiers and their decoders, resolved once. */
+    /** Adds one cell of a {@code MAP} family as an entry, unless a later version already has. */
+    private static void putLatest(Map<Object, Object> map, FamilySlot slot, RowCell cell, Row row) {
+        // A qualifier decodes as STRING or BYTES, neither of which can fail.
+        Object key = slot.keyDecoder.decode(cell.getQualifier().toByteArray());
+        // The same latest-wins rule as a ROW family's seen-marker, keyed by the entry itself.
+        if (map.containsKey(key)) {
+            return;
+        }
+        byte[] value = cell.getValue().toByteArray();
+        try {
+            map.put(key, slot.valueDecoder.decode(value));
+        } catch (RuntimeException e) {
+            // The ROW family's guard, except that the qualifier is escaped: here it is whatever
+            // the writer stored rather than a DDL field name, which RowRanges' rendering rule
+            // treats like a row key.
+            throw new IllegalStateException(
+                    String.format(
+                            "Cell %s:%s of the row with key '%s' holds %d byte(s), which the"
+                                    + " declared map value type cannot decode. Was the cell"
+                                    + " written under a different encoding?",
+                            slot.name,
+                            RowRanges.format(cell.getQualifier()),
+                            RowRanges.format(row.getKey()),
+                            value.length),
+                    e);
+        }
+    }
+
+    /**
+     * One projected column family's qualifiers and their decoders, resolved once — or, for a {@code
+     * MAP} family, its key and value decoders.
+     */
     private static final class FamilySlot implements Serializable {
 
         private static final long serialVersionUID = 1L;
@@ -233,6 +294,10 @@ final class RowToRowDataConverter implements Serializable {
         private final String name;
         private final ByteString[] qualifiers;
         private final CellValueCodec.FieldDecoder[] decoders;
+        private final boolean map;
+        private final boolean binaryKeys;
+        @Nullable private final CellValueCodec.FieldDecoder keyDecoder;
+        @Nullable private final CellValueCodec.FieldDecoder valueDecoder;
 
         private FamilySlot(
                 int outputPosition,
@@ -241,6 +306,15 @@ final class RowToRowDataConverter implements Serializable {
                 TrailingBytes trailingBytes) {
             this.outputPosition = outputPosition;
             this.name = family.getName();
+            this.map = family.isMap();
+            this.binaryKeys = map && family.getMapKeyType().is(LogicalTypeRoot.VARBINARY);
+            this.keyDecoder =
+                    map ? CellValueCodec.decoder(family.getMapKeyType(), trailingBytes) : null;
+            this.valueDecoder =
+                    map
+                            ? CellValueCodec.nullableDecoder(
+                                    family.getMapValueType(), nullStringBytes, trailingBytes)
+                            : null;
             List<BigtableTableSchema.Qualifier> declared = family.getQualifiers();
             this.qualifiers = new ByteString[declared.size()];
             this.decoders = new CellValueCodec.FieldDecoder[declared.size()];
@@ -251,6 +325,24 @@ final class RowToRowDataConverter implements Serializable {
                         CellValueCodec.nullableDecoder(
                                 qualifier.getType(), nullStringBytes, trailingBytes);
             }
+        }
+
+        /**
+         * Returns an empty entry map whose lookups compare keys by content.
+         *
+         * <p>A {@code byte[]} key hashes by identity, so in a hash map the latest-wins check above
+         * would miss every earlier version of a qualifier and the map would hold one entry per
+         * version — measured, a two-version qualifier read back with a {@code CARDINALITY} of 2.
+         * {@code GenericMapData.get} is a {@code Map.get} too, which is how Flink's generated code
+         * reads {@code m[key]} from one (flink-table-planner 2.2.1's {@code ScalarOperatorGens
+         * .generateMapGet}). A tree map compares through its comparator, and unsigned lexicographic
+         * order is also the order Bigtable sorts qualifiers in. A {@code StringData} key compares
+         * by content already.
+         */
+        private Map<Object, Object> newMap() {
+            return binaryKeys
+                    ? new TreeMap<>((a, b) -> Arrays.compareUnsigned((byte[]) a, (byte[]) b))
+                    : new LinkedHashMap<>();
         }
 
         private int qualifierIndex(ByteString qualifier) {

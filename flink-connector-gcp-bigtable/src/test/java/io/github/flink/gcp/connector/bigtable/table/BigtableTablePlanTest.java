@@ -491,6 +491,46 @@ class BigtableTablePlanTest {
     }
 
     @Test
+    void aMapFamilyPlansBesideARowFamilyInBothDirections() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>,\n"
+                        + "  m MAP<STRING, BYTES>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThat(tEnv.explainSql("SELECT m FROM bt")).contains("project=[m]");
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO bt VALUES ('r', ROW('v'), MAP['a', x'78'])"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aMapEntryPredicateStaysResidualWhileAMapExistenceTestIsPrefiltered() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  m MAP<STRING, BYTES>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        // An entry access is an ITEM call, not a nested field, so nothing is pushed for it.
+        assertThat(tEnv.explainSql("SELECT rowkey FROM bt WHERE m['a'] = x'78'"))
+                .doesNotContain("filter=[")
+                .contains("Calc(select=[rowkey], where=[");
+        // The family-existence prefilter, which a cell-less MAP family reading NULL makes exact;
+        // like every cell prefilter it also stays as the residual.
+        assertThat(tEnv.explainSql("SELECT rowkey FROM bt WHERE m IS NOT NULL"))
+                .containsIgnoringCase("filter=[is not null(m)")
+                .containsIgnoringCase("where=[is not null(m)");
+    }
+
+    @Test
     void equalityAccountsForDecoderAliasesAndDoesNotInventByteOrdering() {
         TableEnvironment tEnv = tableEnvironment();
         tEnv.executeSql(

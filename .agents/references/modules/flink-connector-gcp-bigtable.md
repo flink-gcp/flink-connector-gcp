@@ -558,10 +558,10 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
   setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated. Table-owned options have no
-  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The eight
+  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The nine
   defaulted table-owned options are `scan.mode`, `null-string-literal`, `decode.trailing-bytes`,
-  `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
-  `sink.insert-only-input-mode` and `sink.write-mode`; `sink.aggregate.column-family-types` is required
+  `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis`,
+  `sink.insert-only-input-mode`, `sink.map-family.update-mode` and `sink.write-mode`; `sink.aggregate.column-family-types` is required
   in aggregate mode and has no default. `scan.change-stream.changelog-mode` is deliberately required so
   selecting either Change Streams interpretation remains explicit. A mapped option gaining a
   default and a defaulted table-owned option losing its own both fail. "No default restated"
@@ -614,6 +614,21 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   and put a null in a NOT NULL row key (#1038, ADR-0135). Rescaling to the declared scale rounds
   and is not an overflow by itself; the overflow is judged after rounding, so a rounding carry
   can overflow a value whose stored digits look representable.
+- **A top-level `MAP<STRING|BYTES, V>` column is a column family too** (`docs/adr/0172`), this
+  connector's addition to the HBase model and the shape #1216's catalog derives. Keep the `ROW`
+  encoding untouched; map values reuse the codec's field encoder through an `ArrayData` element
+  getter, so there is one layout switch — do not add a second one over `ArrayData`. A cell-less map family reads `NULL`,
+  never an empty map — the pushed `m IS NOT NULL` family prefilter depends on it. `BYTES` keys live
+  in an unsigned-order tree map: a `byte[]` hashes by identity, and a hash map keeps one entry per
+  version (measured). Writes follow `sink.map-family.update-mode`: `merge` sets cells only,
+  `replace` puts `DeleteFromFamily` first in the same entry. `append`, `increment` and `aggregate`
+  reject a map family explicitly rather than letting their qualifier loops pass it vacuously; any
+  new loop over `Family.getQualifiers()` must decide what a map family means there. A map makes
+  the mutations per entry data-dependent; the client's `Mutation` refuses the 100,001st (or one past
+  200 MiB) inside `serialize()`, so an oversized map is a routed serialization failure (the count bound
+  measured; the byte bound read from the client source); the staged writer bounds an
+  entry at 99,999 plus its marker and fails the job instead. Do not move map
+  mutation-building out of `serialize()`, or the writer's later `toProto()` check fails the job instead.
 - `BigtableTableSchema` and `CellValueCodec` sit at the **`table` root**, not in a subpackage: both
   directions share them and neither may import the other (ADR-0055's module-root rule one level
   down). A colon in a family name is rejected there — `familyNameRegexFilter` refuses one even

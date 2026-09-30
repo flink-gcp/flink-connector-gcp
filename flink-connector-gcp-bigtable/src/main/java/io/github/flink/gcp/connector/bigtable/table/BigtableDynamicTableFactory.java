@@ -183,6 +183,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE,
                         BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS,
+                        BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE,
                         BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
@@ -228,6 +229,7 @@ public class BigtableDynamicTableFactory
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
         checkPrimaryKeyIsTheRowKey(context, schema);
         checkSinkHasSomewhereToWrite(schema);
+        checkMapFamilyUpdateModeHasAMapFamily(context, schema);
         ReadModifyWriteSchemaChecks.validate(schema, writeMode);
         Map<String, ColumnFamilyType> aggregateTypes = AggregateOptionsMapper.map(config, schema);
         if (staged
@@ -277,6 +279,8 @@ public class BigtableDynamicTableFactory
                         config.get(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE))
                 .truncateCellTimestampToMillis(
                         config.get(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS))
+                .mapFamilyUpdateMode(
+                        config.get(BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE))
                 .tableCreateOptions(TableCreateOptionsMapper.map(config, schema, aggregateTypes))
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
@@ -866,9 +870,10 @@ public class BigtableDynamicTableFactory
         // Qualifiers, not families: ROW<> parses, so a table can declare a family that holds
         // nothing, and every one of its records would then produce a mutation with no cell in it.
         // A row-key-only table is a legitimate thing to read; it is not a thing to write, because
-        // Bigtable refuses an entry that mutates nothing.
+        // Bigtable refuses an entry that mutates nothing. A MAP family declares its qualifiers per
+        // row, so it is somewhere to write; an empty map is refused per record instead.
         for (BigtableTableSchema.Family family : schema.getFamilies()) {
-            if (!family.getQualifiers().isEmpty()) {
+            if (family.isMap() || !family.getQualifiers().isEmpty()) {
                 return;
             }
         }
@@ -877,7 +882,30 @@ public class BigtableDynamicTableFactory
                         "A 'bigtable' table written to needs at least one column family with a"
                                 + " qualifier in it, and this one declares none besides its row key"
                                 + " '%s'. A family is a ROW<...> column whose fields are its"
-                                + " qualifiers.",
+                                + " qualifiers, or a MAP<...> column whose keys are.",
                         schema.getRowKeyName()));
+    }
+
+    /**
+     * Rejects an explicit {@code sink.map-family.update-mode} on a table with no {@code MAP}
+     * family, where it could change nothing: an option set to no effect is a misunderstanding the
+     * user should hear about rather than a write that silently merges or replaces nothing.
+     */
+    private static void checkMapFamilyUpdateModeHasAMapFamily(
+            Context context, BigtableTableSchema schema) {
+        String key = BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE.key();
+        if (!context.getCatalogTable().getOptions().containsKey(key)) {
+            return;
+        }
+        for (BigtableTableSchema.Family family : schema.getFamilies()) {
+            if (family.isMap()) {
+                return;
+            }
+        }
+        throw new ValidationException(
+                String.format(
+                        "Option '%s' applies to MAP column families, and this table declares"
+                                + " none.",
+                        key));
     }
 }

@@ -60,7 +60,7 @@ This bounds visible versions, not effects: timestamps can change, an old replay 
 There is no compare-and-set, event-time arbitration, ordering between separate same-row entries, or Flink exactly-once guarantee.
 The batcher may run separate requests concurrently even with one entry per request (ADR-0093).
 
-Each targeted cell consumes two mutations instead of one.
+Each targeted cell consumes two mutations instead of one (**refined by ADR-0172**, [#1215](https://github.com/flink-gcp/flink-connector-gcp/issues/1215), 2026-09-28: a `MAP` family written with `sink.map-family.update-mode = replace` omits the column deletes behind its family delete, so it costs one mutation per entry plus that delete).
 The SDK continues to enforce the per-entry mutation limit and batch mutation budget (ADR-0082); entry-count options remain entry counts.
 Age-based GC can still remove a replacement whose explicit timestamp is old enough.
 
