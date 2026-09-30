@@ -29,7 +29,7 @@ import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationS
 import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
-/** Internal DataStream relay for independently supervised Pub/Sub recovery trials. */
+/** Internal DataStream or Table relay for independently supervised Pub/Sub recovery trials. */
 @Internal
 public final class PubSubRecoveryJob {
     private PubSubRecoveryJob() {}
@@ -48,6 +48,10 @@ public final class PubSubRecoveryJob {
     }
 
     static void attach(StreamExecutionEnvironment env, RecoveryOptions options, String emulator) {
+        if (options.entryPoint.equals("table")) {
+            RecoveryTableRelay.attach(env, options, emulator);
+            return;
+        }
         var source =
                 PubSubSource.<String>builder()
                         .subscriptions(

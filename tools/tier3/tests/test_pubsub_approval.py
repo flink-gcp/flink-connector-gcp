@@ -70,12 +70,16 @@ def prepared(env, trial):
 
 @pytest.mark.parametrize("kind", plan.TRIALS)
 @pytest.mark.parametrize("records", [2, 101, 10000])
-def test_trial_roundtrip_and_derived_plan(prepared, kind, records):
+@pytest.mark.parametrize("entry_point", plan.ENTRY_POINTS)
+def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
     environment, _ = prepared
     value = environment.approval.to_dict()
-    value["pubsub_trial"].update(trial=kind, records_per_subscription=records)
+    value["pubsub_trial"].update(
+        trial=kind, records_per_subscription=records, entry_point=entry_point
+    )
     approval = Approval.from_dict(value, environment.clock())
     assert Approval.from_dict(approval.to_dict()) == approval
+    assert approval.pubsub_trial["entry_point"] == entry_point
     value["pubsub_trial"]["traffic_limits"]["publish_calls"] = 1
     assert approval.pubsub_trial["traffic_limits"]["publish_calls"] == 20000
     resources = approval.pubsub_plan.manifest()
@@ -116,6 +120,8 @@ def test_incompatible_approval_refused(prepared, key, value):
     "key,value",
     [
         ("trial", "combined"),
+        ("version", 2),
+        ("entry_point", "sql"),
         ("records_per_subscription", True),
         ("records_per_subscription", 10001),
         ("traffic_limits", {}),

@@ -16,6 +16,10 @@ ARG FLINK_IMAGE
 FROM ${FLINK_IMAGE}
 ARG FLINK_VERSION=2.2.1
 RUN test -f "/opt/flink/opt/flink-gs-fs-hadoop-${FLINK_VERSION}.jar"
+# The Table entry point relies on the image's Table stack rather than packaging its own.
+RUN for jar in table-api-java-uber table-planner-loader table-runtime; do \
+        test -f "/opt/flink/lib/flink-${jar}-${FLINK_VERSION}.jar" || exit 1; \
+    done
 ENV ENABLE_BUILT_IN_PLUGINS=flink-gs-fs-hadoop-${FLINK_VERSION}.jar
 COPY --chown=flink:flink target/pubsub-recovery.jar /opt/flink/usrlib/pubsub-recovery.jar
 COPY --chown=flink:flink target/image-lib/*.jar /opt/flink/usrlib/

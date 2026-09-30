@@ -43,18 +43,12 @@ final class RecoveryDeserializer implements PubSubDeserializationSchema<String> 
     public void deserialize(
             PubsubMessage message, SubscriptionDestination subscription, Collector<String> out)
             throws IOException {
-        if (!message.getData().isValidUtf8()
-                || message.getData().size() > 128
-                || message.getMessageId().isEmpty()) {
-            throw new IOException("Expected bounded UTF-8 input with a service message ID");
-        }
-        String text = message.getData().toStringUtf8();
-        int[] id = RecoveryPayload.parseInput(options, text);
-        if (!subscription.equals(
-                SubscriptionDestination.of(RecoveryOptions.PROJECT, options.input(id[0])))) {
-            throw new IOException("Payload input index differs from its subscription");
-        }
-        out.collect(text + "|" + RecoveryPayload.encode(message.getMessageId()));
+        out.collect(
+                RecoveryPayload.tag(
+                        options,
+                        message.getData(),
+                        message.getMessageId(),
+                        subscription.toSubscriptionPath()));
     }
 
     @Override

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Offline Pub/Sub DataStream trial proposals; never authorize execution."""
+"""Offline Pub/Sub trial proposals; never authorize execution."""
 
 import copy
 import json
@@ -28,11 +28,13 @@ from .pubsub_traffic import COUNTER_CEILINGS, TrafficLimits
 from .workflow import render
 
 TRIALS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
+ENTRY_POINTS = ("datastream", "table")
 WINDOW_SECONDS = 3600
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 FIELDS = {
     "version",
     "trial",
+    "entry_point",
     "records_per_subscription",
     "traffic_limits",
     "total_request_limit",
@@ -42,9 +44,9 @@ FIELDS = {
 def validate_trial(value):
     """Validate proposed caps, without asserting feasibility or bill enforcement."""
     if not isinstance(value, dict) or set(value) != FIELDS:
-        raise Failure("Pub/Sub trial fields must match the version 2 schema")
+        raise Failure("Pub/Sub trial fields must match the version 3 schema")
     for key, low, high in (
-        ("version", 2, 2),
+        ("version", 3, 3),
         ("records_per_subscription", 2, 10000),
         ("total_request_limit", 1, 100000),
     ):
@@ -52,6 +54,8 @@ def validate_trial(value):
             raise Failure("Invalid Pub/Sub trial field: " + key)
     if value["trial"] not in TRIALS:
         raise Failure("Unknown Pub/Sub trial")
+    if value["entry_point"] not in ENTRY_POINTS:
+        raise Failure("Unknown Pub/Sub entry point")
     limits = value["traffic_limits"]
     if not isinstance(limits, dict) or set(limits) != set(COUNTER_CEILINGS):
         raise Failure("Pub/Sub trial requires every traffic counter")
@@ -187,6 +191,7 @@ def prepare(
         application_image=application_image,
         pubsub_trial=trial["trial"],
         pubsub_records=records,
+        pubsub_entry_point=trial["entry_point"],
     )
     for application, parallelism, phase in (
         (initial, 1 if trial["trial"] == "rescale-out" else 2, "initial"),
@@ -216,6 +221,7 @@ def prepare(
                 f"--records-per-subscription={records}",
                 f"--parallelism={parallelism}",
                 f"--require-restored={str(phase == 'upgrade').lower()}",
+                f"--entry-point={trial['entry_point']}",
             ]
         ):
             raise Failure("Rendered application differs from the Pub/Sub trial")

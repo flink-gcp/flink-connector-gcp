@@ -34,7 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RecoveryContractTest {
-    final RecoveryOptions options = new RecoveryOptions("run-1", 2, 1, "initial", false);
+    final RecoveryOptions options =
+            new RecoveryOptions("run-1", 2, 1, "initial", false, "datastream");
 
     @ParameterizedTest
     @ValueSource(
@@ -46,10 +47,32 @@ class RecoveryContractTest {
                 "--phase=upgrade",
                 "--require-restored=yes",
                 "--run-id=x",
-                "--phase=wrong"
+                "--phase=wrong",
+                "--entry-point=sql",
+                "--entry-point=Table"
             })
     void rejectsInvalidOrRepeatedArguments(String arg) {
         assertThatThrownBy(() -> RecoveryOptions.parse(new String[] {"--run-id=run-1", arg}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void entryPointDefaultsToDataStream() {
+        assertThat(RecoveryOptions.parse(new String[] {"--run-id=run-1"}).entryPoint)
+                .isEqualTo("datastream");
+        assertThat(
+                        RecoveryOptions.parse(
+                                        new String[] {"--run-id=run-1", "--entry-point=table"})
+                                .entryPoint)
+                .isEqualTo("table");
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        new String[] {
+                                            "--run-id=run-1",
+                                            "--entry-point=table",
+                                            "--entry-point=table"
+                                        }))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -58,7 +81,8 @@ class RecoveryContractTest {
         RecoveryOptions copy = InstantiationUtil.clone(options);
         assertThat(copy.input(0)).isEqualTo("t3-run-1-in-0");
         assertThat(copy.output()).isEqualTo("t3-run-1-out");
-        RecoveryOptions restored = new RecoveryOptions("run-1", 2, 2, "upgrade", true);
+        RecoveryOptions restored =
+                new RecoveryOptions("run-1", 2, 2, "upgrade", true, "datastream");
         RecoveryObserver.verifyIdentity(restored, true, List.of(copy.identity(), copy.identity()));
         assertThatThrownBy(() -> RecoveryObserver.verifyIdentity(restored, false, List.of()))
                 .hasMessageContaining("requires checkpoint");
@@ -72,7 +96,8 @@ class RecoveryContractTest {
         assertThatThrownBy(
                         () ->
                                 RecoveryObserver.verifyIdentity(
-                                        new RecoveryOptions("run-1", 3, 1, "initial", false),
+                                        new RecoveryOptions(
+                                                "run-1", 3, 1, "initial", false, "datastream"),
                                         true,
                                         List.of(copy.identity())))
                 .hasMessageContaining("another run");
@@ -124,6 +149,44 @@ class RecoveryContractTest {
                 .hasMessageContaining("run");
         assertThatThrownBy(() -> RecoveryPayload.parseInput(options, "v1|run-1|0|01"))
                 .hasMessageContaining("canonical");
+    }
+
+    @Test
+    void tagComparesTheFullSubscriptionPathTheTableMetadataCarries() throws Exception {
+        ByteString data = ByteString.copyFromUtf8(RecoveryPayload.input(options, 1, 0));
+        String path = "projects/flink-gcp/subscriptions/t3-run-1-in-1";
+        assertThat(RecoveryPayload.tag(options, data, "m", path))
+                .isEqualTo("v1|run-1|1|0|" + RecoveryPayload.encode("m"));
+        assertThatThrownBy(() -> RecoveryPayload.tag(options, data, "m", "t3-run-1-in-1"))
+                .hasMessageContaining("subscription");
+        assertThatThrownBy(
+                        () ->
+                                RecoveryPayload.tag(
+                                        options,
+                                        data,
+                                        "m",
+                                        "projects/flink-gcp/subscriptions/t3-run-1-in-0"))
+                .hasMessageContaining("subscription");
+        assertThatThrownBy(() -> RecoveryPayload.tag(options, null, "m", path))
+                .hasMessageContaining("bounded UTF-8");
+        assertThatThrownBy(() -> RecoveryPayload.tag(options, data, null, path))
+                .hasMessageContaining("message ID");
+        assertThatThrownBy(
+                        () ->
+                                RecoveryPayload.tag(
+                                        options,
+                                        ByteString.copyFrom(new byte[] {(byte) 0xff}),
+                                        "m",
+                                        path))
+                .hasMessageContaining("bounded UTF-8");
+        assertThatThrownBy(
+                        () ->
+                                RecoveryPayload.tag(
+                                        options,
+                                        ByteString.copyFromUtf8("v".repeat(129)),
+                                        "m",
+                                        path))
+                .hasMessageContaining("bounded UTF-8");
     }
 
     @Test

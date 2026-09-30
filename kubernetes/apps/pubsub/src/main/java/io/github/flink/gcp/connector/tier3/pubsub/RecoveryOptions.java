@@ -33,9 +33,15 @@ final class RecoveryOptions implements Serializable {
     final int parallelism;
     final String phase;
     final boolean requireRestored;
+    final String entryPoint;
 
     RecoveryOptions(
-            String runId, int records, int parallelism, String phase, boolean requireRestored) {
+            String runId,
+            int records,
+            int parallelism,
+            String phase,
+            boolean requireRestored,
+            String entryPoint) {
         if (runId == null || !runId.matches("[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")) {
             throw new IllegalArgumentException(
                     "--run-id must be a Tier-3 label of at most 40 characters");
@@ -51,11 +57,15 @@ final class RecoveryOptions implements Serializable {
             throw new IllegalArgumentException(
                     "--phase must be initial or upgrade; upgrade requires --require-restored=true");
         }
+        if (!Set.of("datastream", "table").contains(entryPoint)) {
+            throw new IllegalArgumentException("--entry-point must be datastream or table");
+        }
         this.runId = runId;
         this.records = records;
         this.parallelism = parallelism;
         this.phase = phase;
         this.requireRestored = requireRestored;
+        this.entryPoint = entryPoint;
     }
 
     static RecoveryOptions parse(String[] args) {
@@ -66,7 +76,8 @@ final class RecoveryOptions implements Serializable {
                         "records-per-subscription",
                         "parallelism",
                         "phase",
-                        "require-restored");
+                        "require-restored",
+                        "entry-point");
         for (String arg : args) {
             int split = arg.indexOf('=');
             if (!arg.startsWith("--")
@@ -87,7 +98,8 @@ final class RecoveryOptions implements Serializable {
                 Integer.parseInt(values.getOrDefault("records-per-subscription", "1000")),
                 Integer.parseInt(values.getOrDefault("parallelism", "1")),
                 values.getOrDefault("phase", "initial"),
-                Boolean.parseBoolean(restored));
+                Boolean.parseBoolean(restored),
+                values.getOrDefault("entry-point", "datastream"));
     }
 
     String input(int index) {

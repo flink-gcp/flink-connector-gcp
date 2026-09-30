@@ -18,6 +18,10 @@ package io.github.flink.gcp.connector.tier3.pubsub;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
@@ -43,6 +47,30 @@ final class RecoveryPayload {
             throw new IllegalArgumentException("Input identity must use canonical decimal fields");
         }
         return new int[] {subscription, sequence};
+    }
+
+    /**
+     * Tags one delivered input with its service message ID, rejecting input delivered through the
+     * wrong subscription. Both entry points apply this one check.
+     */
+    static String tag(
+            RecoveryOptions options, ByteString data, String messageId, String subscriptionPath)
+            throws IOException {
+        if (data == null
+                || !data.isValidUtf8()
+                || data.size() > 128
+                || messageId == null
+                || messageId.isEmpty()) {
+            throw new IOException("Expected bounded UTF-8 input with a service message ID");
+        }
+        String text = data.toStringUtf8();
+        int[] id = parseInput(options, text);
+        if (!SubscriptionDestination.of(RecoveryOptions.PROJECT, options.input(id[0]))
+                .toSubscriptionPath()
+                .equals(subscriptionPath)) {
+            throw new IOException("Payload input index differs from its subscription");
+        }
+        return text + "|" + encode(messageId);
     }
 
     static void check(RecoveryOptions options, int subscription, int sequence) {
