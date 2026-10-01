@@ -68,7 +68,7 @@ jobs:
         with:
           install_args: crane cue java uv
 
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: just
 
@@ -116,7 +116,7 @@ jobs:
         run: |
           echo "image=$(cue -C kubernetes export ./images -e flink --out text)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: meta
@@ -149,7 +149,7 @@ jobs:
             crane copy "$CLOUDTASKS_SOURCE" "$GAR/flink:$CLOUDTASKS_FLINK_VERSION"
           fi
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
         with:
           context: kubernetes/images/lifecycle
@@ -164,7 +164,7 @@ jobs:
           images: ${{ env.GAR }}/smoke
           tags: type=sha,format=long
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: smoke_build
         with:
           context: kubernetes/apps/smoke
@@ -180,7 +180,7 @@ jobs:
           images: ${{ env.GAR }}/${{ steps.cloudtasks_base.outputs.package }}
           tags: type=sha,format=long
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: cloudtasks_build
         with:
           context: kubernetes/apps/cloudtasks
@@ -198,7 +198,7 @@ jobs:
           images: ${{ env.GAR }}/bigquery-recovery
           tags: type=sha,format=long
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: bigquery_build
         with:
           context: kubernetes/apps/bigquery
@@ -216,7 +216,7 @@ jobs:
           images: ${{ env.GAR }}/pubsub-recovery
           tags: type=sha,format=long
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: pubsub_build
         with:
           context: kubernetes/apps/pubsub
