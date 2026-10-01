@@ -45,7 +45,7 @@ public final class FirestoreEmulatorContainers {
      */
     private static final DockerImageName IMAGE =
             DockerImageName.parse(
-                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:583.0.0-emulators");
+                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:587.0.0-emulators");
 
     private FirestoreEmulatorContainers() {}
 
