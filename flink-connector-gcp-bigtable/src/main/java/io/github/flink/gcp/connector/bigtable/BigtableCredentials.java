@@ -21,22 +21,25 @@ import org.apache.flink.annotation.Internal;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.GoogleCredentialsProvider;
-import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import io.github.flink.gcp.connector.base.auth.ServiceAccountKeys;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-/** Loads credentials for the Bigtable data and admin client families. */
+/**
+ * Loads credentials for the Bigtable data and admin client families.
+ *
+ * <p>A failure names only the product, never the path or the parser's exception; {@link
+ * ServiceAccountKeys#load(String, java.util.Collection, String)} owns that rule.
+ */
 @Internal
 public final class BigtableCredentials {
 
@@ -68,21 +71,13 @@ public final class BigtableCredentials {
     private static CredentialsProvider load(
             @Nullable String serviceAccountKeyFile, Collection<String>... scopeGroups)
             throws IOException {
-        if (serviceAccountKeyFile == null) {
-            return null;
-        }
         Set<String> scopes = new LinkedHashSet<>();
         for (Collection<String> group : scopeGroups) {
             scopes.addAll(group);
         }
-        try (InputStream input = Files.newInputStream(Path.of(serviceAccountKeyFile))) {
-            ServiceAccountCredentials credentials = ServiceAccountCredentials.fromStream(input);
-            return FixedCredentialsProvider.create(credentials.createScoped(scopes));
-        } catch (IOException | RuntimeException e) {
-            // A path can disclose a mounted secret's name, and parser failures can echo material.
-            throw new IOException(
-                    "Failed to load the configured Bigtable service-account key file.");
-        }
+        GoogleCredentials credentials =
+                ServiceAccountKeys.load(serviceAccountKeyFile, scopes, "Bigtable");
+        return credentials == null ? null : FixedCredentialsProvider.create(credentials);
     }
 
     private static Collection<String> dataScopes() {
