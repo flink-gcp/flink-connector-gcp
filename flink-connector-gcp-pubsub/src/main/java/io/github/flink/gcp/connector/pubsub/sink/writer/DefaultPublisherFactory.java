@@ -182,10 +182,13 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
     /**
      * Builds the SDK retry settings: the mirrored SDK defaults overlaid with the set knobs (the
-     * SDK's own defaults are package-private; see {@code DEFAULT_RETRY_SETTINGS}).
+     * SDK's own defaults are package-private; see {@code DEFAULT_RETRY_SETTINGS}). The two
+     * max-versus-initial pairs are checked first; see {@link
+     * #checkRetryPairs(PubSubPublisherOptions)}.
      */
     @VisibleForTesting
     static RetrySettings retrySettings(PubSubPublisherOptions options) {
+        checkRetryPairs(options);
         RetrySettings.Builder retry = DEFAULT_RETRY_SETTINGS.toBuilder();
         if (options.getRetryTotalTimeout() != null) {
             retry.setTotalTimeoutDuration(options.getRetryTotalTimeout());
@@ -212,6 +215,83 @@ public final class DefaultPublisherFactory implements PublisherFactory {
             retry.setMaxAttempts(options.getRetryMaxAttempts());
         }
         return retry.build();
+    }
+
+    /**
+     * Checks each retry maximum against its initial value, naming the knobs as the builder spells
+     * them; see {@link #checkRetryPairs(PubSubPublisherOptions, String, String, String, String)}.
+     *
+     * @param options the publisher options
+     * @throws IllegalArgumentException if a maximum is shorter than its initial value
+     */
+    public static void checkRetryPairs(PubSubPublisherOptions options) {
+        checkRetryPairs(
+                options,
+                "retryInitialDelay",
+                "retryMaxDelay",
+                "retryInitialRpcTimeout",
+                "retryMaxRpcTimeout");
+    }
+
+    /**
+     * Checks each retry maximum against its initial value, counting an unset one as the SDK's: gax
+     * refuses a maximum retry delay shorter than the initial one, and a maximum RPC timeout shorter
+     * than the initial one, with a message that names no option. A single knob set alone can break
+     * a pair against the SDK default on the other side, so this names both knobs and which value is
+     * the SDK's. The sink's builder and the Table layer call it too, so the refusal happens before
+     * the job is submitted rather than when a writer opens a publisher; the Table layer passes its
+     * option keys as the names.
+     *
+     * @param options the publisher options
+     * @param initialDelayName the caller's name for {@code retryInitialDelay}
+     * @param maxDelayName the caller's name for {@code retryMaxDelay}
+     * @param initialRpcTimeoutName the caller's name for {@code retryInitialRpcTimeout}
+     * @param maxRpcTimeoutName the caller's name for {@code retryMaxRpcTimeout}
+     * @throws IllegalArgumentException if a maximum is shorter than its initial value
+     */
+    public static void checkRetryPairs(
+            PubSubPublisherOptions options,
+            String initialDelayName,
+            String maxDelayName,
+            String initialRpcTimeoutName,
+            String maxRpcTimeoutName) {
+        checkPair(
+                options.getRetryMaxDelay(),
+                DEFAULT_RETRY_SETTINGS.getMaxRetryDelayDuration(),
+                maxDelayName,
+                options.getRetryInitialDelay(),
+                DEFAULT_RETRY_SETTINGS.getInitialRetryDelayDuration(),
+                initialDelayName);
+        checkPair(
+                options.getRetryMaxRpcTimeout(),
+                DEFAULT_RETRY_SETTINGS.getMaxRpcTimeoutDuration(),
+                maxRpcTimeoutName,
+                options.getRetryInitialRpcTimeout(),
+                DEFAULT_RETRY_SETTINGS.getInitialRpcTimeoutDuration(),
+                initialRpcTimeoutName);
+    }
+
+    private static void checkPair(
+            @Nullable Duration max,
+            Duration sdkMax,
+            String maxName,
+            @Nullable Duration initial,
+            Duration sdkInitial,
+            String initialName) {
+        Duration effectiveMax = max != null ? max : sdkMax;
+        Duration effectiveInitial = initial != null ? initial : sdkInitial;
+        if (effectiveMax.compareTo(effectiveInitial) < 0) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "%s (%s%s) must not be shorter than %s (%s%s). Raise the first or lower"
+                                    + " the second.",
+                            maxName,
+                            effectiveMax,
+                            max != null ? "" : ", the SDK default because it is unset",
+                            initialName,
+                            effectiveInitial,
+                            initial != null ? "" : ", the SDK default because it is unset"));
+        }
     }
 
     /** Adapts the SDK {@link Publisher} to the writer-facing {@link TopicPublisher} interface. */

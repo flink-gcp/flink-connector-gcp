@@ -61,6 +61,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `publisherShutdownsAbandoned` counts the **sink's** closes that overran their budget, reading the
   module-root `PubSubShutdownResidue` adder — the base class holds no count; the dead-letter
   queue's own closes are a second adder under a second name (#329, below).
+- The `retry*` knobs overlay the SDK publisher's defaults, which `DefaultPublisherFactory` mirrors
+  (a drift test pins the mirror). Each maximum is checked against its initial value, set or the
+  mirror's, by `DefaultPublisherFactory.checkRetryPairs`, which `PubSubSinkBuilder.build()` and
+  `PublisherOptionsMapper` both call before submission, each with its own names (#1570;
+  `docs/adr/0068`). Do not leave a pair to gax: its refusal names no option and fires on the
+  TaskManager. The publisher's own minimums (`MIN_TOTAL_TIMEOUT` 10 s, `MIN_RPC_TIMEOUT` 10 ms,
+  enforced by `Publisher.Builder.setRetrySettings`) are the floors of `retryTotalTimeout`,
+  `retryInitialRpcTimeout` and `retryMaxRpcTimeout`, mirrored in `PubSubPublisherOptions` and
+  pinned by a drift test; a test of the retry settings must go through `configure` onto a real
+  `Publisher.Builder`, since gax alone does not see them.
 - **A table-layer check that fires inside `createDynamicTable{Source,Sink}` is wrapped by
   `FactoryUtil`. A single value the builder rejects is renamed to its option key through the
   module's `table.OptionSetters`** (`docs/adr/0133`); the restate-in-DDL-keys judgment remains

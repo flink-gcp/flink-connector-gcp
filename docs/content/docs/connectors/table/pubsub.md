@@ -462,6 +462,16 @@ itself succeeds — the check runs when the table is used as a sink, so the fail
 time, before any record is published. The six other `sink.retry.*` keys are unaffected. See
 [`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
 
+Each `sink.retry.*` maximum must be at least its initial value: `sink.retry.max-delay` at least
+`sink.retry.initial-delay`, and `sink.retry.max-rpc-timeout` at least
+`sink.retry.initial-rpc-timeout`. A key left out counts as the SDK default, so
+`'sink.retry.max-delay' = '0 s'` alone is rejected against the SDK's initial delay; set
+`'sink.retry.initial-delay' = '0 s'` beside it. Like the ordering check, this one runs at plan time,
+when the table is used as a sink, and its message names both keys and marks which value is the SDK
+default. Separately, `sink.retry.total-timeout` must be at least 10 s, and
+`sink.retry.initial-rpc-timeout` and `sink.retry.max-rpc-timeout` at least 10 ms, the SDK
+publisher's own minimums; a shorter value, zero included, is rejected under its key.
+
 ## Delivery guarantees
 
 At-least-once in both directions, unchanged from the DataStream connectors. The sink publishes

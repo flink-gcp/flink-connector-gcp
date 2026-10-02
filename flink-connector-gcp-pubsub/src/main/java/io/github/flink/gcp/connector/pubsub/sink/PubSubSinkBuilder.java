@@ -23,6 +23,7 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
+import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
 
 import javax.annotation.Nullable;
 
@@ -225,6 +226,10 @@ public class PubSubSinkBuilder<T> {
      * through the interface, without automatic FLIP-314 listener delivery.
      *
      * @return the sink
+     * @throws IllegalStateException if a required setting is missing, or the topic-creation or
+     *     credential settings conflict
+     * @throws IllegalArgumentException if a publisher options' {@code retry*} maximum is shorter
+     *     than its initial value, set or the SDK's
      */
     public Sink<T> build() {
         Preconditions.checkState(serializer != null, "A serializer is required.");
@@ -241,6 +246,9 @@ public class PubSubSinkBuilder<T> {
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
                         + " emulator uses a plaintext channel with no credentials. Remove one of"
                         + " the two settings.");
+        // Refuses a retry pair gax would reject, before the job is submitted rather than when a
+        // writer opens its first publisher.
+        DefaultPublisherFactory.checkRetryPairs(publisherOptions);
         return new PubSubPublisherSink<>(
                 new PubSubSinkConfig<>(
                         destinationResolver,

@@ -460,7 +460,9 @@ the ADR-0028 asymmetry note is retired by the renames (its refinement rides thos
 Storage Write SDK's own knob, whose `0` means no limit; Pub/Sub's goes to gax
 `RetrySettings.totalTimeout`, whose `0` carries gax's attempt-bounded meaning. Two different
 vendor knobs, each already carrying its vendor's name — renaming would erase that and promise
-the wrong zero semantics.)* **Verdict: B — record under the vendor-word rule; the rename was
+the wrong zero semantics.)* *(Refined by [#1570](https://github.com/flink-gcp/flink-connector-gcp/issues/1570): the Pub/Sub publisher refuses a total timeout
+under 10 s, so gax's zero is not reachable through `retryTotalTimeout` and the setter now refuses
+it. The two knobs remain different vendor fields, so the verdict stands.)* **Verdict: B — record under the vendor-word rule; the rename was
 withdrawn from [#1049](https://github.com/flink-gcp/flink-connector-gcp/issues/1049).**
 
 **O7. `failureHandler` (BigQuery) vs `failed<Noun>Handler` (four siblings).** Not drift:

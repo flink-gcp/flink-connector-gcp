@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
 import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
@@ -37,13 +38,16 @@ import java.util.List;
  * of its own, each bound stays in the builder's own {@code Preconditions}, and a rejected value is
  * renamed to the option key the SQL caller wrote (issue #1030).
  *
- * <p><b>One cross-check is restated here in DDL vocabulary</b>, and that is deliberate rather than
+ * <p><b>Two cross-checks are worded here in DDL vocabulary</b>, and that is deliberate rather than
  * duplication. A {@code Preconditions} failure inside {@code createDynamicTableSink} is wrapped by
  * Flink's {@code FactoryUtil} into a {@code ValidationException} whose own message says only
  * "Unable to create a sink for writing table ...", leaving the actionable sentence in the cause —
  * and that sentence would name {@code retryTotalTimeout(...)}, which appears nowhere in the user's
  * {@code WITH} clause. {@code TopicCreateOptionsMapper} restates its builder's create-disposition
- * check for the same reason. A check whose message needs no translation stays in the builder alone.
+ * check for the same reason. The ordering-versus-retry-budget check is restated here; the retry
+ * pair check is called with the option keys as its names instead, because it compares against the
+ * SDK defaults that {@code DefaultPublisherFactory} mirrors and a restatement would need a second
+ * copy of them. A check whose message needs no translation stays in the builder alone.
  */
 @Internal
 public final class PublisherOptionsMapper {
@@ -153,7 +157,31 @@ public final class PublisherOptionsMapper {
                 PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
 
-        return builder.build();
+        PubSubPublisherOptions options = builder.build();
+        rejectInvertedRetryPairs(options);
+        return options;
+    }
+
+    /**
+     * The retry pair check the sink's builder runs, named in the keys the DDL spells: a single
+     * {@code sink.retry.*} maximum can fall below the SDK's initial value, which gax would reject
+     * on the TaskManager with a message naming no option.
+     */
+    private static void rejectInvertedRetryPairs(PubSubPublisherOptions options) {
+        try {
+            DefaultPublisherFactory.checkRetryPairs(
+                    options,
+                    quoted(PubSubConnectorOptions.SINK_RETRY_INITIAL_DELAY),
+                    quoted(PubSubConnectorOptions.SINK_RETRY_MAX_DELAY),
+                    quoted(PubSubConnectorOptions.SINK_RETRY_INITIAL_RPC_TIMEOUT),
+                    quoted(PubSubConnectorOptions.SINK_RETRY_MAX_RPC_TIMEOUT));
+        } catch (IllegalArgumentException e) {
+            throw new ValidationException(e.getMessage(), e);
+        }
+    }
+
+    private static String quoted(ConfigOption<?> option) {
+        return "'" + option.key() + "'";
     }
 
     /**

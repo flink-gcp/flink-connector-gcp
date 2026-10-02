@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0133: A Table option value the builder rejects is renamed to its option key
 
 - Status: Accepted
-- Date: 2026-08-22, revised by [#1027] (2026-08-22) and [#1047] (2026-08-23)
-- Issues: [#1030], [#1019], [#895], [#235], [#1027], [#1047]
+- Date: 2026-08-22, revised by [#1027] (2026-08-22), [#1047] (2026-08-23) and [#1570] (2026-09-30)
+- Issues: [#1030], [#1019], [#895], [#235], [#1027], [#1047], [#1570]
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner (table layers)
 - Current behavior: each module's `table.OptionSetters` and the mapper javadocs that cite it
 
@@ -75,7 +75,11 @@ blesses for the emulator endpoints, where the factory makes the same call the ru
 sentence is identical wherever it lands. The legibility test survives where per-case judgment is
 still the right tool: **cross-field `build()` checks are not renamed**, because a message naming
 two knobs has no single key, and the Bigtable mapper's spelling test (with the Pub/Sub mapper's
-one restatement as the counter-example) remains their rule.
+one restatement as the counter-example) remains their rule. [#1570] added a third shape for a
+cross-field check whose bound is a vendor default rather than a literal: the Pub/Sub retry pair
+check takes the knob names as parameters, and the mapper calls it with the option keys. A
+restatement would need a second copy of the SDK defaults, which the declined sweep below never
+weighed. That makes one parameterized check, not a sweep.
 
 The helper is copied per module rather than hoisted into `flink-connector-gcp-base`, although it
 now has five consumers, because base deliberately carries no Table API dependency and
@@ -131,5 +135,6 @@ method parameter rather than their setter — `absentRetentionFallback`, `heartb
 [#1027]: https://github.com/flink-gcp/flink-connector-gcp/issues/1027
 [#1030]: https://github.com/flink-gcp/flink-connector-gcp/issues/1030
 [#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047
+[#1570]: https://github.com/flink-gcp/flink-connector-gcp/issues/1570
 [ADR-0007]: 0007-the-publisher-teardown-is-two-phase-and-its-bound-is-real.md
 [ADR-0068]: 0068-duration-budgets-are-bounded-at-the-setter-by-what-a-nanosecond-clock-can-express.md

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0068: A `Duration` budget is bounded at the setter by what a nanosecond clock can express
 
 - Status: Accepted
-- Date: 2026-08-08; revised by [#381] (2026-08-08), [#413] (2026-08-09)
-- Issues: [#334], [#321], [#333], [#381], [#413]
+- Date: 2026-08-08; revised by [#381] (2026-08-08), [#413] (2026-08-09), [#1570] (2026-09-30)
+- Issues: [#334], [#321], [#333], [#381], [#413], [#1570]
 - Modules: base (`base.options`, `BoundedShutdown`), pubsub, cloudtasks, bigtable, bigquery
 - Current behavior: each knob's row in `docs/content/docs/reference/{pubsub,bigquery}.md`
 
@@ -176,10 +176,24 @@ resolved sources rather than assumed:
 | Vendor setting | What zero means there | Our knobs |
 |---|---|---|
 | `StreamWriter.Builder.setMaxRetryDuration` (bigquerystorage 3.30.0) | *"You can allow unlimited retry by setting the value to be 0"*; `ConnectionWorker` skips the elapsed-time comparison | `maxRetryDuration` ×2 |
-| `RetrySettings.totalTimeout` (gax 2.82.0) | *"the logic will instead use the number of attempts to determine retries"* — and it is gax's own retry default | `retryTotalTimeout` |
+| `RetrySettings.totalTimeout` (gax 2.82.0) | *"the logic will instead use the number of attempts to determine retries"* — and it is gax's own retry default | `retryTotalTimeout` (Pub/Sub: floored at 10 s instead, see below) |
 | `RetrySettings.initialRetryDelay` / `maxRetryDelay` (gax 2.82.0) | gax's own retry default; a zero cap clamps every delay to none | `retryInitialDelay` / `retryMaxDelay` ×3 classes |
-| `RetrySettings.initialRpcTimeout` / `maxRpcTimeout` (gax 2.82.0) | *"allows the RPC to continue indefinitely"* | `retryInitialRpcTimeout` / `retryMaxRpcTimeout` |
+| `RetrySettings.initialRpcTimeout` / `maxRpcTimeout` (gax 2.82.0) | *"allows the RPC to continue indefinitely"* | `retryInitialRpcTimeout` / `retryMaxRpcTimeout` (Pub/Sub: floored at 10 ms instead, see below) |
 | `Subscriber.Builder.setMaxAckExtensionPeriod` (google-cloud-pubsub 1.152.0) | *"A zero duration effectively disables auto deadline extensions"* | `maxAckExtensionPeriod` — **non-negative only, no floor**: see below |
+
+A zero that gax defines is settable only where nothing between gax and the user refuses it, and
+[#1570] measured two places where something does. First, gax's `RetrySettings` refuses a maximum
+retry delay shorter than the initial one, and a maximum RPC timeout shorter than the initial one,
+so a zero cap stands only beside a zero initial value. The Pub/Sub sink overlays each set `retry*`
+knob on the SDK publisher's defaults, so it checks both pairs against those defaults when the sink
+is built and names the knobs, or the `sink.retry.*` keys, in the refusal. Second, the Pub/Sub
+publisher adds minimums of its own: `Publisher.Builder.setRetrySettings` (google-cloud-pubsub
+1.154.0) refuses a total timeout under 10 s and an initial RPC timeout under 10 ms, zero included,
+with a message naming nothing. The Pub/Sub sink's `retryTotalTimeout`, `retryInitialRpcTimeout`
+and `retryMaxRpcTimeout` therefore take those minimums as their floors instead of this record's
+zero-or-a-millisecond. The cap takes the initial timeout's floor because it may not be shorter
+than any initial timeout the publisher accepts. Gax's zero stays settable where the vendor passes
+it through, as it does for the Pub/Sub retry delays.
 
 **The floor and the exemption are the same argument, not a compromise between them.** Every one of
 these values is read by the vendor with `toMillis()`, so a *positive* sub-millisecond value would
@@ -317,4 +331,5 @@ the failure.**
 [#334]: https://github.com/flink-gcp/flink-connector-gcp/issues/334
 [#381]: https://github.com/flink-gcp/flink-connector-gcp/issues/381
 [#413]: https://github.com/flink-gcp/flink-connector-gcp/issues/413
+[#1570]: https://github.com/flink-gcp/flink-connector-gcp/issues/1570
 [ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

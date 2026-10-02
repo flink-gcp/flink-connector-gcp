@@ -617,8 +617,8 @@ public final class PubSubConnectorOptions {
     // ------------------------------------------------------------------------
 
     /**
-     * The total time budget of a publish including its retries. Cannot be combined with
-     * 'sink.message-ordering.enabled' = 'true'.
+     * The total time budget of a publish including its retries, at least 10 s. Cannot be combined
+     * with 'sink.message-ordering.enabled' = 'true'.
      */
     public static final ConfigOption<Duration> SINK_RETRY_TOTAL_TIMEOUT =
             ConfigOptions.key("sink.retry.total-timeout")
@@ -626,15 +626,19 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The total time budget of a publish including its"
-                                    + " retries. Cannot be combined with"
+                                    + " retries, at least 10 s. Cannot be combined with"
                                     + " 'sink.message-ordering.enabled' = 'true'.");
 
-    /** The delay before the first publish retry. */
+    /**
+     * The delay before the first publish retry, at most 'sink.retry.max-delay', set or the SDK's.
+     */
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_DELAY =
             ConfigOptions.key("sink.retry.initial-delay")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription("The delay before the first publish retry.");
+                    .withDescription(
+                            "The delay before the first publish retry, at most"
+                                    + " 'sink.retry.max-delay', set or the SDK's.");
 
     /** The factor the retry delay grows by per attempt, at least 1.0. */
     public static final ConfigOption<Double> SINK_RETRY_DELAY_MULTIPLIER =
@@ -644,19 +648,31 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The factor the retry delay grows by per attempt, at least 1.0.");
 
-    /** The cap on the delay between publish retries. */
+    /**
+     * The cap on the delay between publish retries, at least 'sink.retry.initial-delay', set or the
+     * SDK's. A cap of 0 needs 'sink.retry.initial-delay' = '0 s' beside it.
+     */
     public static final ConfigOption<Duration> SINK_RETRY_MAX_DELAY =
             ConfigOptions.key("sink.retry.max-delay")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription("The cap on the delay between publish retries.");
+                    .withDescription(
+                            "The cap on the delay between publish retries, at least"
+                                    + " 'sink.retry.initial-delay', set or the SDK's."
+                                    + " A cap of 0 needs 'sink.retry.initial-delay' = '0 s' beside"
+                                    + " it.");
 
-    /** The timeout of the first publish RPC attempt. */
+    /**
+     * The timeout of the first publish RPC attempt, at least 10 ms and at most
+     * 'sink.retry.max-rpc-timeout', set or the SDK's.
+     */
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_RPC_TIMEOUT =
             ConfigOptions.key("sink.retry.initial-rpc-timeout")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription("The timeout of the first publish RPC attempt.");
+                    .withDescription(
+                            "The timeout of the first publish RPC attempt, at least 10 ms and at"
+                                    + " most 'sink.retry.max-rpc-timeout', set or the SDK's.");
 
     /** The factor the per-RPC timeout grows by per attempt, at least 1.0. */
     public static final ConfigOption<Double> SINK_RETRY_RPC_TIMEOUT_MULTIPLIER =
@@ -666,12 +682,18 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The factor the per-RPC timeout grows by per attempt, at least 1.0.");
 
-    /** The cap on the timeout of a publish RPC attempt. */
+    /**
+     * The cap on the timeout of a publish RPC attempt, at least 10 ms and at least
+     * 'sink.retry.initial-rpc-timeout', set or the SDK's.
+     */
     public static final ConfigOption<Duration> SINK_RETRY_MAX_RPC_TIMEOUT =
             ConfigOptions.key("sink.retry.max-rpc-timeout")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription("The cap on the timeout of a publish RPC attempt.");
+                    .withDescription(
+                            "The cap on the timeout of a publish RPC attempt, at least 10 ms and"
+                                    + " at least 'sink.retry.initial-rpc-timeout', set or the"
+                                    + " SDK's.");
 
     /**
      * The cap on publish attempts. 0 means the retries are bounded by the total timeout alone.

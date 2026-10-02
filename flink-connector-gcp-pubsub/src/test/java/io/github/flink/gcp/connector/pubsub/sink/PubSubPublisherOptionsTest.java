@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.pubsub.v1.Publisher;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
@@ -268,47 +269,114 @@ class PubSubPublisherOptionsTest {
     }
 
     /**
-     * Every {@code retry*} knob here is forwarded to gax's {@code RetrySettings}, which gives zero
-     * meanings of its own: a zero total timeout bounds retries by the attempt count instead, a zero
-     * RPC timeout lets the call run indefinitely, and a zero delay is gax's own default. They stay
-     * settable as the SDK defines them; a positive sub-millisecond value is refused instead,
-     * because gax reads them with {@code toMillis()} and it would silently become that zero
-     * (ADR-0068).
+     * The two retry delays are forwarded to gax's {@code RetrySettings}, where a zero delay is
+     * gax's own default, and the SDK publisher adds no minimum of its own. They stay settable as
+     * the SDK defines them; a positive sub-millisecond value is refused instead, because gax reads
+     * them with {@code toMillis()} and it would silently become that zero (ADR-0068).
      */
     @Test
-    void theSdkRetryKnobsTakeTheVendorsZero() {
+    void theRetryDelaysTakeTheVendorsZero() {
         PubSubPublisherOptions options =
                 PubSubPublisherOptions.builder()
-                        .retryTotalTimeout(Duration.ZERO)
                         .retryInitialDelay(Duration.ZERO)
                         .retryMaxDelay(Duration.ZERO)
-                        .retryInitialRpcTimeout(Duration.ZERO)
-                        .retryMaxRpcTimeout(Duration.ZERO)
                         .build();
 
-        assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ZERO);
         assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ZERO);
         assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ZERO);
-        assertThat(options.getRetryInitialRpcTimeout()).isEqualTo(Duration.ZERO);
-        assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ZERO);
 
         PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
         Duration halfAMilli = Duration.ofNanos(500_000);
-        assertThatThrownBy(() -> builder.retryTotalTimeout(halfAMilli))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("retryTotalTimeout must be at least 1 millisecond");
         assertThatThrownBy(() -> builder.retryInitialDelay(halfAMilli))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryInitialDelay must be at least 1 millisecond");
         assertThatThrownBy(() -> builder.retryMaxDelay(halfAMilli))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryMaxDelay must be at least 1 millisecond");
-        assertThatThrownBy(() -> builder.retryInitialRpcTimeout(halfAMilli))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("retryInitialRpcTimeout must be at least 1 millisecond");
-        assertThatThrownBy(() -> builder.retryMaxRpcTimeout(halfAMilli))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("retryMaxRpcTimeout must be at least 1 millisecond");
+    }
+
+    /**
+     * The SDK publisher's own minimums (#1570): {@code Publisher.Builder.setRetrySettings} refuses
+     * a total timeout under 10 s and an initial RPC timeout under 10 ms, zero included, with a
+     * message naming nothing, when the writer opens a publisher. The setters refuse them instead
+     * and accept the minimum itself; the RPC cap takes the same floor, since it may not be shorter
+     * than an initial timeout the publisher accepts.
+     */
+    @Test
+    void theTotalAndRpcTimeoutsTakeTheSdkPublishersMinimums() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryTotalTimeout(Duration.ofSeconds(10))
+                        .retryInitialRpcTimeout(Duration.ofMillis(10))
+                        .retryMaxRpcTimeout(Duration.ofMillis(10))
+                        .build();
+
+        assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ofSeconds(10));
+        assertThat(options.getRetryInitialRpcTimeout()).isEqualTo(Duration.ofMillis(10));
+        assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofMillis(10));
+
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+        for (Duration below : new Duration[] {Duration.ZERO, Duration.ofMillis(9_999)}) {
+            assertThatThrownBy(() -> builder.retryTotalTimeout(below))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage(
+                            "retryTotalTimeout must be at least PT10S, the Pub/Sub publisher's"
+                                    + " minimum: "
+                                    + below);
+        }
+        for (Duration below : new Duration[] {Duration.ZERO, Duration.ofMillis(9)}) {
+            assertThatThrownBy(() -> builder.retryInitialRpcTimeout(below))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage(
+                            "retryInitialRpcTimeout must be at least PT0.01S, the Pub/Sub"
+                                    + " publisher's minimum: "
+                                    + below);
+            assertThatThrownBy(() -> builder.retryMaxRpcTimeout(below))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage(
+                            "retryMaxRpcTimeout must be at least PT0.01S, the Pub/Sub publisher's"
+                                    + " minimum: "
+                                    + below);
+        }
+    }
+
+    /**
+     * A duration too long for {@code toMillis()} still fails at the setter, as it did under the
+     * millisecond floor these minimums replaced. gax's {@code RetrySettings.Builder.build()} calls
+     * {@code toMillis()} on the total and initial RPC timeouts, and its retry algorithm on the RPC
+     * cap, so a value that passed here would throw {@code ArithmeticException} on a TaskManager:
+     * when the writer opens its first publisher, or at the first retry for the cap.
+     */
+    @Test
+    void aTimeoutTooLongForMillisecondsFailsAtTheSetter() {
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+        Duration tooLong = Duration.ofSeconds(Long.MAX_VALUE);
+
+        assertThatThrownBy(() -> builder.retryTotalTimeout(tooLong))
+                .isInstanceOf(ArithmeticException.class);
+        assertThatThrownBy(() -> builder.retryInitialRpcTimeout(tooLong))
+                .isInstanceOf(ArithmeticException.class);
+        assertThatThrownBy(() -> builder.retryMaxRpcTimeout(tooLong))
+                .isInstanceOf(ArithmeticException.class);
+    }
+
+    /**
+     * Pins the mirrored minimums to the SDK's own package-private constants, so an SDK upgrade that
+     * moves either fails here rather than leaving the setters refusing a value the publisher would
+     * take, or taking one it refuses.
+     */
+    @Test
+    void mirroredMinimumsMatchTheSdk() throws Exception {
+        assertThat(sdkConstant("MIN_TOTAL_TIMEOUT"))
+                .isEqualTo(PubSubPublisherOptions.SDK_MIN_TOTAL_TIMEOUT);
+        assertThat(sdkConstant("MIN_RPC_TIMEOUT"))
+                .isEqualTo(PubSubPublisherOptions.SDK_MIN_RPC_TIMEOUT);
+    }
+
+    private static Object sdkConstant(String name) throws Exception {
+        Field field = Publisher.Builder.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(null);
     }
 
     @Test

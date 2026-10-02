@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -68,6 +69,19 @@ public final class PubSubPublisherOptions implements Serializable {
 
     /** {@link Builder#maxConsecutiveRejections(int)} value under which the bound never fires. */
     public static final int UNBOUNDED = -1;
+
+    /**
+     * Mirror of {@code Publisher.Builder.MIN_TOTAL_TIMEOUT} (package-private in the SDK), which
+     * {@code Publisher.Builder.setRetrySettings} enforces with a message naming nothing. A
+     * drift-guard test pins this to the SDK constant.
+     */
+    @VisibleForTesting static final Duration SDK_MIN_TOTAL_TIMEOUT = Duration.ofSeconds(10);
+
+    /**
+     * Mirror of {@code Publisher.Builder.MIN_RPC_TIMEOUT}, enforced on the initial RPC timeout the
+     * same way; pinned by the same drift-guard test.
+     */
+    @VisibleForTesting static final Duration SDK_MIN_RPC_TIMEOUT = Duration.ofMillis(10);
 
     private static final PubSubPublisherOptions DEFAULTS = builder().build();
 
@@ -506,23 +520,27 @@ public final class PubSubPublisherOptions implements Serializable {
          * publisher replaces this and {@link #retryMaxAttempts(int)} with an effectively infinite
          * budget, so setting either would promise a bound the publisher does not have.
          *
-         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: retries are
-         * bounded by the attempt count instead of by time. A setting this connector forwards to the
-         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
-         * instead, because gax reads this with {@code toMillis()} and it would silently become that
-         * zero (ADR-0068).
+         * <p><b>At least 10 seconds</b>, the SDK publisher's own minimum. gax reads a zero total
+         * timeout as "bound retries by the attempt count instead", but the publisher refuses zero
+         * and anything under 10 seconds when the writer opens it, with a message naming no option,
+         * so this setter refuses them instead (#1570).
          *
-         * @param retryTotalTimeout the total timeout, at least 1 ms or {@code Duration.ZERO}
+         * @param retryTotalTimeout the total timeout, at least 10 s
          * @return this builder
          */
         public Builder retryTotalTimeout(Duration retryTotalTimeout) {
             this.retryTotalTimeout =
-                    OptionChecks.checkAtLeastOneMilliOrZero(retryTotalTimeout, "retryTotalTimeout");
+                    checkAtLeastSdkMinimum(
+                            retryTotalTimeout, SDK_MIN_TOTAL_TIMEOUT, "retryTotalTimeout");
             return this;
         }
 
         /**
          * Sets the delay before the first publish retry. Optional; defaults to the SDK's delay.
+         *
+         * <p>At most {@link #retryMaxDelay(Duration)}, counting an unset maximum as the SDK's: the
+         * sink's builder refuses a longer initial delay, which gax would otherwise refuse on the
+         * TaskManager with a message naming no option.
          *
          * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: no delay
          * before the first retry, which is gax's own default. A setting this connector forwards to
@@ -556,11 +574,15 @@ public final class PubSubPublisherOptions implements Serializable {
         /**
          * Caps the delay between publish retries. Optional; defaults to the SDK's cap.
          *
+         * <p>At least {@link #retryInitialDelay(Duration)}, counting an unset initial delay as the
+         * SDK's: the sink's builder refuses a shorter cap, which gax would otherwise refuse on the
+         * TaskManager with a message naming no option.
+         *
          * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: a cap of
-         * zero, which clamps every retry delay to none. A setting this connector forwards to the
-         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
-         * instead, because gax reads this with {@code toMillis()} and it would silently become that
-         * zero (ADR-0068).
+         * zero, which clamps every retry delay to none. It therefore needs a zero {@code
+         * retryInitialDelay} beside it. A setting this connector forwards to the SDK stays settable
+         * as the SDK defines it; a positive sub-millisecond value is refused instead, because gax
+         * reads this with {@code toMillis()} and it would silently become that zero (ADR-0068).
          *
          * @param retryMaxDelay the maximum retry delay, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
@@ -575,20 +597,22 @@ public final class PubSubPublisherOptions implements Serializable {
          * Sets the timeout of the first publish RPC attempt. Optional; defaults to the SDK's
          * timeout.
          *
-         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: the call runs
-         * indefinitely, until the connection itself ends. A setting this connector forwards to the
-         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
-         * instead, because gax reads this with {@code toMillis()} and it would silently become that
-         * zero (ADR-0068).
+         * <p>At most {@link #retryMaxRpcTimeout(Duration)}, counting an unset maximum as the SDK's:
+         * the sink's builder refuses a longer initial timeout, which gax would otherwise refuse on
+         * the TaskManager with a message naming no option.
          *
-         * @param retryInitialRpcTimeout the initial per-RPC timeout, at least 1 ms or {@code
-         *     Duration.ZERO}
+         * <p><b>At least 10 milliseconds</b>, the SDK publisher's own minimum. gax reads a zero RPC
+         * timeout as "let the call run indefinitely", but the publisher refuses zero and anything
+         * under 10 milliseconds when the writer opens it, with a message naming no option, so this
+         * setter refuses them instead (#1570).
+         *
+         * @param retryInitialRpcTimeout the initial per-RPC timeout, at least 10 ms
          * @return this builder
          */
         public Builder retryInitialRpcTimeout(Duration retryInitialRpcTimeout) {
             this.retryInitialRpcTimeout =
-                    OptionChecks.checkAtLeastOneMilliOrZero(
-                            retryInitialRpcTimeout, "retryInitialRpcTimeout");
+                    checkAtLeastSdkMinimum(
+                            retryInitialRpcTimeout, SDK_MIN_RPC_TIMEOUT, "retryInitialRpcTimeout");
             return this;
         }
 
@@ -610,20 +634,22 @@ public final class PubSubPublisherOptions implements Serializable {
         /**
          * Caps the timeout of a publish RPC attempt. Optional; defaults to the SDK's cap.
          *
-         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: a cap of
-         * zero, which lets every call run indefinitely. A setting this connector forwards to the
-         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
-         * instead, because gax reads this with {@code toMillis()} and it would silently become that
-         * zero (ADR-0068).
+         * <p>At least {@link #retryInitialRpcTimeout(Duration)}, counting an unset initial timeout
+         * as the SDK's: the sink's builder refuses a shorter cap, which gax would otherwise refuse
+         * on the TaskManager with a message naming no option.
          *
-         * @param retryMaxRpcTimeout the maximum per-RPC timeout, at least 1 ms or {@code
-         *     Duration.ZERO}
+         * <p><b>At least 10 milliseconds</b>, because the initial timeout it may not be shorter
+         * than is. gax reads a zero cap as "let every call run indefinitely", but no zero cap can
+         * sit beside an initial timeout the SDK publisher accepts, so this setter refuses it rather
+         * than leaving the refusal to the pair check (#1570).
+         *
+         * @param retryMaxRpcTimeout the maximum per-RPC timeout, at least 10 ms
          * @return this builder
          */
         public Builder retryMaxRpcTimeout(Duration retryMaxRpcTimeout) {
             this.retryMaxRpcTimeout =
-                    OptionChecks.checkAtLeastOneMilliOrZero(
-                            retryMaxRpcTimeout, "retryMaxRpcTimeout");
+                    checkAtLeastSdkMinimum(
+                            retryMaxRpcTimeout, SDK_MIN_RPC_TIMEOUT, "retryMaxRpcTimeout");
             return this;
         }
 
@@ -933,5 +959,23 @@ public final class PubSubPublisherOptions implements Serializable {
             }
             return new PubSubPublisherOptions(this);
         }
+    }
+
+    /**
+     * Checks a retry duration against a minimum the SDK publisher enforces itself. The minimums are
+     * whole milliseconds, so this also refuses the positive sub-millisecond values gax would
+     * truncate to zero (ADR-0068). The comparison is in milliseconds on purpose: gax converts these
+     * with {@code toMillis()}, so a duration too long for that throws {@code ArithmeticException}
+     * here, on the client, rather than on a TaskManager.
+     */
+    private static Duration checkAtLeastSdkMinimum(Duration value, Duration minimum, String name) {
+        Preconditions.checkNotNull(value, "%s must not be null", name);
+        Preconditions.checkArgument(
+                value.toMillis() >= minimum.toMillis(),
+                "%s must be at least %s, the Pub/Sub publisher's minimum: %s",
+                name,
+                minimum,
+                value);
+        return value;
     }
 }

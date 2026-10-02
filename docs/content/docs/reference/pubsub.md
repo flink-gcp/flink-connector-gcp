@@ -67,13 +67,13 @@ for how the caps are sized.
 
 | Option | Default | What it does |
 |---|---|---|
-| `retryTotalTimeout` | *unset ⇒ SDK default (600 s)* | Total budget for a publish including retries; `0` is gax's own value for "bound retries by the attempt count instead" |
-| `retryInitialDelay` | *unset ⇒ SDK default (100 ms)* | Delay before the first retry; `0` (gax's own default) means none |
+| `retryTotalTimeout` | *unset ⇒ SDK default (600 s)* | Total budget for a publish including retries, at least 10 s, the SDK publisher's minimum |
+| `retryInitialDelay` | *unset ⇒ SDK default (100 ms)* | Delay before the first retry, at most `retryMaxDelay`; `0` (gax's own default) means none |
 | `retryDelayMultiplier` | *unset ⇒ SDK default (×4)* | Factor the retry delay grows by |
-| `retryMaxDelay` | *unset ⇒ SDK default (60 s)* | Cap on the delay between retries; `0` clamps every delay to none |
-| `retryInitialRpcTimeout` | *unset ⇒ SDK default* | Timeout of the first publish RPC attempt; `0` is gax's own value for "let the call run indefinitely" |
-| `retryRpcTimeoutMultiplier` | *unset ⇒ SDK default* | Factor the per-RPC timeout grows by |
-| `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout; `0` lets every call run indefinitely |
+| `retryMaxDelay` | *unset ⇒ SDK default (60 s)* | Cap on the delay between retries, at least `retryInitialDelay`; `0` beside a zero `retryInitialDelay` means no delay at all |
+| `retryInitialRpcTimeout` | *unset ⇒ SDK default (5 s)* | Timeout of the first publish RPC attempt, at least 10 ms, the SDK publisher's minimum, and at most `retryMaxRpcTimeout` |
+| `retryRpcTimeoutMultiplier` | *unset ⇒ SDK default (×4)* | Factor the per-RPC timeout grows by |
+| `retryMaxRpcTimeout` | *unset ⇒ SDK default (60 s)* | Cap on a publish RPC attempt's timeout, at least `retryInitialRpcTimeout` and therefore at least 10 ms |
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
 `retryTotalTimeout` and `retryMaxAttempts` **are rejected beside `enableMessageOrdering(true)`**,
@@ -83,6 +83,21 @@ retry knobs are unaffected and combine with ordering freely. A program that togg
 therefore set these two only on the branch that leaves it off, rather than once for both. The
 mechanism is on the [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle)
 page, where it also explains why the shutdown budget exists.
+
+**Each retry maximum must be at least its initial value**, and an unset value counts as the SDK
+default shown above. A single knob can therefore break a pair: `retryMaxDelay(Duration.ZERO)` alone
+falls below the SDK's 100 ms initial delay, and `retryInitialRpcTimeout` of 90 s alone exceeds the
+SDK's 60 s maximum. `PubSubSinkBuilder.build()` refuses such a pair with an
+`IllegalArgumentException` that names both knobs and marks which value is the SDK default, so the
+job is never submitted. Without the check, gax would refuse it on a TaskManager, when the writer
+opens its first publisher, with a message that names no option.
+
+**Two timeouts have a minimum the SDK publisher enforces itself**: 10 s for `retryTotalTimeout`
+and 10 ms for `retryInitialRpcTimeout`. gax gives a zero value a meaning for both ("bound retries
+by the attempt count", "let the call run indefinitely"), but the publisher refuses zero as well as
+anything below its minimum, so the setters refuse those values. `retryMaxRpcTimeout` takes the
+10 ms floor too, because it may not be shorter than the initial timeout, so a zero RPC cap cannot
+be configured.
 
 **Ordering, in-flight caps and the republish recovery**, all the connector's own.
 

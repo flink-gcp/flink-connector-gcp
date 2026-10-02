@@ -237,6 +237,58 @@ class PublisherOptionsMapperTest {
                 .hasMessageContaining("'sink.retry.total-timeout' and 'sink.retry.max-attempts'");
     }
 
+    /**
+     * The retry pair check in the keys a {@code WITH} clause spells (#1570): a zero cap alone meets
+     * the SDK's initial value, which the message marks as the default it collided with.
+     */
+    @Test
+    void aZeroMaxDelayAloneIsRejectedInDdlVocabulary() {
+        Configuration config =
+                Configuration.fromMap(
+                        java.util.Collections.singletonMap("sink.retry.max-delay", "0 s"));
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(
+                        "'sink.retry.max-delay' (PT0S) must not be shorter than"
+                                + " 'sink.retry.initial-delay' (PT0.1S, the SDK default because it"
+                                + " is unset). Raise the first or lower the second.")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void anInitialRpcTimeoutAboveTheSdkMaximumIsRejectedInDdlVocabulary() {
+        Configuration config =
+                Configuration.fromMap(
+                        java.util.Collections.singletonMap(
+                                "sink.retry.initial-rpc-timeout", "90 s"));
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(
+                        "'sink.retry.max-rpc-timeout' (PT1M, the SDK default because it is unset)"
+                                + " must not be shorter than 'sink.retry.initial-rpc-timeout'"
+                                + " (PT1M30S). Raise the first or lower the second.");
+    }
+
+    /**
+     * The SDK publisher's own minimum reaches a SQL user under the key they wrote: the setter
+     * refuses it, and {@code OptionSetters} renames the refusal (#1570, ADR-0133).
+     */
+    @Test
+    void aTotalTimeoutBelowThePublishersMinimumNamesItsKey() {
+        Configuration config =
+                Configuration.fromMap(
+                        java.util.Collections.singletonMap("sink.retry.total-timeout", "0 s"));
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.retry.total-timeout' is invalid")
+                .hasMessageContaining(
+                        "retryTotalTimeout must be at least PT10S, the Pub/Sub publisher's"
+                                + " minimum");
+    }
+
     @Test
     void messageOrderingDisabledExplicitlyIsNotAConflict() {
         // `false` is present-but-not-ordering: the guard reads the value, not the key's presence.

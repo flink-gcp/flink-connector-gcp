@@ -36,6 +36,7 @@ import java.lang.reflect.Field;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the settings mapping of {@link DefaultPublisherFactory} and for what its adapter hands
@@ -168,6 +169,116 @@ class DefaultPublisherFactoryTest {
         assertThat(retry.getRpcTimeoutMultiplier()).isEqualTo(1.5);
         assertThat(retry.getMaxRpcTimeoutDuration()).isEqualTo(Duration.ofSeconds(30));
         assertThat(retry.getMaxAttempts()).isEqualTo(7);
+    }
+
+    /**
+     * A single maximum below the SDK's initial value is refused with both knobs named and the SDK
+     * default marked as such (#1570). Without the check, gax's {@code RetrySettings.Builder} threw
+     * {@code IllegalStateException: max retry delay must not be shorter than initial delay}, naming
+     * no option, and only when a writer opened a publisher.
+     */
+    @Test
+    void aZeroMaxDelayAloneIsRefusedAgainstTheSdkInitialDelay() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder().retryMaxDelay(Duration.ZERO).build();
+
+        assertThatThrownBy(() -> DefaultPublisherFactory.retrySettings(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryMaxDelay (PT0S) must not be shorter than retryInitialDelay (PT0.1S,"
+                                + " the SDK default because it is unset). Raise the first or"
+                                + " lower the second.");
+    }
+
+    /**
+     * A zero RPC cap is refused by its setter, since no initial timeout the SDK publisher accepts
+     * could sit beneath it; a positive cap below the SDK's initial timeout reaches the pair check.
+     */
+    @Test
+    void anRpcCapAloneBelowTheSdkInitialRpcTimeoutIsRefused() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder().retryMaxRpcTimeout(Duration.ofSeconds(1)).build();
+
+        assertThatThrownBy(() -> DefaultPublisherFactory.retrySettings(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryMaxRpcTimeout (PT1S) must not be shorter than retryInitialRpcTimeout"
+                                + " (PT5S, the SDK default because it is unset). Raise the first"
+                                + " or lower the second.");
+    }
+
+    /** The mirror case: a set initial value above the SDK's maximum. */
+    @Test
+    void anInitialRpcTimeoutAloneAboveTheSdkMaximumIsRefused() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryInitialRpcTimeout(Duration.ofSeconds(90))
+                        .build();
+
+        assertThatThrownBy(() -> DefaultPublisherFactory.retrySettings(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryMaxRpcTimeout (PT1M, the SDK default because it is unset) must not"
+                                + " be shorter than retryInitialRpcTimeout (PT1M30S). Raise the"
+                                + " first or lower the second.");
+    }
+
+    @Test
+    void anInitialDelayAloneAboveTheSdkMaximumIsRefused() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder().retryInitialDelay(Duration.ofSeconds(90)).build();
+
+        assertThatThrownBy(() -> DefaultPublisherFactory.retrySettings(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryMaxDelay (PT1M, the SDK default because it is unset) must not be"
+                                + " shorter than retryInitialDelay (PT1M30S). Raise the first or"
+                                + " lower the second.");
+    }
+
+    /** Both halves set: neither value is marked as the SDK's. */
+    @Test
+    void anInvertedPairOfSetValuesNamesNoSdkDefault() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryInitialDelay(Duration.ofSeconds(2))
+                        .retryMaxDelay(Duration.ofSeconds(1))
+                        .build();
+
+        assertThatThrownBy(() -> DefaultPublisherFactory.retrySettings(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryMaxDelay (PT1S) must not be shorter than retryInitialDelay (PT2S)."
+                                + " Raise the first or lower the second.");
+    }
+
+    /**
+     * The control for the refusals above, taken through {@code configure} so the SDK publisher's
+     * own checks run too, not only gax's: the lowest values the docs allow — a zero delay pair, the
+     * publisher's 10 ms RPC minimum on both sides of the RPC pair, and its 10 s total-timeout
+     * minimum — are accepted by all three. Equal values are the boundary gax accepts. Handing
+     * {@code RetrySettings} to gax alone would not see the publisher's minimums, which is how a
+     * zero RPC pair once passed here and still failed on a TaskManager.
+     */
+    @Test
+    void theLowestDocumentedRetryValuesReachThePublisherBuilder() throws Exception {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryTotalTimeout(Duration.ofSeconds(10))
+                        .retryInitialDelay(Duration.ZERO)
+                        .retryMaxDelay(Duration.ZERO)
+                        .retryInitialRpcTimeout(Duration.ofMillis(10))
+                        .retryMaxRpcTimeout(Duration.ofMillis(10))
+                        .build();
+        Publisher.Builder builder = Publisher.newBuilder(TOPIC.toTopicPath());
+
+        DefaultPublisherFactory.configure(builder, options);
+
+        RetrySettings retry = (RetrySettings) field(builder, "retrySettings");
+        assertThat(retry.getMaxRetryDelayDuration()).isZero();
+        assertThat(retry.getInitialRpcTimeoutDuration()).isEqualTo(Duration.ofMillis(10));
+        assertThat(retry.getMaxRpcTimeoutDuration()).isEqualTo(Duration.ofMillis(10));
+        assertThat(retry.getTotalTimeoutDuration()).isEqualTo(Duration.ofSeconds(10));
     }
 
     /**
