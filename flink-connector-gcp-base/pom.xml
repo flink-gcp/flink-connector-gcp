@@ -49,6 +49,13 @@ limitations under the License.
             <artifactId>flink-core</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- Catalog and CatalogDatabase, the interfaces base.catalog's read-only skeleton
+                 implements for every connector catalog (docs/adr/0168). -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Google Cloud (versions managed by the libraries BOM) -->
         <dependency>

@@ -417,13 +417,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Catalog (`docs/adr/0168`, `docs/adr/0169`)
 
-- The catalog is read-only and implements Flink's `Catalog` directly: `AbstractCatalog` and
-  `CatalogDatabaseImpl` are `@Internal`. A method only one supported Flink major declares
-  (`listMaterializedTables`) carries no `@Override`, so the one source root compiles on both.
-- `BigQueryCatalogFactory` and `BigQueryCatalog.open()` make no request and load no credentials; the
-  REST client is built on the first metadata call through `BigQueryTableAdmin.restClient`, the one
-  spelling of the emulator/key-file/ADC branches. The docs harness plans `CREATE CATALOG` offline
-  and depends on this.
+- The catalog is read-only and extends base's `AbstractReadOnlyCatalog`, which holds the lifecycle,
+  the lazily opened client, every refused mutation and the answers given without a request, all
+  `final`. `BigQueryCatalog` keeps only listing, resolution and the dataset-id grammar; a change to
+  the shared answers belongs in base, where every connector catalog gets it.
+- `BigQueryCatalogFactory` makes no request and loads no credentials; the REST client is built on
+  the first metadata call through `BigQueryTableAdmin.restClient`, the one spelling of the
+  emulator/key-file/ADC branches. The docs harness plans `CREATE CATALOG` offline and depends on
+  this.
 - `getTable` emits the connector identity options plus the catalog's carried options under the
   connector's keys; tuning stays per statement. Never add a catalog-level default for a scan or sink
   option: an `OPTIONS` hint is how a statement tunes a catalog table.

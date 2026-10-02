@@ -133,6 +133,44 @@ class BigQuerySqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
         assertThat(sourceRows).containsExactlyInAnyOrder("alice", "bob");
     }
 
+    /**
+     * The catalog's read-only skeleton lives in the base module, which this jar relocates, so a
+     * catalog the planner opens through the shaded factory proves the relocated skeleton is still a
+     * Flink {@code Catalog} rather than a class only the jar's own code can see.
+     */
+    @Test
+    void aCatalogListsTheEmulatorsDatasetsThroughTheShadedClasses() throws Exception {
+        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        tEnv.executeSql(
+                "CREATE CATALOG bq WITH (\n"
+                        + "  'type' = 'bigquery',\n"
+                        + "  'project' = '"
+                        + PROJECT
+                        + "',\n"
+                        + "  'default-database' = '"
+                        + DATASET
+                        + "',\n"
+                        + "  'emulator-endpoint' = '"
+                        + BigQueryEmulatorContainers.grpcEndpoint(EMULATOR)
+                        + "',\n"
+                        + "  'emulator-rest-endpoint' = '"
+                        + BigQueryEmulatorContainers.restEndpoint(EMULATOR)
+                        + "'\n"
+                        + ")");
+        tEnv.executeSql("USE CATALOG bq");
+        assertThat(tEnv.getCatalog("bq").orElseThrow().getClass().getSuperclass().getName())
+                .as("the skeleton the planner's catalog extends")
+                .isEqualTo(
+                        "io.github.flink.gcp.connector.bigquery.shaded."
+                                + "io.github.flink.gcp.connector.base.catalog.AbstractReadOnlyCatalog");
+
+        List<String> databases = new ArrayList<>();
+        try (CloseableIterator<Row> rows = tEnv.executeSql("SHOW DATABASES").collect()) {
+            rows.forEachRemaining(row -> databases.add(row.getFieldAs(0).toString()));
+        }
+        assertThat(databases).contains(DATASET);
+    }
+
     private static String qualified(String table) {
         return PROJECT + "." + DATASET + "." + table;
     }

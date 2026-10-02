@@ -67,7 +67,7 @@ class BigQueryCatalogTest {
     }
 
     @Test
-    void createsNoClientBeforeTheFirstMetadataCall() {
+    void createsNoClientBeforeTheFirstMetadataCall() throws Exception {
         AtomicInteger opened = new AtomicInteger();
         BigQueryCatalog catalog =
                 new BigQueryCatalog(
@@ -317,7 +317,7 @@ class BigQueryCatalogTest {
     }
 
     @Test
-    void statisticsAreUnknownAndFunctionsAbsentWithoutAskingTheService() {
+    void statisticsAreUnknownAndFunctionsAbsentWithoutAskingTheService() throws Exception {
         BigQueryCatalog catalog = catalog();
 
         assertThat(catalog.getTableStatistics(EVENTS)).isSameAs(CatalogTableStatistics.UNKNOWN);

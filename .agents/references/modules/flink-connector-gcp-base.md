@@ -12,16 +12,22 @@ record — context, evidence, declined alternatives — is the named ADR under `
   Bigtable and Spanner change-stream sources — `docs/adr/0094`). **A type only moves in once it
   has multiple consumers.**
 - Lineage is the explicit shared-prerequisite exception to the multiple-consumer rule (ADR-0160).
+  `base.catalog` is the second: it moved in with the BigQuery catalog as its only merged consumer,
+  ahead of the Spanner catalog that was designed on it (ADR-0168's "Shared code", #1582).
   Keep factories and vertices internal; only the two immutable listener values stay unrelocated
   in SQL jars. No connector builder gains a manual lineage setter.
-- Dependencies are `flink-core`, `flink-runtime`, and `flink-streaming-java` (provided) plus
-  `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http` (BOM-managed).
+- Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
+  (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
+  (BOM-managed). `flink-table-common` serves `base.catalog` alone; base has no other table-layer
+  type.
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
   on the justfile `binary-compat`/`e2e` install lists for the reactor-resolution reason
   test-utils is (#181).
 - The lineage graph/planner tests use `src/test/java-flink2` (ADR-0160).
-  No production compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches a 1.x/2.x
+  No production compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here needs one.
+  `base.catalog` meets the 1.x/2.x gaps it touches (`listMaterializedTables`, `dropModel`,
+  `renameModel`) by declaring them without `@Override`. Nothing else here touches a 1.x/2.x
   API gap — **not only the `Sink` one**, since the roots hold whatever differs across the majors
   (BigQuery's `CrossVersionCheckpointId` is a `CommittableMessage` accessor, #404).
   `DefaultFailureHandlerContext.of(WriterInitContext)` is not a counter-example — the type and
@@ -62,6 +68,21 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - Every connector declares its names in one `<Product>MetricNames` inventory at its module root;
   counters name events, gauges name states, and **no name takes Flink's `num` prefix**
   (`docs/adr/0038`; the mechanical half is `just check-metric-docs`).
+
+## `base.catalog` (`docs/adr/0168`)
+
+- `AbstractReadOnlyCatalog` is the read-only part of every connector catalog: offline `open()`, the
+  lazily opened client, the empty view, partition, function and procedure answers, `UNKNOWN`
+  statistics and every refused mutation. Those methods are **`final`**, so a connector cannot answer
+  Flink's contract differently from its siblings; only the two table-statistics getters stay open,
+  for ADR-0168's reopen condition. A subclass supplies listing and resolution, its table factory,
+  and its database-name grammar in `databaseExists`. `AbstractReadOnlyCatalogTest` holds both the
+  `final` set and the refused mutators reflectively, so a mutator a later Flink adds shows up there.
+- Service-specific inputs (service name, read-only message, client opener and closer) are
+  constructor arguments, never overridable hooks the constructor would call. `listMaterializedTables`
+  stays without `@Override`: Flink 1.20 has no such method.
+- `ReadOnlyCatalogDatabase` is the one `CatalogDatabase` value; Flink's `CatalogDatabaseImpl` is
+  `@Internal`.
 
 ## `base.source` (`docs/adr/0083`, `0108`)
 

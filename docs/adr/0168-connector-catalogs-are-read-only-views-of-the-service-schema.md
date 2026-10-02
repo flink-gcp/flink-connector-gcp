@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0168: Connector catalogs are read-only views of the service schema
 
 - Status: Accepted
-- Date: 2026-09-27
-- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213)
-- Modules: bigquery; each later connector catalog adds an adoption section here
+- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582) (2026-10-03)
+- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582)
+- Modules: base, bigquery; each later connector catalog adds an adoption section here
 - Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog)
 
 ## Context
@@ -96,10 +96,23 @@ SQL reaches them through `CREATE CATALOG`, and Java through `TableEnvironment.cr
 
 ### Shared code
 
-No shared base class exists yet.
-`AbstractCatalog` is `@Internal`, and `flink-connector-gcp-base` has no table-layer dependency (ADR-0138).
-Each catalog carries its own small `CatalogDatabase` value.
-When the second catalog lands, its author measures what the two copies share as protocol rather than as text, as ADR-0083 did, and records the answer here.
+The read-only part of every connector catalog is one `@Internal` base class, `AbstractReadOnlyCatalog` in `flink-connector-gcp-base`'s `base.catalog` package, and `ReadOnlyCatalogDatabase` is the database value every catalog returns, since Flink's `CatalogDatabaseImpl` is `@Internal`.
+The class holds the lifecycle and the lazily opened client, the empty view, partition, function and procedure answers, the `UNKNOWN` statistics, every refused mutation, and `listMaterializedTables` declared without `@Override`.
+Those methods are `final`, so the contract above holds the same way in every connector; the two table-statistics getters are the exception, left open for the reopen condition above.
+A subclass lists and resolves databases and tables, names its table factory, and keeps its service's database-name grammar.
+The service's name, the read-only message, the client opener and the client closer are constructor arguments rather than overridable hooks, so the constructor calls nothing a subclass defines.
+Flink 2.x's `dropModel` and `renameModel` are declared there without `@Override`, like `listMaterializedTables`; `createModel` and `alterModel` take a `CatalogModel`, a type 1.20 lacks, so the skeleton cannot declare them, and they still throw `UnsupportedOperationException` with Flink's own message.
+
+The split follows a measurement taken when the second catalog, Spanner's ([#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214)), was designed.
+About 280 of `BigQueryCatalog`'s 590 lines were this part, and BigQuery appeared in it only as the read-only message and the service name in the client-opening failure, which became constructor arguments.
+What the catalogs share is therefore the answer to Flink's `Catalog` contract, which is protocol rather than text in ADR-0083's sense, while listing, resolution, the type mapping and the name grammar differ per service and stay in each connector.
+The type mappers stay per connector for the same reason: each reads a different representation of the service schema.
+
+The class is base's first table-layer type.
+ADR-0138 counted that as a cost against moving a per-module enum into base, where the shared type would have forbidden per-product values; nothing in the shared methods varies per product, and the dependency is `flink-table-common` at provided scope, which the BigQuery, Spanner and Bigtable modules already declare.
+The SQL jars relocate base per product (ADR-0015).
+The skeleton's signatures use only Flink and JDK types, so each jar carries its own copy and Flink sees a plain `Catalog`; `BigQuerySqlConnectorSmokeITCase` holds that by opening a catalog through the shaded factory.
+The class moved into base ahead of its second consumer's merge, by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), so the Spanner catalog builds on it rather than on a copy.
 
 ### Documentation
 
@@ -111,10 +124,13 @@ The catalog's `Option` table sits in that section, and its `[[config_options]]` 
 
 - The Flink facts above were read from the 1.20.4 and 2.2.1 sources and bytecode on 2026-09-27, and are pinned by `BigQueryCatalogFactoryTest` (offline `CREATE CATALOG` and `USE CATALOG`), `BigQueryCatalogPlanTest` (a hint enabling CDC on a catalog table; the same upsert refused without it) and `BigQueryCatalogTest` (the nullable-key case).
 - A query through a catalog table asked `databaseExists` before `getTable`: the plan test failed with `Object 'analytics' not found within 'bq'` until its stub answered the dataset.
+- `AbstractReadOnlyCatalogTest` pins the shared part: no client before the first metadata call, one client under concurrent first calls (the test fails when `client()` is not synchronized), the close-and-reopen cycle, every refused mutation, and the answers given without the client.
 
 ## Alternatives declined
 
 - **Extending `AbstractCatalog`**: it is `@Internal`, so `check-flink-api-tiers` would need an entry for a convenience the read-only set does not need.
+- **A copy of the read-only part per catalog until a third catalog lands**: two catalogs already shared it line for line, and the Bigtable and Datastore catalogs ([#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216), [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548)) need the same methods, so each copy would only be a place for the contract to drift.
+- **A table-layer module of its own**: it would keep `flink-table-common` out of base, at the price of a new artifact with its own shading, NOTICE and release entries for one abstract class and one value, where base already reaches every connector.
 - **Returning a `CatalogView` for a service view**: its expanded query must be Flink SQL, and no connector here can translate the service's SQL.
 - **Catalog-level tuning defaults**: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212) excluded them; hints cover tuning, and a default would be a second place a statement's configuration comes from.
 - **Dropping the primary key when a key column is nullable**: safe for reads, but it would keep the connector's own CDC tables, whose key columns are nullable by default, off the CDC path through the catalog.
