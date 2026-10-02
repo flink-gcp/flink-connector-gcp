@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0156: Aggregate Table writes add integer contributions
 
 - Status: Accepted
-- Date: 2026-09-06
+- Date: 2026-09-06; refined 2026-09-30 (`MAP` column families, [#1569](https://github.com/flink-gcp/flink-connector-gcp/issues/1569))
 - Issue: [#1176](https://github.com/flink-gcp/flink-connector-gcp/issues/1176)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
@@ -36,8 +36,9 @@ The published [data API](https://docs.cloud.google.com/bigtable/docs/reference/d
 No sketch library is added.
 Existing DataStream serializers can still submit MergeToCell.
 
-A null family or scalar cell contributes nothing.
-An input with no non-null cell fails rather than submitting an empty entry.
+A `MAP` column family (ADR-0172) contributes one AddToCell per non-null entry, addressed by the qualifier its key encodes; its value type must be one of the four integer types, and the family is declared in `sink.aggregate.column-family-types` like any other.
+A null family, scalar cell or map value contributes nothing.
+An input with no non-null cell, empty maps included, fails rather than submitting an empty entry.
 INSERT is the only accepted row kind, and repeated inputs for the same row key remain separate contributions.
 An updating GROUP BY produces replacement aggregate results, not contributions, and is rejected by changelog negotiation.
 The connector does not subtract prior values or retain per-input aggregation state.

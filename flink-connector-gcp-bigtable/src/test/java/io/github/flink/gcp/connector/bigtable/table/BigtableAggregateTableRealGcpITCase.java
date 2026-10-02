@@ -249,6 +249,95 @@ class BigtableAggregateTableRealGcpITCase extends AbstractBigtableRealGcpITCase 
         }
     }
 
+    /**
+     * The #1569 acceptance: a {@code MAP} family in the aggregate input DDL contributes to
+     * qualifiers that are data (a day, a campaign), one {@code AddToCell} per non-null entry. The
+     * state reads back through a {@code MAP<BYTES, BIGINT>} read DDL and through GoogleSQL, which
+     * must agree; the emulator has no aggregate families, so this is the only place it runs.
+     */
+    @Test
+    void mapFamiliesContributeToQualifiersThatAreData() throws Exception {
+        String id = "aggregate-map-write";
+        TableDestination destination = tableDestination(id);
+        TableEnvironment env = environment();
+        env.executeSql(
+                "CREATE TABLE bt (rowkey STRING, totals MAP<STRING, BIGINT>, "
+                        + "minimums MAP<STRING, INT>, maximums MAP<STRING, BIGINT>, "
+                        + "users MAP<STRING, BIGINT>, "
+                        + "ts TIMESTAMP_LTZ(6) METADATA FROM 'timestamp'"
+                        + ") WITH ('connector'='bigtable', 'project'='"
+                        + PROJECT
+                        + "', 'instance'='"
+                        + destination.getInstance()
+                        + "', 'table'='"
+                        + id
+                        + "', 'sink.write-mode'='aggregate', "
+                        + "'sink.aggregate.column-family-types'='totals:int64-sum,minimums:int64-min,maximums:int64-max,users:int64-hll', "
+                        + "'sink.create-disposition'='create-if-needed', 'sink.table-create.gc-rule.max-versions'='2')");
+        // The null value contributes nothing; 'd3' must not appear in any family.
+        env.executeSql(
+                        "INSERT INTO bt VALUES "
+                                + "('r', MAP['d1', CAST(3 AS BIGINT), 'd2', CAST(4 AS BIGINT)], MAP['d1', 3],"
+                                + " MAP['d1', CAST(3 AS BIGINT)], MAP['campaign-a', CAST(101 AS BIGINT)],"
+                                + " TO_TIMESTAMP_LTZ(1000, 3)),"
+                                + "('r', MAP['d1', CAST(5 AS BIGINT), 'd3', CAST(NULL AS BIGINT)], MAP['d1', 5],"
+                                + " MAP['d1', CAST(5 AS BIGINT)],"
+                                + " MAP['campaign-a', CAST(102 AS BIGINT), 'campaign-b', CAST(101 AS BIGINT)],"
+                                + " TO_TIMESTAMP_LTZ(1000, 3))")
+                .await();
+
+        env.executeSql(
+                "CREATE TABLE as_maps (rowkey STRING, totals MAP<BYTES, BIGINT>, "
+                        + "minimums MAP<BYTES, BIGINT>, maximums MAP<BYTES, BIGINT>, "
+                        + "users MAP<BYTES, BYTES>) WITH ('connector'='bigtable', 'project'='"
+                        + PROJECT
+                        + "', 'instance'='"
+                        + destination.getInstance()
+                        + "', 'table'='"
+                        + id
+                        + "')");
+        org.apache.flink.types.Row fromMaps =
+                single(
+                        env,
+                        "SELECT totals[CAST('d1' AS BYTES)], totals[CAST('d2' AS BYTES)],"
+                                + " CARDINALITY(totals), minimums[CAST('d1' AS BYTES)],"
+                                + " maximums[CAST('d1' AS BYTES)], CARDINALITY(users) FROM as_maps");
+        assertThat(fromMaps.getField(0)).isEqualTo(8L);
+        assertThat(fromMaps.getField(1)).isEqualTo(4L);
+        assertThat(fromMaps.getField(2)).isEqualTo(2);
+        assertThat(fromMaps.getField(3)).isEqualTo(3L);
+        assertThat(fromMaps.getField(4)).isEqualTo(5L);
+        assertThat(fromMaps.getField(5)).isEqualTo(2);
+        assertThat(readRows(destination).get(0).getCells("totals", "d1"))
+                .singleElement()
+                .satisfies(cell -> assertThat(cell.getTimestamp()).isEqualTo(TIMESTAMP));
+
+        try (BigtableDataClient client =
+                        BigtableDataClient.create(PROJECT, destination.getInstance());
+                ResultSet result =
+                        client.executeQuery(
+                                client.prepareStatement(
+                                                "SELECT totals['d1'] AS d1, totals['d2'] AS d2,"
+                                                        + " minimums['d1'] AS mn, maximums['d1'] AS mx,"
+                                                        + " HLL_COUNT.EXTRACT(users['campaign-a']) AS a,"
+                                                        + " HLL_COUNT.EXTRACT(users['campaign-b']) AS b"
+                                                        + " FROM `"
+                                                        + id
+                                                        + "`",
+                                                Map.of())
+                                        .bind()
+                                        .build())) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getLong("d1")).isEqualTo(8L);
+            assertThat(result.getLong("d2")).isEqualTo(4L);
+            assertThat(result.getLong("mn")).isEqualTo(3L);
+            assertThat(result.getLong("mx")).isEqualTo(5L);
+            assertThat(result.getLong("a")).isEqualTo(2L);
+            assertThat(result.getLong("b")).isEqualTo(1L);
+            assertThat(result.next()).isFalse();
+        }
+    }
+
     private static org.apache.flink.types.Row single(TableEnvironment env, String query)
             throws Exception {
         java.util.List<org.apache.flink.types.Row> rows = new java.util.ArrayList<>();

@@ -498,6 +498,9 @@ public class DocumentationSqlPlanTest {
                         "Bigtable table reference map families",
                         snippet("flink/BigtableTableReference.sql", "map-families")),
                 scenario(
+                        "Bigtable table reference aggregate map family",
+                        snippet("flink/BigtableTableReference.sql", "aggregate-map-family")),
+                scenario(
                         "Bigtable table reference keep-latest versus GC",
                         snippet("flink/BigtableTableReference.sql", "keep-latest-versus-gc")),
                 scenario(

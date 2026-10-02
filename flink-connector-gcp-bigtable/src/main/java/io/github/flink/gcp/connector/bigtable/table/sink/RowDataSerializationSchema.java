@@ -441,14 +441,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         }
         for (int i = 0; i < map.size(); i++) {
             if (keys.isNullAt(i)) {
-                // The key is the qualifier, and there is no null qualifier to address. The row
-                // key is escaped because it is whatever the job wrote (RowRanges' rendering rule).
-                throw new IOException(
-                        String.format(
-                                "The MAP column family '%s' of the row with key '%s' holds a null"
-                                        + " key. A key is a qualifier, and a cell has no null"
-                                        + " qualifier.",
-                                family.name, RowRanges.format(key)));
+                throw nullMapKey(family.name, key);
             }
             consumer.setCell(
                     family.name,
@@ -458,6 +451,20 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                     replace);
         }
         return map.size() + (replace ? 1 : 0);
+    }
+
+    /**
+     * The failure for a null key in a {@code MAP} family, shared by every write mode that writes
+     * one: the key is the qualifier, and there is no null qualifier to address. The row key is
+     * escaped because it is whatever the job wrote ({@link RowRanges}' rendering rule).
+     */
+    static IOException nullMapKey(String family, ByteString rowKey) {
+        return new IOException(
+                String.format(
+                        "The MAP column family '%s' of the row with key '%s' holds a null"
+                                + " key. A key is a qualifier, and a cell has no null"
+                                + " qualifier.",
+                        family, RowRanges.format(rowKey)));
     }
 
     private interface CellConsumer {

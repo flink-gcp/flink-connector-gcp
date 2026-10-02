@@ -28,18 +28,21 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
+import org.apache.flink.table.types.DataType;
 
 import com.google.bigtable.v2.Mutation;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -75,18 +78,24 @@ class MapFamilyTableFactoryTest {
     }
 
     /** The mutations the planned sink's serializer builds for one row of {@link #MAP_ONLY}. */
-    @SuppressWarnings("unchecked")
     private static List<Mutation.MutationCase> mutationCases(DynamicTableSink tableSink)
             throws Exception {
+        Map<Object, Object> map = new HashMap<>();
+        map.put(StringData.fromString("a"), StringData.fromString("x"));
+        return mutationCases(
+                tableSink, GenericRowData.of(StringData.fromString("r1"), new GenericMapData(map)));
+    }
+
+    /** The mutations the planned sink's serializer builds for {@code row}. */
+    @SuppressWarnings("unchecked")
+    private static List<Mutation.MutationCase> mutationCases(
+            DynamicTableSink tableSink, RowData row) throws Exception {
         BigtableMutateRowsSink<RowData> sink =
                 (BigtableMutateRowsSink<RowData>)
                         ((SinkV2Provider)
                                         tableSink.getSinkRuntimeProvider(
                                                 new SinkRuntimeProviderContext(false)))
                                 .createSink();
-        Map<Object, Object> map = new HashMap<>();
-        map.put(StringData.fromString("a"), StringData.fromString("x"));
-        RowData row = GenericRowData.of(StringData.fromString("r1"), new GenericMapData(map));
         return sink
                 .getConfig()
                 .getSerializer()
@@ -173,46 +182,120 @@ class MapFamilyTableFactoryTest {
                 .isInstanceOf(BigtableDynamicSink.class);
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"append", "increment"})
-    void aReadModifyWriteModeRejectsAMapFamily(String mode) {
-        Map<String, String> options = options();
-        options.put("sink.write-mode", mode);
+    private static ResolvedSchema mapOf(DataType valueType) {
+        return ResolvedSchema.of(
+                Column.physical("rowkey", DataTypes.STRING()),
+                Column.physical("m", DataTypes.MAP(DataTypes.STRING(), valueType)));
+    }
 
-        assertThatThrownBy(() -> FactoryMocks.createTableSink(MAP_ONLY, options))
-                .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("does not support MAP column family 'm'");
+    static Stream<DataType> appendOperands() {
+        return Stream.of(
+                DataTypes.STRING(), DataTypes.BYTES(), DataTypes.CHAR(3), DataTypes.BINARY(3));
+    }
+
+    static Stream<DataType> integers() {
+        return Stream.of(
+                DataTypes.TINYINT(), DataTypes.SMALLINT(), DataTypes.INT(), DataTypes.BIGINT());
+    }
+
+    @ParameterizedTest
+    @MethodSource("appendOperands")
+    void appendAcceptsAMapFamilyOfCharacterOrBinaryValues(DataType valueType) {
+        Map<String, String> options = options();
+        options.put("sink.write-mode", "append");
+
+        assertThat(FactoryMocks.createTableSink(mapOf(valueType), options))
+                .isInstanceOf(BigtableDynamicSink.class);
     }
 
     @Test
-    void theAggregateModeRejectsAMapFamily() {
+    void incrementAcceptsAMapFamilyOfBigintValues() {
+        Map<String, String> options = options();
+        options.put("sink.write-mode", "increment");
+
+        assertThat(FactoryMocks.createTableSink(mapOf(DataTypes.BIGINT()), options))
+                .isInstanceOf(BigtableDynamicSink.class);
+    }
+
+    @Test
+    void incrementRejectsAMapFamilyOfAnotherValueType() {
+        Map<String, String> options = options();
+        options.put("sink.write-mode", "increment");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(mapOf(DataTypes.INT()), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "requires BIGINT values; MAP column family 'm' has value type INT");
+    }
+
+    @Test
+    void appendRejectsAMapFamilyOfAnotherValueType() {
+        Map<String, String> options = options();
+        options.put("sink.write-mode", "append");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(mapOf(DataTypes.BIGINT()), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "requires CHAR, VARCHAR, BINARY or VARBINARY values; MAP column family"
+                                + " 'm' has value type BIGINT");
+    }
+
+    @ParameterizedTest
+    @MethodSource("integers")
+    void theAggregateModePlansAMapFamilyOfIntegers(DataType valueType) throws Exception {
         Map<String, String> options = options();
         options.put("sink.write-mode", "aggregate");
         options.put("sink.aggregate.column-family-types", "m:int64-sum");
 
-        assertThatThrownBy(
-                        () ->
-                                FactoryMocks.createTableSink(
-                                        ResolvedSchema.of(
-                                                Column.physical("rowkey", DataTypes.STRING()),
-                                                Column.physical(
-                                                        "m",
-                                                        DataTypes.MAP(
-                                                                DataTypes.STRING(),
-                                                                DataTypes.BIGINT()))),
-                                        options))
-                .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("does not support MAP column family 'm'");
+        DynamicTableSink sink = FactoryMocks.createTableSink(mapOf(valueType), options);
+
+        assertThat(sink).isInstanceOf(BigtableDynamicSink.class);
     }
 
     @Test
-    void theAggregateModeRejectsAMapFamilyBeforeAskingForItsTypes() {
+    void thePlannedAggregateSerializerAddsToAMapFamilysCells() throws Exception {
+        Map<String, String> options = options();
+        options.put("sink.write-mode", "aggregate");
+        options.put("sink.aggregate.column-family-types", "m:int64-sum");
+        Map<Object, Object> map = new HashMap<>();
+        map.put(StringData.fromString("a"), 3L);
+
+        assertThat(
+                        mutationCases(
+                                FactoryMocks.createTableSink(mapOf(DataTypes.BIGINT()), options),
+                                GenericRowData.of(
+                                        StringData.fromString("r1"), new GenericMapData(map))))
+                .containsExactly(Mutation.MutationCase.ADD_TO_CELL);
+    }
+
+    @Test
+    void theAggregateModeRejectsANonIntegerMapValue() {
+        Map<String, String> options = options();
+        options.put("sink.write-mode", "aggregate");
+        options.put("sink.aggregate.column-family-types", "m:int64-sum");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(mapOf(DataTypes.DOUBLE()), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Aggregate MAP column family 'm' requires TINYINT, SMALLINT, INT or BIGINT"
+                                + " values; found DOUBLE");
+    }
+
+    @Test
+    void theAggregateModeStillAsksForAMapFamilysType() {
         Map<String, String> options = options();
         options.put("sink.write-mode", "aggregate");
 
-        assertThatThrownBy(() -> FactoryMocks.createTableSink(MAP_ONLY, options))
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(mapOf(DataTypes.BIGINT()), options))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("does not support MAP column family 'm'");
+                .hasStackTraceContaining(
+                        "'sink.write-mode' = 'aggregate' requires"
+                                + " 'sink.aggregate.column-family-types'");
+
+        options.put("sink.aggregate.column-family-types", "other:int64-sum");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(mapOf(DataTypes.BIGINT()), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must declare column family 'm'");
     }
 
     @Test
