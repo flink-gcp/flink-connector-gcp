@@ -13,7 +13,9 @@
 # limitations under the License.
 """Reject unusable offline proposals before rendering or cloud access."""
 
+import copy
 import json
+from pathlib import Path
 
 import pytest
 from flink_tier3 import pubsub_plan as plan
@@ -49,6 +51,107 @@ def inputs(trial, monkeypatch):
         "application_image": plan.GAR + "pubsub-recovery@sha256:" + "c" * 64,
         "trial": trial,
     }
+
+
+@pytest.fixture
+def renderer(monkeypatch):
+    """A render that answers with the manifests the real CUE produces."""
+    calls = []
+
+    def pod(role):
+        return {
+            "containers": [
+                {
+                    "resources": {
+                        category: dict(plan.POD_RESOURCES[role])
+                        for category in ("requests", "limits")
+                    }
+                }
+            ]
+        }
+
+    def application(run_id, nonce, expiry, options, parallelism, phase):
+        spec = {
+            "image": options["application_image"],
+            "podTemplate": {"spec": pod("smoke")},
+            "job": {
+                "parallelism": parallelism,
+                "args": [
+                    f"--run-id={run_id}",
+                    f"--phase={phase}",
+                    f"--records-per-subscription={options['pubsub_records']}",
+                    f"--parallelism={parallelism}",
+                    f"--require-restored={str(phase == 'upgrade').lower()}",
+                    f"--entry-point={options['pubsub_entry_point']}",
+                ],
+            },
+        }
+        for manager, replicas in (("jobManager", 1), ("taskManager", parallelism)):
+            spec[manager] = {
+                "replicas": replicas,
+                "resource": {"cpu": 1, "memory": "2Gi"},
+                "podTemplate": {"spec": pod("smoke")},
+            }
+        return {
+            "metadata": {
+                "name": run_id,
+                "namespace": "tier3-pubsub",
+                "annotations": {
+                    "flink-gcp.io/approval": nonce,
+                    "flink-gcp.io/expires-at": expiry,
+                },
+            },
+            "spec": spec,
+        }
+
+    def render(run_id, nonce, expiry, seconds, **options):
+        calls.append((run_id, nonce, expiry, seconds, options))
+        kind = options["pubsub_trial"]
+        initial = application(
+            run_id, nonce, expiry, options, 1 if kind == "rescale-out" else 2, "initial"
+        )
+        recovery = application(
+            run_id,
+            nonce,
+            expiry,
+            options,
+            1 if kind == "rescale-in" else 2,
+            "upgrade" if kind.startswith("rescale-") else "initial",
+        )
+        supervisor = pod("supervisor")
+        supervisor["containers"][0]["image"] = (
+            plan.GAR + "lifecycle-tools@sha256:" + "9" * 64
+        )
+        delivery = {
+            "config": {
+                "data": {
+                    "approval.json": "{}",
+                    "application.json": json.dumps(initial),
+                    "upgrade-application.json": json.dumps(recovery),
+                }
+            },
+            "supervisor": {
+                "spec": {
+                    "parallelism": 1,
+                    "completions": 1,
+                    "activeDeadlineSeconds": seconds,
+                    "template": {"spec": supervisor},
+                }
+            },
+        }
+        return copy.deepcopy(initial), copy.deepcopy(recovery), delivery
+
+    monkeypatch.setattr(plan, "render", render)
+    return calls
+
+
+@pytest.mark.parametrize("kind", plan.TRIALS)
+def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
+    """The dispatch and bundle tests stand on it, so it must pass as the CUE does."""
+    inputs["trial"]["trial"] = kind
+    proposal = plan.prepare(**inputs)["proposal"]
+    assert proposal["approved"] is False
+    assert renderer[0][4]["pubsub_trial"] == kind
 
 
 @pytest.mark.parametrize(
@@ -239,3 +342,54 @@ def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, 
         with pytest.raises(SystemExit):
             command.main(arguments + extra)
     assert len(calls) == 1
+
+
+REVIEWED = Path(__file__).parents[3] / "kubernetes/lifecycle/pubsub-trials"
+
+
+def test_every_reviewed_trial_file_is_a_valid_trial():
+    """A dispatch names one of these; a broken one would refuse only on the day."""
+    from flink_tier3.policy import RUN_ID
+
+    files = sorted(REVIEWED.iterdir())
+    assert files
+    for path in files:
+        assert path.suffix == ".toml", path
+        assert RUN_ID.fullmatch(path.stem), path
+        # The one-pass feasibility check dispatch reaches only after the cluster.
+        plan.input_plan("feasibility", plan.load_reviewed_trial(path))
+
+
+def test_the_example_trial_is_the_one_the_tests_use(trial):
+    assert plan.load_reviewed_trial(REVIEWED / "example-wiring.toml") == trial
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "version = 3\nversion = 3\n",
+        "version = ",
+        # JSON is the offline renderer's format, not a reviewed file's.
+        '{"version": 3}',
+    ],
+)
+def test_a_reviewed_trial_file_that_does_not_parse_or_validate_is_refused(
+    tmp_path, text
+):
+    path = tmp_path / "trial.toml"
+    path.write_text(text)
+    with pytest.raises(Failure):
+        plan.load_reviewed_trial(path)
+
+
+def test_a_missing_reviewed_trial_file_is_refused(tmp_path):
+    with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
+        plan.load_reviewed_trial(tmp_path / "missing.toml")
+
+
+def test_a_reviewed_trial_file_that_is_not_utf8_is_refused(tmp_path):
+    path = tmp_path / "trial.toml"
+    path.write_bytes(b"# caf\xe9\nversion = 3\n")
+    with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
+        plan.load_reviewed_trial(path)

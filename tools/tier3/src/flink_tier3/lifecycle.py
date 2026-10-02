@@ -30,7 +30,14 @@ from pathlib import Path
 
 import flink_tier3 as rt
 
-from . import bigquery_actors, bigquery_bundle, bigquery_plan, bootstrap
+from . import (
+    bigquery_actors,
+    bigquery_bundle,
+    bigquery_plan,
+    bootstrap,
+    pubsub_bundle,
+    pubsub_plan,
+)
 from . import runner as runner_api
 from . import workflow as wf
 from .cloudtasks import QUEUE_POLL_MASK, Ledger, Queues, load_session
@@ -42,6 +49,8 @@ from .policy import (
     CLOUDTASKS_CEILINGS,
     DIGEST,
     FLINK_LINES,
+    PUBSUB,
+    PUBSUB_CEILINGS,
     RECOVERY,
 )
 
@@ -54,12 +63,19 @@ BIGQUERY_APPROVAL = (
     f"APPROVE ONE BIGQUERY TRIAL: {BIGQUERY_CEILINGS['pods']} PODS, "
     f"{BIGQUERY_CEILINGS['seconds'] // 60} MINUTES"
 )
-SCENARIOS = ("smoke", "generic-recovery", "cloudtasks", "bigquery-recovery")
+SCENARIOS = (
+    "smoke",
+    "generic-recovery",
+    "cloudtasks",
+    "bigquery-recovery",
+    "pubsub-recovery",
+)
 # How far the operator's typed expiry may lie beyond the run's own end. The
 # window starts at admission, so queueing before dispatch costs the run none of
 # its startup budget; the typed expiry is the latest the run may end, and it
 # must not overstate that by more than this.
-BIGQUERY_EXPIRY_SLACK_SECONDS = 600
+EXPIRY_SLACK_SECONDS = 600
+PUBSUB_TRIALS = Path("kubernetes/lifecycle/pubsub-trials")
 
 
 def trial_inputs(args):
@@ -70,20 +86,25 @@ def trial_inputs(args):
     return trial, rt.GAR + "bigquery-recovery@" + args.application_digest
 
 
-def bigquery_window(now, expires_at):
+def service_window(now, expires_at, seconds, service):
     """The approved window: it starts at admission and ends by the typed expiry.
 
-    The approval requires exactly 90 minutes on whole seconds, and a bundle
+    A service approval requires an exact window on whole seconds, and a bundle
     cannot be prepared before its start. Starting the window at admission
     rather than deriving it from the expiry keeps dispatch queueing out of the
     600-second startup budget that every deadline counts from.
     """
     started = int(now)
-    end = started + BIGQUERY_CEILINGS["seconds"]
-    if not end <= rt.timestamp(expires_at) <= end + BIGQUERY_EXPIRY_SLACK_SECONDS:
+    end = started + seconds
+    if not end <= rt.timestamp(expires_at) <= end + EXPIRY_SLACK_SECONDS:
+        minutes = seconds // 60
+        # Admission follows dispatch by the job's queueing and setup, so an
+        # expiry typed exactly at the lower bound when dispatching is refused.
         raise rt.Failure(
-            "BigQuery expiry must be 90 to 100 minutes after dispatch; the run "
-            "ends 90 minutes after admission, never later than the expiry"
+            f"{service} expiry must be {minutes} to "
+            f"{minutes + EXPIRY_SLACK_SECONDS // 60} minutes after admission, "
+            f"which follows dispatch by the job's setup; the run ends {minutes} "
+            "minutes after admission, never later than the expiry"
         )
     return started, end
 
@@ -129,6 +150,133 @@ def bigquery_approval(
         "upgrade_application_sha256": proposal["upgrade_application_sha256"],
         "actor": actor,
     }
+
+
+def pubsub_phrase(trial):
+    """The approval phrase: the policy's ceilings and the reviewed trial's own."""
+    return (
+        f"APPROVE ONE PUBSUB TRIAL: {PUBSUB_CEILINGS['pods']} PODS, "
+        f"{PUBSUB_CEILINGS['seconds'] // 60} MINUTES, "
+        f"{trial['records_per_subscription']} RECORDS PER SUBSCRIPTION, "
+        f"{trial['total_request_limit']} REQUESTS"
+    )
+
+
+def pubsub_inputs(args):
+    """Resolve the reviewed trial file and the live application digest."""
+    if not rt.RUN_ID.fullmatch(args.pubsub_trial or ""):
+        raise rt.Failure("Pub/Sub trials need a reviewed --pubsub-trial name")
+    if not DIGEST.fullmatch(args.application_digest or ""):
+        raise rt.Failure("Pub/Sub trials need a sha256 --application-digest")
+    trial = pubsub_plan.load_reviewed_trial(
+        ROOT / PUBSUB_TRIALS / (args.pubsub_trial + ".toml")
+    )
+    return trial, rt.GAR + "pubsub-recovery@" + args.application_digest
+
+
+def pubsub_approval(
+    *,
+    run_id,
+    nonce,
+    sha,
+    trial,
+    proposal,
+    namespaces,
+    operator_uid,
+    baseline,
+    images,
+    owner,
+    actor,
+):
+    """Assemble the version 5 approval from a rendered, verified proposal.
+
+    Every digest comes from the proposal, which rendered and checked the
+    manifests itself. The proposal names the second manifest the recovery
+    application; the approval keeps the name every service scenario shares.
+    """
+    return {
+        "version": 5,
+        "scenario": "pubsub-recovery",
+        "run_id": run_id,
+        "nonce": nonce,
+        "sha": sha,
+        "started_at": proposal["started_at"],
+        "expires_at": proposal["expires_at"],
+        "cleanup_at": proposal["cleanup_at"],
+        "ceilings": dict(PUBSUB_CEILINGS),
+        "pubsub_trial": copy.deepcopy(trial),
+        "namespaces": namespaces,
+        "operator_uid": operator_uid,
+        "baseline_uids": baseline,
+        "images": images,
+        "lock_owner": owner,
+        "runtime_sha256": proposal["runtime_sha256"],
+        "delivery_sha256": proposal["delivery_sha256"],
+        "application_sha256": proposal["application_sha256"],
+        "upgrade_application_sha256": proposal["recovery_application_sha256"],
+        "actor": actor,
+    }
+
+
+def start_pubsub(args, store):
+    """Build and verify one Pub/Sub trial's approval, then refuse admission.
+
+    Everything here reads: the cluster's idle state, the image receipts and the
+    checkout the bundle re-renders from. The runner cannot yet admit Pub/Sub
+    execution, so this stops before the lock. Beyond the kubeconfig every
+    dispatch writes to authenticate, it writes neither the lock, evidence nor a
+    run document or step output the workflow's finalization reads.
+    """
+    trial, application_image = pubsub_inputs(args)
+    refuse_before_admission(args, store, pubsub_phrase(trial))
+    started, end = service_window(
+        time.time(), args.expires_at, pubsub_plan.WINDOW_SECONDS, "Pub/Sub"
+    )
+    nonce = uuid.uuid4().hex
+    owner = rig_owner(wf.execution("run", nonce), args)
+    kube = wf.external(args.kubeconfig, idle=True)
+    bootstrap.Cluster(args.kubeconfig).can_i(
+        True, "create", "flink.apache.org", "flinkdeployments", PUBSUB
+    )
+    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, PUBSUB)
+    rendered = pubsub_plan.prepare(
+        run_id=args.run_id,
+        nonce=nonce,
+        started_at=rt.utc(started),
+        expires_at=rt.utc(end),
+        active_seconds=pubsub_plan.ACTIVE_SECONDS,
+        revision=args.sha,
+        application_image=application_image,
+        trial=trial,
+    )
+    proposal = rendered["proposal"]
+    images = {
+        "operator": operator_image,
+        "supervisor": proposal["images"]["supervisor"],
+        "application": application_image,
+    }
+    wf.image_receipts(
+        rt.authorized_session(rt.GoogleToken()), images, proposal["expires_at"]
+    )
+    approval = pubsub_approval(
+        run_id=args.run_id,
+        nonce=nonce,
+        sha=args.sha,
+        trial=trial,
+        proposal=proposal,
+        namespaces=namespaces,
+        operator_uid=operator_uid,
+        baseline=baseline,
+        images=images,
+        owner=owner,
+        actor=os.environ["GITHUB_ACTOR"],
+    )
+    rt.validate_approval(approval, time.time())
+    pubsub_bundle.prepare(approval, prepared_at=rt.utc(math.ceil(time.time())))
+    raise rt.Failure(
+        "Pub/Sub execution admission is not implemented; the approval and its "
+        "bundle were verified and nothing was locked"
+    )
 
 
 def runner_for(approval, kube, store, queues=None, ledger=None):
@@ -199,7 +347,9 @@ def start_bigquery(args, store):
     """
     trial, application_image = trial_inputs(args)
     refuse_before_admission(args, store, BIGQUERY_APPROVAL)
-    started, end = bigquery_window(time.time(), args.expires_at)
+    started, end = service_window(
+        time.time(), args.expires_at, bigquery_plan.WINDOW_SECONDS, "BigQuery"
+    )
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args)
     kube = wf.external(args.kubeconfig, idle=True)
@@ -309,6 +459,8 @@ def start(args, store):
         raise rt.Failure("Unknown smoke scenario")
     if scenario == "bigquery-recovery":
         return start_bigquery(args, store)
+    if scenario == "pubsub-recovery":
+        return start_pubsub(args, store)
     cloudtasks = scenario == "cloudtasks"
     refuse_before_admission(
         args, store, CLOUDTASKS_APPROVAL if cloudtasks else APPROVAL
@@ -673,6 +825,10 @@ def main(argv=None):
     run.add_argument(
         "--trial", help="BigQuery trial: " + ", ".join(bigquery_plan.TRIALS)
     )
+    run.add_argument(
+        "--pubsub-trial",
+        help=f"Pub/Sub trial: a file under {PUBSUB_TRIALS}/, without .toml",
+    )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)
     sub.add_parser("plans")
@@ -693,12 +849,19 @@ def main(argv=None):
         inputs = {
             "cloudtasks": {"session", "flink_version", "application_digest"},
             "bigquery-recovery": {"trial", "application_digest"},
+            "pubsub-recovery": {"pubsub_trial", "application_digest"},
         }.get(args.scenario, set())
         # Supplied is not the same as non-empty: an empty foreign input is still
         # another scenario's, and an empty own input is still missing.
         supplied = {
             name
-            for name in ("session", "flink_version", "application_digest", "trial")
+            for name in (
+                "session",
+                "flink_version",
+                "application_digest",
+                "trial",
+                "pubsub_trial",
+            )
             if getattr(args, name) is not None
         }
         if supplied != inputs or not all(getattr(args, name) for name in inputs):

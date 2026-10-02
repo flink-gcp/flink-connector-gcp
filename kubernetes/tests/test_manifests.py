@@ -25,7 +25,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-from flink_tier3 import bigquery_bundle, bigquery_plan, pubsub_plan, workflow
+from flink_tier3 import (
+    approval_bundle,
+    bigquery_bundle,
+    bigquery_plan,
+    pubsub_bundle,
+    pubsub_plan,
+    workflow,
+)
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.common import Failure, digest
 from flink_tier3.model import validate_approval
@@ -2116,7 +2123,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         },
     }
     # The synthetic CUE module is not a Git checkout; revision checks have separate tests.
-    monkeypatch.setattr(bigquery_bundle, "_check_revision", lambda revision: None)
+    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
     prepared = bigquery_bundle.prepare(approval, prepared_at="2026-09-21T00:10:00Z")
     assert bigquery_bundle.validate(prepared, approval) == prepared
     assert prepared["application"] == bundle["application"]
@@ -2132,6 +2139,87 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         json.loads(data["approval.json"])["bigquery_trial"]
         == approval["bigquery_trial"]
     )
+    assert {
+        name: data["flink_tier3_" + name] for name in delivered_sources()
+    } == delivered_sources()
+
+
+@pytest.mark.parametrize(
+    "trial,entry_point", [("rescale-out", "datastream"), ("rescale-in", "table")]
+)
+def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_point):
+    """The dispatch's assembled approval re-renders to the delivery it was built from."""
+    from flink_tier3 import lifecycle
+
+    root = module.parent
+    module.rename(root / "kubernetes")
+    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setenv("GOMAXPROCS", "2")
+    pubsub_trial = {
+        "version": 3,
+        "trial": trial,
+        "entry_point": entry_point,
+        "records_per_subscription": 1000,
+        "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
+        "total_request_limit": 100000,
+    }
+    application_image = GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST
+    bundle = pubsub_plan.prepare(
+        run_id="proposal-1429",
+        nonce="a" * 32,
+        started_at="2026-09-21T00:00:00Z",
+        expires_at="2026-09-21T01:00:00Z",
+        active_seconds=pubsub_plan.ACTIVE_SECONDS,
+        revision="b" * 40,
+        application_image=application_image,
+        trial=pubsub_trial,
+    )
+    approval = lifecycle.pubsub_approval(
+        run_id="proposal-1429",
+        nonce="a" * 32,
+        sha="b" * 40,
+        trial=pubsub_trial,
+        proposal=bundle["proposal"],
+        namespaces={
+            namespace: {
+                "uid": namespace + "-uid",
+                "quota_uid": namespace + "-quota",
+                "hard": {"pods": "0", "persistentvolumeclaims": "0"},
+            }
+            for namespace in ("tier3-pubsub", "tier3-system")
+        },
+        operator_uid="operator-uid",
+        baseline=["operator-uid"],
+        images={
+            "operator": GAR + "operator@" + SYNTHETIC_DIGEST,
+            **bundle["proposal"]["images"],
+        },
+        owner={
+            "nonce": "a" * 32,
+            "kind": "run",
+            "run_id": "proposal-1429",
+            "github_run_id": "123",
+            "attempt": "1",
+            "sha": "b" * 40,
+        },
+        actor="octocat",
+    )
+    validate_approval(approval, lifecycle.rt.timestamp("2026-09-21T00:10:00Z"))
+    # The synthetic CUE module is not a Git checkout; revision checks have separate tests.
+    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
+    prepared = pubsub_bundle.prepare(approval, prepared_at="2026-09-21T00:10:00Z")
+    assert pubsub_bundle.validate(prepared, approval) == prepared
+    assert prepared["application"] == bundle["application"]
+    assert prepared["recovery_application"] == bundle["recovery_application"]
+    expected_delivery = json.loads(json.dumps(bundle["delivery"]))
+    expected_delivery["config"]["data"]["approval.json"] = prepared["delivery"][
+        "config"
+    ]["data"]["approval.json"]
+    expected_delivery["supervisor"]["spec"]["activeDeadlineSeconds"] = 2820
+    assert prepared["delivery"] == expected_delivery
+    data = prepared["delivery"]["config"]["data"]
+    assert json.loads(data["approval.json"])["pubsub_trial"] == pubsub_trial
+    assert json.loads(data["proposal.json"]) == bundle["proposal"]
     assert {
         name: data["flink_tier3_" + name] for name in delivered_sources()
     } == delivered_sources()

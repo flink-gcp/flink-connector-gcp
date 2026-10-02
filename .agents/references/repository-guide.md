@@ -583,7 +583,9 @@ renders one FlinkDeployment per cell of a reviewed session file under
 `kubernetes/lifecycle/sessions/`; before changing the cell vocabulary, the queue lifecycle or the
 session ceilings, read that runbook's session section, `kubernetes/apps/cloudtasks/README.md` and
 ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks.py` and
-`policy.toml` in agreement. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
+`policy.toml` in agreement. The `pubsub-recovery` dispatch names a reviewed trial file under
+`kubernetes/lifecycle/pubsub-trials/`; read `kubernetes/apps/pubsub/README.md` before adding one,
+and keep it TOML so it carries the licence header apache-rat requires. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
 offline; it never contacts a cluster or a bucket.
 `just tier3-vm-analyze <out> <campaign>...` does the same for single-host campaign directories
 (`flink_tier3.vmanalyze`, ADR-0162).

@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+from flink_tier3 import approval_bundle
 from flink_tier3 import bigquery_bundle as bundles
 from flink_tier3 import bigquery_plan as plan
 from flink_tier3 import lifecycle as cli
@@ -110,7 +111,9 @@ def test_a_trial_that_does_not_resolve_is_refused(reviewed, tmp_path, change, ma
 
 @pytest.mark.parametrize("slack", [0, 1, 599, 600])
 def test_the_window_starts_at_admission_and_ends_by_the_typed_expiry(slack):
-    started, end = cli.bigquery_window(NOW + 0.7, cli.rt.utc(NOW + WINDOW + slack))
+    started, end = cli.service_window(
+        NOW + 0.7, cli.rt.utc(NOW + WINDOW + slack), WINDOW, "BigQuery"
+    )
     # Whole seconds, and never after the moment it was admitted.
     assert started == NOW
     assert end == NOW + WINDOW
@@ -120,7 +123,7 @@ def test_the_window_starts_at_admission_and_ends_by_the_typed_expiry(slack):
 def test_an_expiry_that_would_not_bound_the_run_is_refused(slack):
     """Earlier than the run's own end outlasts the approval; much later misleads."""
     with pytest.raises(Failure, match="90 to 100 minutes"):
-        cli.bigquery_window(NOW, cli.rt.utc(NOW + WINDOW + slack))
+        cli.service_window(NOW, cli.rt.utc(NOW + WINDOW + slack), WINDOW, "BigQuery")
 
 
 @pytest.mark.parametrize(
@@ -189,7 +192,7 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch):
     """Everything outside the rig faked at its boundary, the rig itself real."""
     kube, store, reference, _ = env
     monkeypatch.setattr(plan, "source_digest", source_digest)
-    monkeypatch.setattr(bundles, "_check_revision", lambda revision: None)
+    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
     monkeypatch.setattr(cli.wf, "external", lambda kubeconfig, idle=False: kube)
     monkeypatch.setattr(
         cli.bootstrap,
@@ -362,7 +365,7 @@ def test_a_bundle_that_refuses_does_so_before_the_lock(
     def refuse(revision):
         raise Failure("Repository revision differs from approval")
 
-    monkeypatch.setattr(bundles, "_check_revision", refuse)
+    monkeypatch.setattr(approval_bundle, "check_revision", refuse)
     with pytest.raises(Failure, match="revision differs"):
         cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
     assert cluster.locks == []

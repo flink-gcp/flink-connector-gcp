@@ -100,7 +100,7 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 Run from the repository root, or set the CLI's global `--repository` argument before `render`.
 The example uses synthetic revision/image identities and dates; rendering performs no credential lookup, image availability check or cloud operation.
 The output contains `proposal`, `application`, `recovery_application` and `delivery` (ConfigMap and supervisor Job).
-The proposal records the supplied source revision, installed runtime source digest, exact application/supervisor hashes, service settings and grants.
+The proposal records the supplied source revision, installed runtime source digest, exact application/supervisor hashes, the application and supervisor images, service settings and grants.
 It does not prove that the installed package, checkout or application image came from the supplied revision.
 `approved` is always false and the ConfigMap's `approval.json` remains empty; neither output is an execution approval.
 
@@ -269,7 +269,7 @@ The durable controller below uses this entry point; the original `cleanup()` sti
 ### Durable preparation and cleanup
 
 [`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub_lifecycle.py) connects the resource helper to the existing generation-checked active run record.
-It is an internal caller contract for `pubsub-recovery`; the version 5 schema below binds trial inputs but no CLI admits execution.
+It is an internal caller contract for `pubsub-recovery`; the version 5 schema below binds trial inputs, and [dispatch](#approval-dispatch) builds that approval but does not admit execution.
 The caller validates the full application contract, authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and budget/deadline guard.
 The controller additionally binds the exact approved application digest, namespace, application name and run-ID argument to the resource plan.
 The [IAM apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35504842276) succeeded; subsequent role/binding readback matched the three custom roles and two project bindings, and a local refreshed GCP plan was empty.
@@ -566,5 +566,38 @@ The original receipt is retained; the current plans must still prove the same no
 Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
 
 The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
-Version 5 therefore does not enable an approval-generating CLI, runner admission or supervisor execution.
-Complete execution accounting, approval-bound delivery, external fault observations and deployed orchestration remain prerequisites to the live trials under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+Version 5 therefore does not enable runner admission or supervisor execution.
+Complete execution accounting, external fault observations and deployed orchestration remain prerequisites to the live trials under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+
+## Approval dispatch
+
+The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery` and builds its version 5 approval, but the run it would admit is still refused.
+The scenario takes four inputs beyond the common ones.
+
+| Input | Contract |
+| --- | --- |
+| `pubsub_trial` | A reviewed trial file under [`kubernetes/lifecycle/pubsub-trials/`](../../lifecycle/pubsub-trials/), named without `.toml`; an empty name is refused |
+| `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
+| `expires_at` | 60 to 70 minutes after admission; the latest the run may end |
+| `approval` | `APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION, N REQUESTS`, where `R` and `N` are the trial file's `records_per_subscription` and `total_request_limit` |
+
+A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the approved commit.
+The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
+The phrase carries the trial's own numbers because they differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one trial therefore does not approve another trial with different numbers.
+The request number is the proposed total ceiling, which is not yet an aggregate meter.
+The only file in the directory is `example-wiring`, which exists to exercise this path; the campaign's trials are preregistered separately.
+
+The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, as the version 5 approval requires.
+The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
+Admission follows the dispatch by the job's setup, about 40 seconds in the smoke runs measured on 2026-09-25, and by any wait behind another run in the workflow's concurrency group, so an expiry typed exactly 60 minutes after dispatching is refused; about 65 minutes leaves room for the setup, but not for a queue longer than about five minutes.
+
+The checks that need neither the cluster nor the lock run first: the trial file and digest, the phrase, the exact approved rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID, an existing run's evidence and the window.
+Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and verifies the proposal, takes live image receipts, assembles and validates the version 5 approval and prepares the bundle with the approval embedded.
+The proposal names its second manifest the recovery application; the approval pins that manifest as `upgrade_application_sha256`, the name every service scenario shares, and takes the supervisor image from the proposal's `images`, as a BigQuery approval does.
+The bundle re-renders from the approval alone and refuses a different application, recovery manifest, supervisor image, source or delivery digest, and an approved checkout with local changes or untracked CUE or TOML files under `kubernetes/`, so a trial file the approved commit lacks is refused too.
+
+Dispatch then fails with "Pub/Sub execution admission is not implemented" before it acquires the environment lock.
+Apart from the kubeconfig every dispatch writes to authenticate, it writes no lock, no run evidence, no control record, no run document and no step output, so the workflow skips its plan proof and finalization as it does for any refusal before admission.
+Admission itself, with its ordered preparation, is [#1430](https://github.com/flink-gcp/flink-connector-gcp/issues/1430).
+The workflow job keeps the default 85-minute limit, because the window is one hour, as for smoke.
+Enabling the scenario does not approve a run.

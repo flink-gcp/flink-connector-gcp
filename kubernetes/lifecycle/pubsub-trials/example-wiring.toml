@@ -1,0 +1,33 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Reviewed example trial for tests and documentation. It exercises the version 3
+# trial schema, the approval phrase and the approval-bound rendering; it
+# authorizes nothing. The campaign's trials and their numbers are preregistered
+# separately, and each needs its own dispatch approval.
+
+version = 3
+trial = "rescale-out"
+entry_point = "datastream"
+records_per_subscription = 1000
+total_request_limit = 100000
+
+[traffic_limits]
+publish_calls = 20000
+pull_calls = 2000
+input_messages = 20000
+input_bytes = 2560000
+output_messages = 200000
+pubsub_requests = 30000
+evidence_bytes = 67108864

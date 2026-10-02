@@ -56,10 +56,12 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery_lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier |
 | `flink_tier3/bigquery_handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
 | `flink_tier3/bigquery_exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
+| `flink_tier3/approval_bundle.py` | The approved-checkout check, approval embedding and ConfigMap size limit that every approval-bound service delivery shares |
 | `flink_tier3/bigquery_bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
 | `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
 | `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
-| `flink_tier3/pubsub_plan.py` | Offline, unapproved Pub/Sub trial, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
+| `flink_tier3/pubsub_plan.py` | Offline, unapproved Pub/Sub trial, reviewed trial files, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
+| `flink_tier3/pubsub_bundle.py` | Approval-bound Pub/Sub delivery and complete re-render verification; no authentication or admission |
 | `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub_messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
 | `flink_tier3/pubsub_traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
@@ -496,3 +498,4 @@ The offline `bigquery-recovery` proposal is described in the [BigQuery proposal 
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub execution admission remains disabled.
 The version 4 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes the trial (`alo-10`, `eo-10`, `alo-50` or `eo-50`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
+A Pub/Sub trial is dispatched the same way from a reviewed file under [pubsub-trials/](pubsub-trials/), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's numbers; dispatch builds and verifies its version 5 approval and bundle, then refuses before the lock, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.

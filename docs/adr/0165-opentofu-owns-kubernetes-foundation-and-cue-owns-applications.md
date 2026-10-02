@@ -665,6 +665,16 @@ The selected dollar cap remains unestimated, the total-request cap is not an agg
 Keep runner and supervisor entrypoints disabled and the offline delivery approval empty until complete accounting, approval-bound delivery, external fault observations and independent orchestration are reviewed.
 The [internal approval runbook](../../kubernetes/apps/pubsub/README.md#internal-approval-contract) records the exact limits and remaining boundaries.
 
+Refined under [#1429](https://github.com/flink-gcp/flink-connector-gcp/issues/1429): the run workflow and the lifecycle CLI accept `pubsub-recovery` and build the version 5 approval, and admission is still refused.
+A dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`, which holds the offline schema as TOML beside its licence header, and the published application digest.
+Its phrase carries the policy's Pod count and window and the trial's own record and total-request ceilings, so a phrase typed for one trial does not approve another trial with different numbers.
+The window starts at admission on the whole second and lasts exactly the approval's hour; the typed expiry may lie at most ten minutes beyond it, as for BigQuery.
+Dispatch assembles the approval from the proposal it rendered and verified, mapping the proposal's recovery-application digest to the approval's `upgrade_application_sha256`, and prepares the approval-bound bundle, which re-renders from the approval alone.
+The approval's window and source checks, the approved-checkout check, the approval embedding and the ConfigMap size limit move from the BigQuery bundle into one shared module, so the two service deliveries share them; each keeps its own re-render and digest comparison.
+The approved-checkout check now also refuses untracked TOML files under `kubernetes/`, ignored ones included, so a dispatch naming a trial file the approved commit lacks is refused at bundle preparation, before the lock; this applies to the BigQuery bundle as well.
+Dispatch then refuses before the environment lock, writing no lock, evidence, control record or run document, and runner admission remains [#1430](https://github.com/flink-gcp/flink-connector-gcp/issues/1430).
+Declined: workflow choice inputs for the trial kind and entry point with policy-fixed numbers, because the numbers differ between the campaign's trials and are preregistered per trial; a JSON trial file, which apache-rat would reject without a licence header; and continuing to the runner's existing refusal after the lock, because a run that cannot execute would then take the lock, write evidence and depend on settlement to release it.
+
 ### Pub/Sub lifecycle IAM preparation
 
 Define the persistent custom roles and project bindings in OpenTofu, and keep per-run topic/subscription policies in the guarded runtime helper.

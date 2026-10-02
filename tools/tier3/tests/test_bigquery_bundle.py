@@ -16,12 +16,11 @@
 
 import copy
 import json
-import subprocess
 
 import pytest
+from flink_tier3 import approval_bundle, cli
 from flink_tier3 import bigquery_bundle as bundles
 from flink_tier3 import bigquery_plan as plan
-from flink_tier3 import cli
 from flink_tier3.bundle import delivery_digest, source_digest
 from flink_tier3.common import Failure, json_bytes
 from flink_tier3.model import Approval
@@ -35,7 +34,7 @@ from test_tier3_lifecycle import env as env  # noqa: PLC0414
 @pytest.fixture
 def approval(env, inputs, renderer, monkeypatch):
     monkeypatch.setattr(plan, "source_digest", source_digest)
-    monkeypatch.setattr(bundles, "_check_revision", lambda revision: None)
+    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
     value = copy.deepcopy(env[2])
     inputs.update(run_id=value["run_id"], nonce=value["nonce"])
     proposed = plan.prepare(**inputs)["proposal"]
@@ -247,80 +246,6 @@ def test_cli_round_trip_and_refusal(approval, tmp_path, capsys):
     assert not capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "change",
-    ["none", "revision", "tracked", "untracked", "ignored", "unicode", "environment"],
-)
-def test_approved_checkout_and_cue_inputs_are_required(tmp_path, monkeypatch, change):
-    def git(*args):
-        return subprocess.run(
-            [
-                "git",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-                *args,
-            ],
-            cwd=tmp_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-
-    git("init")
-    kubernetes = tmp_path / "kubernetes"
-    kubernetes.mkdir()
-    (kubernetes / "common.cue").write_text("package test\n")
-    git("add", "kubernetes")
-    git(
-        "-c",
-        "user.name=Test",
-        "-c",
-        "user.email=test@example.invalid",
-        "commit",
-        "-m",
-        "Fixture",
-    )
-    revision = git("rev-parse", "HEAD")
-    monkeypatch.setattr(bundles.workflow, "ROOT", tmp_path)
-    if change == "environment":
-        monkeypatch.setenv("GIT_DIR", str(tmp_path / ".git"))
-        monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
-        monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / ".git/index"))
-        monkeypatch.setattr(bundles.workflow, "ROOT", tmp_path.parent)
-    if change == "revision":
-        revision = "0" * 40
-    elif change == "tracked":
-        (kubernetes / "common.cue").write_text("package changed\n")
-    elif change in ("untracked", "ignored", "unicode"):
-        (kubernetes / ("追加.cue" if change == "unicode" else "extra.cue")).write_text(
-            "package test\n"
-        )
-        if change == "ignored":
-            (tmp_path / ".git/info/exclude").write_text("extra.cue\n")
-    if change == "none":
-        bundles._check_revision(revision)
-    else:
-        with pytest.raises(Failure):
-            bundles._check_revision(revision)
-
-
-@pytest.mark.parametrize("failure", ["missing", "timeout", "exit"])
-def test_git_failures_are_bounded_and_reported(monkeypatch, failure):
-    def run(args, **kwargs):
-        assert 0 < kwargs.get("timeout", float("inf")) <= 60
-        if failure == "missing":
-            raise FileNotFoundError("git is missing")
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-        return subprocess.CompletedProcess(args, 1, "", "not a repository")
-
-    monkeypatch.setattr(bundles.subprocess, "run", run)
-    with pytest.raises(Failure, match="Cannot verify the approved repository revision"):
-        bundles._check_revision("b" * 40)
-
-
 @pytest.mark.parametrize("duplicate", ["approval", "bundle"])
 def test_cli_refuses_duplicate_json_fields(approval, tmp_path, capsys, duplicate):
     approved, artifact = tmp_path / "approval.json", tmp_path / "bundle.json"
@@ -366,6 +291,6 @@ def test_checkout_drift_refuses_preparation(
         if len(checks) > int(changed_after_render):
             raise Failure("Checkout changed")
 
-    monkeypatch.setattr(bundles, "_check_revision", check)
+    monkeypatch.setattr(approval_bundle, "check_revision", check)
     with pytest.raises(Failure, match="Checkout changed"):
         bundles.prepare(approval, prepared_at=approval["started_at"])
