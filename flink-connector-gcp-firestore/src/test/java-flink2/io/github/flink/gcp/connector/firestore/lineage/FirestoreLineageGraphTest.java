@@ -16,20 +16,27 @@
 
 package io.github.flink.gcp.connector.firestore.lineage;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.lineage.LineageGraph;
+import org.apache.flink.util.Collector;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.firestore.DocumentSnapshot;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSink;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
+import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
+import io.github.flink.gcp.connector.firestore.source.serializer.FirestoreDocumentDeserializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Flink 2.x extraction from the real Firestore sink, without starting a client. */
+/** Flink 2.x extraction from the real Firestore source and sink, without starting a client. */
 class FirestoreLineageGraphTest {
 
     @Test
@@ -53,5 +60,56 @@ class FirestoreLineageGraphTest {
         assertThat(graph.sinks())
                 .singleElement()
                 .satisfies(vertex -> assertThat(vertex.datasets()).isEmpty());
+    }
+
+    @Test
+    void theDataStreamGraphCarriesTheScannedCollectionGroup() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.fromSource(
+                        InstantiationUtil.clone(
+                                FirestoreSource.<String>builder()
+                                        .database(DatabaseDestination.of("p"))
+                                        .collectionGroup("orders")
+                                        .deserializer(new PathDeserializer())
+                                        .serviceAccountKeyFile(
+                                                "/lineage-test/must-not-read-credentials.json")
+                                        .build()),
+                        WatermarkStrategy.noWatermarks(),
+                        "firestore")
+                .print();
+
+        LineageGraph graph = env.getStreamGraph().getLineageGraph();
+
+        assertThat(graph.sources())
+                .singleElement()
+                .satisfies(
+                        vertex ->
+                                assertThat(vertex.datasets())
+                                        .singleElement()
+                                        .satisfies(
+                                                dataset -> {
+                                                    assertThat(dataset.namespace())
+                                                            .isEqualTo("firestore://p/(default)");
+                                                    assertThat(dataset.name())
+                                                            .isEqualTo("orders");
+                                                }));
+    }
+
+    private static final class PathDeserializer
+            implements FirestoreDocumentDeserializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public void deserialize(
+                DocumentSnapshot document,
+                Collector<String> out) {
+            out.collect(document.getReference().getPath());
+        }
+
+        @Override
+        public TypeInformation<String> getProducedType() {
+            return Types.STRING;
+        }
     }
 }

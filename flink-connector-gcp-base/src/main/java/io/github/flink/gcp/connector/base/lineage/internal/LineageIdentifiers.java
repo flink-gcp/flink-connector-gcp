@@ -117,6 +117,25 @@ public final class LineageIdentifiers {
                         stream));
     }
 
+    /**
+     * Names a configured Firestore collection group: every collection with that id, at any depth,
+     * in one database. No document path or query filter is reported.
+     */
+    public static ResourceIdentifier firestoreCollectionGroup(
+            String project, String database, String collectionGroup) {
+        return new ResourceIdentifier(
+                "firestore-collection-group",
+                "firestore://" + project + "/" + database,
+                collectionGroup,
+                Map.of(
+                        "project",
+                        project,
+                        "database",
+                        database,
+                        "collectionGroup",
+                        collectionGroup));
+    }
+
     /** Names a configured Cloud Tasks queue, without reporting task URLs or request payloads. */
     public static ResourceIdentifier cloudTasksQueue(
             String project, String location, String queue) {

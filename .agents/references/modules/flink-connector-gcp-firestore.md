@@ -57,6 +57,36 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `FIRESTORE_EMULATOR_HOST` itself, and `FirestoreClients` warns when it is set without an
   endpoint.
 
+## Native-mode source (`docs/adr/0173`)
+
+- **A split is a `RunQueryRequest` plus the job's read time.** Both read shapes share it; the
+  serializer writes the query's protobuf encoding length-prefixed. Never put a `Query`,
+  `QueryPartition` or `DocumentReference` in state: none is `Serializable`, and each belongs to a
+  client.
+- **One snapshot per job.** The planner takes the read time from a one-document probe's response,
+  never from the process clock (the service refuses a future read time); a restore from a
+  checkpoint that recorded the plan never plans again. The library's `getPartitions` sets no read
+  time (the RPC accepts one), which is harmless because its partitions tile the document-name
+  space.
+- **Cursors are the library's `startAfter(DocumentSnapshot)`** (`QueryCursors`), for pages and for
+  checkpoints alike; a checkpoint also shrinks the `limit` and drops the `offset`. Do not hand-build
+  a cursor: the implicit ordering (inequality fields, then `__name__`) is the library's to derive.
+  The planner's probe refuses a query whose projection omits an ordered field.
+- **A page is materialised** (a read-time transaction has no streaming read), so `pageSize` bounds a
+  fetch's memory — plus up to one page per mid-stream library retry, appended before the reader's
+  cut — and a fetch is one request, which `wakeUp()` waits for.
+- **The library retries a broken page from its last document with `limit` and `offset`
+  unchanged.** So the reader cuts every page to its limit, and the planner resolves a query's
+  `offset` into a cursor; a split never carries an offset. Read through `ReadTimeQueries`
+  (`runAsyncTransaction`, interruptible), and hold clients in `LazyFirestoreClient` (one-way close).
+- The emulator answers `PartitionQuery` with `UNIMPLEMENTED`; emulator tests cut partitions through
+  `FixedPartitionsPlannerFactory` (an override of `ClientQueryPlanner.partitions`). Real partition
+  counts and the read-time window belong to the gated suite (#1546).
+- Unit tests mint snapshots through the library's `@InternalApi` `Internal.snapshotFromProto`
+  (`TestDocuments` in this project's test package), so no vendor-package helper exists here.
+- A user query is planned from its wire form (`Query.fromProto(toProto())`), which is what readers
+  rebuild; planning on the original reverses a `limitToLast` offset.
+
 ## Testing
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image

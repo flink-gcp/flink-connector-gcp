@@ -16,6 +16,12 @@
 
 package io.github.flink.gcp.connector.docs;
 
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.util.Collector;
+
+import com.google.cloud.firestore.DocumentSnapshot;
+import io.github.flink.gcp.connector.firestore.source.serializer.FirestoreDocumentDeserializationSchema;
+
 final class FirestoreDocumentationTypes {
 
     private FirestoreDocumentationTypes() {}
@@ -40,6 +46,26 @@ final class FirestoreDocumentationTypes {
 
         boolean isHeartbeat() {
             return false;
+        }
+    }
+
+    static final class Order {
+
+        Order(String id, long total) {}
+    }
+
+    static final class OrderDeserializer implements FirestoreDocumentDeserializationSchema<Order> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public void deserialize(DocumentSnapshot document, Collector<Order> out) {
+            out.collect(new Order(document.getId(), document.getLong("total")));
+        }
+
+        @Override
+        public TypeInformation<Order> getProducedType() {
+            return TypeInformation.of(Order.class);
         }
     }
 }

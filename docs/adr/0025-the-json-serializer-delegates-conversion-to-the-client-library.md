@@ -20,7 +20,7 @@ limitations under the License.
 - Date: 2026-07-26
 - Issues: [#66] (JSON half, closing the issue), [#131]
 - Modules: bigquery (`sink.serializer.json`)
-- Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § JSON documents
+- Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § JSON records
 
 ## Decision
 

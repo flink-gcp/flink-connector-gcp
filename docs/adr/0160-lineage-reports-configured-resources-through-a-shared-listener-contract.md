@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0160: Lineage reports configured resources through a shared listener contract
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27)
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540)
+- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27; source 2026-09-30)
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541)
 - Modules: base, test-utils, bigquery, pubsub, cloudtasks, bigtable, spanner, firestore, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
@@ -74,6 +74,7 @@ Credentials, SQL, task URLs, payload schemas and record contents are excluded.
 | `spanner-table` | `spanner://{project}:{instance}` | `{database}.{schema}.{table}` | project, instance, database, optional schema, table |
 | `spanner-change-stream` | `spanner://{project}:{instance}` | `{database}/changeStreams/{stream}` | project, instance, database, stream |
 | `cloudtasks-queue` | `cloudtasks://{project}/{location}` | `{queue}` | project, location, queue |
+| `firestore-collection-group` | `firestore://{project}/{database}` | `{collectionGroup}` | project, database, collectionGroup |
 
 BigQuery, Pub/Sub and Spanner table names follow [OpenLineage's naming convention](https://openlineage.io/docs/spec/naming/).
 The other forms are project conventions.
@@ -225,5 +226,8 @@ Lookup joins and result-emitting Async I/O/SQL functions remain outside this Sou
 
 The Firestore sink ([#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540)) implements `LineageVertexProvider` through `Lineage.sink` with an empty resource list.
 Its configuration names a database, and each `FirestoreWrite` names its own document path, so the collections a job writes are the serializer's and extraction never invokes it; this is the Spanner mutations-sink case.
-No Firestore resource kind is added to `LineageIdentifiers` yet: the first configuration that names a fixed collection is the Table API sink ([#1544](https://github.com/flink-gcp/flink-connector-gcp/issues/1544)), which adds the kind together with its first use.
+The bounded source ([#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541)) is the first configuration that names a fixed resource: a collection-group scan names the group, so `firestore-collection-group` arrives with it and the source reports it through `Lineage.source`.
+The group is every collection with that id at any depth of one database, which is why the kind is a group rather than a collection path; the Table API ([#1544](https://github.com/flink-gcp/flink-connector-gcp/issues/1544)) adds a collection kind if its sink names one.
+A source built from a query factory reports no dataset, for the sink's reason: the query's collections are the factory's, and extraction never calls it.
+`FirestoreSourceLineageTest` covers both shapes before and after a serialization round trip, and `FirestoreLineageGraphTest` extracts the scan from a Flink 2.x graph.
 `FirestoreBulkWriterSinkTest` inspects the builder result before and after a serialization round trip with an unreadable key-file path, and `FirestoreLineageGraphTest` exercises Flink 2.x DataStream extraction.

@@ -49,7 +49,8 @@ class LineageTest {
                         LineageIdentifiers.bigtableTable("p", "i", "T"),
                         LineageIdentifiers.spannerTable("p", "i", "d", null, "T", null, "T"),
                         LineageIdentifiers.spannerChangeStream("p", "i", "d", "Changes"),
-                        LineageIdentifiers.cloudTasksQueue("p", "loc", "q"));
+                        LineageIdentifiers.cloudTasksQueue("p", "loc", "q"),
+                        LineageIdentifiers.firestoreCollectionGroup("p", "(default)", "orders"));
         assertThat(resources)
                 .extracting(ResourceIdentifier::kind)
                 .containsExactly(
@@ -59,7 +60,8 @@ class LineageTest {
                         "bigtable-table",
                         "spanner-table",
                         "spanner-change-stream",
-                        "cloudtasks-queue");
+                        "cloudtasks-queue",
+                        "firestore-collection-group");
         assertThat(resources)
                 .extracting(ResourceIdentifier::namespace)
                 .containsExactly(
@@ -69,7 +71,8 @@ class LineageTest {
                         "bigtable://p/i",
                         "spanner://p:i",
                         "spanner://p:i",
-                        "cloudtasks://p/loc");
+                        "cloudtasks://p/loc",
+                        "firestore://p/(default)");
         assertThat(resources)
                 .extracting(ResourceIdentifier::name)
                 .containsExactly(
@@ -79,7 +82,8 @@ class LineageTest {
                         "T",
                         "d.T",
                         "d/changeStreams/Changes",
-                        "q");
+                        "q",
+                        "orders");
         assertThat(resources)
                 .extracting(ResourceIdentifier::identity)
                 .containsExactly(
@@ -97,7 +101,14 @@ class LineageTest {
                                 "d",
                                 "stream",
                                 "Changes"),
-                        Map.of("project", "p", "location", "loc", "queue", "q"));
+                        Map.of("project", "p", "location", "loc", "queue", "q"),
+                        Map.of(
+                                "project",
+                                "p",
+                                "database",
+                                "(default)",
+                                "collectionGroup",
+                                "orders"));
     }
 
     @Test

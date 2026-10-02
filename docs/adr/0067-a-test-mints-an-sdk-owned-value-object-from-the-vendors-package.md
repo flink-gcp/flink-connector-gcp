@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0067: A test mints an SDK-owned value object from a helper in the vendor's package
 
 - Status: Accepted
-- Date: 2026-08-08
+- Date: 2026-08-08; refined 2026-10-03 (the later instances listed)
 - Issues: [#337]
 - Modules: bigquery (tests); the rule is cross-connector
-- Current behavior: root `AGENTS.md` § Cross-connector contracts
+- Current behavior: `.agents/references/repository-guide.md` § Cross-connector contracts
 
 ## Decision
 
@@ -42,9 +42,13 @@ delegates to the three-argument `JobStatus` constructor rather than reaching the
 as well, because a redundant overload is one more member an SDK release can move.
 
 `flink-connector-gcp-bigquery/src/test/java/com/google/cloud/bigquery/TestJobs.java` is the first
-and, today, only instance. It is the **only Java source in this repository whose package is
-outside `io.github.flink.gcp.*`**, and a second one is a decision, not a precedent to follow
-silently.
+instance. Each further helper declared in a vendor's package is a decision taken on its own
+evidence against both halves of the bar, not a precedent followed silently. Two have been taken
+since: the Spanner module's `com.google.cloud.spanner.TestPartitions` (`Partition` and
+`BatchTransactionId`, ADR-0085) and the BigQuery module's
+`org.apache.flink.connector.base.source.reader.splitreader.TestSplitsChanges` (a `SplitsChange`
+shape no shipped Flink version has). The last names its reach and why no other exists, but not the
+Flink version the reach was verified against, which this record's rule asks for.
 
 ## Context
 
