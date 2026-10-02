@@ -502,7 +502,7 @@ A BigQuery finalization retry compares all receipt fields except the refreshed p
 ## Approval-bound delivery bundle
 
 `flink-tier3 bigquery-bundle` prepares the delivery from a separately supplied version 4 approval and verifies it by re-rendering against that approval.
-The checkout HEAD must match the approval SHA, with no tracked Kubernetes input changes or untracked CUE inputs, including ignored files.
+The checkout HEAD must match the approval SHA, with no tracked Kubernetes input changes or untracked CUE or TOML inputs, including ignored files.
 Repository checks ignore ambient `GIT_*` overrides and bound each Git invocation to 60 seconds.
 The installed package runtime hash, both application hashes and the supervisor image must also match the approval.
 It embeds the approval in the immutable ConfigMap and reduces the supervisor Job's relative deadline to the time remaining at the specified preparation instant.
@@ -544,7 +544,7 @@ The campaign, its estimate, stop conditions and cleanup checks are preregistered
 The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget.
 The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
 
-The checks that need neither the cluster nor the lock run first: the trial and digest, the phrase, the exact main commit, the run ID, an existing run's evidence and the window.
+The checks that need neither the cluster nor the lock run first: the trial and digest, the phrase, the exact approved rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID, an existing run's evidence and the window.
 Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the version 4 approval and prepares the bundle with the approval embedded, so a bundle refusal also arrives before the lock.
 It then acquires the environment lock, checks the foundation again, writes the run documents and runs the authenticated runner inside its session, minting the runner token in this process.
 If the authenticated session cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.

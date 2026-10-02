@@ -16,6 +16,7 @@
 import copy
 import json
 import re
+import tomllib
 from dataclasses import asdict
 
 from .bundle import delivery_digest, source_digest
@@ -29,7 +30,7 @@ from .workflow import render
 
 TRIALS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
 ENTRY_POINTS = ("datastream", "table")
-WINDOW_SECONDS = 3600
+WINDOW_SECONDS = PUBSUB_CEILINGS["seconds"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 FIELDS = {
     "version",
@@ -85,6 +86,18 @@ def load_trial(path):
         return result
     except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as error:
         raise Failure("Invalid Pub/Sub trial proposal: " + str(error)) from error
+
+
+def load_reviewed_trial(path):
+    """Read a reviewed trial file: the same schema, as TOML beside its licence."""
+    try:
+        with path.open("rb") as stream:
+            trial = tomllib.load(stream)
+    # TOML is UTF-8 by definition; other bytes fail to decode before parsing.
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise Failure("Unreadable Pub/Sub trial file") from error
+    validate_trial(trial)
+    return trial
 
 
 def _pod(pod, role):
@@ -269,11 +282,17 @@ def prepare(
         "application_sha256": digest(initial),
         "recovery_application_sha256": digest(recovery),
         "supervisor_sha256": digest(delivery["supervisor"]),
+        "images": {
+            "application": application_image,
+            "supervisor": delivery["supervisor"]["spec"]["template"]["spec"][
+                "containers"
+            ][0]["image"],
+        },
         "input": planned_input,
         "traffic_limits": asdict(limits),
         "limits": {
             "seconds": WINDOW_SECONDS,
-            "cleanup_seconds": 900,
+            "cleanup_seconds": PUBSUB_CEILINGS["cleanup_seconds"],
             "pods": PUBSUB_CEILINGS["pods"],
             "pvcs": 0,
             "total_requests": trial["total_request_limit"],

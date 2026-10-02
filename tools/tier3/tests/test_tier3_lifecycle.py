@@ -2438,6 +2438,11 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
 
     trial = rt.Schedule.for_window(env[3](), env[3]() + BIGQUERY_CEILINGS["seconds"])
     assert trial.serial_budget <= trial_minutes * 60
+    from flink_tier3.policy import PUBSUB_CEILINGS
+
+    # Pub/Sub takes the default timeout: its window is the smoke run's hour.
+    pubsub = rt.Schedule.for_window(env[3](), env[3]() + PUBSUB_CEILINGS["seconds"])
+    assert pubsub.serial_budget <= smoke_minutes * 60
     assert schedule.cleanup_at == schedule.expires_at - 900
     assert schedule.active_seconds(env[3]()) == 3420
     late = schedule.cleanup_window(schedule.expires_at + 60)
@@ -2452,12 +2457,24 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
 
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["scenario"]["options"] == list(cli.SCENARIOS)
     assert inputs["trial"]["options"] == ["none", *bigquery_plan.TRIALS]
     assert inputs["trial"]["default"] == "none"
+    # The Pub/Sub phrase carries the reviewed trial's numbers, so the form can
+    # only name their places; the ceilings around them are the policy's.
+    pubsub = cli.pubsub_phrase(
+        {"records_per_subscription": "R", "total_request_limit": "N"}
+    )
     assert inputs["approval"]["description"] == (
         f"Type {cli.APPROVAL}, or {cli.CLOUDTASKS_APPROVAL}, or "
-        f"{cli.BIGQUERY_APPROVAL}; spend is approved beforehand from the estimate"
+        f"{cli.BIGQUERY_APPROVAL}, or {pubsub} with the pubsub_trial file's "
+        "numbers; spend is approved beforehand from the estimate"
     )
+    assert (
+        f"under {cli.PUBSUB_TRIALS}, without .toml"
+        in (inputs["pubsub_trial"]["description"])
+    )
+    assert inputs["pubsub_trial"]["default"] == ""
 
 
 def test_record_phase_transitions_and_wire_round_trip():
@@ -3292,6 +3309,12 @@ WORKFLOW_INPUTS = {
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
+    "pubsub-recovery": [
+        "--pubsub-trial",
+        "example-wiring",
+        "--application-digest",
+        "sha256:" + "d" * 64,
+    ],
 }
 
 
@@ -3328,7 +3351,7 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
             r'"\$SCENARIO" = ([a-z-]+) \]; then\s+start\+=\(([^)]*)\)', step["run"]
         )
     )
-    assert set(branches) == {"cloudtasks", "bigquery-recovery"}
+    assert set(branches) == {"cloudtasks", "bigquery-recovery", "pubsub-recovery"}
     # Each flag with the workflow input it carries, not only its name.
     expected = {
         "cloudtasks": [
@@ -3338,6 +3361,10 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
         ],
         "bigquery-recovery": [
             ("--trial", "TRIAL"),
+            ("--application-digest", "APPLICATION_DIGEST"),
+        ],
+        "pubsub-recovery": [
+            ("--pubsub-trial", "PUBSUB_TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
         ],
     }
@@ -3385,6 +3412,20 @@ def test_cli_start_accepts_the_inputs_the_workflow_passes(
         ("cloudtasks", [*WORKFLOW_INPUTS["cloudtasks"], "--trial", "alo-10"]),
         ("smoke", ["--application-digest", "sha256:" + "d" * 64]),
         ("generic-recovery", ["--trial", "alo-10"]),
+        ("pubsub-recovery", ["--pubsub-trial", "example-wiring"]),
+        (
+            "pubsub-recovery",
+            [*WORKFLOW_INPUTS["pubsub-recovery"], "--trial", "alo-10"],
+        ),
+        (
+            "bigquery-recovery",
+            [*WORKFLOW_INPUTS["bigquery-recovery"], "--pubsub-trial", "x"],
+        ),
+        ("smoke", ["--pubsub-trial", "example-wiring"]),
+        (
+            "pubsub-recovery",
+            ["--pubsub-trial", "", "--application-digest", "sha256:" + "d" * 64],
+        ),
         # Supplied but empty: still another scenario's input, or still missing.
         ("smoke", ["--session", ""]),
         (

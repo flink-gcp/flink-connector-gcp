@@ -16,72 +16,18 @@
 
 import argparse
 import json
-import os
-import subprocess
 from pathlib import Path
 
-from . import bigquery_plan, workflow
-from .bundle import source_digest
-from .common import Failure, digest, json_bytes, timestamp, utc
-from .model import Approval
-from .policy import MIB
-
-
-def _check_revision(revision):
-    """Require the approved checkout and unchanged CUE inputs."""
-
-    def git(*args):
-        try:
-            result = subprocess.run(
-                ["git", "--no-optional-locks", *args],
-                cwd=workflow.ROOT,
-                env={
-                    key: value
-                    for key, value in os.environ.items()
-                    if not key.startswith("GIT_")
-                },
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise Failure(
-                "Cannot verify the approved repository revision: " + str(error)
-            ) from error
-        if result.returncode:
-            raise Failure(
-                "Cannot verify the approved repository revision: "
-                + result.stderr[-1000:].strip()
-            )
-        return result.stdout
-
-    if git("rev-parse", "HEAD").strip() != revision:
-        raise Failure("Repository revision differs from approval")
-    if git("diff", "--name-only", "HEAD", "--", "kubernetes"):
-        raise Failure("Approved Kubernetes inputs have local changes")
-    # Include ignored CUE files: Git's ordinary status hides them, but CUE may load them.
-    others = git("ls-files", "--others", "-z", "--", "kubernetes").split("\0")
-    if any(path.endswith(".cue") or "cue.mod" in Path(path).parts for path in others):
-        raise Failure("Approved Kubernetes inputs contain untracked CUE files")
+from . import approval_bundle, bigquery_plan
+from .common import Failure, digest
 
 
 def prepare(approval, *, prepared_at):
     """Build from a separately supplied approval, without service access."""
-    value = approval.to_dict() if isinstance(approval, Approval) else approval
-    if not isinstance(value, dict):
-        raise Failure("Approval must be a JSON object")
-    when = timestamp(prepared_at)
-    approved = Approval.from_dict(value, when)
-    if approved.scenario != "bigquery-recovery":
-        raise Failure("Execution bundles require a BigQuery approval")
-    if when != int(when) or when < approved.schedule.started:
-        raise Failure(
-            "Bundle preparation requires a whole second within the run window"
-        )
-    if approved.runtime_sha256 != source_digest():
-        raise Failure("Bundle source differs from approval")
-    _check_revision(approved.sha)
+    approved, when = approval_bundle.check_approval(
+        approval, prepared_at, "bigquery-recovery", "BigQuery"
+    )
+    approval_bundle.check_revision(approved.sha)
     bundle = bigquery_plan.prepare(
         run_id=approved.run_id,
         nonce=approved.nonce,
@@ -102,40 +48,13 @@ def prepare(approval, *, prepared_at):
         raise Failure(
             "Rendered bundle differs from the approved manifests, images or source"
         )
-    _check_revision(approved.sha)
-    # These two fields vary after approval; every other rendered field is retained.
-    bundle["delivery"]["config"]["data"]["approval.json"] = json_bytes(
-        approved.to_dict()
-    ).decode()
-    bundle["delivery"]["supervisor"]["spec"]["activeDeadlineSeconds"] = (
-        approved.schedule.active_seconds(when)
-    )
-    data = bundle["delivery"]["config"]["data"]
-    if (
-        sum(len(key.encode()) + len(value.encode()) for key, value in data.items())
-        > MIB
-    ):
-        raise Failure("Approved ConfigMap exceeds the Kubernetes data size limit")
-    return {
-        "kind": "bigquery-approval-bundle",
-        "version": 1,
-        "admission_enabled": False,
-        "prepared_at": utc(when),
-        "approval": approved.to_dict(),
-        **bundle,
-    }
+    approval_bundle.check_revision(approved.sha)
+    return approval_bundle.bind("bigquery-approval-bundle", approved, bundle, when)
 
 
 def validate(bundle, approval):
     """Re-render against the caller's approval; embedded approval is not authority."""
-    if not isinstance(bundle, dict) or not isinstance(bundle.get("prepared_at"), str):
-        raise Failure("Bundle must contain its preparation time")
-    expected = prepare(approval, prepared_at=bundle["prepared_at"])
-    if json_bytes(bundle) != json_bytes(expected):
-        raise Failure(
-            "Bundle differs from the separately supplied approval and rendering"
-        )
-    return expected
+    return approval_bundle.validate(prepare, bundle, approval)
 
 
 def _read_json(path):

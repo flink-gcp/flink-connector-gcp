@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, one Cloud Tasks measurement session, or one BigQuery recovery trial'
+        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, one Cloud Tasks measurement session, one BigQuery recovery trial, or one Pub/Sub recovery trial (approved and verified, then refused before the lock until its runner admission exists)'
         required: true
         type: choice
         default: smoke
@@ -15,6 +15,7 @@ on:
           - generic-recovery
           - cloudtasks
           - bigquery-recovery
+          - pubsub-recovery
       run_id:
         description: 'Unique lowercase run ID (at most 40 characters)'
         required: true
@@ -24,11 +25,11 @@ on:
         required: true
         type: string
       expires_at:
-        description: 'UTC expiry ending in Z: 55 to 60 minutes ahead for smoke/generic-recovery; session plan plus 15 minutes, at most 300 minutes, for cloudtasks; 90 to 100 minutes ahead for bigquery-recovery, whose run ends 90 minutes after admission'
+        description: 'UTC expiry ending in Z: 55 to 60 minutes ahead for smoke/generic-recovery; session plan plus 15 minutes, at most 300 minutes, for cloudtasks; 90 to 100 minutes ahead for bigquery-recovery, whose run ends 90 minutes after admission; 60 to 70 minutes after admission for pubsub-recovery, whose run ends 60 minutes after admission'
         required: true
         type: string
       approval:
-        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES, or APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES; spend is approved beforehand from the estimate'
+        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES, or APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, or APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION, N REQUESTS with the pubsub_trial file''s numbers; spend is approved beforehand from the estimate'
         required: true
         type: string
       session:
@@ -45,7 +46,7 @@ on:
           - '2.2.1'
           - '1.20.4'
       application_digest:
-        description: 'Cloud Tasks and BigQuery: published sha256:... digest of the application package; verified live, never pinned'
+        description: 'Cloud Tasks, BigQuery and Pub/Sub: published sha256:... digest of the application package; verified live, never pinned'
         required: false
         type: string
         default: ''
@@ -65,6 +66,11 @@ on:
           - 'eo-10'
           - 'alo-50'
           - 'eo-50'
+      pubsub_trial:
+        description: 'Pub/Sub only: trial file name under kubernetes/lifecycle/pubsub-trials, without .toml'
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 concurrency:
@@ -135,6 +141,7 @@ jobs:
           FLINK_VERSION: ${{ inputs.flink_version }}
           APPLICATION_DIGEST: ${{ inputs.application_digest }}
           TRIAL: ${{ inputs.trial }}
+          PUBSUB_TRIAL: ${{ inputs.pubsub_trial }}
           RIG_SHA: ${{ inputs.rig_sha }}
         run: |
           start=(start --run-id "$RUN_ID" --sha "$REVIEWED_SHA" --expires-at "$EXPIRES_AT" --approve "$APPROVAL" --scenario "$SCENARIO")
@@ -145,6 +152,8 @@ jobs:
             start+=(--session "$SESSION" --flink-version "$FLINK_VERSION" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = bigquery-recovery ]; then
             start+=(--trial "$TRIAL" --application-digest "$APPLICATION_DIGEST")
+          elif [ "$SCENARIO" = pubsub-recovery ]; then
+            start+=(--pubsub-trial "$PUBSUB_TRIAL" --application-digest "$APPLICATION_DIGEST")
           fi
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle \
             --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" "${start[@]}"
