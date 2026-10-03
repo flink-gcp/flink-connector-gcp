@@ -64,6 +64,27 @@ E2E_GATES = (
 )
 
 
+# Connector modules, and the Tier-3 applications, which sit outside the default reactor behind
+# a `tier3-<name>` profile each but whose gated classes join the same E2E run.
+TEST_SOURCES = (
+    "*/src/test/java*/**/*.java",
+    "kubernetes/apps/*/src/test/java*/**/*.java",
+)
+
+
+def test_sources(root: Path) -> list[Path]:
+    return sorted({path for pattern in TEST_SOURCES for path in root.glob(pattern)})
+
+
+def module_of(source: Path) -> str:
+    """The module directory of a test source: everything before its `src/test`."""
+    parts = source.parts
+    index = next(
+        i for i in range(len(parts) - 1) if parts[i : i + 2] == ("src", "test")
+    )
+    return "/".join(parts[:index])
+
+
 def tags(path: Path, root: Path) -> tuple[set[str], bool, bool]:
     parsed = JavaSource.parse(path.relative_to(root), path.read_bytes())
     gated = False
@@ -83,7 +104,7 @@ def tags(path: Path, root: Path) -> tuple[set[str], bool, bool]:
 
 
 def check(root: Path) -> tuple[int, int, list[str]]:
-    sources = sorted(root.glob("*/src/test/java*/**/*.java"))
+    sources = test_sources(root)
     gated_sources: list[Path] = []
     slow_sources: list[Path] = []
     problems: list[str] = []
@@ -153,7 +174,7 @@ def gated_sources(
         and (except_gate is None or gate != except_gate)
     ]
     by_gate: dict[str, list[Path]] = {gate: [] for gate in selected}
-    for source in sorted(root.glob("*/src/test/java*/**/*.java")):
+    for source in test_sources(root):
         gates, _, _ = tags(source, root)
         for gate in gates & by_gate.keys():
             by_gate[gate].append(source.relative_to(root))
@@ -172,10 +193,19 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--for-gate", choices=E2E_GATES)
     mode.add_argument("--except-gate", choices=E2E_GATES)
+    mode.add_argument("--modules-for-gate", choices=E2E_GATES)
     mode.add_argument("--check", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     try:
+        if args.modules_for_gate:
+            # One line per module: its directory, then its classes comma-joined for -Dtest=.
+            by_module: dict[str, list[str]] = {}
+            for source in gated_sources(root, args.modules_for_gate, None):
+                by_module.setdefault(module_of(source), []).append(source.stem)
+            for module, classes in sorted(by_module.items()):
+                print(module, ",".join(classes))
+            return 0
         if not args.check:
             sources = gated_sources(root, args.for_gate, args.except_gate)
             print("\n".join(str(source) for source in sources))

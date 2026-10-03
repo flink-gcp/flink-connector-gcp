@@ -195,3 +195,33 @@ java.lang.IllegalStateException: setup-failed
             "frames": ["p.ExampleITCase.setup(ExampleITCase.java:5)"],
         }
     ]
+
+
+def test_application_report_is_read_from_its_own_module(tmp_path):
+    tool = load_script("e2e-reports.py")
+    source = "kubernetes/apps/fake/src/test/java/p/ExampleITCase.java"
+    path, fqcn = tool.report_path(tmp_path, source)
+    assert path == (
+        tmp_path
+        / "kubernetes/apps/fake/target/surefire-reports/TEST-p.ExampleITCase.xml"
+    )
+    assert fqcn == "p.ExampleITCase"
+    tool.prepare(tmp_path, [source])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report())
+    assert tool.collect(tmp_path, [source]) == 0
+    evidence = json.loads((tmp_path / "target/e2e/evidence/results.json").read_text())
+    assert evidence[0]["module"] == "kubernetes/apps/fake"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "kubernetes/apps/src/test/java/p/ExampleITCase.java",
+        "kubernetes/apps/fake/nested/src/test/java/p/ExampleITCase.java",
+    ],
+)
+def test_application_source_outside_the_layout_is_refused(tmp_path, source):
+    tool = load_script("e2e-reports.py")
+    with pytest.raises(ValueError, match="invalid gated source path"):
+        tool.report_path(tmp_path, source)

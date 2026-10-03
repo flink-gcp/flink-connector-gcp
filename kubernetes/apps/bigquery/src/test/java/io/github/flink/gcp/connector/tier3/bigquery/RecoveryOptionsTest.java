@@ -18,11 +18,15 @@ package io.github.flink.gcp.connector.tier3.bigquery;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -62,7 +66,12 @@ class RecoveryOptionsTest {
         "records,9223372036854775807",
         "bytes-per-second,0",
         "bytes-per-second,1048577",
-        "mode,FILE_LOADS",
+        "mode,OTHER",
+        "staging-format,AVRO",
+        "max-concurrent-checkpoint-finalizations,1",
+        "max-concurrent-destinations,8",
+        "max-staging-file-bytes,16777216",
+        "max-open-destinations,16",
         "phase,other",
         "phase,upgrade",
         "require-restored,yes",
@@ -73,6 +82,124 @@ class RecoveryOptionsTest {
     void rejectsInvalidOrUnboundedInputs(String name, String value) {
         assertThatThrownBy(() -> RecoveryOptions.parse(arguments("--" + name, value)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "staging-format,ORC",
+        "max-concurrent-checkpoint-finalizations,one",
+        "max-staging-file-bytes,16MiB"
+    })
+    void rejectsUnparseableFileLoadsArguments(String name, String value) {
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        arguments("--mode", "FILE_LOADS", "--" + name, value)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void fileLoadsDefaultsAreTheConnectorsAndStageInsideTheRunPrefix() {
+        var options = RecoveryOptions.parse(arguments("--mode", "FILE_LOADS"));
+        assertThat(options.records).isEqualTo(1843200);
+        assertThat(options.checkpointInterval)
+                .isEqualTo(Duration.ofSeconds(120))
+                .isGreaterThanOrEqualTo(FileLoadsOptions.DEFAULT_MIN_CHECKPOINT_INTERVAL);
+        var sink = options.fileLoads;
+        var defaults = FileLoadsOptions.builder().stagingPath("gs://bucket").build();
+        assertThat(sink.getStagingPath())
+                .isEqualTo("gs://flink-gcp-tier3-bigquery/runs/bigquery-it/staging");
+        assertThat(sink.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_APPEND);
+        assertThat(sink.getMinCheckpointInterval()).isEqualTo(defaults.getMinCheckpointInterval());
+        assertThat(sink.getStagingFormat()).isEqualTo(defaults.getStagingFormat());
+        assertThat(sink.getMaxConcurrentCheckpointFinalizations())
+                .isEqualTo(defaults.getMaxConcurrentCheckpointFinalizations());
+        assertThat(sink.getMaxConcurrentDestinations())
+                .isEqualTo(defaults.getMaxConcurrentDestinations());
+        assertThat(sink.getMaxStagingFileBytes()).isEqualTo(defaults.getMaxStagingFileBytes());
+        assertThat(sink.getMaxOpenDestinations()).isEqualTo(defaults.getMaxOpenDestinations());
+        assertThat(RecoveryOptions.parse(arguments("--mode", "ALO")).checkpointInterval)
+                .isEqualTo(RecoveryOptions.parse(arguments()).checkpointInterval)
+                .isEqualTo(Duration.ofSeconds(30));
+    }
+
+    @Test
+    void fileLoadsArgumentsReachTheSink() {
+        var sink =
+                RecoveryOptions.parse(
+                                arguments(
+                                        "--mode",
+                                        "FILE_LOADS",
+                                        "--staging-format",
+                                        "PARQUET",
+                                        "--max-concurrent-checkpoint-finalizations",
+                                        "3",
+                                        "--max-concurrent-destinations",
+                                        "5",
+                                        "--max-staging-file-bytes",
+                                        "8388608",
+                                        "--max-open-destinations",
+                                        "7"))
+                        .fileLoads;
+        // Building PARQUET options passes the connector's probe for parquet-avro and Hadoop, on
+        // the test classpath; the image's runtime classpath is the copied runtime dependencies.
+        assertThat(sink.getStagingFormat()).isEqualTo(StagingFormat.PARQUET);
+        assertThat(sink.getMaxConcurrentCheckpointFinalizations()).isEqualTo(3);
+        assertThat(sink.getMaxConcurrentDestinations()).isEqualTo(5);
+        assertThat(sink.getMaxStagingFileBytes()).isEqualTo(8388608);
+        assertThat(sink.getMaxOpenDestinations()).isEqualTo(7);
+    }
+
+    @Test
+    void connectorOwnsTheFileLoadsRanges() {
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        arguments(
+                                                "--mode",
+                                                "FILE_LOADS",
+                                                "--max-concurrent-destinations",
+                                                "65")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        arguments(
+                                                "--mode",
+                                                "FILE_LOADS",
+                                                "--max-open-destinations",
+                                                "10001")))
+                .hasMessageContaining("maxPendingFiles must be >= maxOpenDestinations");
+    }
+
+    @Test
+    void connectorDefaultsAreTheOnesTheCuePackageRenders() {
+        // kubernetes/pkg/bigquery/application.cue writes these as #FileLoads defaults, and its
+        // render tests pin them; a connector default that moves must move there as well.
+        assertThat(FileLoadsOptions.DEFAULT_STAGING_FORMAT).isEqualTo(StagingFormat.AVRO);
+        assertThat(FileLoadsOptions.DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS).isEqualTo(1);
+        assertThat(FileLoadsOptions.DEFAULT_MAX_CONCURRENT_DESTINATIONS).isEqualTo(8);
+        assertThat(FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES).isEqualTo(16777216);
+        assertThat(FileLoadsOptions.DEFAULT_MAX_OPEN_DESTINATIONS).isEqualTo(16);
+        // The application does not expose maxPendingFiles, so it caps maxOpenDestinations.
+        assertThat(FileLoadsOptions.DEFAULT_MAX_PENDING_FILES).isEqualTo(10000);
+        assertThat(RecoveryOptions.parse(arguments()).fileLoads).isNull();
+    }
+
+    @Test
+    void testTargetReplacesTheTablesStagingAndInterval() {
+        var target =
+                new RecoveryOptions.Target(
+                        "it-project", "it_dataset", "gs://it-bucket/it", Duration.ofSeconds(2));
+        var options = RecoveryOptions.parse(target, arguments("--mode", "FILE_LOADS"));
+        assertThat(options.table(0).getProject()).isEqualTo("it-project");
+        assertThat(options.table(0).getDataset()).isEqualTo("it_dataset");
+        assertThat(options.checkpointInterval).isEqualTo(Duration.ofSeconds(2));
+        var sink = options.fileLoads;
+        assertThat(sink.getStagingPath()).isEqualTo("gs://it-bucket/it/bigquery-it/staging");
+        assertThat(sink.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(RecoveryOptions.parse(arguments("--mode", "FILE_LOADS")).identity())
+                .isEqualTo(options.identity());
     }
 
     @Test
@@ -112,6 +239,42 @@ class RecoveryOptionsTest {
                         arguments("--phase", "upgrade", "--require-restored", "true"));
         assertThat(upgrade.identity()).isEqualTo(initial.identity());
         assertThat(RecoveryOptions.parse(arguments("--records", "100")).identity())
+                .isNotEqualTo(initial.identity());
+    }
+
+    @Test
+    void storageWriteIdentitiesKeepTheirShape() {
+        assertThat(RecoveryOptions.parse(arguments()).identity())
+                .isEqualTo("v1/bigquery-it/EO/10/1843200/1048576");
+        assertThat(RecoveryOptions.parse(arguments("--mode", "ALO")).identity())
+                .isEqualTo("v1/bigquery-it/ALO/10/28800/1048576");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "staging-format,PARQUET",
+        "max-concurrent-checkpoint-finalizations,2",
+        "max-concurrent-destinations,9",
+        "max-staging-file-bytes,8388608",
+        "max-open-destinations,17"
+    })
+    void everyFileLoadsArgumentIsPartOfTheIdentity(String name, String value) {
+        var initial = RecoveryOptions.parse(arguments("--mode", "FILE_LOADS"));
+        assertThat(initial.identity())
+                .isEqualTo("v1/bigquery-it/FILE_LOADS/10/1843200/1048576/AVRO/1/8/16777216/16");
+        var upgrade =
+                RecoveryOptions.parse(
+                        arguments(
+                                "--mode",
+                                "FILE_LOADS",
+                                "--phase",
+                                "upgrade",
+                                "--require-restored",
+                                "true"));
+        assertThat(upgrade.identity()).isEqualTo(initial.identity());
+        assertThat(
+                        RecoveryOptions.parse(arguments("--mode", "FILE_LOADS", "--" + name, value))
+                                .identity())
                 .isNotEqualTo(initial.identity());
     }
 }

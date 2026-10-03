@@ -1472,7 +1472,26 @@ def bigquery_leaf(module, **changes):
     return path
 
 
-@pytest.mark.parametrize("mode,records", [("ALO", 28800), ("EO", 1843200)])
+# The FILE_LOADS arguments at the connector's defaults; the Storage Write modes take none.
+FILE_LOADS_DEFAULT_ARGS = [
+    "--staging-format",
+    "AVRO",
+    "--max-concurrent-checkpoint-finalizations",
+    "1",
+    "--max-concurrent-destinations",
+    "8",
+    "--max-staging-file-bytes",
+    "16777216",
+    "--max-open-destinations",
+    "16",
+]
+BIGQUERY_MODE_ARGS = {"ALO": [], "EO": [], "FILE_LOADS": FILE_LOADS_DEFAULT_ARGS}
+BIGQUERY_MODE_INTERVALS = {"ALO": "30 s", "EO": "30 s", "FILE_LOADS": "120 s"}
+
+
+@pytest.mark.parametrize(
+    "mode,records", [("ALO", 28800), ("EO", 1843200), ("FILE_LOADS", 1843200)]
+)
 @pytest.mark.parametrize("destinations", [10, 50])
 def test_bigquery_initial_and_upgrade_preserve_the_trial(
     module, mode, records, destinations
@@ -1520,18 +1539,21 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
                 "1048576",
                 "--require-restored",
                 str(phase == "upgrade").lower(),
+                *BIGQUERY_MODE_ARGS[mode],
             ],
         }
         args = dict(
             zip(spec["job"]["args"][::2], spec["job"]["args"][1::2], strict=True)
         )
-        trial = Trial(
-            args["--run-id"],
-            args["--mode"],
-            int(args["--destinations"]),
-            int(args["--records"]),
-        )
-        assert sum(trial.expected(i) for i in range(destinations)) == records
+        # The rig's oracle learns FILE_LOADS separately (#1551); the render is checked here.
+        if mode != "FILE_LOADS":
+            trial = Trial(
+                args["--run-id"],
+                args["--mode"],
+                int(args["--destinations"]),
+                int(args["--records"]),
+            )
+            assert sum(trial.expected(i) for i in range(destinations)) == records
         config = spec["flinkConfiguration"]
         assert config["taskmanager.numberOfTaskSlots"] == "1"
         assert config["job.autoscaler.enabled"] == "false"
@@ -1540,7 +1562,9 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
             == "false"
         )
         assert config["kubernetes.operator.snapshot.resource.enabled"] == "false"
-        assert config["execution.checkpointing.interval"] == "30 s"
+        assert (
+            config["execution.checkpointing.interval"] == BIGQUERY_MODE_INTERVALS[mode]
+        )
         assert config["execution.checkpointing.max-concurrent-checkpoints"] == "1"
         assert config["execution.checkpointing.timeout"] == "120 s"
         assert config["execution.checkpointing.num-retained"] == "2"
@@ -1581,7 +1605,15 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
 
 
 @pytest.mark.parametrize(
-    "mode,records", [("ALO", 100), ("ALO", 32768), ("EO", 100), ("EO", 2097152)]
+    "mode,records",
+    [
+        ("ALO", 100),
+        ("ALO", 32768),
+        ("EO", 100),
+        ("EO", 2097152),
+        ("FILE_LOADS", 100),
+        ("FILE_LOADS", 2097152),
+    ],
 )
 def test_bigquery_record_boundaries_render(module, mode, records):
     path = bigquery_leaf(module, mode=mode, destinations=50, records=records)
@@ -1600,6 +1632,24 @@ def test_bigquery_record_boundaries_render(module, mode, records):
         {"phase": "resume"},
         {"mode": "ALO", "records": 32769},
         {"mode": "EO", "records": 2097153},
+        {"mode": "FILE_LOADS", "records": 2097153},
+        {"mode": "ALO", "fileLoads": {"stagingFormat": "AVRO"}},
+        {"mode": "EO", "fileLoads": {}},
+        {"mode": "FILE_LOADS", "fileLoads": {"stagingFormat": "ORC"}},
+        {
+            "mode": "FILE_LOADS",
+            "fileLoads": {"maxConcurrentCheckpointFinalizations": 0},
+        },
+        {
+            "mode": "FILE_LOADS",
+            "fileLoads": {"maxConcurrentCheckpointFinalizations": 9},
+        },
+        {"mode": "FILE_LOADS", "fileLoads": {"maxConcurrentDestinations": 65}},
+        {"mode": "FILE_LOADS", "fileLoads": {"maxStagingFileBytes": 0}},
+        {"mode": "FILE_LOADS", "fileLoads": {"maxOpenDestinations": 0}},
+        {"mode": "FILE_LOADS", "fileLoads": {"maxOpenDestinations": 10001}},
+        {"mode": "FILE_LOADS", "fileLoads": {"maxStagingFileBytes": 2**63}},
+        {"mode": "FILE_LOADS", "fileLoads": {"maxPendingFiles": 16}},
         {"destinations": 50, "records": 99},
         {"records": 0},
         {"records": "100"},
@@ -1619,6 +1669,70 @@ def test_bigquery_rejects_invalid_trial_inputs(module, changes):
     result = cue(module, "cmd", "render", path)
     assert result.returncode != 0
     assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "changes,cause",
+    [
+        ({"mode": "ALO", "fileLoads": {"stagingFormat": "AVRO"}}, "explicit error"),
+        ({"mode": "EO", "fileLoads": {}}, "explicit error"),
+        ({"mode": "FILE_LOADS", "fileLoads": {"maxPendingFiles": 16}}, "not allowed"),
+        (
+            {"mode": "FILE_LOADS", "fileLoads": {"maxOpenDestinations": 10001}},
+            "out of bound <=10000",
+        ),
+    ],
+)
+def test_bigquery_file_loads_refusals_name_their_cause(module, changes, cause):
+    # The knobs reach the render only through the arguments, so a refusal surfaces there.
+    path = bigquery_leaf(module, **changes)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode != 0
+    assert "spec.job.args" in result.stderr
+    assert cause in result.stderr
+
+
+def test_bigquery_file_loads_partial_knobs_keep_the_other_defaults(module):
+    path = bigquery_leaf(
+        module, mode="FILE_LOADS", fileLoads={"stagingFormat": "PARQUET"}
+    )
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    assert app["spec"]["job"]["args"][14:] == [
+        "--staging-format",
+        "PARQUET",
+        *FILE_LOADS_DEFAULT_ARGS[2:],
+    ]
+
+
+def test_bigquery_file_loads_arguments_render_in_order(module):
+    path = bigquery_leaf(
+        module,
+        mode="FILE_LOADS",
+        fileLoads={
+            "stagingFormat": "PARQUET",
+            "maxConcurrentCheckpointFinalizations": 8,
+            "maxConcurrentDestinations": 64,
+            "maxStagingFileBytes": 33554432,
+            "maxOpenDestinations": 50,
+        },
+    )
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    assert app["spec"]["job"]["args"][14:] == [
+        "--staging-format",
+        "PARQUET",
+        "--max-concurrent-checkpoint-finalizations",
+        "8",
+        "--max-concurrent-destinations",
+        "64",
+        "--max-staging-file-bytes",
+        "33554432",
+        "--max-open-destinations",
+        "50",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1966,7 +2080,9 @@ def test_pubsub_companion_and_application_use_the_selected_run_namespace(
         assert not result.stdout.strip()
 
 
-@pytest.mark.parametrize("mode,records", [("ALO", 28800), ("EO", 1843200)])
+@pytest.mark.parametrize(
+    "mode,records", [("ALO", 28800), ("EO", 1843200), ("FILE_LOADS", 1843200)]
+)
 @pytest.mark.parametrize("destinations", [10, 50])
 def test_bigquery_proposal_delivery_binds_both_phases(
     module, mode, records, destinations
@@ -2001,7 +2117,7 @@ def test_bigquery_proposal_delivery_binds_both_phases(
     initial, upgrade, delivery = json.loads(result.stdout)
     expected = json.loads(json.dumps(initial))
     expected["spec"]["job"]["args"][3] = "upgrade"
-    expected["spec"]["job"]["args"][-1] = "true"
+    expected["spec"]["job"]["args"][13] = "true"
     assert upgrade == expected
     assert initial["metadata"]["namespace"] == "tier3-bigquery"
     assert initial["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32
@@ -2020,8 +2136,13 @@ def test_bigquery_proposal_delivery_binds_both_phases(
         "1048576",
         "--require-restored",
         "false",
+        *BIGQUERY_MODE_ARGS[mode],
     ]
     assert initial["spec"]["job"]["parallelism"] == 2
+    assert (
+        initial["spec"]["flinkConfiguration"]["execution.checkpointing.interval"]
+        == BIGQUERY_MODE_INTERVALS[mode]
+    )
     assert initial["spec"]["taskManager"]["replicas"] == 2
     config = delivery["config"]
     assert config["immutable"] is True

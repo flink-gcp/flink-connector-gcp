@@ -18,8 +18,9 @@ name: E2E
 # silently skips, checking exactly what the emulator cannot (idempotent
 # re-flush, load jobs, the default-stream fan-out/restore suite, serializer
 # column-type fidelity, ordered Pub/Sub dispatch and dead-letter forwarding,
-# Cloud Tasks App Engine dispatch and routing, and which statuses Bigtable
-# rejects a mutation with; see each connector's testing section). The whole
+# Cloud Tasks App Engine dispatch and routing, which statuses Bigtable
+# rejects a mutation with, and the Tier-3 BigQuery application's FILE_LOADS
+# savepoint restore; see each connector's testing section). The whole
 # run is `just e2e`, which also
 # asserts the gated classes actually executed: @EnabledIfEnvironmentVariable
 # makes a missing variable a silent skip, so a workflow that lost its

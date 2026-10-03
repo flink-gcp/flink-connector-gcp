@@ -17,10 +17,12 @@
 package io.github.flink.gcp.connector.tier3.bigquery;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator;
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriter;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryDefaultStreamWriter;
@@ -35,6 +37,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ResourceLock("bigquery-appender-logger")
 class ObservedSinksTest {
@@ -74,6 +77,30 @@ class ObservedSinksTest {
                             .toList();
             assertThat(ids).doesNotHaveDuplicates();
         }
+    }
+
+    @Test
+    void fileLoadsSinkIsUndecoratedAndPassesTheConnectorsStreamingChecks() throws Exception {
+        var options = RecoveryOptions.parse(RecoveryOptionsTest.arguments("--mode", "FILE_LOADS"));
+        Sink<Long> sink =
+                InstantiationUtil.clone(
+                        BigQueryRecoveryJob.sink(options, null, null), getClass().getClassLoader());
+        assertThat(sink.getClass()).isEqualTo(BigQueryFileLoadsSink.class);
+        var env = StreamExecutionEnvironment.getExecutionEnvironment();
+        BigQueryRecoveryJob.configure(env, options, sink);
+        assertThat(StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph()).getVertices())
+                .extracting(JobVertex::getName)
+                .anySatisfy(name -> assertThat(name).contains("Committer"));
+    }
+
+    @Test
+    void fileLoadsRefusesTheStorageWriteInterval() {
+        var options = RecoveryOptions.parse(RecoveryOptionsTest.arguments("--mode", "FILE_LOADS"));
+        var env = StreamExecutionEnvironment.getExecutionEnvironment();
+        BigQueryRecoveryJob.configure(env, options, BigQueryRecoveryJob.sink(options, null, null));
+        env.enableCheckpointing(RecoveryOptions.Mode.EO.checkpointInterval.toMillis());
+        assertThatThrownBy(env::getStreamGraph)
+                .hasStackTraceContaining("below the file-loads minimum (120000 ms)");
     }
 
     @Test

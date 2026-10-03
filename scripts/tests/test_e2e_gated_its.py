@@ -387,7 +387,7 @@ def test_except_gate_omits_only_the_selected_classes(tree):
     )
 
 
-@pytest.mark.parametrize("mode", ["--for-gate", "--except-gate"])
+@pytest.mark.parametrize("mode", ["--for-gate", "--except-gate", "--modules-for-gate"])
 def test_gate_selector_rejects_an_unknown_gate(tree, mode):
     full_suite(tree)
 
@@ -397,13 +397,31 @@ def test_gate_selector_rejects_an_unknown_gate(tree, mode):
     assert "usage:" in result.stderr
 
 
-@pytest.mark.parametrize("mode", ["--for-gate", "--except-gate"])
+@pytest.mark.parametrize("mode", ["--for-gate", "--except-gate", "--modules-for-gate"])
 def test_unknown_gate_is_diagnosed_before_parser_restoration(tree, mode):
     result = tree(mode, "BQ_IT_PROJEKT", env={"PATH": "/usr/bin:/bin"})
 
     assert result.returncode == 2
     assert "usage:" in result.stderr
     assert "parser is unavailable" not in result.stderr
+
+
+def test_modules_for_gate_hands_each_module_only_its_own_classes(tree):
+    full_suite(tree)
+    tree.add("AppITCase", module="kubernetes/apps/fake", gate="BQ_IT_PROJECT", tag=True)
+    tree.add(
+        "AppTwoITCase", module="kubernetes/apps/fake", gate="BQ_IT_PROJECT", tag=True
+    )
+
+    result = tree("--modules-for-gate", "BQ_IT_PROJECT")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "flink-connector-gcp-fake BqITCase",
+        "kubernetes/apps/fake AppITCase,AppTwoITCase",
+    ]
+    other = tree("--modules-for-gate", "PUBSUB_IT_PROJECT")
+    assert other.stdout.splitlines() == ["flink-connector-gcp-fake PubsubITCase"]
 
 
 def test_shell_gate_selector_mirrors_the_python_inventory(tree, check_gated_tags):
@@ -540,5 +558,29 @@ def test_compatibility_sources_are_discovered_checked_and_required_to_run(
     assert result.returncode == 1
     assert "p.CompatITCase: NOT_RUN" in result.stderr
     tree.report("CompatITCase")
+    result = tree("--assert-ran")
+    assert result.returncode == 0, result.stderr
+
+
+def test_application_sources_are_discovered_checked_and_required_to_run(tree):
+    """A Tier-3 application sits two levels deeper than a connector module."""
+    sources = full_suite(tree)
+    module = "kubernetes/apps/fake"
+    tree.add("AppITCase", module=module, gate="BQ_IT_PROJECT")
+    result = tree("--check-tags")
+    assert result.returncode == 1
+    assert "kubernetes/apps/fake/src/test/java/p/AppITCase.java" in result.stderr
+    tree.add("AppITCase", module=module, gate="BQ_IT_PROJECT", tag=True)
+    assert tree("--check-tags").returncode == 0
+    assert "AppITCase" in tree("--for-gate", "BQ_IT_PROJECT").stdout
+    assert tree("--prepare-reports").returncode == 0
+    for source in sources:
+        tree.report(source.stem)
+    # Its report under a connector module's target does not count for it.
+    tree.report("AppITCase")
+    result = tree("--assert-ran")
+    assert result.returncode == 1
+    assert "p.AppITCase: NOT_RUN" in result.stderr
+    tree.report("AppITCase", module=module)
     result = tree("--assert-ran")
     assert result.returncode == 0, result.stderr
