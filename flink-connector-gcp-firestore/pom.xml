@@ -73,9 +73,24 @@ limitations under the License.
         <dependency>
             <!-- The Datastore-mode client. Its Batch is the Datastore sink's write path; FullEntity
                  and Key are what a DatastoreMutation carries, and so part of this module's public API
-                 surface. -->
+                 surface; Entity is what the Datastore source's deserializer takes. It also brings
+                 datastore-v1-proto-client, whose QuerySplitter the source's planner calls: the
+                 libraries BOM does not manage that artifact, so it is left to this dependency, which
+                 pins the version it was released with, rather than declared at a version kept by
+                 hand. -->
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-datastore</artifactId>
+        </dependency>
+        <dependency>
+            <!-- The HTTP transport and credentials adapter the splitter's client is built with,
+                 as the client library's own HTTP transport builds it. Versions managed by the
+                 libraries BOM. -->
+            <groupId>com.google.http-client</groupId>
+            <artifactId>google-http-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.auth</groupId>
+            <artifactId>google-auth-library-oauth2-http</artifactId>
         </dependency>
         <dependency>
             <!-- The Datastore protobuf messages: the Datastore sink's lookup builds its

@@ -210,6 +210,19 @@ class FirestoreSplitReaderTest {
     }
 
     @Test
+    void closingTheSplitReaderLeavesTheSharedPageReaderOpen() throws IOException {
+        ScriptedQueryPageReader pages = new ScriptedQueryPageReader(client, SEVEN);
+        FirestoreSplitReader reader = reader(pages, 3);
+        reader.handleSplitsChanges(
+                new SplitsAddition<>(List.of(split("0", client.collection("c")))));
+        reader.fetch();
+
+        reader.close();
+
+        assertThat(pages.closeCalls()).isZero();
+    }
+
+    @Test
     void readsQueuedSplitsOneAfterAnother() throws IOException {
         ScriptedQueryPageReader pages = new ScriptedQueryPageReader(client, SEVEN);
         FirestoreSplitReader reader = reader(pages, 10);

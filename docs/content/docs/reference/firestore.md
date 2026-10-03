@@ -22,7 +22,7 @@ limitations under the License.
 
 # Firestore options
 
-Every option the Firestore source and sink take, and the Datastore-mode sink's.
+Every option the Firestore source and sink take, and the Datastore-mode source's and sink's.
 What each one is *for* is on the [Firestore connector]({{< relref "docs/connectors/datastream/firestore" >}}) page; the three forms of the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
 The Native-mode sink has no backoff knobs.
@@ -100,6 +100,22 @@ It also refuses values that add up exactly to gax's own defaults, because the li
 | `maxInFlightWrites` | `250` | Caps the writes handed to the client library and not yet answered, **at most `500`**: past that many the library queues further writes without bound instead of sending them. The default leaves half the library's slots for failed writes, which hold theirs until the writer replaces its `BulkWriter` |
 | `maxInFlightBytes` | `64 MiB` | Caps their size in the request. This is the bound that actually bounds memory, since a document may be up to 1 MiB |
 | `maxConsecutiveRejections` | `100` | How many confirmed refusals in a row, with no write applied between them, fail the job after being routed. `-1` removes the bound. `ALREADY_EXISTS` for a create and a routed `FAILED_PRECONDITION` for a conditional write do not count. Matters only beside a dropping `failedWriteHandler` |
+
+## `DatastoreSource.builder()`
+
+| Option | Default | What it does |
+|---|---|---|
+| `database` | **required** | The database in Datastore mode to read, as the Datastore root's `DatabaseDestination.of(project)` for the default database or `DatabaseDestination.of(project, databaseId)` |
+| `deserializer` | **required** | Turns an `Entity` into zero or more records |
+| `kind` | **required**: exactly one of `kind`, `query` and `gqlQuery` | Reads every entity of this kind, cut into key ranges |
+| `query` | **required**: exactly one of `kind`, `query` and `gqlQuery` | A `com.google.datastore.v1.Query` to read, the Datastore API's protobuf rather than the client library's `Query`. A nearest-neighbour search is refused. Cut into key ranges when it names one kind and filters only with `EQUAL` and `HAS_ANCESTOR` under `AND`; any other query is one split. See [Reading in Datastore mode]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) |
+| `gqlQuery` | **required**: exactly one of `kind`, `query` and `gqlQuery` | A GQL query, with literals and without bindings, which the service parses when the read is planned and which is then read by the rules for `query` |
+| `namespace` | the default namespace | The namespace the kind or query reads. Blank is refused; leave it unset for the default namespace |
+| `splitCount` | estimated from the kind's statistics: one per 64 MiB, at least `12` and at least the source's parallelism, at most `50000` | How many key ranges to ask the client library's splitter for, from 1 to 50,000; an upper bound the sampling may answer below. Refused for a query that cannot be split. See [Key ranges and the split count]({{< relref "docs/connectors/datastream/firestore" >}}#key-ranges-and-the-split-count) |
+| `readTime` | the service's time when the read is planned | The snapshot time every split reads at, in the same window as the Native-mode source's `readTime` |
+| `pageSize` | `500` | Entities one `RunQuery` call asks for. A page is held in memory whole |
+| `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the JobManager when it creates or restores the enumerator and by each TaskManager reader. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) |
+| `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started with `--database-mode=datastore-mode`, which samples no keys for the splitter, so a read against it is never cut into more than one key range. The only way the source reaches an emulator; `DATASTORE_EMULATOR_HOST` never chooses the endpoint |
 
 ## `DatastoreSink.builder()`
 

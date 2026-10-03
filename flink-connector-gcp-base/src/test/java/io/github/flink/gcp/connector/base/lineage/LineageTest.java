@@ -50,7 +50,8 @@ class LineageTest {
                         LineageIdentifiers.spannerTable("p", "i", "d", null, "T", null, "T"),
                         LineageIdentifiers.spannerChangeStream("p", "i", "d", "Changes"),
                         LineageIdentifiers.cloudTasksQueue("p", "loc", "q"),
-                        LineageIdentifiers.firestoreCollectionGroup("p", "(default)", "orders"));
+                        LineageIdentifiers.firestoreCollectionGroup("p", "(default)", "orders"),
+                        LineageIdentifiers.datastoreKind("p", "(default)", "", "Task"));
         assertThat(resources)
                 .extracting(ResourceIdentifier::kind)
                 .containsExactly(
@@ -61,7 +62,8 @@ class LineageTest {
                         "spanner-table",
                         "spanner-change-stream",
                         "cloudtasks-queue",
-                        "firestore-collection-group");
+                        "firestore-collection-group",
+                        "datastore-kind");
         assertThat(resources)
                 .extracting(ResourceIdentifier::namespace)
                 .containsExactly(
@@ -72,7 +74,8 @@ class LineageTest {
                         "spanner://p:i",
                         "spanner://p:i",
                         "cloudtasks://p/loc",
-                        "firestore://p/(default)");
+                        "firestore://p/(default)",
+                        "datastore://p/(default)");
         assertThat(resources)
                 .extracting(ResourceIdentifier::name)
                 .containsExactly(
@@ -83,7 +86,8 @@ class LineageTest {
                         "d.T",
                         "d/changeStreams/Changes",
                         "q",
-                        "orders");
+                        "orders",
+                        "Task");
         assertThat(resources)
                 .extracting(ResourceIdentifier::identity)
                 .containsExactly(
@@ -108,7 +112,28 @@ class LineageTest {
                                 "database",
                                 "(default)",
                                 "collectionGroup",
-                                "orders"));
+                                "orders"),
+                        Map.of("project", "p", "database", "(default)", "kind", "Task"));
+    }
+
+    @Test
+    void placesADatastoreNamespaceInTheCanonicalNamespace() {
+        ResourceIdentifier namespaced =
+                LineageIdentifiers.datastoreKind("p", "db", "tenant-a", "a/b");
+        assertThat(namespaced.namespace()).isEqualTo("datastore://p/db/tenant-a");
+        assertThat(namespaced.name()).isEqualTo("a/b");
+        assertThat(namespaced.identity())
+                .containsExactly(
+                        entry("database", "db"),
+                        entry("kind", "a/b"),
+                        entry("namespace", "tenant-a"),
+                        entry("project", "p"));
+        // A kind containing '/' in the default namespace stays distinct from the namespaced one.
+        ResourceIdentifier slashedKind =
+                LineageIdentifiers.datastoreKind("p", "db", "", "tenant-a/a/b");
+        assertThat(slashedKind.namespace()).isEqualTo("datastore://p/db");
+        assertThat(slashedKind).isNotEqualTo(namespaced);
+        assertThat(slashedKind.identity()).doesNotContainKey("namespace");
     }
 
     @Test

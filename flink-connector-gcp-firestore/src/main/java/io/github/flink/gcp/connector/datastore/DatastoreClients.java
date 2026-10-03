@@ -41,10 +41,11 @@ import java.time.Duration;
  * reached over plaintext with no credentials: the library switches to a plaintext channel when the
  * credentials are {@link NoCredentials}, whatever the host.
  *
- * <p><b>The client makes exactly one attempt per call.</b> The library applies the client's retry
- * settings both around each call and to every generated call setting, so a single-attempt setting
- * turns off both layers, and the timeout given here bounds each call. Every caller in this
- * connector owns its retry loop.
+ * <p><b>The sink's client makes exactly one attempt per call.</b> The library applies the client's
+ * retry settings both around each call and to every generated call setting, so a single-attempt
+ * setting turns off both layers, and the timeout given here bounds each call; the sink owns its
+ * retry loop. The source's reads are idempotent at a fixed read time, so it passes no timeout and
+ * keeps the library's retry settings instead.
  */
 @Internal
 public final class DatastoreClients {
@@ -58,22 +59,25 @@ public final class DatastoreClients {
      * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
      * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
      *     ADC
-     * @param callTimeout the bound on each call the client makes
+     * @param callTimeout the bound on each call, which then makes exactly one attempt; or {@code
+     *     null} to keep the library's retry settings
      * @return the settings
      */
     public static DatastoreOptions settings(
             DatabaseDestination database,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride,
-            Duration callTimeout) {
+            @Nullable Duration callTimeout) {
         Preconditions.checkArgument(
                 emulatorEndpoint == null || credentialsOverride == null,
                 "credentialsOverride cannot be combined with an emulator endpoint");
         DatastoreOptions.Builder settings =
                 DatastoreOptions.newBuilder()
                         .setProjectId(database.getProject())
-                        .setDatabaseId(database.getDatabaseId())
-                        .setRetrySettings(singleAttempt(callTimeout));
+                        .setDatabaseId(database.getDatabaseId());
+        if (callTimeout != null) {
+            settings.setRetrySettings(singleAttempt(callTimeout));
+        }
         if (emulatorEndpoint != null) {
             settings.setHost(emulatorEndpoint.getTarget())
                     .setCredentials(NoCredentials.getInstance());

@@ -85,6 +85,20 @@ class DatastoreClientsTest {
     }
 
     @Test
+    void withoutATimeoutTheClientKeepsTheLibrarysRetries() {
+        // The source's reads are idempotent at a fixed read time, so it leaves retries to the
+        // library rather than owning a loop.
+        EmulatorEndpoint emulator = EmulatorEndpoint.parse("localhost:8081", "e");
+        RetrySettings retry =
+                DatastoreClients.settings(DATABASE, emulator, null, null).getRetrySettings();
+
+        assertThat(retry)
+                .isEqualTo(
+                        DatastoreOptions.newBuilder().setProjectId("p").build().getRetrySettings());
+        assertThat(retry.getMaxAttempts()).isGreaterThan(1);
+    }
+
+    @Test
     void credentialsCannotBeCombinedWithAnEmulator() {
         assertThatThrownBy(
                         () ->

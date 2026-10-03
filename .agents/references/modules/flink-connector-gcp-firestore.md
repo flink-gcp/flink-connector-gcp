@@ -120,6 +120,46 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and enforces no request size; `DatastoreRejectionITCase` pins each fact it asserts. The lookup
   discriminator and request size belong to the gated suite (#1546).
 
+## Datastore-mode source (`docs/adr/0177`)
+
+- **The input is a kind, a protobuf `com.google.datastore.v1.Query`, or a GQL string** (owner's
+  decision, 2026-10-03). Do not accept the high-level `EntityQuery`: its conversion to the wire
+  form is package-private or `@InternalApi`. A GQL query is parsed at planning with `LIMIT 0`
+  appended, falling back to running it as written on `INVALID_ARGUMENT`.
+- **`QuerySplitter` is called over the proto-client HTTP `Datastore`** (`SplitterClient`, built
+  through `HttpDatastoreRpc`'s factory; owner's decision, 2026-10-03), on the JobManager only while
+  planning. Readers use the gRPC `DatastoreRpc` of a client `DatastoreClients` builds with the
+  library's retry settings (`callTimeout` null; `LazyDatastoreClientTest` pins it).
+- **The splitter's ranges are rebuilt in the service's key order** (`KeyRanges`; owner's decision,
+  2026-10-03): its comparator orders names by UTF-16 code unit, the service by UTF-8 byte
+  (measured on the emulator), and misordered boundaries make ranges overlap. Do not hand the
+  splitter's output to readers directly. `datastore-v1-proto-client` is not managed by
+  libraries-bom; it arrives through `google-cloud-datastore`, never at a hand-kept version.
+- **`SplittableQueries` is the splittability rule, stricter than the splitter's**: one kind, no
+  order/limit/offset/cursor/`DISTINCT ON`, filters only `EQUAL` and `HAS_ANCESTOR` under `AND`,
+  none of no type. Anything else is one split. `SplittableQueriesTest` iterates every operator.
+  A nearest-neighbour search is refused outright (`whyNotReadable`): paging would change what it
+  finds.
+- **The estimated split count is Beam's (`entity_bytes`/64 MiB, 12..50,000) with the parallelism
+  as a further floor.** Statistics failures fail planning; absent statistics take the floor.
+- **Projected index values are read back** (`ProjectedValues`, owner's decision 2026-10-03):
+  meaning-18 integers become timestamps (microseconds), meaning-18 strings become blobs, as
+  `ProjectionEntity` does, and only for a query that projects; `ProjectionEntity` itself cannot be
+  built outside its package.
+- **`splitCount` is bounded at `MAX_SPLIT_COUNT` (50,000)**: the splitter checks no upper bound,
+  sizes a list from the count and holds 32 sampled keys per boundary.
+- **A page is one unary `RunQuery`**; the offset stays on the query and the service spends it
+  page by page. A checkpoint starts the query at the cursor after the last emitted entity, drops
+  the offset and reduces the limit. A batch that claims more without moving fails the read, and a
+  spent limit finishes the split whatever the batch says, so no page asks for zero entities.
+  Repeats a list-valued ordering or inequality produces across pages are the service's and are
+  passed on (documented, owner's decision); a keyless projection result fails the read.
+- The emulator samples no `__scatter__` keys and keeps no statistics; emulator tests cut ranges
+  through `FixedSplitsPlannerFactory` (an override of `ClientQueryPlanner.split`), and the planner's
+  RPC-level steps are unit-tested through `FakeDatastoreRpc`. `DatastoreEmulatorReadDeviationITCase`
+  pins each emulator fact the docs' deviation table states; with `DatastoreSourceEmulatorITCase`
+  it pins the emulator evidence ADR-0177 records.
+
 ## Testing
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image

@@ -31,7 +31,8 @@ Pub/Sub and Bigtable also test extraction against their builder-returned Source/
 Pub/Sub covers multiple subscriptions and ordering-key routing; Bigtable covers scans, bounded and unbounded Change Streams, and every Table write mode.
 Spanner implements the contract for the paths documented in its [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}) and [Table]({{< relref "docs/connectors/table/spanner" >}}) references.
 The [Cloud Tasks guide]({{< relref "docs/connectors/datastream/cloudtasks" >}}#lineage) describes its fixed-queue coverage for DataStream and Table/SQL; its connector tests exercise the builder-returned sink, listener delivery and planner facets.
-The [Firestore]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) collection-group scan reports its collection group; a Firestore source reading a query, and the Firestore sinks in both modes, report an empty dataset list, because the query factory or the serializer, not the configuration, names the collections or kinds.
+The [Firestore]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) collection-group scan reports its collection group, and a Datastore-mode source reports the kind its configuration names: a kind, or a query naming exactly one kind.
+A Native-mode source reading a query, a Datastore-mode source reading a GQL query or a query naming no kind or several, and the Firestore sinks in both modes report an empty dataset list, because the query factory, the service's parse or the serializer, not the configuration, names the collections or kinds.
 
 ## Metadata and resource identities
 
@@ -57,9 +58,10 @@ The constructors are internal integration plumbing, not a supported manual datas
 | Spanner Change Stream | `spanner://{project}:{instance}` | `{database}/changeStreams/{stream}` |
 | Cloud Tasks queue | `cloudtasks://{project}/{location}` | `{queue}` |
 | Firestore collection group | `firestore://{project}/{database}` | `{collectionGroup}` |
+| Datastore kind | `datastore://{project}/{database}`, then `/{namespace}` outside the default namespace | `{kind}` |
 
 BigQuery, Pub/Sub and Spanner table names follow [OpenLineage's naming convention](https://openlineage.io/docs/spec/naming/).
-The Bigtable, Cloud Tasks and Change Stream names are project conventions.
+The Bigtable, Cloud Tasks, Change Stream, Firestore and Datastore names are project conventions.
 A Spanner Change Stream identity names the stream, not the complete set of tables it watches.
 Bigtable Change Streams reports its configured data table.
 

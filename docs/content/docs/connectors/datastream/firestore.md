@@ -22,18 +22,18 @@ limitations under the License.
 
 # Firestore connector
 
-The connector reads and writes a Firestore database in Native mode, and writes one in Datastore mode.
+The connector reads and writes a Firestore database in Native mode or in Datastore mode.
 A bounded source reads a whole collection group or one query at a single snapshot time, and finishes.
 An at-least-once sink applies one document write per record, through the client library's `BulkWriter`, which batches writes into `BatchWrite` requests and throttles them to Firestore's ramp-up guidance.
-A second at-least-once sink applies one entity write per record to a database in Datastore mode, in non-transactional commits; [Datastore mode](#datastore-mode) covers it.
+A second bounded source and a second at-least-once sink read and write a database in Datastore mode; [Datastore mode](#datastore-mode) covers both.
 
 The connector has not been released yet ([#1547]({{< param BookRepo >}}/issues/1547) tracks the release that first publishes it).
-The Datastore-mode sink lives under its own package root, `io.github.flink.gcp.connector.datastore`, and reaches the database through the Datastore client library; a Datastore-mode source is not implemented yet ([#1543]({{< param BookRepo >}}/issues/1543)).
+The Datastore-mode source and sink live under their own package root, `io.github.flink.gcp.connector.datastore`, and reach the database through the Datastore client library.
 Every option is listed on the [Firestore options]({{< relref "docs/reference/firestore" >}}) page.
 
 ## Credentials
 
-The source and both sinks use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
+Both sources and both sinks use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
 Set the key file only when the job must select a service-account JSON key that the runtime environment cannot supply through ADC.
 
 {{< java-snippet file="FirestoreConnectorCredentials.java" tag="firestore-connector-credentials" >}}
@@ -46,22 +46,24 @@ A loading failure is sanitized, so neither the path nor the key's contents enter
 The client library also reads the `FIRESTORE_EMULATOR_HOST` environment variable on its own whenever no emulator endpoint is set, and then sends every request to that host over plaintext, with the emulator's placeholder token in place of the job's credentials.
 The connector cannot switch that lookup off.
 A writer or a source that starts in an environment carrying the variable, with no `emulatorEndpoint(...)` configured, logs a warning naming the variable and its value.
-The Datastore-mode sink is not exposed to the same lookup: it always gives its client a host, the service's own or the emulator's, and the Datastore client library takes its endpoint from `DATASTORE_EMULATOR_HOST` only when none is given.
+The Datastore-mode source and sink are not exposed to the same lookup: they always give their clients a host, the service's own or the emulator's, and the Datastore client library takes its endpoint from `DATASTORE_EMULATOR_HOST` only when none is given.
 
-The identity the job runs as needs permission to read documents for the source, and to create, update and delete them for the sinks; [`roles/datastore.user`](https://cloud.google.com/firestore/docs/security/iam) carries all four, in either mode (the Datastore-mode sink also reads, through the lookup it makes before routing an update's `NOT_FOUND`), and `roles/datastore.viewer` is enough for a job that only reads.
+The identity the job runs as needs permission to read documents for the sources, and to create, update and delete them for the sinks; [`roles/datastore.user`](https://cloud.google.com/firestore/docs/security/iam) carries all four, in either mode (the Datastore-mode sink also reads, through the lookup it makes before routing an update's `NOT_FOUND`), and `roles/datastore.viewer` is enough for a job that only reads.
 Nothing creates anything else: collections and kinds need no creating, and the database must exist.
 
 ## Lineage
 
-The source and both sinks implement Flink's `LineageVertexProvider`, and extraction opens no client.
+Both sources and both sinks implement Flink's `LineageVertexProvider`, and extraction opens no client.
 A collection-group scan reports the group, with namespace `firestore://{project}/{database}`, the group id as its name, and a `gcp` physical-resource facet.
-A source that reads a query reports an empty dataset list, and so do both sinks: a database does not establish which collections or kinds a query factory or a serializer will address, and extraction calls neither.
+A Datastore-mode source whose kind is known when the job is built (a `kind(...)`, or a `query(...)` naming exactly one kind) reports the kind as its name, with namespace `datastore://{project}/{database}`, followed by `/{namespace}` outside the default namespace; the namespace belongs there rather than in the name because a kind may contain `/` and a namespace may not.
+A Native-mode source that reads a query reports an empty dataset list, and so do a Datastore-mode GQL query, which the service parses only when the read is planned, a Datastore-mode query naming no kind or several, and both sinks: a database does not establish which collections or kinds a query factory or a serializer will address, and extraction calls neither.
 Flink 2.x extracts lineage automatically; Flink 1.20 supports direct inspection but not native listener delivery.
 
 ## Source
 
-The source is bounded: it reads a snapshot of the database and finishes.
+The Native-mode source is bounded: it reads a snapshot of the database and finishes.
 Bounded is not batch-only; the source runs inside a streaming job too, and ends there.
+The Datastore-mode source is described under [Reading in Datastore mode](#reading-in-datastore-mode).
 It reads one of two things, set on the builder as `collectionGroup(...)` or `query(...)`.
 
 A **collection-group scan** reads every document of every collection with one id, at any depth of the database.
@@ -125,7 +127,7 @@ A deserializer that throws fails the job, and the document is read again after t
 
 ### Source metrics
 
-Registered on the source reader's and the split enumerator's metric groups.
+Registered on the Native-mode source reader's and split enumerator's metric groups.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -139,7 +141,6 @@ Registered on the source reader's and the split enumerator's metric groups.
 ### Not here yet
 
 There is no unbounded source; [Change data capture](#change-data-capture) explains why.
-Reading a Datastore-mode database is a source of its own, not implemented yet ([#1543]({{< param BookRepo >}}/issues/1543)).
 
 ## Sink
 
@@ -357,8 +358,8 @@ There are no per-destination counters, because the sink writes any number of col
 ## Datastore mode
 
 A database in Datastore mode answers the Datastore API (`datastore.v1`) rather than the Firestore one, and refuses Firestore API writes.
-The module writes it through a sink of its own, `DatastoreSink`, which shares nothing with the Native-mode sink beyond the credentials and emulator conventions above.
-It reaches the database through the Datastore client library, whose entity and key types it carries.
+The module reads it through a source of its own, `DatastoreSource`, and writes it through a sink of its own, `DatastoreSink`, which share nothing with the Native-mode source and sink beyond the credentials and emulator conventions above.
+Both reach the database through the Datastore client library: the sink carries its entity and key types, and the source hands its `Entity` to the deserializer while taking a query in the API's own protobuf form.
 
 ### Keys address the entity
 
@@ -484,13 +485,107 @@ Registered on the Datastore sink writer's metric group.
 
 `errorClass` counts the transient failures the writer recovered from, because the writer sees its own retries; on the Native-mode sink the client library absorbs those.
 
+### Reading in Datastore mode
+
+The Datastore source is bounded, as the Native-mode source is, and reads one of three things, set on the builder as `kind(...)`, `query(...)` or `gqlQuery(...)`, in the namespace `namespace(...)` names (the default namespace when unset).
+A **kind** reads every entity of one kind, cut into key ranges read in parallel.
+
+{{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source" >}}
+
+A **query** is the Datastore API's protobuf `com.google.datastore.v1.Query`, the form the service and the client library's query splitter take; the client library's own `com.google.cloud.datastore.Query` is not accepted, because its conversion to this form is not public API.
+The `DatastoreHelper` class the example uses to build a filter comes from `com.google.datastore.v1.client`, in the `datastore-v1-proto-client` library that the Datastore client library brings.
+The source cuts a query into key ranges only when it names exactly one kind and filters only with equality (`EQUAL`) and ancestor (`HAS_ANCESTOR`) filters, combined with `AND`, because each range is the query with `__key__ >= start AND __key__ < end` added to it.
+A query with an ordering, a `limit`, an `offset`, a cursor, a `DISTINCT ON`, an `OR`, or a filter with another operator or of no type, or one naming no kind or several, is read as one split, by one subtask, which the JobManager logs with the reason.
+The splitter itself refuses only an ordering, the `<`, `<=`, `>` and `>=` filters, a filter of no type, and a query not naming one kind; the source refuses the rest too, because `limit`, `offset` and cursors are positions in the whole result rather than in a key range, `!=` and `NOT_IN` are inequalities that a second inequality on `__key__` would meet, and `IN` and `OR` are disjunctions the key range would have to distribute over.
+Projections are read as the query states them.
+A nearest-neighbour search (`find_nearest`) is refused when the source is built: the service applies a query's cursor and limit before the search, so the page limit and the resume cursor every read sets would change which entities it finds.
+
+{{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-query" >}}
+
+A query that needs an index the database does not have fails the job when the read is planned, because the planner reads one entity of it first, and the error then carries the service's answer.
+A key range adds a `__key__` inequality to the query, which for a projection may need an index the whole query does not; that is not measured yet ([#1546]({{< param BookRepo >}}/issues/1546)), and a projection that fails that way can be read as one split by giving it `splitCount(1)`.
+
+A **GQL query** is parsed by the service when the read is planned, and the source then reads the query it was parsed into, by the same rules.
+Literals are allowed and bindings are not.
+To parse it without reading an entity, the source asks for the query with `LIMIT 0` appended; a GQL query that already ends in a `LIMIT` or an `OFFSET` clause cannot take another, so the source parses it by running it as written, which reads and bills its first batch of entities once more.
+A GQL query the service refuses fails the job when the read is planned, with the query's text in the message, and so does one that parses into a nearest-neighbour search.
+
+{{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-gql" >}}
+
+The snapshot works as the [Native-mode one](#one-snapshot-for-the-whole-read) does: every split reads at one read time, the service's own unless `readTime(...)` sets it, inside the same one-hour or seven-day window, and a job that restarts before its first completed checkpoint plans again, at a new read time unless `readTime(...)` is set.
+The planner takes the read time from a one-entity probe of the query, which also fails the job at planning when a configured read time lies outside the window.
+
+### Key ranges and the split count
+
+A kind, or a query that can be split, is cut by the client library's `QuerySplitter`, which samples the kind's keys through the `__scatter__` property, 32 for each boundary, and picks the range boundaries among them.
+The splitter sorts what it samples by comparing kind names and key names as Java strings, while the service sorts them by their UTF-8 bytes, and the two orders differ for a name holding a character above U+FFFF beside one holding a character from U+E000 to U+FFFF.
+The source therefore lays the splitter's ranges out again in the service's order, so that they still cover each key once.
+
+`splitCount(...)` sets how many ranges to ask for, at most 50,000; it is an upper bound, because a small kind yields fewer sampled keys.
+The subtasks left without a range finish immediately, and the JobManager logs a warning; a `splitCount(...)` below the parallelism has the same effect, and so does the emulator, which samples no keys.
+Unset, the count is estimated from the database's statistics: the kind's `entity_bytes` in the latest `__Stat_Kind__` entry (`__Stat_Ns_Kind__` in a namespace), one split per 64 MiB, at least 12, at least the source's parallelism, and at most 50,000.
+The estimate is the whole kind's size, whatever the query's filter, so an equality query that matches a few entities of a large kind still asks for as many ranges as the kind would; set `splitCount(...)` for such a query.
+The service computes statistics periodically rather than as entities are written, so a new kind has none, and the estimate then asks for the lower bound and logs that it found none.
+A failure to read the statistics fails the job when the read is planned, with a message naming `splitCount(...)` as the way to skip the estimate.
+The 12, the 64 MiB and the 50,000 are Apache Beam's `DatastoreIO` defaults; the parallelism as a further floor is this source's, so that a job of high parallelism over a kind without statistics still gives each subtask a range to read.
+At 50,000 ranges the splitter samples and holds about 1.6 million keys on the JobManager while it plans.
+A `splitCount(...)` on a query that cannot be split is refused when the source is built, or, for a GQL query, when the read is planned.
+
+The splitter samples the keys at the current time, not at the read time: its read-time variant is a beta API, and the ranges cover the whole key space between them, so an entity of the snapshot falls in exactly one range however the kind has changed since.
+The splitter runs over its own HTTP client, the one the `datastore-v1-proto-client` library takes, built on the JobManager only while the read is planned, with the source's credentials or the emulator endpoint.
+The readers use a gRPC client built as the sink's is, except that it keeps the client library's retries where the sink's makes one attempt per call.
+
+### Pages and recovery in Datastore mode
+
+A reader fetches a split in pages of `pageSize` entities (500 by default), one `RunQuery` call each, at the split's read time.
+The service may answer a call with fewer entities than the page asked for and say more remain, and the next page then starts at the cursor the answer ended at.
+A page is held in memory whole before any of its entities is handed on, so `pageSize` times the largest entity bounds what one fetch holds.
+An `offset` the service had not finished skipping in one page is carried, reduced, into the next.
+
+The client library retries a call that fails with `UNAVAILABLE` or `DEADLINE_EXCEEDED`, on its default schedule of up to six attempts within 50 seconds; a retried call is the same request at the same read time, so it reads the same entities.
+Any other failure, or a call still failing at the end of that schedule, fails the job, which restarts from its last checkpoint under Flink's restart strategy.
+No metric or log line counts these retries; a page that is being retried shows only as a lower `entitiesRead` rate.
+The call does not answer a thread interrupt: a reader that closes while a call runs waits for its fetcher up to Flink's `source.reader.close.timeout` (30 seconds by default), and a call still running after that fails against the closed client.
+
+The service sets a cursor on every entity it returns, and a checkpoint records, for each split being read, the query started at the cursor after the last entity the job has passed, its `limit` reduced by the entities passed, and its `offset` dropped, because the service returns an entity only once the whole offset is skipped.
+A restore resumes there, without reading an entity twice and without skipping one, with one exception the service documents: a query that orders by, or filters with an inequality on, a property holding a list of values removes the duplicates such a property produces only within one request, so across pages, and across a restore, it can return an entity again, and each repeat counts toward the query's `limit`.
+The source passes such repeats on as the service returns them.
+A job that must not see one either avoids ordering and inequality filters on list properties, or removes repeats downstream in checkpointed state, for example by keying the stream by the entity key and keeping a flag per key; a set kept in the deserializer does not survive a restore, because the deserializer's fields are not checkpointed.
+Continuing needs no knowledge of the query, because the cursor is the service's; the emulator tests restore a kind scan across a failure, and continue queries with an ordering, a filter, an `offset`, a `limit` and an end cursor across pages.
+The reasoning and the declined alternatives are in [ADR-0177]({{< param BookRepo >}}/blob/main/docs/adr/0177-the-datastore-source-reads-key-ranges-the-client-librarys-splitter-cuts.md).
+
+### Deserializing entities
+
+A `DatastoreEntityDeserializationSchema` turns each entity into zero or more records.
+It receives the client library's `Entity`, whose key names it, namespace included, and which holds only the projected properties when the query projects some.
+A projection returns a timestamp as an integer of microseconds and a blob as a string, both marked as index values (measured against the emulator, 2026-10-03).
+The API also allows a projection result without a key, which an `Entity` cannot hold; the source fails the job on one with a message saying so (none has been observed against the emulator, and the service is measured in [#1546]({{< param BookRepo >}}/issues/1546)).
+For a query that projects, the reader replaces those two with the timestamp and the blob they stand for before the deserializer sees the entity, by the rules the client library's own projection results read them back with, so `getTimestamp` and `getBlob` answer on a projected property as on a whole entity; `getLong` and `getString` no longer answer on them.
+
+{{< java-snippet file="DatastoreConnectorSourceDeserializer.java" tag="datastore-connector-source-deserializer" >}}
+
+An entity that produces no record is skipped, counted in `recordsSkipped`, and still passed; a deserializer that throws fails the job, and the entity is read again after the restore.
+
+### Datastore source metrics
+
+Registered on the Datastore source reader's and split enumerator's metric groups.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsIn` | counter (Flink standard) | Entities handed to the deserializer, one per entity whatever it produced, counted before it runs |
+| `entitiesRead` | counter | Entities the reader handed on from its pages, counted when a page arrives |
+| `recordsSkipped` | counter | Entities the deserializer produced no record for |
+| `splitsAssigned` | counter | Splits the enumerator handed to a reader |
+| `splitsReturned` | counter | Splits a failed reader gave back to the enumerator |
+| `readsPlanned` | counter | Planning calls that completed: one on a fresh run, zero on one restored from a checkpoint that recorded the plan |
+
 ## Testing
 
 Functional coverage runs against the Firestore emulator, the `gcloud emulators firestore` binary in the same `google-cloud-cli` image the Bigtable and Pub/Sub tests use, through testcontainers.
 The sink tests drive the production writer-creation path, so the client and `BulkWriter` are the real ones, and a MiniCluster job covers checkpoint-driven and end-of-input flushes.
 The source tests read through the production planner and page reader, and a MiniCluster job that fails once after a checkpoint shows a restored split resuming after its last document.
 The endpoint reaches the client through the builder, never through `FIRESTORE_EMULATOR_HOST`.
-The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and a MiniCluster job; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
+The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and MiniCluster jobs, the source's failing once after a checkpoint as the Native-mode one does; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
 
 ### Emulator deviations
 
@@ -506,7 +601,10 @@ Where the two disagree, the service decides.
 | `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)). A scan against the emulator needs a partition count of one |
 | Any Datastore-mode database id is served | A database that was never created answered a lookup and an update alike, so the lookup that tells a missing entity from a missing database before a `NOT_FOUND` is routed is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | Datastore-mode request size is not enforced | A commit of about 10.5 MiB was applied, so `maxBatchBytes` is untested against a real refusal until the gated suite covers it |
-| Old read times are answered | A read time two hours old was answered, where the service keeps versions for one hour without point-in-time recovery. The read-time window is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| Old read times are answered | A read time two hours old was answered, in both modes, where the service keeps versions for one hour without point-in-time recovery. The read-time window is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| `__scatter__` sampling finds no keys | The splitter's sampling query answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| No statistics | `__Stat_Total__` and `__Stat_Kind__` are empty, and so are a namespace's `__Stat_Ns_Total__` and `__Stat_Ns_Kind__`, so the split-count estimate always takes its lower bound against the emulator. Unit tests cover the estimate from statistics shaped as the service documents them; the estimate from real statistics belongs to the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch that returned entities does carry its end cursor |
 
 ## Scope and provenance
 
