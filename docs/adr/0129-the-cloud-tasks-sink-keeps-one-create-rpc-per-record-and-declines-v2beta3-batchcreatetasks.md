@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0129: The Cloud Tasks sink keeps one create RPC per record and declines v2beta3 BatchCreateTasks
+# ADR-0129: The Cloud Tasks sink keeps one create RPC per record and declines BatchCreateTasks
 
 - Status: Accepted
-- Date: 2026-08-22 ([#937])
-- Issues: [#937], [#1015]
+- Date: 2026-08-22 ([#937]); revised by [#1590] (2026-10-03)
+- Issues: [#937], [#1015], [#1590]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md` § Queues, rate limits
   and sink concurrency
@@ -52,10 +52,10 @@ grounds, any one of which would have sufficed:
 
 - **No latency win.** The initial `BatchCreateTasks` RPC always returned the operation already
   `done=true` (63/63 trials), so the generated 5 s first-poll floor never applies — but only
-  because the RPC itself blocks until the batch has executed. A 100-task batch completed in
-  p50 1.07 s / p95 2.9 s against p50 0.97 s / p95 1.4 s for 100 concurrent single creates: the
-  batch is no faster at the median and ~2× worse at the tail, with polling configuration
-  changing nothing.
+  because the RPC itself blocks until the batch has executed. On v2beta3 a 100-task batch
+  completed in p50 1.07 s / p95 2.9 s against p50 0.97 s / p95 1.4 s for 100 concurrent single
+  creates: no faster at the median and ~2× worse at the tail, with polling configuration
+  changing nothing. On v2 the median tied and the tail penalty was gone (see the refinement).
 - **The throughput win belongs to the transport, not the method.** At an equal 1,000-task
   in-flight budget, batches sustained 995 tasks/s against 210 tasks/s for singles — but the
   singles number was the default single gRPC channel's ~100-concurrent-stream ceiling, not the
@@ -68,17 +68,52 @@ grounds, any one of which would have sufficed:
   (`PARTIALLY_SUCCEEDED`, response carries the created tasks, `failed_requests` names every
   failed index), but an all-failed batch resolves as a gax `UnknownException` ("succeeded, but
   encountered a problem unpacking it"), and a batch containing already-existing named tasks
-  (measured with 50 duplicates among 100) **is rejected wholesale with a single top-level
-  `ALREADY_EXISTS`** — no operation, no metadata, no per-index report — while `GetTask` probes
-  confirmed its non-duplicate half was silently created anyway. The sink's dedup contract
-  (`ALREADY_EXISTS` on a named task is success, ADR-0048/0049) would turn a re-delivery into an
-  unobservable partial write that only a per-record `GetTask` sweep could reconcile.
+  (measured with 50 duplicates among 100, and on v2 also with a single one) **is rejected
+  wholesale with a single top-level `ALREADY_EXISTS`** — no operation, no metadata, no per-index
+  report — while `GetTask` probes confirmed its non-duplicate tasks were silently created
+  anyway. The sink's dedup contract (`ALREADY_EXISTS` on a named task is success,
+  ADR-0048/0049) would turn a re-delivery into an unobservable partial write that only a
+  per-record `GetTask` sweep could reconcile.
 
 Costs that would have ridden along even with favorable numbers, recorded as supporting rather
-than deciding: a beta API surface under a `@Public` sink ([ADR-0124]'s japicmp gate), the
-non-wire-compatible proto translation, and the loss of all emulator coverage — the
-`aertje/cloud-tasks-emulator` image the ITCases run implements v2 only, so a batch path would be
-testable only against hand-written fakes and billed gated suites.
+than deciding: on v2beta3, a beta API surface under a `@Public` sink ([ADR-0124]'s japicmp gate)
+and the non-wire-compatible proto translation, neither of which applies to the v2 method; and on
+either surface, the loss of all emulator coverage. The `aertje/cloud-tasks-emulator` image the
+ITCases run (2.0.1, upstream's latest tag) answers v2 `CreateTask` but rejects v2
+`BatchCreateTasks` with `UNIMPLEMENTED`, so a batch path would be testable only against
+hand-written fakes and billed gated suites.
+
+## Refinement (2026-10-03): re-measured on the GA v2 surface
+
+`google-cloud-tasks` 2.99.0, adopted through `libraries-bom` 26.90.0 ([#1555]), added
+`BatchCreateTasks` to the v2 `CloudTasksClient` without `@BetaApi`, with the v2beta3 shape: an
+operation whose per-index failures live only on the metadata's `failed_requests`, and the same
+generated polling defaults. [#1590] re-ran the three deciding measurements on v2 on 2026-10-03,
+against a paused throwaway queue, with predictions and thresholds registered on the issue first.
+As on [#937], each arm ran once and the arms ran in sequence, so the figures carry run-to-run
+service variation; the single-channel singles arm alone moved from 210 to 346 tasks/s between
+the two runs. Each ground held under its registered threshold, the latency one in a weaker form:
+
+- **Latency.** The initial RPC returned the operation already `done=true` on all 63 trials of the
+  smoke and latency arms. A 100-task batch completed in p50 985 ms against 881 ms for 100
+  concurrent single creates, but that gap comes from the singles arm's last ten trials running
+  faster: over each arm's first 20 trials the batch took 985 ms (default polling) and 944 ms
+  (tuned polling) against 949 ms for singles. The batch is no faster, a tie rather than a
+  penalty, and the ~2× tail penalty did not reproduce (p95 1,100 ms against 1,073 ms).
+- **Throughput.** At the same 1,000-task in-flight budget, singles sustained 346 tasks/s on the
+  default single channel and 1,399 tasks/s on an 8-channel pool, the shape [ADR-0134]'s
+  `channelPoolSize` offers; batches sustained 1,220 tasks/s on one channel or eight. The batch
+  figure is the budget divided by one batch's latency (ten concurrent operations of about
+  0.82 s), so a pool cannot lift it. [#937]'s ordering holds: batching beats only the default
+  single channel, and a channel pool beats batching. The batch throughput arms polled at 250 ms,
+  which can only favor them.
+- **Failure surface.** A mixed batch reports every failed index; an all-failed batch still throws
+  gax `UnknownException` ("problem unpacking it"). A batch containing already-existing named tasks
+  is still rejected with one top-level `ALREADY_EXISTS`, without metadata, while every new task in
+  it is created: `GetTask` found 50 of 50 with 50 duplicates among 100, and 99 of 99 with **a
+  single duplicate among 100**, the case [#937] left unmeasured. One re-delivered record is enough
+  to make a batch report failure for writes that landed. In both batches the duplicates came
+  first; a trailing duplicate was not measured separately.
 
 ## Alternatives declined
 
@@ -92,22 +127,18 @@ and a `failed_requests` demultiplexer feeding the existing park/retry loop.
 - The sink's writer is unchanged; ADR-0048's one-RPC-per-record conclusion stands on these
   measurements rather than on the method's absence.
 - **The verdict is bound to what was measured**: `google-cloud-tasks` 2.95.0 and the service's
-  behavior on 2026-08-22. The deciding facts sit on both sides of the wire and each can move
-  independently — the wholesale `ALREADY_EXISTS` rejection and the batch's execution latency are
-  service behavior that can change under an unchanged client, while the gax "problem unpacking
-  it" surface and the polling defaults are client code a release can rewrite. Only the
+  behavior on 2026-08-22, and again `google-cloud-tasks` 2.99.0 on the v2 surface and the
+  service's behavior on 2026-10-03. The deciding facts sit on both sides of the wire and each can
+  move independently — the wholesale `ALREADY_EXISTS` rejection and the batch's execution latency
+  are service behavior that can change under an unchanged client, while the gax "problem
+  unpacking it" surface and the polling defaults are client code a release can rewrite. Only the
   metadata-side failure reporting is structural to the API's shape.
-- Re-evaluate when a batch create reaches the v2 surface, `ALREADY_EXISTS` in a batch becomes a
-  per-index report, or a `google-cloud-tasks` release notes batch-create changes. The
+- Re-evaluate when `ALREADY_EXISTS` in a batch becomes a per-index report, a transactional create
+  reaches the v2 surface, or a `google-cloud-tasks` release notes batch-create changes. The
   `libraries-bom` bump that moves this client is where the re-check happens — the same event
   ([#903]) that surfaced the method and falsified ADR-0048's absence claim — not a runtime
   guard. A throughput motive alone is answered by [#1015] instead, where the measured transport
   ceiling (a single channel's ~100 concurrent streams) is routed.
-- The first trigger fired on 2026-10-03: `google-cloud-tasks` 2.99.0, adopted through
-  `libraries-bom` 26.90.0 ([#1555]), has `BatchCreateTasks` on the v2 `CloudTasksClient`, not
-  `@BetaApi`. That removes the beta surface and the v2-to-v2beta3 request translation from the
-  costs above, but not the three measured grounds; [#1590] re-measures them on v2, and this
-  decision stands until it concludes.
 
 [#903]: https://github.com/flink-gcp/flink-connector-gcp/issues/903
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
@@ -115,3 +146,4 @@ and a `failed_requests` demultiplexer feeding the existing park/retry loop.
 [#1555]: https://github.com/flink-gcp/flink-connector-gcp/issues/1555
 [#1590]: https://github.com/flink-gcp/flink-connector-gcp/issues/1590
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md
+[ADR-0134]: 0134-the-cloud-tasks-channel-pool-is-an-explicit-knob-defaulting-to-the-clients-single-channel.md

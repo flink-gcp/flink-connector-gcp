@@ -326,16 +326,16 @@ The sink options do not change how quickly Cloud Tasks delivers requests or retr
 handler invocation.
 
 **This sink does not use a batch create, and creation costs one RPC per record.** `BufferTask` is a
-GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does: a
-long-running, explicitly non-atomic call of at most 100 tasks. It was evaluated on its **v2beta3**
-surface against a real queue and declined in
-[#937]({{< param BookRepo >}}/issues/937)
+GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does, on the GA v2
+client: a long-running, non-atomic call of at most 100 tasks. It was measured against a real
+queue and declined
 ([ADR-0129]({{< param BookRepo >}}/blob/main/docs/adr/0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md)
-holds the measurements): batching was no faster than the sink's existing concurrent creates, and
-a batch containing already-existing named tasks is rejected wholesale with a single
-`ALREADY_EXISTS` — no per-task report, its non-duplicate half still silently created — which no
-sink reporting per-task outcomes can reconcile. The Java client now also offers the method on
-v2; re-evaluating it is tracked in [#1590]({{< param BookRepo >}}/issues/1590). The Java client also
+holds the measurements, including an earlier v2beta3 round). A batch was no faster than 100
+concurrent creates, and its throughput beat only the default single gRPC channel: with a channel
+pool (`channelPoolSize`, below), concurrent creates outran it. A batch containing
+already-existing named tasks, even a single one, is rejected wholesale with one
+`ALREADY_EXISTS` — no per-task report, every other task in it still silently created — which no
+sink reporting per-task outcomes can reconcile. The Java client also
 configures no method with gax batching — there is no `BatchingSettings` in `CloudTasksSettings` or
 `CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
 are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.
@@ -349,7 +349,10 @@ Create throughput is then bounded by sink parallelism × min(the in-flight cap, 
 × ~100) concurrent creates, against a per-RPC latency that naming increases. The transport term is
 the one the [#937]({{< param BookRepo >}}/issues/937) measurement surfaced: a single gRPC channel
 carries ~100 concurrent streams, so once the cap sits at or above ~100, a subtask at the default
-single channel tops out around ~210 creates/s however much higher the cap is raised. [#1015]({{< param BookRepo >}}/issues/1015) routed that ceiling
+single channel stops gaining throughput however much higher the cap is raised. That ceiling is
+about 100 creates divided by the per-RPC latency, so it moves with the service: it measured
+~210 creates/s in [#937]({{< param BookRepo >}}/issues/937) and ~346 creates/s in
+[#1590]({{< param BookRepo >}}/issues/1590). [#1015]({{< param BookRepo >}}/issues/1015) routed that ceiling
 into the `channelPoolSize` knob under [Tuning](#tuning), whose default keeps the single channel.
 
 What the sink does **not** provide is pacing. Two numbers bound the queue instead:
