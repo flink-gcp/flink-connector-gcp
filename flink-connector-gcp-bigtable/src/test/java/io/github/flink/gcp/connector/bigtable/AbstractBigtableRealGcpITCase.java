@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
+import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.NotFoundException;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
@@ -28,9 +29,12 @@ import com.google.cloud.bigtable.admin.v2.models.StorageType;
 import com.google.cloud.bigtable.admin.v2.models.Table;
 import com.google.cloud.bigtable.admin.v2.models.UpdateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
+import com.google.cloud.bigtable.data.v2.models.Mutation;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.cloud.bigtable.data.v2.models.ReadChangeStreamQuery;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
@@ -117,6 +121,31 @@ public abstract class AbstractBigtableRealGcpITCase {
 
     /** An instance older than this belongs to a run that crashed; see the class javadoc. */
     private static final Duration STALE_AFTER = Duration.ofHours(2);
+
+    /** How long a new change stream may refuse a fresh start; well inside the class timeout. */
+    private static final Duration CHANGE_STREAM_START_TIMEOUT = Duration.ofMinutes(2);
+
+    /** The pause between change-stream start probes. */
+    private static final Duration CHANGE_STREAM_START_RETRY = Duration.ofSeconds(1);
+
+    /**
+     * Bounds each probe RPC, retries included, by the probe's own timeout. The client's default
+     * ReadChangeStream settings allow five-minute attempts within twelve hours, longer than the
+     * class timeout, so without this a probe that never closes would end as a generic timeout
+     * rather than as the RPC's own status. A retry the server directs through {@code RetryInfo} is
+     * not clipped to what is left of the total and can get a full attempt timeout, so one RPC can
+     * run for two budgets. The bound is per RPC, not for the whole probe.
+     */
+    private static final RetrySettings PROBE_RPC_RETRY =
+            RetrySettings.newBuilder()
+                    .setInitialRetryDelayDuration(Duration.ofMillis(10))
+                    .setRetryDelayMultiplier(2.0)
+                    .setMaxRetryDelayDuration(CHANGE_STREAM_START_RETRY)
+                    .setInitialRpcTimeoutDuration(CHANGE_STREAM_START_TIMEOUT)
+                    .setRpcTimeoutMultiplier(1.0)
+                    .setMaxRpcTimeoutDuration(CHANGE_STREAM_START_TIMEOUT)
+                    .setTotalTimeoutDuration(CHANGE_STREAM_START_TIMEOUT)
+                    .build();
 
     private static String instanceId;
     private static BigtableInstanceAdminClient instanceAdmin;
@@ -274,6 +303,101 @@ public abstract class AbstractBigtableRealGcpITCase {
         }
         tableAdmin.createTable(request);
         return TableDestination.of(PROJECT, instanceId, tableId);
+    }
+
+    /**
+     * Writes a server-stamped marker cell and returns its timestamp.
+     *
+     * <p>The timestamp-free SDK overload stamps client time. Explicit {@code -1} asks Bigtable for
+     * server time; repeated marker versions are harmless on this unrelated cell.
+     */
+    protected static Instant writeServerTimeMarker(TableDestination table, String rowKey) {
+        dataClient.mutateRow(
+                RowMutation.create(
+                        TableId.of(table.getTable()),
+                        rowKey,
+                        Mutation.createUnsafe().setCell(FAMILY, "marker", -1L, "time")));
+        Row marker = dataClient.readRow(TableId.of(table.getTable()), rowKey);
+        if (marker == null) {
+            throw new IllegalStateException("Marker row " + rowKey + " was not read back");
+        }
+        long micros = marker.getCells(FAMILY, "marker").get(0).getTimestamp();
+        return Instant.ofEpochSecond(
+                Math.floorDiv(micros, 1_000_000L), Math.floorMod(micros, 1_000_000L) * 1_000L);
+    }
+
+    /**
+     * Returns a server-time start position from which the table's change stream is readable.
+     *
+     * <p>A start must be after the change stream's creation. A read from a marker written right
+     * after {@code createTable} returned was refused with {@code NOT_FOUND}, in one test about 30
+     * seconds after the table was created (#1613), so this does not assume the start is readable;
+     * it proves it. Each attempt writes a fresh marker, truncates its timestamp to the millisecond
+     * a {@code scan.startup.timestamp-millis} option carries, and reads every initial partition
+     * from it through the given application profile. A {@code NOT_FOUND} retries with a later
+     * marker, since a fixed start that precedes the change stream never becomes readable.
+     */
+    protected static Instant awaitReadableChangeStreamStart(
+            TableDestination table, String appProfileId, String markerRowKey) throws Exception {
+        long startNanos = System.nanoTime();
+        long deadline = startNanos + CHANGE_STREAM_START_TIMEOUT.toNanos();
+        BigtableDataSettings.Builder settings =
+                BigtableDataSettings.newBuilder()
+                        .setProjectId(PROJECT)
+                        .setInstanceId(table.getInstance())
+                        .setAppProfileId(appProfileId);
+        settings.stubSettings()
+                .generateInitialChangeStreamPartitionsSettings()
+                .setRetrySettings(PROBE_RPC_RETRY);
+        settings.stubSettings().readChangeStreamSettings().setRetrySettings(PROBE_RPC_RETRY);
+        try (BigtableDataClient profileClient = BigtableDataClient.create(settings.build())) {
+            for (int attempt = 1; ; attempt++) {
+                Instant start =
+                        Instant.ofEpochMilli(
+                                writeServerTimeMarker(table, markerRowKey).toEpochMilli());
+                try {
+                    // The partition stream is drained before any read, so a NOT_FOUND below
+                    // cannot abandon it half consumed.
+                    List<ByteStringRange> partitions = new ArrayList<>();
+                    profileClient
+                            .generateInitialChangeStreamPartitions(table.getTable())
+                            .forEach(partitions::add);
+                    for (ByteStringRange partition : partitions) {
+                        profileClient
+                                .readChangeStream(
+                                        ReadChangeStreamQuery.create(table.getTable())
+                                                .streamPartition(partition)
+                                                .startTime(start)
+                                                .endTime(start.plusMillis(1)))
+                                .forEach(record -> {});
+                    }
+                    LOG.info(
+                            "Change stream of {} readable from {} after {} attempt(s) in {} ms",
+                            table.getTable(),
+                            start,
+                            attempt,
+                            Duration.ofNanos(System.nanoTime() - startNanos).toMillis());
+                    return start;
+                } catch (NotFoundException notReadable) {
+                    if (System.nanoTime() - deadline >= 0) {
+                        throw new IllegalStateException(
+                                "Change stream of "
+                                        + table.getTable()
+                                        + " still unreadable after "
+                                        + attempt
+                                        + " attempt(s)",
+                                notReadable);
+                    }
+                    LOG.info(
+                            "Change stream of {} not readable from {} (attempt {}): {}",
+                            table.getTable(),
+                            start,
+                            attempt,
+                            notReadable.getMessage());
+                    Thread.sleep(CHANGE_STREAM_START_RETRY.toMillis());
+                }
+            }
+        }
     }
 
     /** Returns a destination in the ephemeral instance without creating the table. */
