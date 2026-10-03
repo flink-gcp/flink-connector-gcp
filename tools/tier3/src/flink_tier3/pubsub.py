@@ -14,6 +14,7 @@
 # limitations under the License.
 """Owned Pub/Sub resources for the later independently supervised recovery run."""
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -24,6 +25,9 @@ from .common import ApiError, Failure, TransportError, json_bytes
 from .policy import HTTP_TIMEOUT, PROJECT, REGION, RUN_ID
 
 BASE = "https://pubsub.googleapis.com/v1/"
+# A local read cap, not a service limit: the largest response these helpers
+# read, resource and policy readback or a message call, is far smaller.
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -260,13 +264,25 @@ class Resources:
     def _request(self, phase, method, name, body=None):
         self.before_operation(phase, method, name)
         try:
-            response = self.http.request(
+            with self.http.request(
                 method,
                 BASE + name,
                 json=body,
                 timeout=HTTP_TIMEOUT,
                 allow_redirects=False,
-            )
+                stream=True,
+            ) as response:
+                if response.status_code == 404 and method in ("GET", "DELETE"):
+                    return None
+                if not 200 <= response.status_code < 300:
+                    raise ApiError(response.status_code, method, name)
+                # Streamed and capped, so an oversized body is refused while
+                # it arrives rather than buffered whole.
+                data = bytearray()
+                for chunk in response.iter_content(chunk_size=8192):
+                    data.extend(chunk)
+                    if len(data) > MAX_RESPONSE_BYTES:
+                        raise Failure("Pub/Sub response exceeds 1 MiB")
         except (
             requests.exceptions.RequestException,
             google.auth.exceptions.GoogleAuthError,
@@ -274,13 +290,9 @@ class Resources:
             raise TransportError(
                 f"{method} Pub/Sub request failed: {type(error).__name__}"
             ) from error
-        if response.status_code == 404 and method in ("GET", "DELETE"):
-            return None
-        if not 200 <= response.status_code < 300:
-            raise ApiError(response.status_code, method, name)
         try:
-            value = response.json() if response.content else {}
-        except ValueError as error:
+            value = json.loads(data) if data else {}
+        except (ValueError, UnicodeError) as error:
             raise Failure("Malformed Pub/Sub response") from error
         if not isinstance(value, dict):
             raise Failure("Pub/Sub response must be an object")

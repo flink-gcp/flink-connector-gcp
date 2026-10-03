@@ -13,6 +13,7 @@
 # limitations under the License.
 """Exercise Pub/Sub ownership and partial failures without credentials or service calls."""
 
+import contextlib
 import copy
 import json
 
@@ -53,10 +54,10 @@ class FakeHttp:
         self.before = lambda method, name: None
         self.after = lambda method, name: None
 
-    def request(self, method, url, *, json, timeout, allow_redirects):
+    def request(self, method, url, *, json, timeout, allow_redirects, stream):
         assert url.startswith(BASE)
         assert timeout == HTTP_TIMEOUT
-        assert allow_redirects is False
+        assert allow_redirects is False and stream is True
         name = url.removeprefix(BASE)
         self.calls.append((method, name, copy.deepcopy(json)))
         self.before(method, name)
@@ -93,6 +94,8 @@ def reply(value, status=200):
     response = requests.Response()
     response.status_code = status
     response._content = json.dumps(value).encode()
+    # Already read, so a streamed iteration replays the body.
+    response._content_consumed = True
     return response
 
 
@@ -626,12 +629,17 @@ class FakeIamHttp(FakeHttp):
         super().__init__()
         self.policies = {}
 
-    def request(self, method, url, *, json, timeout, allow_redirects):
+    def request(self, method, url, *, json, timeout, allow_redirects, stream):
         if ":" not in url.removeprefix(BASE):
             return super().request(
-                method, url, json=json, timeout=timeout, allow_redirects=allow_redirects
+                method,
+                url,
+                json=json,
+                timeout=timeout,
+                allow_redirects=allow_redirects,
+                stream=stream,
             )
-        assert timeout == HTTP_TIMEOUT and allow_redirects is False
+        assert timeout == HTTP_TIMEOUT and allow_redirects is False and stream
         name, operation = url.removeprefix(BASE).split(":", 1)
         self.calls.append((method, name + ":" + operation, copy.deepcopy(json)))
         self.before(method, name)
@@ -912,3 +920,116 @@ def test_iam_helpers_fit_the_documented_operation_budgets(iam_setup):
         for phase, limit in phase_limits.items():
             assert sum(call[0] == phase for call in guards) <= limit
         assert len(guards) == len(http.calls) + len(store.calls)
+
+
+def measure(method, http, store, guards):
+    http.calls.clear()
+    store.calls.clear()
+    guards.clear()
+    method()
+    phases = {}
+    for call in guards:
+        phases[call[0]] = phases.get(call[0], 0) + 1
+    return {
+        "phases": phases,
+        "pubsub": len(http.calls),
+        "reads": sum(call[0] == "GET" for call in store.calls),
+        "creates": sum(call[0] == "PUT" for call in store.calls),
+    }
+
+
+def test_provision_and_cleanup_match_the_documented_operation_budgets():
+    """The runbook's rows for the methods admission and cleanup also run."""
+    http, store, guards = FakeIamHttp(), FakeStore(), []
+    resources = Resources(
+        http, store, ResourcePlan("probe", "a" * 32), lambda *args: guards.append(args)
+    )
+    assert measure(resources.provision, http, store, guards) == {
+        "phases": {"provision": 20, "inspect": 7},
+        "pubsub": 18,
+        "reads": 8,
+        "creates": 1,
+    }
+    assert measure(resources.cleanup_or_confirm_absent, http, store, guards) == {
+        "phases": {"cleanup": 26},
+        "pubsub": 18,
+        "reads": 8,
+        "creates": 0,
+    }
+    absent = Resources(
+        FakeIamHttp(),
+        FakeStore(),
+        ResourcePlan("probe", "a" * 32),
+        lambda *args: guards.append(args),
+    )
+    assert measure(
+        absent.cleanup_or_confirm_absent, absent.http, absent.store, guards
+    ) == {
+        "phases": {"cleanup": 7},
+        "pubsub": 6,
+        "reads": 1,
+        "creates": 0,
+    }
+
+
+class Streamed:
+    """A streamed response whose body arrives in chunks, and records closing."""
+
+    def __init__(self, status, chunks):
+        self.status_code, self.chunks = status, chunks
+        self.read = 0
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        for chunk in self.chunks:
+            self.read += len(chunk)
+            yield chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.closed = True
+
+
+def body(chunks=64, size=64 * 1024):
+    """Four MiB in all: past the cap, but finite should the cap be missing."""
+    for _ in range(chunks):
+        yield b" " * size
+
+
+def test_an_oversized_resource_response_is_refused_while_it_arrives(setup):
+    resources, http, _, _ = setup
+    response = Streamed(200, body())
+    http.request = lambda *args, **kwargs: response
+    with pytest.raises(Failure, match="exceeds 1 MiB"):
+        # Without a manifest, cleanup only reads the six planned names.
+        resources.cleanup_or_confirm_absent()
+    assert 1024 * 1024 < response.read <= 1024 * 1024 + 64 * 1024
+    assert response.closed
+
+
+def test_a_body_that_fails_while_arriving_is_a_transport_failure(setup):
+    resources, http, _, _ = setup
+
+    class Broken(Streamed):
+        def iter_content(self, chunk_size):
+            yield b'{"name": '
+            raise requests.exceptions.ChunkedEncodingError("cut")
+
+    response = Broken(200, [])
+    http.request = lambda *args, **kwargs: response
+    with pytest.raises(TransportError, match="ChunkedEncodingError"):
+        # Without a manifest, cleanup only reads the six planned names.
+        resources.cleanup_or_confirm_absent()
+    assert response.closed
+
+
+@pytest.mark.parametrize("status", [404, 409, 500])
+def test_every_resource_response_is_closed(setup, status):
+    resources, http, _, _ = setup
+    response = Streamed(status, [b"{}"])
+    http.request = lambda *args, **kwargs: response
+    with contextlib.suppress(Failure):
+        resources.cleanup_or_confirm_absent()
+    assert response.closed

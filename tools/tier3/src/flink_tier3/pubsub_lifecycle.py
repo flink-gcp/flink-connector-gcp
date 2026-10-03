@@ -15,6 +15,7 @@
 """Durable Pub/Sub preparation and cleanup for a future admitted scenario."""
 
 import copy
+from contextlib import nullcontext
 
 from .common import Failure, digest, json_bytes
 from .model import Phase
@@ -73,6 +74,15 @@ class PubSubLifecycle:
             "manifest": self.plan.manifest(),
             "application_sha256": approval.application_sha256,
         }
+
+    def reserve(self, name, *, deadline=None):
+        """Open the guard's reservation for one method, when it keeps them.
+
+        Internal fixtures pass a plain callback, which reserves nothing; the
+        production guard refuses any operation outside a reservation.
+        """
+        method = getattr(self.before_operation, "method", None)
+        return nullcontext() if method is None else method(name, deadline=deadline)
 
     def _actor(self, *, runner=False):
         allowed = ("runner",) if runner else ("runner", "supervisor")
@@ -145,12 +155,17 @@ class PubSubLifecycle:
             "policies": None,
         }
 
-    def _resources(self, *, cleanup=False):
+    def _resources(self, mode):
         def guard(phase, method, name):
-            self._actor(runner=not cleanup)
-            self.before_operation(phase, method, name)
+            self._actor(runner=mode == "prepare")
+            # The caller's guard runs last, after this control I/O, so its
+            # deadline check is the one taken just before the operation.
             record, state = self._read()
-            if cleanup:
+            if mode == "verify":
+                self._open(record)
+                if state["stage"] != "prepared":
+                    raise Failure("Pub/Sub resources are not prepared")
+            elif mode == "cleanup":
                 if (
                     state["stage"] not in ("cleaning", "cleaned")
                     or not record.stop_requested
@@ -170,6 +185,7 @@ class PubSubLifecycle:
                         state["creation_intent"] = True
 
                     self._change(intend)
+            self.before_operation(phase, method, name)
 
         return Resources(self.http, self.env.store, self.plan, guard)
 
@@ -185,7 +201,7 @@ class PubSubLifecycle:
             state["stage"] = "preparing"
 
         self._change(claim)
-        resources = self._resources()
+        resources = self._resources("prepare")
         observed = resources.provision()
         self._remember("resources", observed)
         policies = resources.install_grants()
@@ -199,6 +215,18 @@ class PubSubLifecycle:
             state["stage"] = "prepared"
 
         self._change(prepared)
+
+    def verify_prepared(self):
+        """Re-read the prepared resources and policies before admitting work.
+
+        Either actor may ask, while admission is open; every read first
+        rechecks that, so a stop during verification refuses the rest.
+        Settings, ownership or policy drift since preparation refuses; nothing
+        is written, so a refusal leaves the run to stop and clean. Explicit
+        policies still do not prove effective access.
+        """
+        self._actor()
+        return self._resources("verify").inspect_grants()
 
     def _remember(self, key, value):
         def remember(record):
@@ -232,7 +260,7 @@ class PubSubLifecycle:
         _, state = self._read()
         require_handoff_released(state)
         if state["creation_intent"]:
-            self._resources(cleanup=True).cleanup_or_confirm_absent()
+            self._resources("cleanup").cleanup_or_confirm_absent()
 
         def cleaned(record):
             state = self._state(record)

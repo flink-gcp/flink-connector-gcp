@@ -15,15 +15,11 @@
 """What the quiescence barrier proves, against a fake cluster it can re-read."""
 
 import pytest
-from flink_tier3.bigquery_quiesce import (
-    UNREAD_RETRIES,
-    WRITER_KINDS,
-    barrier,
-    owned_writers,
-)
+from flink_tier3.bigquery_quiesce import barrier, owned_writers
 from flink_tier3.common import ApiError, Failure, timestamp
 from flink_tier3.environment import Environment
 from flink_tier3.policy import BIGQUERY, SYSTEM
+from flink_tier3.quiesce import UNREAD_RETRIES, WRITER_KINDS
 from test_bigquery_bundle import approval as approval  # noqa: PLC0414
 from test_bigquery_plan import inputs as inputs  # noqa: PLC0414
 from test_bigquery_plan import renderer as renderer  # noqa: PLC0414

@@ -15,6 +15,7 @@
 """The Pub/Sub dispatch boundary: the approval it builds, and where it stops."""
 
 import copy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +25,7 @@ from flink_tier3 import pubsub_bundle as bundles
 from flink_tier3.common import Failure, digest
 from flink_tier3.model import validate_approval
 from flink_tier3.policy import PUBSUB, PUBSUB_CEILINGS, SMOKE
-from test_pubsub_plan import REVIEWED
+from test_pubsub_plan import FIXTURE_TRIALS
 from test_pubsub_plan import renderer as renderer  # noqa: PLC0414
 from test_pubsub_plan import trial as trial  # noqa: PLC0414
 from test_tier3_lifecycle import env as env  # noqa: PLC0414
@@ -42,8 +43,9 @@ PHRASE = (
 
 @pytest.fixture
 def reviewed(monkeypatch):
-    """Resolve trial names against this checkout's reviewed directory."""
-    monkeypatch.setattr(cli, "ROOT", REVIEWED.parents[2])
+    """Resolve trial names against the tests' fixture directory."""
+    monkeypatch.setattr(cli, "ROOT", FIXTURE_TRIALS.parent)
+    monkeypatch.setattr(cli, "PUBSUB_TRIALS", Path(FIXTURE_TRIALS.name))
 
 
 @pytest.fixture
@@ -94,6 +96,12 @@ def test_the_trial_resolves_from_its_reviewed_file_and_the_live_digest(
     resolved, image = cli.pubsub_inputs(args(tmp_path))
     assert resolved == trial
     assert image == cli.rt.GAR + "pubsub-recovery@" + DIGEST
+
+
+def test_the_tests_example_trial_is_not_dispatchable(tmp_path):
+    """Only reviewed files resolve, and the example is not one of them."""
+    with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
+        cli.pubsub_inputs(args(tmp_path))
 
 
 @pytest.mark.parametrize(

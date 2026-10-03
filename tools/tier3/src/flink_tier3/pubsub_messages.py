@@ -24,10 +24,9 @@ import requests
 
 from .common import ApiError, Failure, TransportError
 from .policy import HTTP_TIMEOUT
-from .pubsub import BASE, ResourcePlan
+from .pubsub import BASE, MAX_RESPONSE_BYTES, ResourcePlan
 
 MAX_BATCH = 100
-MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_PAYLOAD_BYTES = 4096
 MAX_ID_BYTES = 1024
 MAX_ACK_ID_BYTES = 4096

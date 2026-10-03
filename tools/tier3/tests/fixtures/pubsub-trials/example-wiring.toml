@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Reviewed example trial for tests and documentation. It exercises the version 3
-# trial schema, the approval phrase and the approval-bound rendering; it
-# authorizes nothing. The campaign's trials and their numbers are preregistered
-# separately, and each needs its own dispatch approval.
+# Example trial for tests. It exercises the version 3 trial schema, the
+# approval phrase and the approval-bound rendering. It lives outside
+# kubernetes/lifecycle/pubsub-trials/ so that no dispatch can name it: once
+# admission opens, a file there is a runnable trial. The campaign's trials are
+# committed there once #1434 preregisters them and their numbers, and each
+# needs its own dispatch approval.
 
 version = 3
 trial = "rescale-out"
