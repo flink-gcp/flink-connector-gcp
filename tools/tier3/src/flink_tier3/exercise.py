@@ -19,6 +19,7 @@ import copy
 import re
 
 from .common import ApiError, Failure, TransportError, contains, digest, timestamp, utc
+from .metrics import FlinkRest
 from .policy import RECOVERY, SMOKE, STATE
 
 
@@ -89,10 +90,61 @@ class RecoveryExercise:
         self.stable_pods = None
         self.retiring_pods = set()
         self.generation = None
+        self.rest, self.measured_at = None, None
 
     @property
     def recovering(self):
         return self.stage in ("upgrade", "failover")
+
+    def admitted(self):
+        """Called once, when the loop sees the application admitted."""
+
+    def prefix(self, kind):
+        """The run's own location for ``checkpoints`` or ``savepoints``."""
+        return f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/{kind}/"
+
+    def track_rest(self, service, job_id):
+        """Keep a REST reader for the job the loop verified; True when replaced.
+
+        No service resolved means the job is between states; measuring against
+        the last one would attribute a reading to a job that is not the one
+        running.
+        """
+        if service is None:
+            self.rest = None
+            return True
+        replaced = self.rest is None or self.rest.job_id != job_id
+        if replaced:
+            self.rest = FlinkRest(self.env, service, job_id)
+        self.rest.service = service
+        return replaced
+
+    def measurement_due(self):
+        """Whether a REST reader exists and a measurement interval has passed."""
+        if self.rest is None:
+            return False
+        now = self.env.clock()
+        if (
+            self.measured_at is not None
+            and now - self.measured_at < self.timing["measure_seconds"]
+        ):
+            return False
+        self.measured_at = now
+        return True
+
+    def rebaseline(self, pods):
+        """After a proven recovery, the Pods running now are the stable set."""
+        self.retiring_pods = {
+            p["metadata"]["uid"]
+            for p in pods
+            if p["metadata"]["namespace"] == self.namespace
+            and p["metadata"].get("deletionTimestamp")
+        }
+        self.stable_pods = {
+            p["metadata"]["uid"]
+            for p in pods
+            if p["metadata"]["namespace"] == self.namespace
+        } - self.retiring_pods
 
     def check_open(self):
         self.env.require_running("Recovery exercise has been stopped")
@@ -232,9 +284,7 @@ class RecoveryExercise:
         ):
             return None
         path = cp.get("external_path", "")
-        if not path.startswith(
-            f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/checkpoints/"
-        ):
+        if not path.startswith(self.prefix("checkpoints")):
             raise Failure("Completed checkpoint is outside the approved state prefix")
         return cp
 
@@ -291,9 +341,7 @@ class RecoveryExercise:
                 or savepoint.get("location") != path
                 or savepoint.get("triggerType") != "UPGRADE"
                 or savepoint.get("timeStamp", 0) / 1000 <= self.boundary
-                or not path.startswith(
-                    f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/savepoints/"
-                )
+                or not path.startswith(self.prefix("savepoints"))
             ):
                 raise Failure("Upgrade did not restore its newly completed savepoint")
         else:
@@ -302,7 +350,7 @@ class RecoveryExercise:
                 or restored.get("is_savepoint") is not False
                 or restored["id"] < self.before["checkpoint"]["id"]
                 or not restored.get("external_path", "").startswith(
-                    f"gs://{self.state_bucket}/runs/{self.env.approval.run_id}/checkpoints/"
+                    self.prefix("checkpoints")
                 )
             ):
                 raise Failure("JobManager did not recover the checkpointed job")
@@ -331,18 +379,22 @@ class RecoveryExercise:
         self.generation = app["metadata"]["generation"] + 1
         self.persist("upgrade", before=self.before, generation=self.generation)
         self.check_open()
+        self.patch_upgrade(
+            app,
+            [
+                {
+                    "op": "replace",
+                    "path": "/spec/job/args",
+                    "value": self.upgrade["spec"]["job"]["args"],
+                }
+            ],
+        )
+
+    def patch_upgrade(self, app, operations):
+        """Apply the approved upgrade once; a lost response must show it applied."""
         # Patch cannot recreate a deleted CR; the UID/version tests lose to deletion.
         try:
-            self.env.kube.patch(
-                app,
-                [
-                    {
-                        "op": "replace",
-                        "path": "/spec/job/args",
-                        "value": self.upgrade["spec"]["job"]["args"],
-                    }
-                ],
-            )
+            self.env.kube.patch(app, operations)
         except (ApiError, TransportError) as error:
             if isinstance(error, ApiError) and error.status in (409, 422):
                 raise Failure(
@@ -381,20 +433,24 @@ class RecoveryExercise:
         )
         self.persist("failover", before=self.before)
         self.check_open()
+        self.delete_pod(jm, "JM")
+
+    def delete_pod(self, pod, role):
+        """Delete one planned Pod once; a lost response must show it going."""
         try:
-            if self.env.kube.delete(jm) is False:
-                raise Failure("JM disappeared before its planned deletion")
+            if self.env.kube.delete(pod) is False:
+                raise Failure(role + " disappeared before its planned deletion")
         except (ApiError, TransportError) as error:
             if isinstance(error, ApiError) and error.status not in (500, 502, 503, 504):
                 raise
-            current = self.env.kube.get("Pod", self.namespace, jm["metadata"]["name"])
+            current = self.env.kube.get("Pod", self.namespace, pod["metadata"]["name"])
             if (
                 current
-                and current["metadata"]["uid"] == jm["metadata"]["uid"]
+                and current["metadata"]["uid"] == pod["metadata"]["uid"]
                 and not current["metadata"].get("deletionTimestamp")
             ):
                 raise Failure(
-                    "JM delete response lost without a verified outcome"
+                    role + " delete response lost without a verified outcome"
                 ) from error
 
     def attach_rest(self, service, job_id):
@@ -441,17 +497,7 @@ class RecoveryExercise:
                 self.outcomes["failover"] = proof
                 self.deadline = self.env.schedule.cleanup_at
                 self.persist("finishing")
-                self.retiring_pods = {
-                    p["metadata"]["uid"]
-                    for p in pods
-                    if p["metadata"]["namespace"] == self.namespace
-                    and p["metadata"].get("deletionTimestamp")
-                }
-                self.stable_pods = {
-                    p["metadata"]["uid"]
-                    for p in pods
-                    if p["metadata"]["namespace"] == self.namespace
-                } - self.retiring_pods
+                self.rebaseline(pods)
         if status == "FINISHED":
             # Operator 1.15.0 marks the old job FINISHED after stop-with-savepoint
             # and assigns the upgraded job's ID before that state clears, so

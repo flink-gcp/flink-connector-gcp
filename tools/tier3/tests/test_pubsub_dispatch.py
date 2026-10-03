@@ -276,7 +276,7 @@ def test_a_verified_approval_is_refused_before_the_lock(cluster, trial, tmp_path
     store, kube = cluster.store, cluster.kube
     before = copy.deepcopy((store.data, store.blobs, store.serial, kube.data))
     calls = len(kube.calls)
-    with pytest.raises(Failure, match="waits on the supervised exercise"):
+    with pytest.raises(Failure, match=r"waits on execution accounting \(#1433\)"):
         cli.start(args(tmp_path), store)
     # Neither the lock, evidence, control, a cluster change, nor a local document
     # or step output that finalization reads.
@@ -325,7 +325,7 @@ def test_the_approval_pins_the_manifests_the_proposal_rendered(
     cluster, trial, tmp_path
 ):
     """The recovery manifest, not the initial one, becomes the upgrade digest."""
-    with pytest.raises(Failure, match="waits on the supervised exercise"):
+    with pytest.raises(Failure, match=r"waits on execution accounting \(#1433\)"):
         cli.start(args(tmp_path), cluster.store)
     [approval] = cluster.bundled
     # The first render is dispatch's own; the bundle re-renders after it.

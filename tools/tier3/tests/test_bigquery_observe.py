@@ -20,12 +20,12 @@ from flink_tier3.bigquery_observe import (
     CONNECTOR_METRICS,
     MEMORY_METRICS,
     NETWORK_METRICS,
-    FlinkRest,
     observation,
     vertices,
 )
 from flink_tier3.common import ApiError
-from flink_tier3.metrics import unavailable
+from flink_tier3.exercise import RecoveryExercise
+from flink_tier3.metrics import FlinkRest, unavailable
 from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS
 
 JOB = "a" * 32
@@ -159,6 +159,8 @@ class Exercising:
     timing = BIGQUERY_OBSERVATIONS
     attach_rest = BigQueryExercise.attach_rest
     measure = BigQueryExercise.measure
+    track_rest = RecoveryExercise.track_rest
+    measurement_due = RecoveryExercise.measurement_due
 
     def later(self):
         """Past the sampling interval, where the next measurement is due."""
