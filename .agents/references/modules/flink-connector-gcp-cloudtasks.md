@@ -22,9 +22,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   measured rates, adds most of a checkpoint interval to task latency, ships `@Experimental`, and ADR-0104's
   p95 threshold does not apply to it (ADR-0162, 2026-09-24). Keep #1241's inconclusive result
   distinct from that sequencing decision.
-- **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
-  (`docs/adr/0129`) — do not adopt a batch create without superseding that record. Its arrival on
-  v2 (`google-cloud-tasks` 2.99.0) fired that ADR's re-measure trigger; #1590 carries it.
+- **One `CreateTask` RPC per record**; `BatchCreateTasks` was measured and declined on v2beta3
+  (#937) and again on GA v2 after `google-cloud-tasks` 2.99.0 (#1590), both in `docs/adr/0129`
+  — do not adopt a batch create without superseding that record. Re-check that ADR's
+  re-evaluation triggers at every `libraries-bom` bump that moves `google-cloud-tasks`.
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
   queue would discard the throttling that is the reason to use the service. External HTTP and
   App Engine targets are separate serializer arms. OIDC vs OAuth is the external HTTP target's

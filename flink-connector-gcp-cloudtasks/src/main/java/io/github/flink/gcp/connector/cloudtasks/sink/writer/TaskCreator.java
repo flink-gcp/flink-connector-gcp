@@ -31,10 +31,10 @@ import io.grpc.Deadline;
  * per-queue connection or stream, so there is nothing to key by destination.
  *
  * <p>There is deliberately no batch method. {@code BufferTask} is absent from the Java client;
- * {@code BatchCreateTasks}, a long-running, non-atomic call, was measured on its v2beta3 surface
- * and declined (ADR-0129, which carries the client version, the numbers and the trigger to measure
- * again). No method in the client's settings is configured with batching, so the writer owns
- * batching, backpressure and concurrency outright.
+ * {@code BatchCreateTasks}, a long-running, non-atomic call, was measured on its v2beta3 and GA v2
+ * surfaces and declined (ADR-0129, which carries the client versions, the numbers and the triggers
+ * to measure again). No method in the client's settings is configured with batching, so the writer
+ * owns batching, backpressure and concurrency outright.
  */
 @Internal
 public interface TaskCreator extends AutoCloseable {
