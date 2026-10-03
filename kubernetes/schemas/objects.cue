@@ -26,6 +26,7 @@ import (
 } & (
 	{apiVersion: "v1", kind: "ConfigMap", core.#ConfigMap} |
 	{apiVersion: "v1", kind: "Service", core.#Service} |
+	{apiVersion: "v1", kind: "Pod", core.#Pod} |
 	{apiVersion: "apps/v1", kind: "Deployment", apps.#Deployment} |
 	{apiVersion: "batch/v1", kind: "Job", batch.#Job} |
 	{apiVersion: "flink.apache.org/v1beta1", kind: "FlinkDeployment", flink.#FlinkDeployment})

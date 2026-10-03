@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from .common import Failure
 from .model import validate_approval
 from .policy import HTTP_TIMEOUT, PUBSUB_ADMISSION
+from .pubsub_access import INTERVAL, admission_until
 
 # A conditional control update invokes the guard once before the record
 # adapter and once per write attempt, and the adapter makes at most five.
@@ -55,6 +56,13 @@ def _bound(resources=(), messages=(), *, reads=0, changes=0):
     }
 
 
+# An access probe tests every one of the run's six resources per round and
+# pulls at most two subscriptions, each round or pull retry at least one
+# interval after the last, within the admission window.
+RESOURCES, PULLED = 6, 2
+ACCESS_ATTEMPTS = PUBSUB_ADMISSION["startup_seconds"] // INTERVAL + 1
+ACCESS = {"access": ACCESS_ATTEMPTS * (RESOURCES + PULLED)}
+
 # Changes: preparation claims its attempt, records creation intent, keeps the
 # resource and policy readback, marks the stage and binds the traffic
 # counters. Publication reserves the batch, its POST and two evidence uploads;
@@ -72,11 +80,23 @@ METHOD_BOUNDS = {
     "released": _bound(reads=1),
     "cleanup": _bound((CLEANUP,), reads=2, changes=2),
     "reclaim": _bound((CLEANUP,), reads=2, changes=3),
+    # The actor's binding read, then one recorded summary.
+    "access": _bound((ACCESS,), reads=1, changes=1),
+    "record": _bound(changes=1),
+    "actors": _bound(reads=1),
 }
 # Methods that admit work. Their Pub/Sub requests stop at the deadline and
 # once the approval no longer validates; the rest settle the run and must
 # stay usable after both.
-ADMISSION = ("initialize", "prepare", "verify", "join", "publish", "collect")
+ADMISSION = (
+    "initialize",
+    "prepare",
+    "verify",
+    "access",
+    "join",
+    "publish",
+    "collect",
+)
 # Message traffic continues through the exercise, long after admission, so
 # its default deadline is the traffic window's; a caller publishing during
 # admission passes the admission deadline instead.
@@ -88,10 +108,7 @@ SERVICE_PREFIX = "projects/"
 
 def admission_deadline(env):
     """When admission must have created the application, or stop and clean."""
-    return min(
-        env.schedule.started + PUBSUB_ADMISSION["startup_seconds"],
-        env.schedule.cleanup_at,
-    )
+    return admission_until(env.schedule)
 
 
 class PubSubGuard:

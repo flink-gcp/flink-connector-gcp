@@ -297,11 +297,12 @@ def test_abort_before_supervisor_join_can_release_and_clean_empty_intent(runtime
 
 
 def test_replacement_supervisor_cannot_implicitly_release_original_actor(runtime):
+    """Without a proof that the former Pod ended, the replacement only waits."""
     a = runtime
     a.sender.release()
     replacement = a.make("supervisor", "d" * 32)
     cleanup = Cleanup(replacement.env, pubsub=replacement, quiesce=lambda: True)
-    with pytest.raises(Failure, match="identity changed"):
+    with pytest.raises(Failure, match="Bounded wait expired"):
         cleanup.finish_pubsub(a.clock() + 30)
     assert not deletions(a.service)
     assert not actors(a.sender.env)["supervisor"]["released"]
@@ -348,7 +349,7 @@ def test_attached_handoff_must_belong_to_the_same_original_actor(runtime):
     assert a.sender.env.refresh().to_dict() == before
 
 
-def test_namespace_and_state_routing_do_not_enable_admission(runtime):
+def test_namespace_routing_and_unguarded_actors_do_not_admit(runtime):
     a = runtime
     runner = Runner(a.sender.env, pubsub=a.sender)
     assert runner.namespace == PUBSUB
@@ -361,12 +362,13 @@ def test_namespace_and_state_routing_do_not_enable_admission(runtime):
     with pytest.raises(Failure, match="Invalid run approval identity"):
         Approval.from_dict(a.approval.to_dict())
     calls = list(a.kube.calls)
-    with pytest.raises(Failure, match="admission is not implemented"):
+    # The internal fixture's handoff has no production guard.
+    with pytest.raises(Failure, match="authenticated, guarded handoff"):
         runner.start({}, {}, a.application)
     assert a.kube.calls == calls
     supervisor = Supervisor(a.observer.env, pubsub=a.observer, quiesce=lambda: True)
     before = a.observer.env.refresh().to_dict()
-    with pytest.raises(Failure, match="supervision is not implemented"):
+    with pytest.raises(Failure, match="requires its authenticated handoff"):
         supervisor.supervise("unused-pod")
     assert a.kube.calls == calls
     assert a.observer.env.refresh().to_dict() == before

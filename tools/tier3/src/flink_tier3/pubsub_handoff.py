@@ -84,6 +84,11 @@ def require_handoff_released(state):
         raise Failure("Pub/Sub actors have not released their authority")
 
 
+def runner_released(actors):
+    """Whether the runner bound and has since released its authority."""
+    return actors["runner"] is not None and actors["runner"]["released"]
+
+
 class _InvocationChanged(Failure):
     """A completion acknowledgement no longer names the active call."""
 
@@ -283,6 +288,21 @@ class PubSubHandoff:
         with self.controller.reserve("verify"):
             return self.controller.verify_prepared()
 
+    def access(self, *, deadline):
+        """Probe this bound actor's own effective access before admission ends."""
+        self._role()
+        with self.controller.reserve("access", deadline=deadline):
+            record, _ = self.controller._read()
+            if self._owned(record)["released"]:
+                raise Failure("Pub/Sub actor has released its authority")
+            return self.controller.access(deadline=deadline)
+
+    def record_workload(self, summary):
+        """Record the workload's access, which only the probe Pod can observe."""
+        self._role("runner")
+        with self.controller.reserve("record"):
+            self.controller.record_access("workload", summary)
+
     def publish(self, input_index, start, count, *, deadline=None):
         self._role("runner")
         with self.controller.reserve("publish", deadline=deadline):
@@ -336,6 +356,20 @@ class PubSubHandoff:
             actor is None or actor["released"]
             for actor in self._state(record)["actors"].values()
         )
+
+    def actors(self):
+        """The recorded actor bindings, read through this actor's guard."""
+        self._role()
+        with self.controller.reserve("actors"):
+            record, _ = self.controller._read()
+        return copy.deepcopy(self._state(record)["actors"])
+
+    def supervisor_binding(self, actors=None):
+        """Who holds the supervisor binding: nobody, this process, or another."""
+        bound = (actors or self.actors())["supervisor"]
+        if bound is None:
+            return "none"
+        return "mine" if bound["token"] == self.token else "other"
 
     def cleanup(self, quiesce):
         """Require cooperative actor releases and the external workload barrier."""

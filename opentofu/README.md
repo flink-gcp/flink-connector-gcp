@@ -238,7 +238,8 @@ The [bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/r
 The common helper now inspects all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) adds `tier3-pubsub` to its watch set.
 The initial foundation deferred Pub/Sub topic/subscription grants; the lifecycle authority below follows the concrete application and owned resource design.
 The initial eight-resource stage introduced no Pub/Sub data or resource-administration permissions.
-Application/image publication, run admission, fault injection, ownership-aware service cleanup and separately approved numeric execution ceilings remain later steps.
+Application image publication, ownership-aware service cleanup and run admission have since landed, as the [Pub/Sub runbook](../kubernetes/apps/pubsub/README.md) describes.
+The supervised recovery exercise ([#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431)), execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) and the preregistered trial numbers ([#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434)) remain open: dispatch refuses a Pub/Sub run before the environment lock until the first two land, and no recovery trial is registered before the third.
 This configuration does not create topics/subscriptions or start Kubernetes workloads, and it does not establish live Pub/Sub recovery.
 
 ### Pub/Sub lifecycle authority

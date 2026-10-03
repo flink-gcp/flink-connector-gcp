@@ -66,15 +66,15 @@ def test_a_different_identity_is_refused_before_the_write_leaves(wire):
     assert http.settled()
 
 
-# Every request but a GET counts as a write, even one that changes nothing.
+# Every request but a GET or a permission test counts as a write.
 WRITES = [
     ("PUT", TOPIC),
     ("DELETE", TOPIC),
     ("POST", TOPIC + ":setIamPolicy"),
     ("POST", TOPIC + ":publish"),
-    ("POST", TOPIC + ":testIamPermissions"),
+    ("POST", TOPIC + ":pull"),
 ]
-READS = [("GET", TOPIC)]
+READS = [("GET", TOPIC), ("POST", TOPIC + ":testIamPermissions")]
 
 
 @pytest.mark.parametrize(

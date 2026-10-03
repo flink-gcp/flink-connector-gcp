@@ -21,7 +21,7 @@ from .pubsub import BASE
 class PubSubSession(ActorSession):
     """One Pub/Sub actor's session, which remembers an unsettled write.
 
-    Every request other than a GET counts as a write. A write is unsettled
+    Every request other than a GET or a permission test counts as a write. A write is unsettled
     when it left this process and no status came back, or the service
     answered 5xx, or its budget expired after it left: each may still
     complete at the service. A refusal before sending, a read, or a write
@@ -41,8 +41,9 @@ class PubSubSession(ActorSession):
         self.ambiguous = False
         self._pending = False
 
-    def _sending(self, method, _url):
-        self._pending = method != "GET"
+    def _sending(self, method, url):
+        # testIamPermissions is a POST that changes nothing.
+        self._pending = method != "GET" and not url.endswith(":testIamPermissions")
 
     def request(self, method, url, **kwargs):
         self._pending = False

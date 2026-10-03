@@ -276,7 +276,7 @@ def test_a_verified_approval_is_refused_before_the_lock(cluster, trial, tmp_path
     store, kube = cluster.store, cluster.kube
     before = copy.deepcopy((store.data, store.blobs, store.serial, kube.data))
     calls = len(kube.calls)
-    with pytest.raises(Failure, match="admission is not implemented"):
+    with pytest.raises(Failure, match="waits on the supervised exercise"):
         cli.start(args(tmp_path), store)
     # Neither the lock, evidence, control, a cluster change, nor a local document
     # or step output that finalization reads.
@@ -286,7 +286,9 @@ def test_a_verified_approval_is_refused_before_the_lock(cluster, trial, tmp_path
     assert not (tmp_path / "github-output").exists()
     assert cluster.connected == [True]
     assert cluster.checked == [
-        (True, "create", "flink.apache.org", "flinkdeployments", PUBSUB)
+        (True, "create", "flink.apache.org", "flinkdeployments", PUBSUB),
+        # Admission creates the workload access probe Pod.
+        (True, "create", "", "pods", PUBSUB),
     ]
     assert cluster.snapshots == [PUBSUB]
     [approval] = cluster.bundled
@@ -323,7 +325,7 @@ def test_the_approval_pins_the_manifests_the_proposal_rendered(
     cluster, trial, tmp_path
 ):
     """The recovery manifest, not the initial one, becomes the upgrade digest."""
-    with pytest.raises(Failure, match="admission is not implemented"):
+    with pytest.raises(Failure, match="waits on the supervised exercise"):
         cli.start(args(tmp_path), cluster.store)
     [approval] = cluster.bundled
     # The first render is dispatch's own; the bundle re-renders after it.

@@ -20,9 +20,17 @@ from contextlib import nullcontext
 from .common import Failure, digest, json_bytes
 from .model import Phase
 from .pubsub import ResourcePlan, Resources
+from .pubsub_access import wait_for_access
 from .pubsub_handoff import require_handoff_released
 
 MAX_CONTROL_BYTES = 256 * 1024
+# Who records each identity's access: an actor probes itself, and the runner
+# reads the workload's from the probe Pod it created.
+ACCESS_RECORDERS = {
+    "runner": "runner",
+    "supervisor": "supervisor",
+    "workload": "runner",
+}
 
 
 def require_pubsub_clean(record):
@@ -161,7 +169,7 @@ class PubSubLifecycle:
             # The caller's guard runs last, after this control I/O, so its
             # deadline check is the one taken just before the operation.
             record, state = self._read()
-            if mode == "verify":
+            if mode in ("verify", "access"):
                 self._open(record)
                 if state["stage"] != "prepared":
                     raise Failure("Pub/Sub resources are not prepared")
@@ -227,6 +235,34 @@ class PubSubLifecycle:
         """
         self._actor()
         return self._resources("verify").inspect_grants()
+
+    def access(self, *, deadline):
+        """Probe this actor's own effective access, then record what was seen.
+
+        Either actor, while admission is open: a permission test answers for
+        the identity that sends it, so each actor probes only itself; the
+        runner records the workload's separately, from the probe Pod.
+        """
+        self._actor()
+        summary = wait_for_access(
+            self.env, self._resources("access"), self.env.actor, deadline=deadline
+        )
+        self.record_access(self.env.actor, summary)
+        return summary
+
+    def record_access(self, role, summary):
+        """Keep one identity's access observations with the run's control."""
+        if role not in ACCESS_RECORDERS or self.env.actor != ACCESS_RECORDERS[role]:
+            raise Failure("Pub/Sub access for " + role + " is recorded by its prober")
+
+        def record(record):
+            self._open(record)
+            state = self._state(record)
+            if state["stage"] != "prepared":
+                raise Failure("Pub/Sub resources are not prepared")
+            state.setdefault("access", {})[role] = copy.deepcopy(summary)
+
+        self._change(record)
 
     def _remember(self, key, value):
         def remember(record):

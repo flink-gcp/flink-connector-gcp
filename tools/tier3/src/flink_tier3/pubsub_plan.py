@@ -19,11 +19,20 @@ import re
 import tomllib
 from dataclasses import asdict
 
-from .bundle import delivery_digest, source_digest
-from .common import Failure, digest, json_bytes, quantity, timestamp, utc
+from .bundle import delivery_digest, package_sources, source_digest
+from .common import (
+    Failure,
+    digest,
+    json_bytes,
+    quantity,
+    timestamp,
+    utc,
+    verify_pod,
+)
 from .model import Schedule
 from .policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
 from .pubsub import ResourcePlan
+from .pubsub_access import probe_spec
 from .pubsub_messages import MAX_BATCH
 from .pubsub_traffic import COUNTER_CEILINGS, TrafficLimits
 from .workflow import render
@@ -115,6 +124,37 @@ def _pod(pod, role):
             quantity(resources[k]) != quantity(v) for k, v in expected.items()
         ):
             raise Failure("Rendered Pod differs from the Pub/Sub resource proposal")
+
+
+def probe_command():
+    """The probe Pod's command: the packaged program, passed inline."""
+    return ["python3", "-I", "-c", package_sources()["pubsub_probe.py"]]
+
+
+def probe_argument(plan, schedule):
+    """The probe Pod's one argument: what it tests, until when."""
+    return json_bytes(probe_spec(plan, schedule)).decode()
+
+
+def require_probe(probe, plan, schedule, image):
+    """The workload access probe runs the packaged program on this run's plan.
+
+    It is a control Pod in the application namespace, shaped and placed as
+    the supervisor is, and running as the workload's service account.
+    """
+    metadata = probe.get("metadata", {}) if isinstance(probe, dict) else {}
+    spec = probe.get("spec", {}) if isinstance(probe, dict) else {}
+    containers = spec.get("containers") or [{}]
+    if (
+        metadata.get("name") != plan.run_id + "-access-probe"
+        or metadata.get("namespace") != "tier3-pubsub"
+        or spec.get("serviceAccountName") != "pubsub"
+        or spec.get("restartPolicy") != "Never"
+        or containers[0].get("command") != probe_command()
+        or containers[0].get("args") != [probe_argument(plan, schedule)]
+    ):
+        raise Failure("Rendered access probe differs from the Pub/Sub plan")
+    verify_pod(probe, "supervisor", image, POD_RESOURCES["supervisor"], spot=False)
 
 
 def input_plan(run_id, trial):
@@ -259,6 +299,8 @@ def prepare(
         pubsub_trial=trial["trial"],
         pubsub_records=records,
         pubsub_entry_point=trial["entry_point"],
+        pubsub_probe=probe_argument(resources, schedule),
+        pubsub_probe_source=probe_command()[3],
     )
     require_trial_jobs(run_id, trial, initial, recovery)
     for application, (parallelism, _) in zip(
@@ -296,6 +338,8 @@ def prepare(
             "Rendered supervisor differs from the Pub/Sub schedule or Pod budget"
         )
     _pod(supervisor["template"]["spec"], "supervisor")
+    supervisor_image = supervisor["template"]["spec"]["containers"][0]["image"]
+    require_probe(delivery["probe"], resources, schedule, supervisor_image)
     data = delivery["config"]["data"]
     if (
         json.loads(data["approval.json"]) != {}

@@ -93,6 +93,8 @@ def renderer(monkeypatch):
                 "podTemplate": {"spec": pod("smoke")},
             }
         return {
+            "apiVersion": "flink.apache.org/v1beta1",
+            "kind": "FlinkDeployment",
             "metadata": {
                 "name": run_id,
                 "namespace": "tier3-pubsub",
@@ -138,6 +140,40 @@ def renderer(monkeypatch):
                     "template": {"spec": supervisor},
                 }
             },
+        }
+        probe = pod("supervisor")
+        # Placed as the supervisor is: the rendered Pod excludes Spot.
+        probe["affinity"] = {
+            "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [
+                        {
+                            "matchExpressions": [
+                                {
+                                    "key": "cloud.google.com/gke-spot",
+                                    "operator": "NotIn",
+                                    "values": ["true"],
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+        probe["containers"][0].update(
+            image=supervisor["containers"][0]["image"],
+            command=["python3", "-I", "-c", options["pubsub_probe_source"]],
+            args=[options["pubsub_probe"]],
+        )
+        delivery["probe"] = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": run_id + "-access-probe",
+                "namespace": "tier3-pubsub",
+                "annotations": {"flink-gcp.io/approval": nonce},
+            },
+            "spec": {**probe, "serviceAccountName": "pubsub", "restartPolicy": "Never"},
         }
         return copy.deepcopy(initial), copy.deepcopy(recovery), delivery
 

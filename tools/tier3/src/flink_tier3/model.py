@@ -744,6 +744,8 @@ class RunRecord:
     application_intent: bool = False
     config_intent: dict | None = None
     supervisor_intent: dict | None = None
+    # The workload access probe Pod a Pub/Sub admission creates.
+    probe_intent: dict | None = None
     heartbeat: str | None = None
     lineage: str | None = None
     checkpoint_observed: bool = False

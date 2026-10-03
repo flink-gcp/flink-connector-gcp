@@ -281,6 +281,7 @@ class Records:
             "application": "application_intent",
             "config": "config_intent",
             "supervisor": "supervisor_intent",
+            "probe": "probe_intent",
             "cell": "cell_intent",
             "queue": "queue_intent",
         }

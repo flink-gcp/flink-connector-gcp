@@ -27,6 +27,7 @@ cluster: {
 delivery: order: {
 	ConfigMap:       30
 	Service:         70
+	Pod:             75
 	Deployment:      80
 	Job:             80
 	FlinkDeployment: 90
