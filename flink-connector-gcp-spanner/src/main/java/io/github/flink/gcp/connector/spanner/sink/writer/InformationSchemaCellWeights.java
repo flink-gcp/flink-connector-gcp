@@ -50,7 +50,7 @@ final class InformationSchemaCellWeights {
                 return "SELECT table_schema, table_name, column_name, index_name"
                         + " FROM information_schema.index_columns"
                         + " WHERE table_schema NOT IN"
-                        + " ('pg_catalog', 'information_schema', 'SPANNER_SYS')"
+                        + " ('pg_catalog', 'information_schema', 'spanner_sys')"
                         + " AND index_name != 'PRIMARY_KEY'";
             case GOOGLE_STANDARD_SQL:
                 return "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, INDEX_NAME"

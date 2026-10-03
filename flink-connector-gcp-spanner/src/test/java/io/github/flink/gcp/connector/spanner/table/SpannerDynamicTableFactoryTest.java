@@ -638,6 +638,35 @@ class SpannerDynamicTableFactoryTest {
         }
     }
 
+    /**
+     * Spanner change streams watch a generated column only when it is part of the primary key
+     * (measured on the emulator; the service documents the same), so a non-key one is refused when
+     * the table is planned rather than on the first record.
+     */
+    @Test
+    void aChangeStreamTableRefusesANonKeyGeneratedColumnButReadsAGeneratedKey() {
+        Map<String, String> nonKey = changeStreamOptions("full");
+        nonKey.put("schema.generated-columns", "name");
+        assertThatThrownBy(() -> source(withPrimaryKey(), nonKey))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "scan.mode=change-stream cannot read the generated columns [name],"
+                                + " which are outside the declared PRIMARY KEY");
+
+        Map<String, String> key = changeStreamOptions("full");
+        key.put("schema.generated-columns", "id");
+        assertThat(source(withPrimaryKey(), key)).isInstanceOf(ScanTableSource.class);
+        // The check sees only the key the DDL declares, so the same column is refused without it.
+        assertThatThrownBy(() -> source(SCHEMA, key))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot read the generated columns [id]")
+                .hasStackTraceContaining("Declare the table's Spanner primary key");
+
+        Map<String, String> bounded = options();
+        bounded.put("schema.generated-columns", "name");
+        assertThat(source(withPrimaryKey(), bounded)).isInstanceOf(ScanTableSource.class);
+    }
+
     @Test
     void validatesChangeStreamTimestampOptionPairs() {
         Map<String, String> missing = changeStreamOptions("full");

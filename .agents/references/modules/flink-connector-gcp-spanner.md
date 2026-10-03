@@ -353,8 +353,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Keep absent JSON members distinct from explicit JSON null. A missing complete-row value is not a
   nullable value and must never become SQL null.
 - Stage every row from one `DataChangeRecord` before collecting any of them. A malformed later mod
-  must not partially emit the record. Failures name only sanitized record identity and the mod
-  index; do not attach a cause containing JSON or credential paths.
+  must not partially emit the record. Failures name sanitized record identity, the mod index and,
+  when the converter's own validation refused the record, that check's constant reason
+  (`RecordRefusal`); never put a record value in a reason, and do not attach a cause containing
+  JSON or credential paths.
 - Keep record validation and changelog construction in `DataChangeRecordToRowDataConverter`.
   `SpannerChangeStreamRowDataDeserializationSchema` is the collector and produced-type adapter;
   do not grow physical conversion branches back into that SPI wrapper.
@@ -374,6 +376,30 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Flink 1.20 uses its sole upsert declaration, while Flink 2.x declares key-only deletes through
   the boolean overload in their versioned `CrossVersionChangelogMode` sources. Do not call the
   newer overload from common code.
+
+## Catalog (`docs/adr/0168`, `docs/adr/0176`)
+
+- `SpannerCatalog` extends base's `AbstractReadOnlyCatalog`; the read-only answers live there. This
+  module owns listing, the database-id grammar, the `INFORMATION_SCHEMA` statements
+  (`SpannerInformationSchema`, one statement per dialect behind a `switch`) and the type mapping.
+- Table names go through `SpannerObjectName`: `format` and `parse` are inverses, and a part is
+  quoted exactly when its bare spelling would decode to a different name. Never split a catalog
+  name on `.` by hand, and never emit a PostgreSQL part bare without checking that it folds to
+  itself; `SpannerObjectNameTest` holds the round trip over an adversarial alphabet.
+- A default-schema table carries `table` alone, in the native spelling; a named-schema table
+  carries `schema` and `table` in canonical quoting. Mixing the two forms targets a different
+  table for a mixed-case PostgreSQL name.
+- `SPANNER_TYPE` is parsed by `SpannerTypeSpelling` from the spellings measured on the service and the
+  emulator, which differ: the service reports `PROTO<fqn>`/`ENUM<fqn>`, the emulator a backticked
+  FQN alone, which is classified from `GetDatabaseDdl`'s proto descriptors, never from the name.
+- Marker values pass through `SpannerMarkerValues`, which quotes as Flink's own option serializer
+  does: a quoted Spanner column name may contain `;`, `,` or `:`.
+- Stored generated columns stay in the schema and are listed in `schema.generated-columns`; the
+  sink skips them, and a change-stream table refuses a non-key one at planning, because Spanner
+  change streams do not watch it. Hidden columns and generated columns that are not stored are left
+  out; the service's read API refuses the latter, which the emulator does not.
+- The emulator is not the service: `SpannerCatalogRealGcpITCase` (gated) holds the spellings, the
+  system schemas and the read-API refusal against Spanner itself (ADR-0176's Evidence).
 
 ## Testing
 

@@ -13,3 +13,4 @@
 # limitations under the License.
 
 io.github.flink.gcp.connector.spanner.table.SpannerDynamicTableFactory
+io.github.flink.gcp.connector.spanner.table.catalog.SpannerCatalogFactory
