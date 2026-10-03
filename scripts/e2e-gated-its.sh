@@ -29,6 +29,8 @@
 # check in ci.yaml via `just check-gated-tags`:
 #
 #   (default)      print the gated class names, comma-joined, for -Dtest=
+#                  (a Tier-3 application's classes also need its profile, so an
+#                  undivided run over the default reactor reports them NOT_RUN)
 #   --require-env  fail unless every variable the gates read is set.
 #                  @EnabledIfEnvironmentVariable turns a missing variable into
 #                  a silent skip; this turns it into an error before any build
@@ -49,6 +51,12 @@
 #                  Cloud Tasks class and nothing else.
 #   --except-gate  print every class except those using the named gate, for
 #                  callers selecting an explicit subset outside --run.
+#   --modules-for-gate
+#                  print one line per module holding the named gate's classes:
+#                  its directory, then those classes comma-joined. --run uses
+#                  it so a module is never handed another module's class names,
+#                  and so a Tier-3 application under kubernetes/apps, outside
+#                  the default reactor, runs behind its tier3-<name> profile.
 #   --check-tags   fail unless the environment gate and @Tag("gated") sit
 #                  together on every class carrying either (issue #245)
 #
@@ -60,6 +68,11 @@
 # --check-tags exists to catch.
 
 set -euo pipefail
+
+usage() {
+    echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --modules-for-gate GATE | --check-tags]" >&2
+    exit 2
+}
 
 # Validate selector arguments before restoring the parser, so a typo reports
 # the usage error even on a machine that has not installed mise yet. This list
@@ -150,7 +163,7 @@ finish_suite() {
 }
 
 run_suite() {
-    local outcome=0 gate module classes
+    local outcome=0 gate module modules classes
     local maven=("$@")
     scripts/e2e-gated-its.sh --prepare-reports
     trap finish_suite EXIT
@@ -166,15 +179,28 @@ run_suite() {
     # independently before starting more billed fixtures.
     run_child scripts/appengine-e2e-fixture.sh stop
     for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
-        case "$gate" in
-            BQ_IT_PROJECT) module=bigquery ;;
-            PUBSUB_IT_PROJECT) module=pubsub ;;
-            BIGTABLE_IT_PROJECT) module=bigtable ;;
-            SPANNER_IT_PROJECT) module=spanner ;;
-        esac
-        classes=$(scripts/e2e-gated-its.sh --for-gate "$gate")
-        run_child "${maven[@]}" -pl "flink-connector-gcp-$module" surefire:test@integration-tests \
-            -Dtest.excluded.groups= -Dsurefire.rerunFailingTestsCount=0 "-Dtest=$classes" || outcome=1
+        modules=$(scripts/e2e-gated-its.sh --modules-for-gate "$gate")
+        while read -r module classes; do
+            case "$module" in
+                kubernetes/apps/*)
+                    # A Tier-3 application sits outside the default reactor, behind its
+                    # tier3-<name> profile, and resolves its connector from the local
+                    # repository. Install that connector from this tree first, so a stale
+                    # snapshot cannot stand in for it.
+                    run_child "${maven[@]}" -pl "flink-connector-gcp-${module##*/}" \
+                        -DskipTests -Drat.skip=true install < /dev/null \
+                        && run_child "${maven[@]}" -P "tier3-${module##*/}" -pl "$module" \
+                            test-compile surefire:test@integration-tests \
+                            -Dtest.excluded.groups= -Dsurefire.rerunFailingTestsCount=0 "-Dtest=$classes" \
+                            < /dev/null || outcome=1
+                    ;;
+                *)
+                    run_child "${maven[@]}" -pl "$module" surefire:test@integration-tests \
+                        -Dtest.excluded.groups= -Dsurefire.rerunFailingTestsCount=0 "-Dtest=$classes" \
+                        < /dev/null || outcome=1
+                    ;;
+            esac
+        done <<< "$modules"
     done
     return "$outcome"
 }
@@ -205,10 +231,7 @@ case "${1:-}" in
         # its own — so there is no resource name to pass in. Cloud Tasks reads
         # its service and version from OpenTofu, while the lifecycle wrapper
         # exports the observed instance id only after startup.
-        [ "$#" -eq 1 ] || {
-            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
-            exit 2
-        }
+        [ "$#" -eq 1 ] || usage
         for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT CLOUDTASKS_IT_PROJECT; do
             if [ -z "${!var:-}" ]; then
                 echo "::error::$var is not set, so the gated real-GCP ITCases would silently skip. Locally the variables come from the uncommitted .env at the repository root, which mise loads." >&2
@@ -218,15 +241,19 @@ case "${1:-}" in
         ;;
     --for-gate)
         if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
-            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
-            exit 2
+            usage
         fi
         print_classes "$2"
         ;;
+    --modules-for-gate)
+        if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
+            usage
+        fi
+        run_tag_checker --root "$PWD" --modules-for-gate "$2"
+        ;;
     --except-gate)
         if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
-            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
-            exit 2
+            usage
         fi
         print_classes '' "$2"
         ;;
@@ -249,15 +276,11 @@ case "${1:-}" in
         run_repository_python e2e-reports.py "$mode" --root "$PWD" <<< "$sources"
         ;;
     --check-tags)
-        [ "$#" -eq 1 ] || {
-            echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
-            exit 2
-        }
+        [ "$#" -eq 1 ] || usage
         run_tag_checker --root "$PWD" --check
         exit
         ;;
     *)
-        echo "usage: $0 [--run -- MAVEN [ARG ...] | --require-env | --prepare-reports | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
-        exit 2
+        usage
         ;;
 esac

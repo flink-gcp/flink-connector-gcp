@@ -64,7 +64,9 @@ updates:
       # that classpath resolves what a deployment adding hadoop-common resolves.
       # Every update type — they move when hadoop.version moves, which dependabot
       # is still free to bump. Issue #940 records the decision; the pom comment
-      # beside the two dependencies carries the reason.
+      # beside the two dependencies carries the reason. The Tier-3 BigQuery
+      # application (kubernetes/apps/bigquery/pom.xml) ships the same two at the
+      # same pins, so both poms move together.
       - dependency-name: org.apache.commons:commons-collections4
       - dependency-name: org.apache.hadoop.thirdparty:hadoop-shaded-guava
   - package-ecosystem: github-actions

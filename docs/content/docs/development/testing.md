@@ -83,6 +83,9 @@ per-service gates select, and asserts afterwards that they actually ran, so a si
 suite cannot pass as a green one. A few deliberately manual cases — slow schema-propagation
 observations — sit behind gates of their own, outside `just e2e`.
 
+The gated classes of the Tier-3 applications under `kubernetes/apps` join the same run.
+Each application sits outside the default reactor, so the recipe installs its connector from the working tree and then builds it behind its `tier3-<name>` profile; the BigQuery application's FILE_LOADS savepoint restore is one such class.
+
 Each connector runs even when an earlier connector test fails, provided the App Engine fixture has returned to its stopped, zero-instance state.
 The recipe removes selected old reports before starting and validates the full XML reports against that run's inventory at exit, including on failure.
 Missing, stale, truncated, mismatched, failed or skipped results fail the run.

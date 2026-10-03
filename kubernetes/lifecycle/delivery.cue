@@ -38,8 +38,8 @@ flinkVersion:     *"2.2.1" | "1.20.4" @tag(flink_version)
 applicationImage: *"" | string        @tag(application_image)
 targetURL:        *"" | string        @tag(target)
 // Offline BigQuery application inputs; these do not extend lifecycle admission.
-bigqueryMode:         *"EO" | "ALO" @tag(bigquery_mode)
-bigqueryDestinations: *10 | 50      @tag(bigquery_destinations,type=int)
+bigqueryMode:         *"EO" | "ALO" | "FILE_LOADS" @tag(bigquery_mode)
+bigqueryDestinations: *10 | 50                     @tag(bigquery_destinations,type=int)
 // Shared offline proposal document for BigQuery and Pub/Sub.
 proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.

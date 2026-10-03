@@ -20,6 +20,7 @@ let inputs = run
 let application = bigquery.#Application & {
 	run: {id: inputs.id, image: inputs.image, phase: inputs.phase, mode: inputs.mode, destinations: inputs.destinations}
 	if inputs.records != _|_ {run: records: inputs.records}
+	if inputs.fileLoads != _|_ {run: fileLoads: inputs.fileLoads}
 }
 
 delivery: resources: app: application.resource

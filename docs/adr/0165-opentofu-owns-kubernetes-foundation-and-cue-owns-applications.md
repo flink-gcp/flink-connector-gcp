@@ -444,6 +444,19 @@ A declared revision and digest-shaped image are inputs to later provenance check
 Keep the cost calculation a planning estimate with an explicit reserve; it cannot bound service bills or replace final resource and cost approval.
 Updated image publication, digest adoption, bounded admission/query execution and complete cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 
+Refined under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), the first step of the [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313) FILE_LOADS finalization scenario: the application and its CUE package gain a third mode, `FILE_LOADS`, that builds the production FILE_LOADS sink with `WRITE_APPEND` and 1 KiB rows.
+Stage under `runs/<run-id>/staging` in the run's state bucket, inside the existing run-state IAM condition, bucket lifecycle rule and cleanup prefix.
+Checkpoint every 120 seconds in this mode, in both the Java graph and the rendered configuration: the connector refuses an interval below its two-minute `minCheckpointInterval` default at graph construction, and the Java interval overrides the rendered one.
+The Storage Write modes keep their 30-second interval, and their rendered manifests are unchanged byte for byte.
+Take the five sink inputs a trial varies (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`) as an explicit argument allowlist at the connector's defaults, refused in the Storage Write modes and bound into the checkpointed input identity.
+Bundle the Parquet and Hadoop runtime the connector leaves to a deployment, so `PARQUET` staging is selectable rather than refused at graph construction.
+Do not decorate the FILE_LOADS sink: it has no appender, and the connector's per-checkpoint staging, per-job submission and per-commit row-count log lines with its writer and committer metrics already report what a trial reads, beside the query oracle.
+The CUE package renders the knobs from a flag table and re-unifies them with their schema where they are read, because a struct a delivery passed by reference rendered an out-of-range value through the plain path on cue v0.17.1; an out-of-range or unknown knob, or any knob in a Storage Write mode, fails the render, and `maxOpenDestinations` is capped at the connector's default `maxPendingFiles`, which the application does not expose.
+The emulator cannot cover this mode: the connector refuses emulator endpoints for FILE_LOADS, because the pinned emulator runs no load jobs and serves no Cloud Storage.
+A gated real-GCP ITCase therefore takes the savepoint-restore coverage, and the gated discovery and the `just e2e` runner now include Tier-3 applications under `kubernetes/apps`, each built behind its `tier3-<name>` profile after its connector is installed from the same tree.
+Trial selection, the proposal, dispatch and the oracle still refuse the mode until [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551); this change grants no permission and runs nothing on the deployed rig.
+The deployed workload identity cannot run the mode until [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550) grants it at least `bigquery.datasets.get`, which the committer needs to read each destination dataset's location, and `bigquery.jobs.create`, which it needs to submit load jobs (the overflow path may need table create and delete as well); the gated test runs under the E2E identity and cannot show that gap.
+
 ### Pub/Sub GCP preparation
 
 For [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361), prepare a dedicated `tier3-pubsub` GSA and `flink-gcp-tier3-pubsub` state bucket in the GCP root before extending the Kubernetes foundation.
