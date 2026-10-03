@@ -88,7 +88,7 @@ All updates for one counter bucket use the same row key, qualifier and bucket ti
 
 `addToCell` contributes an input to the family's aggregation function.
 `MergeToCell` contributes an already accumulated state, such as the bytes read from an Int64 Sum cell in another table.
-The pinned Java SDK 2.82.0's `mergeToCell` convenience overload encodes that state as `raw_value`.
+The Java SDK's `mergeToCell` convenience overload encodes that state as `raw_value`.
 Its typed `Value` model has no `bytes_value` variant either.
 An Int64 Sum write to real Bigtable on 2026-09-05 rejected that input with `INVALID_ARGUMENT: ... must use bytes_value`; ADR-0041 records the observation and the successful `bytes_value` rerun.
 The example therefore builds the protobuf input with `bytes_value` and wraps the mutation through the SDK's public beta `fromProtoUnsafe` and `createFromMutationUnsafe` methods.

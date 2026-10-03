@@ -192,6 +192,10 @@
                                     <shadedPattern>io.github.flink.gcp.connector.pubsub.shaded.com.google</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <pattern>dev.cel</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.pubsub.shaded.dev.cel</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>io.grpc</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.pubsub.shaded.io.grpc</shadedPattern>
                                 </relocation>

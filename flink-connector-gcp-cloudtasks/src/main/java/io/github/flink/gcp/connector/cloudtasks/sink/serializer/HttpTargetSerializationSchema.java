@@ -157,9 +157,9 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
      * Returns a schema resolving the target URL per record, overriding the URL the chain started
      * from.
      *
-     * <p>Note that a queue carrying an {@code httpTarget.uriOverride} overrides task-level URLs and
-     * cannot be detected through the v2 client, so per-record URLs silently go to the queue's URL
-     * against such a queue.
+     * <p>Note that a queue carrying an {@code httpTarget.uriOverride} overrides task-level URLs,
+     * and the sink does not check the queue for one, so per-record URLs silently go to the queue's
+     * URL against such a queue.
      *
      * @param extractor the URL extractor; must return an absolute {@code http://} or {@code
      *     https://} URL

@@ -39,12 +39,11 @@ import java.io.Serializable;
  *
  * <p><b>Not {@code AutoCloseable}</b>, unlike the two seams on the read path. Those wrap {@code
  * BigQueryReadClient}, which owns a gRPC channel and an executor that leak if nothing releases
- * them; this one wraps the REST client, and {@code com.google.cloud.bigquery.BigQuery} extends
- * {@code com.google.cloud.Service} and nothing else — there is no {@code close} to call (verified
- * against google-cloud-bigquery 2.69.0 on 2026-08-22, the version {@code libraries-bom} resolves).
- * {@code TableAdmin} on the sink side holds the same client and is not closeable for the same
- * reason. A closeable seam here would be one the enumerator has to compose into its single planner
- * for no released resource.
+ * them; this one wraps the REST client, whose {@code close} releases only the {@code
+ * BigQueryReadClient}s its Arrow query paths create, and this runner never takes one (ADR-0087
+ * records the versions checked). {@code TableAdmin} on the sink side holds the same client and is
+ * not closeable for the same reason. A closeable seam here would be one the enumerator has to
+ * compose into its single planner for no released resource.
  */
 @Internal
 public interface QueryRunner extends Serializable {

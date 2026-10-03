@@ -277,8 +277,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      * own client. The writer closing its copy releases nothing here.
      *
      * <p>The lazily built {@link LoadJobRunner} and {@link TableAdmin} are not released here
-     * because neither declares a {@code close()}, and neither has to: {@code
-     * com.google.cloud.bigquery.BigQuery}, the client behind both, is not {@code AutoCloseable}.
+     * because neither declares a {@code close()}, and neither has to: closing {@code
+     * com.google.cloud.bigquery.BigQuery}, the client behind both, releases only the {@code
+     * BigQueryReadClient}s its Arrow query paths create, and neither of them takes one.
      *
      * @throws Exception if the worker pool or staging client cannot close
      */

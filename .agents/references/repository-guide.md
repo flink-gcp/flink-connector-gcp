@@ -781,6 +781,14 @@ facts); the rules a session needs:
   is exactly what should arrive, and #916 records what a `hadoop.version` bump costs
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
   google-cloud artifact versions
+- **Cutting a minor release starts by adopting the latest `libraries-bom`** (#1555): as the
+  release candidate's first step, bump `google-cloud-libraries-bom.version` to the newest release
+  on Maven Central, re-check on the release day, and name the adopted version in the release
+  notes. Dependabot's monthly `maven` group does not cover this: the BOM has shipped every one to
+  four weeks, about two on average. A BOM bump owes more than the property:
+  `just update-notice <module>` for each shaded module, a relocation for any package root the
+  packaging ITCase reports, the org.json check its root-POM comment prescribes, and a re-read of
+  every documented claim about what a moved SDK does or lacks
 
 ## CI architecture
 

@@ -149,6 +149,27 @@ class FirestoreWriteTest {
     }
 
     @Test
+    void aBsonBinaryBlobOfAnotherSubtypeIsRejectedAndSubtypeZeroIsAccepted() {
+        // A subtype other than 0 is encoded as a reserved map rather than bytes, which the writer's
+        // size accounting does not count (#1589); subtype 0 is the plain bytes value.
+        assertThat(FirestoreWrite.set("c/a", Map.of("v", Blob.createBsonBinary(0, new byte[] {1}))))
+                .isNotNull();
+        assertThatThrownBy(
+                        () ->
+                                FirestoreWrite.set(
+                                        "c/a",
+                                        Map.of(
+                                                "outer",
+                                                List.of(
+                                                        Blob.createBsonBinary(
+                                                                128, new byte[] {1})))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("outer[0]")
+                .hasMessageContaining("subtype 128")
+                .hasMessageContaining("Blob.fromBytes");
+    }
+
+    @Test
     void toStringNamesTheFieldsButNotTheirValues() {
         assertThat(FirestoreWrite.update("c/a", Map.of("secret", "value"), TIME).toString())
                 .contains("UPDATE", "c/a", "secret", "lastUpdateTime")

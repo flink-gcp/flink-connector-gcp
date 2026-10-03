@@ -175,7 +175,7 @@ acceptance fixture in [#632]({{< param BookRepo >}}/issues/632) provides.
 
 Queue configuration wins over the record: if `appEngineRoutingOverride` is present, Cloud Tasks
 uses it for every task regardless of the task-level routing above.
-The v2 client can read this queue field, unlike HTTP `uriOverride`, which requires REST or v2beta3.
+The v2 client can read this queue field, as it can HTTP `uriOverride`.
 The sink does not validate routing overrides; the staged mode's queue read checks name retention only.
 
 App Engine handlers may be secure, unsecure, or restricted to `login: admin`; tasks do not run as
@@ -213,16 +213,15 @@ OAuth is the narrow one: Google documents it as "generally only" for `*.googleap
 builder does not present the two as interchangeable knobs; setting both is rejected, since the
 underlying field is a `oneof`.
 
-**Queue-level routing can silently override the task's URL — and v2 cannot see it.** A queue may
+**Queue-level routing can silently override the task's URL.** A queue may
 carry an `httpTarget.uriOverride` whose `uriOverrideEnforceMode` defaults to `ALWAYS`, documented
 as "queue-level configuration overrides all task-level configuration". A pipeline resolving URLs
 per record against such a queue will see every task go to the queue's URL instead, with no error
 anywhere.
 
-Detecting it is harder than it looks: `httpTarget` exists in the **REST** `Queue` resource and in
-`v2beta3`, but **not in the v2 proto** — `com.google.cloud.tasks.v2.Queue` has no `getHttpTarget`,
-so a v2 `GetQueue` returns an object that cannot carry the field at all.
-The staged mode uses v2beta3 for retention readback, but neither mode validates `httpTarget` routing overrides.
+`httpTarget` is a field of the REST `Queue` resource and of both the v2 and `v2beta3` protos, so
+the override can be inspected on the queue itself.
+The sink does not inspect it: the staged mode uses v2beta3 for retention readback only, and neither mode validates `httpTarget` routing overrides.
 Configure those independently; successful retention verification does not establish which URL receives a task.
 
 ### Task naming and deduplication
@@ -327,15 +326,16 @@ The sink options do not change how quickly Cloud Tasks delivers requests or retr
 handler invocation.
 
 **This sink does not use a batch create, and creation costs one RPC per record.** `BufferTask` is a
-GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does, but only on the
-**v2beta3** surface — long-running, explicitly non-atomic, 100 tasks maximum — while this
-connector targets v2. It was evaluated against a real queue and declined in
+GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does: a
+long-running, explicitly non-atomic call of at most 100 tasks. It was evaluated on its **v2beta3**
+surface against a real queue and declined in
 [#937]({{< param BookRepo >}}/issues/937)
 ([ADR-0129]({{< param BookRepo >}}/blob/main/docs/adr/0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md)
 holds the measurements): batching was no faster than the sink's existing concurrent creates, and
 a batch containing already-existing named tasks is rejected wholesale with a single
 `ALREADY_EXISTS` — no per-task report, its non-duplicate half still silently created — which no
-sink reporting per-task outcomes can reconcile. The Java client also
+sink reporting per-task outcomes can reconcile. The Java client now also offers the method on
+v2; re-evaluating it is tracked in [#1590]({{< param BookRepo >}}/issues/1590). The Java client also
 configures no method with gax batching — there is no `BatchingSettings` in `CloudTasksSettings` or
 `CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
 are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.

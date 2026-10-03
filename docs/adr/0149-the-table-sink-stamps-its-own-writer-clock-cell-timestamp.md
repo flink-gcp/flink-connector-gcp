@@ -133,7 +133,10 @@ change wearing the same clothes.
   2.82.0 the emulator will still reject a client-auto-generated timestamp, so the harness needs an
   explicit one of its own; that workaround travels with the bump and is tracked, with its removal
   condition, in [#1205]. The deviation is reported upstream as [googleapis/google-cloud-go#20468]
-  with a fix in [googleapis/google-cloud-go#20469].
+  with a fix in [googleapis/google-cloud-go#20469]. In google-cloud-bigtable 2.85.0
+  `newBuilderForEmulator` rounds a client-auto-generated timestamp down to a millisecond on the
+  client, which hides the deviation from every client built that way; the emulator itself is
+  unchanged, so [#1205] stays open and the deviation suite pins both behaviors (2026-10-03).
 
 ## Alternatives declined
 

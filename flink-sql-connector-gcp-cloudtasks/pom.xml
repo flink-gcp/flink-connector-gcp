@@ -183,6 +183,10 @@
                                     <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.com.google</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <pattern>dev.cel</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.dev.cel</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>io.grpc</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.grpc</shadedPattern>
                                 </relocation>

@@ -466,7 +466,8 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * before the first checkpoint builds a second enumerator over this same object, and its
      * planning call runs on a different coordinator worker thread. Without the guard that thread
      * may not see the first one's write and would build a second client — nothing this class can
-     * release, since the REST client has no {@code close}. The lock covers construction only.
+     * release, since the REST client holds no resource on the paths this runner uses. The lock
+     * covers construction only.
      *
      * @param project the project the job is submitted to, which is also what satisfies the
      *     emulator's builder

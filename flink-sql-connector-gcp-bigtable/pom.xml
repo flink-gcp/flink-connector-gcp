@@ -202,6 +202,10 @@
                                     <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.com.google</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <pattern>dev.cel</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.dev.cel</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>io.grpc</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.grpc</shadedPattern>
                                 </relocation>
