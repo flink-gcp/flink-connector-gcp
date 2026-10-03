@@ -15,6 +15,7 @@
 """Flink metric primitives, shared by the scenarios that sample them."""
 
 from .common import ApiError, TransportError
+from .policy import MIB
 
 AGGREGATES = "min,max,sum"
 # The query service reports an operator metric as "<sanitised operator>.<name>",
@@ -47,3 +48,34 @@ def unavailable(value):
 def subset(value, fields):
     value = value or {}
     return {field: value[field] for field in fields if field in value}
+
+
+class FlinkRest:
+    """Read the running job's REST API through its own Service, by proxy.
+
+    The Cloud Tasks observer has equivalents bound to that scenario's fixed
+    namespace and to its session's meter; this one takes the namespace from
+    the approval so the same endpoints can be read from a recovery exercise.
+    """
+
+    def __init__(self, env, service, job_id):
+        self.env, self.service, self.job_id = env, service, job_id
+
+    def _read(self, suffix, limit):
+        return self.env.kube.request(
+            "GET",
+            self.env.kube.path(
+                "Service",
+                self.env.approval.application_namespace,
+                self.service["metadata"]["name"] + ":8081",
+            )
+            + "/proxy"
+            + suffix,
+            limit=limit,
+        )
+
+    def job(self, path, limit=MIB):
+        return self._read(f"/jobs/{self.job_id}{path}", limit)
+
+    def root(self, path, limit=MIB):
+        return self._read(path, limit)

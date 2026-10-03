@@ -1780,7 +1780,14 @@ def test_pubsub_recovery_deployment_contract(
     ]
     config = spec["flinkConfiguration"]
     assert config["taskmanager.numberOfTaskSlots"] == "1"
-    assert config["execution.checkpointing.interval"] == "30 s"
+    # Status-based savepoint reporting, and no last-state fallback, as the
+    # recovery exercise reads the upgrade savepoint from the application.
+    assert config["kubernetes.operator.snapshot.resource.enabled"] == "false"
+    assert (
+        config["kubernetes.operator.job.upgrade.last-state-fallback.enabled"]
+        == "false"
+    )
+    assert config["execution.checkpointing.interval"] == "120 s"
     assert config["execution.checkpointing.max-concurrent-checkpoints"] == "1"
     assert config["execution.checkpointing.storage"] == "filesystem"
     assert config["high-availability.type"] == "kubernetes"

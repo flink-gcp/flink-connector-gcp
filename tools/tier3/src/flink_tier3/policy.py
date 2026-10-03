@@ -78,6 +78,7 @@ PUBSUB_ADMISSION = {
     "startup_seconds": 900,
 }
 
+
 # Application namespaces first, then the control namespace.
 NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, SYSTEM)
 
@@ -123,3 +124,33 @@ POLL = 15
 
 
 HTTP_TIMEOUT = 20
+
+
+PUBSUB_EXERCISE = {
+    # Admission's own window and one poll, so that a RUNNING the runner set
+    # in its last moment is still seen.
+    "startup_seconds": PUBSUB_ADMISSION["startup_seconds"] + POLL,
+    # From the application's creation to its first cohort fully observed on
+    # the output subscription. A cold Autopilot cluster provisions a node each
+    # for the JobManager and the TaskManagers, which took about ten minutes
+    # for BigQuery's pilot.
+    "input_seconds": 900,
+    # To a completed checkpoint triggered after that observation: one
+    # 120-second interval, one 120-second checkpoint timeout and a margin.
+    "checkpoint_seconds": 300,
+    # From the replay cohort's request to its processing observed, which must
+    # also come before the next checkpoint completes for the boundary to hold.
+    "boundary_seconds": 180,
+    # From a cohort's request to its publication's start: the runner serves
+    # requests once per poll.
+    "cohort_seconds": 90,
+    # From the fault to restored attempts having replayed what the fault
+    # displaced: a replacement Pod may need a new node.
+    "recovery_seconds": 600,
+    # From the last cohort's request to its processing observed on both
+    # inputs and a checkpoint completed after it.
+    "after_seconds": 420,
+    "measure_seconds": 60,
+    # Output pulls per poll at most; a short batch ends a poll's drain sooner.
+    "drain_pulls": 5,
+}

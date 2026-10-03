@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 
 from .bigquery import assess
-from .bigquery_observe import FlinkRest, observation, vertices
+from .bigquery_observe import observation, vertices
 from .bigquery_verdict import (
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
@@ -149,16 +149,8 @@ class BigQueryExercise(RecoveryExercise):
         super().persist(stage, **details)
 
     def attach_rest(self, service, job_id):
-        # No service resolved means the job is between states; measuring
-        # against the last one would attribute a reading to a job that is not
-        # the one running.
-        if service is None:
-            self.rest, self.vertices = None, None
-            return
-        if self.rest is None or self.rest.job_id != job_id:
-            self.rest = FlinkRest(self.env, service, job_id)
+        if self.track_rest(service, job_id):
             self.vertices = None
-        self.rest.service = service
 
     def measure(self):
         """Sample the sink once, inside the window the exercise is already in.
@@ -168,15 +160,8 @@ class BigQueryExercise(RecoveryExercise):
         re-discovering every poll would spend reads on an answer that does not
         change while the job runs.
         """
-        if self.rest is None:
+        if not self.measurement_due():
             return
-        now = self.env.clock()
-        if (
-            self.measured_at is not None
-            and now - self.measured_at < self.timing["measure_seconds"]
-        ):
-            return
-        self.measured_at = now
         self.vertices = vertices(self.rest, self.vertices)
         reading = observation(self.rest, self.vertices)
         self.coverage = summarize(self.coverage, self.stage, reading)

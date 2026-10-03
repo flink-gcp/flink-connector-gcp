@@ -41,7 +41,10 @@ public final class PubSubRecoveryJob {
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         env.setParallelism(options.parallelism);
         env.setMaxParallelism(128);
-        env.enableCheckpointing(30000);
+        // Long enough for a supervised trial to publish, process and observe a
+        // cohort between two checkpoints, so that a fault can follow it before
+        // any checkpoint covers it.
+        env.enableCheckpointing(120000);
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         attach(env, options, null);
         env.execute("Pub/Sub Tier-3 recovery " + options.runId);
