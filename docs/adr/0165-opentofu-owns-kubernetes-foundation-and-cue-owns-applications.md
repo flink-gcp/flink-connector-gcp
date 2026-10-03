@@ -48,6 +48,7 @@ limitations under the License.
 - Updated: 2026-09-25 (BigQuery deployed trial findings)
 - Updated: 2026-10-03 (Pub/Sub admission building blocks: actor construction, per-method operation bounds, settled failures)
 - Updated: 2026-10-03 (Pub/Sub runner admission, effective-access probes and supervisor participation)
+- Updated: 2026-10-03 (Pub/Sub cohorts the supervisor requests and the runner publishes, and output collection)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -607,6 +608,7 @@ Attach the original Pub/Sub runner to common settlement and the supervisor to co
 The caller must finish data operations by both actors, including supervisor output collection, before entering terminal settlement.
 Release the runner before waiting for the supervisor, because the supervisor's service cleanup itself waits for every bound release.
 That release closes shared admission even without an explicit stop request; waiting cannot overlap further output collection.
+A runner that is not stopping now keeps its authority while it waits, to publish the cohorts the supervisor requests, as refined under [#1601](https://github.com/flink-gcp/flink-connector-gcp/issues/1601) below.
 Keep failed-release diagnostics and a failed outcome even when a later acknowledgement settles.
 An unbound supervisor may stop admission without fabricating a release record; a replacement cannot release a former actor.
 
@@ -626,6 +628,7 @@ Keep JM and active-TM replacement separate, with unchanged manifests at parallel
 Freeze the run/nonce, supplied source/image identities, installed runtime digest, exact manifests, service settings and grants.
 Divide each subscription's finite sequence domain into disjoint pre-recovery and post-recovery cohorts, using at most 100 messages per publication.
 The cohorts define publication intent, not a measured uncheckpointed replay population.
+Three cohorts replace the two, so that the replay population is published as its own cohort, as refined under [#1601](https://github.com/flink-gcp/flink-connector-gcp/issues/1601) below.
 
 Require explicit traffic counters within the existing helper ceilings and check that they can cover at least one complete input/output pass.
 Propose a one-hour window, fifteen-minute cleanup reserve, seven total Pods and no PVCs, with separate total-request and additional-cost caps.
@@ -703,6 +706,14 @@ A runner-only Role lets the runner create Pods in `tier3-pubsub`; the runner cou
 The supervisor joins, probes itself and stops at the exercise boundary.
 Once the run has Pub/Sub state, a stopped supervisor is not left to a replacement, joined or not, because only a supervisor deletes Pub/Sub resources and no other process can release a joined one's authority; a replacement that finds such a binding stops the run and reclaims only after the runner released, the former supervisor Pod ended or is gone, and the namespace barrier passed, and a supervisor whose cleanup outlasts its grace period keeps the lock for an operator.
 Declined: a probe that reads a ConfigMap in `tier3-pubsub`, which would need the runner to create ConfigMaps there as well; a Python-built probe manifest, which would leave the only unrendered resource outside CUE's ownership of manifests; having the Operator's service account create the probe, which would borrow another identity's authority; treating a permission test as proof of data access, which the pull adds; publishing only after `RUNNING`, which would race the supervisor's start of supervision; and letting a replacement claim a run its joined predecessor already stopped, which would reopen the claim fence of [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396).
+
+Refined under [#1601](https://github.com/flink-gcp/flink-connector-gcp/issues/1601), the first half of the supervised exercise [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431): the input domain splits into three cohorts per subscription, and the runner publishes the later two when the supervisor asks.
+The first cohort is published at admission, the second after a retained completed checkpoint, so that a replacement trial has a population that was processed but that no completed checkpoint covers, and the third after observed recovery.
+Only the runner holds the publisher grant on the input topics, so the supervisor records a request in the run control and the runner serves it from its settlement wait; each cohort is published once, in order and before its deadline, and its start is durable before its first request, so that start bounds from below when any of its messages can exist.
+The runner therefore no longer releases its authority as settlement begins: it keeps it while the run is `RUNNING` and nothing stops it, and releases once a stop or evidence failure is recorded, the supervisor's Job ends or is lost, the run leaves `RUNNING`, `cleanup_at` passes or a publication fails.
+Supervisor cleanup stops admission before it waits for the runner's release, so the runner, which sees that stop on its next poll, never waits on a supervisor that waits on it.
+The supervisor's output collection pulls the independent subscription through its own reservations and keeps the parsed relay observations for the exercise; the batch evidence stays as the message helper writes it.
+Declined: granting the supervisor publish access on the input topics, which would remove the separation between the identity that drives input and the one that observes output; and a second cohort taken from the halves the plan had, which would leave the replay population indistinguishable from input published before the retained checkpoint.
 
 ### Pub/Sub lifecycle IAM preparation
 

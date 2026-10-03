@@ -31,6 +31,22 @@ MAX_PAYLOAD_BYTES = 4096
 MAX_ID_BYTES = 1024
 MAX_ACK_ID_BYTES = 4096
 
+# Each subscription's input domain in publication order: the cohort admission
+# publishes, the one published after a retained completed checkpoint (the
+# population a replacement trial must see redelivered), and the one published
+# after observed recovery.
+COHORTS = ("before_checkpoint", "after_checkpoint", "after_recovery")
+
+
+def cohort_ranges(records):
+    """Split one subscription's domain into three disjoint, nonempty thirds."""
+    _integer(records, 3, 10000, "cohort domain")
+    bounds = (0, records // 3, 2 * records // 3, records)
+    return {
+        name: {"start": bounds[i], "count": bounds[i + 1] - bounds[i]}
+        for i, name in enumerate(COHORTS)
+    }
+
 
 def _integer(value, low, high, name):
     if type(value) is not int or not low <= value <= high:

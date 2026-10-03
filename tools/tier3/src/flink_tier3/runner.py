@@ -21,6 +21,7 @@ from .cloudtasks import admission_budget_open, admit_queue
 from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
 from .pubsub_admission import admit, require_admission
 from .pubsub_guard import admission_deadline
+from .pubsub_handoff import CohortUnstarted
 from .pubsub_lifecycle import require_pubsub_clean
 from .records import write_artifact
 
@@ -315,16 +316,27 @@ class Runner:
                     self.env.emit("pubsub-release-blocked", {"cause": cause})
                     last_pubsub_error = cause
 
-        # Both actors have finished data operations before terminal settlement.
-        # Release stops shared admission, including supervisor collection, before
-        # waiting for the supervisor's cleanup to observe this actor's release.
-        release_pubsub()
-        self.env.refresh()
-        if request_stop or self.env.stopping:
-            self.env.records.request_stop()
-        self.adopt_root("config")
-        self.adopt_root("supervisor")
-        self.adopt_root("probe")
+        # Release stops shared admission, including supervisor collection. A
+        # run that is not stopping keeps the runner's authority while it waits,
+        # because only the runner may publish the cohorts the supervisor
+        # requests; a stopping one releases first, so the supervisor's cleanup
+        # never waits on a runner that waits on it.
+        pubsub_serving = (
+            self.pubsub is not None and not request_stop and not self.env.stopping
+        )
+        if not pubsub_serving:
+            release_pubsub()
+        try:
+            self.env.refresh()
+            if request_stop or self.env.stopping:
+                self.env.records.request_stop()
+            self.adopt_root("config")
+            self.adopt_root("supervisor")
+            self.adopt_root("probe")
+        except BaseException:
+            # Nothing is served once settlement cannot reach its wait.
+            release_pubsub()
+            raise
 
         query_failed = False
         released = False
@@ -344,8 +356,9 @@ class Runner:
                         last_release_error = cause
 
         def completed():
-            nonlocal query_failed
-            release_pubsub()
+            nonlocal query_failed, pubsub_serving, pubsub_failed
+            if not pubsub_serving:
+                release_pubsub()
             control = self.env.refresh()
             if self.env.stopping:
                 self.env.records.request_stop()
@@ -356,17 +369,36 @@ class Runner:
                 or control.phase == rt.Phase.CLEANED
                 or self.supervisor_lost()
             )
+            # When neither handoff may admit another runner operation.
+            closed = (
+                finished
+                or self.env.stopping
+                or self.env.evidence_failed
+                or control.stop_requested
+                or control.evidence_failed
+                or control.phase != rt.Phase.RUNNING
+                or self.env.clock() >= self.env.schedule.cleanup_at
+            )
+            if pubsub_serving:
+                if closed:
+                    pubsub_serving = False
+                    release_pubsub()
+                else:
+                    try:
+                        self.pubsub.serve()
+                    except CohortUnstarted:
+                        # The run closed after this poll's read: nothing was
+                        # started, so this is a close, not a failure.
+                        pubsub_serving = False
+                        release_pubsub()
+                    except (rt.Failure, OSError, ValueError) as error:
+                        pubsub_serving, pubsub_failed = False, True
+                        self.env.emit(
+                            "pubsub-publication-failed", {"cause": str(error)}
+                        )
+                        release_pubsub()
             if self.bigquery is not None and not released:
-                if (
-                    finished
-                    or query_failed
-                    or self.env.stopping
-                    or self.env.evidence_failed
-                    or control.stop_requested
-                    or control.evidence_failed
-                    or control.phase != rt.Phase.RUNNING
-                    or self.env.clock() >= self.env.schedule.cleanup_at
-                ):
+                if closed or query_failed:
                     release_queries()
                 else:
                     try:

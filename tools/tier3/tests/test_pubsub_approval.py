@@ -69,7 +69,7 @@ def prepared(env, trial):
 
 
 @pytest.mark.parametrize("kind", plan.TRIALS)
-@pytest.mark.parametrize("records", [2, 101, 10000])
+@pytest.mark.parametrize("records", [3, 101, 10000])
 @pytest.mark.parametrize("entry_point", plan.ENTRY_POINTS)
 def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
     environment, _ = prepared
@@ -123,6 +123,8 @@ def test_incompatible_approval_refused(prepared, key, value):
         ("version", 2),
         ("entry_point", "sql"),
         ("records_per_subscription", True),
+        # Three cohorts, each nonempty.
+        ("records_per_subscription", 2),
         ("records_per_subscription", 10001),
         ("traffic_limits", {}),
         ("total_request_limit", 29999),

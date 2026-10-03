@@ -84,6 +84,11 @@ METHOD_BOUNDS = {
     "access": _bound((ACCESS,), reads=1, changes=1),
     "record": _bound(changes=1),
     "actors": _bound(reads=1),
+    # A cohort's request, a read of every cohort, and the publication's start
+    # or end mark; its batches reserve as `publish`.
+    "request_cohort": _bound(changes=1),
+    "read_cohorts": _bound(reads=1),
+    "mark_cohort": _bound(changes=1),
 }
 # Methods that admit work. Their Pub/Sub requests stop at the deadline and
 # once the approval no longer validates; the rest settle the run and must

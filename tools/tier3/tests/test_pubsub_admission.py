@@ -260,8 +260,15 @@ def test_admission_runs_the_ordered_preparation_before_the_application(admitting
     # Nothing is published until every identity passed, and the application
     # is created last, with its input waiting.
     assert participated < min(publishes) and max(publishes) < application
-    cohort = a.environment.approval.pubsub_trial["records_per_subscription"] // 2
+    cohort = a.environment.approval.pubsub_trial["records_per_subscription"] // 3
     assert len(publishes) == 2 * -(-cohort // 100)
+    cohorts = control.pubsub["cohorts"]
+    assert list(cohorts) == ["before_checkpoint"]
+    assert cohorts["before_checkpoint"]["requested_at"] is None
+    assert (
+        cohorts["before_checkpoint"]["started_at"]
+        <= cohorts["before_checkpoint"]["published_at"]
+    )
     access = control.pubsub["access"]
     assert set(access) == {"runner", "workload", "supervisor"}
     assert access["supervisor"]["pulled"] == pulls(
@@ -270,6 +277,40 @@ def test_admission_runs_the_ordered_preparation_before_the_application(admitting
     assert control.pubsub["handoff"]["actors"]["supervisor"] is not None
     assert "probe" not in [k for k, v in control.roots.items() if a.environment.root(k)]
     assert control.roots["application"]["namespace"] == PUBSUB
+
+
+def test_later_cohorts_run_under_the_actors_production_guards(admitting):
+    """The cohort methods' bounds are those the production guard reserves."""
+    a = admitting
+    a.runner.start(*a.args)
+    a.receiver.request_cohort("after_checkpoint", deadline=a.observer.clock() + 120)
+    published = a.events.count(("publish", "runner"))
+    assert a.sender.serve() == "after_checkpoint"
+    cohort = a.environment.approval.pubsub_trial["records_per_subscription"] // 3
+    assert a.events.count(("publish", "runner")) - published == 2 * -(-cohort // 100)
+    assert a.receiver.cohorts()["after_checkpoint"]["published_at"] is not None
+    assert a.sender.serve() is None
+
+
+def test_admission_rechecks_itself_before_every_batch(admitting, monkeypatch):
+    a = admitting
+    publish, admission_open = a.sender.publish, a.runner.admission_open
+    sent = []
+
+    def published(*args, **kwargs):
+        sent.append(args)
+        return publish(*args, **kwargs)
+
+    def checked():
+        if sent:
+            raise Failure("Admission closed between batches")
+        return admission_open()
+
+    monkeypatch.setattr(a.sender, "publish", published)
+    monkeypatch.setattr(a.runner, "admission_open", checked)
+    with pytest.raises(Failure, match="between batches"):
+        a.runner.start(*a.args)
+    assert len(sent) == 1
 
 
 def kinds(events, kind):

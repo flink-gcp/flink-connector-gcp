@@ -75,7 +75,7 @@ cat > /tmp/pubsub-trial.json <<'JSON'
   "entry_point": "datastream",
   "records_per_subscription": 1000,
   "traffic_limits": {
-    "publish_calls": 20,
+    "publish_calls": 24,
     "pull_calls": 200,
     "input_messages": 2000,
     "input_bytes": 256000,
@@ -113,17 +113,25 @@ It does not prove that the installed package, checkout or application image came
 
 JM/TM proposals keep both manifests identical: recovery is performed by the existing deployment, with no upgrade submission.
 For rescaling, `recovery_application` is also stored under the shared delivery key `upgrade-application.json` and requires restored state.
-Each plan covers one trial and two input subscriptions with 2–10,000 logical records per subscription.
-The first `floor(records / 2)` records form `before_recovery`; the remaining disjoint range forms `after_recovery`, which must wait for observed recovery before publication.
-Publish each range in ascending batches of at most 100, without crossing the range boundary.
+Each plan covers one trial and two input subscriptions with 3–10,000 logical records per subscription.
+Each subscription's domain splits into three disjoint, nonempty cohorts at `floor(records / 3)` and `floor(2 * records / 3)`, published in this order:
+
+| Cohort | Published |
+| --- | --- |
+| `before_checkpoint` | At admission, before the application exists |
+| `after_checkpoint` | When the supervisor asks, after a retained completed checkpoint; a replacement trial's replay population |
+| `after_recovery` | When the supervisor asks, after observed recovery |
+
+Each range is published in ascending batches of at most 100, without crossing the range boundary: the first by admission, the others through the [cohort requests](#cohort-requests) below.
 The output records exact logical messages, payload bytes and required publication calls.
-These ranges do not identify the processed-but-not-checkpoint-confirmed replay population: that requires a later fault-boundary protocol and external evidence.
+A cohort range alone does not prove that its messages were processed but not checkpoint-confirmed: the fault boundary and its evidence belong to the exercise ([#1602](https://github.com/flink-gcp/flink-connector-gcp/issues/1602)).
 
 The input file requires exactly the seven fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
 `entry_point` is `datastream` or `table` and applies to both manifests, so a trial never changes the entry point between phases.
 `traffic_limits` supplies every counter in the [shared reservation contract](#shared-traffic-reservations), within its existing ceilings.
 The renderer refuses caps too small for one complete input/output pass; extra pulls, duplicates, ambiguous calls and evidence sizes can exhaust otherwise valid proposals.
 Input bytes exclude service framing; output messages count reserved deliveries, including collector redelivery and empty-pull reservations.
+The [output collector](#output-collector) reserves a whole batch of 100 for every pull, so one complete pass needs 100 output messages for each of its minimum pulls: 2,100 for the example's 21.
 These helper counters exclude connector SDK traffic and resource/control/credential/storage operations.
 `total_request_limit` separately proposes at most 100,000 aggregate requests, including those operations and retries, and must be at least the data-helper request limit.
 No aggregate request accounting is wired into execution yet.
@@ -319,7 +327,7 @@ A concurrent cleanup or evidence update retains the record and lock for retry; r
 When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) restores the deleted record from the receipt, which still carries the cleaned Pub/Sub portion, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
-[Admission](#admission-and-effective-access) composes this controller with the actors and the access probes; output observation and the recovery exercise remain [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431).
+[Admission](#admission-and-effective-access) composes this controller with the actors and the access probes; the recovery exercise remains [#1602](https://github.com/flink-gcp/flink-connector-gcp/issues/1602).
 
 ### Actor construction and operation bounds
 
@@ -346,7 +354,7 @@ Each bound is the helper count measured above plus one control re-read per resou
 | `collect` | `collect` 4, `acknowledge` 2 |
 | `cleanup`, `reclaim` | `cleanup` 26 |
 | `access` | `access` 488: 61 attempts, one per 15-second interval of the 900-second admission window, each of six permission tests and two pulls |
-| `initialize`, `join`, `record`, `stop`, `release`, `released`, `actors` | None |
+| `initialize`, `join`, `record`, `stop`, `release`, `released`, `actors`, `request_cohort`, `read_cohorts`, `mark_cohort` | None |
 
 While a method admits work (`initialize`, `prepare`, `verify`, `access`, `join`, `publish` or `collect`), the guard also refuses to start a Pub/Sub request less than 20 seconds, the session's request budget, before the deadline, or one that the approval would no longer validate.
 The controller and the traffic wrapper call the guard after their own control reads and reservations, so that check is the last step before the request.
@@ -393,7 +401,7 @@ The observations are recorded under the run control's `pubsub.access`, one entry
 
 The supervisor's entrypoint builds its actor through `pubsub_actors.supervisor()`.
 Once preparation completes it joins, probes its own access, including an empty pull of the output subscription, and waits for admission to finish.
-It then stops with "Pub/Sub recovery exercise is not implemented (#1431)", and cleanup deletes the run's resources; [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431) replaces that stop with the exercise.
+It then stops with "Pub/Sub recovery exercise is not implemented (#1431)", and cleanup deletes the run's resources; [#1602](https://github.com/flink-gcp/flink-connector-gcp/issues/1602) replaces that stop with the exercise.
 Once the run has Pub/Sub state, a supervisor stopped before supervision starts is not left to a replacement, joined or not: only a supervisor deletes Pub/Sub resources, and a joined one holds authority that no other process can release.
 It waits for the runner to settle and release, then cleans up, which must fit its grace period.
 A replacement that finds another process's binding stops the run, waits for the runner's release, and reclaims the former authority only after the former supervisor Pod has ended or is gone and the namespace barrier passes; until both hold, it waits, and the lock stays if they never do.
@@ -405,7 +413,7 @@ A write without a definite answer in a handoff call keeps its marker and the loc
 
 ## Input publication and output collection
 
-[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub_messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) publishes the first cohort through them, and collection remains [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431).
+[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub_messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) and the runner's [cohort requests](#cohort-requests) publish through them, and the supervisor's [output collector](#output-collector) pulls through them.
 Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the authenticated actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
 The role parameter checks routing only; the caller must authenticate the runner or supervisor and bind that identity, the plan and input domain to current approval.
 The guard must verify prepared resources and effective access, the active run and exclusive actor authority, stop/deadline conditions and the complete traffic, evidence and operation budget before every call.
@@ -447,6 +455,30 @@ Reserve storage for both the response and the TSV representation, including JSON
 The shared 20-second HTTP timeout applies to transport waits, not total trial elapsed time; the response byte cap does not bound service billing or an integrated trial's storage and request counts.
 Before cleanup, the caller must stop and fence both actors and prove their in-flight requests quiescent, even if a helper has returned a timeout.
 Synthetic tests establish request/evidence ordering and refusal behavior; they do not establish effective IAM access, service ACK behavior or deployed recovery acceptance.
+
+### Cohort requests
+
+Only the runner holds the publisher grant on the input topics, so the [cohorts](#offline-trial-proposal) after the first are published by the runner at the supervisor's request, through [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub_handoff.py).
+The run control's Pub/Sub portion keeps one entry per cohort under `cohorts`, with its deadline and the times it was requested, started and published.
+
+- **`request_cohort(name, deadline=…)`**: the supervisor asks for `after_checkpoint` or `after_recovery`, only once the cohort before it is published, while the run is `RUNNING` and its message traffic is admitted, which lasts until `cleanup_at` rather than the 900-second admission window, and with a deadline after now and no later than `cleanup_at`. Repeating a recorded request with the same deadline changes nothing, even after that deadline or a stop, so a retry after a lost response confirms it; another deadline is refused.
+- **`serve()`**: the runner publishes the first requested cohort that has not started, and returns its name, or `None` when nothing waits. `Runner.settle()` calls it on each poll.
+- **`publish_cohort(name, deadline=…)`**: the runner publishes one cohort to both input topics in batches of at most 100. Admission calls it for `before_checkpoint` with the admission deadline; `serve()` calls it for a requested cohort, which takes no deadline argument and uses the recorded one.
+
+A cohort's start is recorded before its first publication request, so `started_at` precedes every message of the cohort, and a cohort that started is never started again.
+A batch that fails stops the run through the handoff's usual failure path, leaving the cohort started but unpublished.
+The start is refused, and nothing recorded, once less than the guard's 20-second request budget is left before the deadline, because the guard would refuse every batch after it; each batch's own request keeps that budget too.
+The marks are control updates under the guard's `request_cohort` and `mark_cohort` methods, the read under `read_cohorts`; each batch reserves as `publish`.
+The start and end marks are read from the runner's clock and the request time from the supervisor's, so an ordering across the two holds only up to the skew between those hosts.
+
+### Output collector
+
+[`OutputCollector`](../../../tools/tier3/src/flink_tier3/pubsub_output.py) pulls the output subscription through the supervisor's handoff, so every pull uses the shared reservations and leaves the evidence `collect` writes.
+`pull()` takes one batch of up to 100 under the next batch ID: `out-`, eight random hexadecimal digits fixed for the collector, and a counter, so that two collectors name the same create-only evidence only if those digits collide.
+`drain(max_pulls)` repeats it until a batch comes back short or the pulls are spent; a short or empty batch ends the round without proving the subscription empty.
+Each collected line whose payload is this run's relay output, with the nine fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase and whether the attempt restored state, with the output message ID, batch and collection time.
+Any other line, including another run's, is kept apart by batch and stays in the evidence for the offline oracle to reject.
+The observations live in the supervisor's process for the exercise; a replacement supervisor, which never collects, does not rebuild them.
 
 ## Shared traffic reservations
 
@@ -554,11 +586,14 @@ Deployed actor wiring, measured quiescence, full numeric execution approval and 
 
 The internal caller may attach its original runner handoff with `Runner(env, pubsub=handoff)` and its supervisor handoff with `Supervisor(env, pubsub=handoff, quiesce=barrier)`; in production, [`pubsub_actors`](#actor-construction-and-operation-bounds) makes both attachments and builds the barrier from the run.
 Each handoff must belong to that exact actor environment; a supervisor attachment requires the external barrier, and a lifecycle cannot attach both BigQuery and Pub/Sub handoffs.
-Admission initializes, prepares and publishes the first cohort, and the supervisor joins, through `PubSubHandoff`; later message operations remain [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431).
-Before entering `Runner.settle()`, the caller must coordinate completion of both runner publication and supervisor output collection and stop concurrent data calls from either process.
-For Pub/Sub, settlement is terminal: even with `request_stop=False`, the runner release closes shared admission, so the supervisor cannot collect further output while the runner waits for cleanup.
+Admission initializes, prepares and publishes the first cohort, and the supervisor joins, through `PubSubHandoff`; the runner publishes the later cohorts from `Runner.settle()`, as [cohort requests](#cohort-requests) describes.
 
-The runner attempts its release before waiting for supervisor completion, avoiding a circular wait with the supervisor's cleanup.
+A runner that settles with `request_stop=True`, or that is already stopping, releases before it waits, as before.
+Otherwise it keeps its authority while it waits, serving cohort requests on each poll, and releases once a stop or evidence failure is recorded, the supervisor's Job ends or is lost, the run leaves `RUNNING`, `cleanup_at` passes or a publication fails; the last is recorded as `pubsub-publication-failed`.
+A stop that lands while a requested cohort is still being published refuses its next batch, which is such a failure and withholds success; a stop that lands before the runner has recorded a requested cohort's start, including one between its poll and that record, only closes serving, so the cohort stays unpublished without a failure, and the run's verdict is the supervisor's.
+Release closes shared admission, so the supervisor collects no further output after it.
+There is no circular wait with the supervisor's cleanup: that cleanup records the shared stop before it waits for the runner's release, and the runner releases on the next poll that sees the stop.
+A supervisor that never stops and whose Job ends also releases the runner, whose settlement then finds the Pub/Sub resources undeleted and keeps the lock, because only a supervisor deletes them.
 It retries an unsuccessful release during subsequent settlement polls and once after the wait, with every attempt subject to the existing caller-owned control guard.
 `pubsub-release-blocked` records each changed failure cause; a release failure latches local stop and prevents that runner's settlement from recording success even if a later acknowledgement succeeds.
 No retry repeats publication or reclaims an unresolved invocation.

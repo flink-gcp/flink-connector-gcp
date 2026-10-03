@@ -308,6 +308,7 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         ("entry_point", None),
         ("trial", None),
         ("records_per_subscription", 1),
+        ("records_per_subscription", 2),
         ("records_per_subscription", 10001),
         ("records_per_subscription", 2.0),
         ("records_per_subscription", True),
@@ -339,10 +340,13 @@ def test_invalid_counter_refused(inputs, counter, value):
     [
         ("input_messages", 1999),
         ("input_bytes", 1),
-        ("publish_calls", 19),
-        ("output_messages", 1999),
-        ("pull_calls", 19),
-        ("pubsub_requests", 59),
+        # Three cohorts of 333, 333 and 334: four batches each per input,
+        # seven pulls each for both inputs' output, and their requests.
+        ("publish_calls", 23),
+        # Each of the 21 pulls reserves a whole batch of 100.
+        ("output_messages", 2099),
+        ("pull_calls", 20),
+        ("pubsub_requests", 65),
     ],
 )
 def test_incomplete_pass_cannot_be_proposed(inputs, counter, value):
@@ -351,9 +355,17 @@ def test_incomplete_pass_cannot_be_proposed(inputs, counter, value):
         plan.prepare(**inputs)
 
 
+def test_the_minimum_complete_pass_is_accepted(trial):
+    trial["traffic_limits"].update(
+        publish_calls=24, pull_calls=21, pubsub_requests=66, output_messages=2100
+    )
+    planned = plan.input_plan("proposal-1361", trial)
+    assert planned["publish_calls"] == 24
+
+
 def test_each_cohort_needs_a_separate_output_pull(inputs):
-    inputs["trial"]["records_per_subscription"] = 2
-    inputs["trial"]["traffic_limits"]["pull_calls"] = 1
+    inputs["trial"]["records_per_subscription"] = 3
+    inputs["trial"]["traffic_limits"]["pull_calls"] = 2
     with pytest.raises(Failure, match="complete input/output pass"):
         plan.prepare(**inputs)
 
