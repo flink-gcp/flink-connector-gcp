@@ -63,3 +63,41 @@ resource "kubernetes_role_binding_v1" "pubsub" {
     namespace = kubernetes_service_account_v1.pubsub.metadata[0].namespace
   }
 }
+
+# The runner alone creates the Pub/Sub admission's workload access probe: a
+# Pod that runs as the `pubsub` service account above, so that the workload
+# identity's own effective access is observed before the application exists.
+# The runner could already reach that identity through a FlinkDeployment the
+# Operator turns into Pods, so this adds no authority the runner lacked.
+resource "kubernetes_role_v1" "pubsub_probe" {
+  metadata {
+    name      = "tier3-lifecycle-probe"
+    namespace = kubernetes_namespace_v1.tier3["tier3-pubsub"].metadata[0].name
+    labels    = local.labels
+  }
+  rule {
+    api_groups = [""]
+    resources  = ["pods"]
+    verbs      = ["create"]
+  }
+  depends_on = [kubernetes_role_v1.installer]
+}
+
+resource "kubernetes_role_binding_v1" "pubsub_probe" {
+  metadata {
+    name      = "tier3-lifecycle-probe"
+    namespace = kubernetes_namespace_v1.tier3["tier3-pubsub"].metadata[0].name
+    labels    = local.labels
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role_v1.pubsub_probe.metadata[0].name
+  }
+  subject {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "User"
+    name      = "tier3-runner@flink-gcp.iam.gserviceaccount.com"
+    namespace = ""
+  }
+}

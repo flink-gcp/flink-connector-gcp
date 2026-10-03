@@ -47,6 +47,7 @@ limitations under the License.
 - Updated: 2026-09-25 (one-node capacity gate removed)
 - Updated: 2026-09-25 (BigQuery deployed trial findings)
 - Updated: 2026-10-03 (Pub/Sub admission building blocks: actor construction, per-method operation bounds, settled failures)
+- Updated: 2026-10-03 (Pub/Sub runner admission, effective-access probes and supervisor participation)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -692,6 +693,17 @@ Cleanup's barrier waits for every writer in the application namespace, not only 
 The tests' example trial moved out of the reviewed directory, which holds no trial until [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters them, so no dispatch can name an example once admission opens.
 Declined: refusing the example by a reserved name at admission, because the approval carries the trial's content rather than its file name, and either adding the name to the version 5 schema or matching content would guard a file that has no reason to be dispatchable; and keeping every failure's marker, because a refusal before any request, or a drifted read, would then need the external reclamation proof to clean a run that sent nothing ambiguous.
 
+Refined under [#1581](https://github.com/flink-gcp/flink-connector-gcp/issues/1581), the second half of [#1430](https://github.com/flink-gcp/flink-connector-gcp/issues/1430): the runner admits a version 5 Pub/Sub run, and dispatch still refuses before the environment lock until the supervised exercise ([#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431)) and execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) exist.
+After the supervisor and the Operator are ready, admission binds the runner, creates the six resources and then installs their grants, probes each identity's effective access, waits for the supervisor to join, re-reads every resource and policy, and publishes the first cohort, all within 900 seconds of the window's start, before it creates the application.
+The issue's order of grants before creation cannot hold, because installing a policy reads its resource, and the supervisor can join only prepared resources.
+Effective access is tested per identity on all six resources for the one permission the run's bindings decide there, publish on a topic and consume on a subscription, because the runner's and the supervisor's project roles grant neither: every resource is then a positive or a negative control.
+The runner and the supervisor test themselves; the workload's service account is reachable only through its Kubernetes service account, so the runner creates one CUE-rendered probe Pod that runs as it, requires it to succeed, re-derives the verdict from its log rather than trusting the exit status alone, and deletes it before the application is created.
+A missing grant is retested every 15 seconds while a whole further round of tests still fits before the deadline, because IAM documents propagation as typically two minutes and potentially seven or longer; an unexpected grant is refused at once, because the resource policies were empty before installation, so the run's own writes cannot explain it; each consumer then pulls once without acknowledging, while nothing is published.
+A runner-only Role lets the runner create Pods in `tier3-pubsub`; the runner could already reach the same identity through a FlinkDeployment, so this adds no reachable authority.
+The supervisor joins, probes itself and stops at the exercise boundary.
+Once the run has Pub/Sub state, a stopped supervisor is not left to a replacement, joined or not, because only a supervisor deletes Pub/Sub resources and no other process can release a joined one's authority; a replacement that finds such a binding stops the run and reclaims only after the runner released, the former supervisor Pod ended or is gone, and the namespace barrier passed, and a supervisor whose cleanup outlasts its grace period keeps the lock for an operator.
+Declined: a probe that reads a ConfigMap in `tier3-pubsub`, which would need the runner to create ConfigMaps there as well; a Python-built probe manifest, which would leave the only unrendered resource outside CUE's ownership of manifests; having the Operator's service account create the probe, which would borrow another identity's authority; treating a permission test as proof of data access, which the pull adds; publishing only after `RUNNING`, which would race the supervisor's start of supervision; and letting a replacement claim a run its joined predecessor already stopped, which would reopen the claim fence of [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396).
+
 ### Pub/Sub lifecycle IAM preparation
 
 Define the persistent custom roles and project bindings in OpenTofu, and keep per-run topic/subscription policies in the guarded runtime helper.
@@ -717,7 +729,7 @@ Retain partial work for ownership-checked resource cleanup and re-read every ins
 The exclusive environment control must span resource/policy read-write gaps as well as deletion gaps.
 
 The [application runbook](../../kubernetes/apps/pubsub/README.md#permissions-and-remaining-integration) records the exact grant table and API sources.
-Explicit policy readback does not establish effective access or exclude inherited privileges; identity-specific probes and propagation handling remain mandatory before separately approved execution.
+Explicit policy readback does not establish effective access or exclude inherited privileges; identity-specific probes and propagation handling remain mandatory before separately approved execution, and admission performs them as refined under [#1581](https://github.com/flink-gcp/flink-connector-gcp/issues/1581) above.
 Version 1 manifests are not adopted or migrated; the earlier helper was not executed against live resources.
 This stage prepares authority and internal operations, leaving shared lifecycle integration and deployed recovery acceptance to subsequent work.
 

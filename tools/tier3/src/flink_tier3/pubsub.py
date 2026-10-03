@@ -374,6 +374,48 @@ class Resources:
             observations.append({"name": resource["name"], "policy": policy})
         return observations
 
+    def holds(self, phase, name, permission):
+        """Whether the caller's own identity holds one permission on a resource.
+
+        Read-only: Pub/Sub answers for whoever sends the request, so this
+        proves nothing about any other identity. It answers an empty set for a
+        resource that does not exist, so absence reads as a missing grant
+        here; preparation and verification read existence.
+        """
+        if name not in {
+            r["name"] for r in self.plan.topics() + self.plan.subscriptions()
+        }:
+            raise Failure("Pub/Sub access probe names a resource outside the plan")
+        value = self._request(
+            phase, "POST", name + ":testIamPermissions", {"permissions": [permission]}
+        )
+        granted = value.get("permissions", [])
+        if not isinstance(granted, list) or not set(granted) <= {permission}:
+            raise Failure("Malformed Pub/Sub permission response")
+        return permission in granted
+
+    def peek(self, phase, subscription):
+        """Pull at most one message without acknowledging it, expecting none.
+
+        A data-plane check of consume access before any input exists: an
+        empty answer proves the caller may pull, and a refusal is the
+        service's answer. A received message means the subscription is not
+        the empty one this run created, so it is refused, unacknowledged,
+        and redelivered after its deadline.
+        """
+        if subscription not in {r["name"] for r in self.plan.subscriptions()}:
+            raise Failure("Pub/Sub pull probe names a subscription outside the plan")
+        value = self._request(
+            phase,
+            "POST",
+            subscription + ":pull",
+            {"maxMessages": 1, "returnImmediately": True},
+        )
+        if value.get("receivedMessages"):
+            raise Failure(
+                "Pub/Sub pull probe received a message; nothing is published yet"
+            )
+
     def cleanup_or_confirm_absent(self):
         """Clean owned resources, or prove absence when the manifest is absent.
 

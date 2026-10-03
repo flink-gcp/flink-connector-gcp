@@ -54,6 +54,7 @@ from .policy import (
     STATE,
     SYSTEM,
 )
+from .pubsub_handoff import runner_released
 from .pubsub_lifecycle import require_pubsub_clean
 
 
@@ -129,6 +130,8 @@ class Cleanup:
             )
         self.env = env
         self.bigquery, self.pubsub, self.quiesce = bigquery, pubsub, quiesce
+        # The supervisor Pod a replacement displaced, set by its supervisor.
+        self.former_supervisor = None
         self.last_inventory = []
         self.current_cell = None
 
@@ -309,10 +312,14 @@ class Cleanup:
         groups = {
             "supervisor": self.owned(items, ["supervisor"]),
             "application": self.owned(items, self.application_keys()),
+            "probe": self.owned(items, ["probe"]),
             "operator": ownership(items, {approval.operator_uid}),
         }
         images = {
             "supervisor": approval.images["supervisor"],
+            # The access probe runs the lifecycle tools image, as the
+            # supervisor does, in the application namespace.
+            "probe": approval.images["supervisor"],
             "operator": approval.images["operator"],
             "application": approval.images[
                 "smoke"
@@ -363,7 +370,16 @@ class Cleanup:
                 spot = (
                     pod["metadata"].get("labels", {}).get("component") != "jobmanager"
                 )
-            verify_pod(pod, role, images[role], expected, spot=spot)
+            elif role == "probe":
+                # Shaped and placed as the supervisor is, Spot excluded.
+                expected, spot = POD_RESOURCES["supervisor"], False
+            verify_pod(
+                pod,
+                "supervisor" if role == "probe" else role,
+                images[role],
+                expected,
+                spot=spot,
+            )
         cells = [self.current_cell] if self.cloudtasks else None
         state = self.remaining_state([] if cells == [None] else cells)
         if sum(int(obj["size"]) for obj, _ in state) > self.ceilings["state_bytes"]:
@@ -406,6 +422,45 @@ class Cleanup:
         return next(
             (m for m in manifests or [] if m["metadata"]["name"] == cell_id), None
         )
+
+    def adopt_intended_probe(self, items):
+        """Adopt a probe Pod the runner intended but never recorded, if it exists.
+
+        The namespace barrier waits for every Pod there, so cleanup deletes
+        this one even when only the runner's intent names it, and looks on
+        every pass because a create whose response was lost can land after
+        cleanup began. Like the runner's own adoption, the Pod must match the
+        persisted intent; any other Pod of that name is left for the barrier
+        to report. Uses the cached control record: an intent cannot be
+        written once a stop or cleanup is recorded. Returns the adopted
+        object, or None.
+        """
+        intent = self.env.records.cache.probe_intent
+        if not intent or "probe" in self.env.roots:
+            return None
+        metadata = intent["metadata"]
+        obj = next(
+            (
+                o
+                for o in items
+                if o["kind"] == "Pod"
+                and o["metadata"]["namespace"] == metadata["namespace"]
+                and o["metadata"]["name"] == metadata["name"]
+            ),
+            None,
+        )
+        if obj is None:
+            return None
+        if not contains(obj, intent):
+            self.env.emit("probe-adoption-refused", {"uid": obj["metadata"]["uid"]})
+            return None
+        try:
+            self.env.remember("probe", obj)
+        except Failure:
+            # The record could not be updated; the Pod is still ours to delete
+            # in this pass.
+            self.env.evidence_failed = True
+        return obj
 
     def adopt_intended_cell(self, items, manifest=None):
         """Adopt a cell the supervisor intended but never recorded, if it exists.
@@ -510,6 +565,11 @@ class Cleanup:
         namespace = self.env.approval.application_namespace
         before = self.inventory()
         keys = [key for key in self.application_keys() if key in self.env.roots]
+        # A probe Pod the runner did not get to delete is removed with the
+        # workload it preceded; one only the runner's intent names is adopted
+        # in the loop below.
+        if "probe" in self.env.roots:
+            keys.append("probe")
         known = ownership(before, {self.env.roots[key]["uid"] for key in keys})
         known |= {
             uid
@@ -531,6 +591,13 @@ class Cleanup:
         manifest = self.approved_manifest(intent["cell"]) if intent else None
         while self.env.clock() < end:
             items = self.inventory()
+            probe = self.adopt_intended_probe(items)
+            if probe is not None:
+                known.add(probe["metadata"]["uid"])
+                if "probe" in self.env.roots and "probe" not in keys:
+                    keys.append("probe")
+                else:
+                    apps_extra.append(probe)
             if self.cloudtasks:
                 # A cell create issued just before the stop can land after the
                 # snapshot above; adopt it by intent, nonce and manifest.
@@ -541,7 +608,7 @@ class Cleanup:
                     if key in self.env.roots and key not in keys:
                         keys.append(key)
                     else:
-                        apps_extra = [adopted]
+                        apps_extra.append(adopted)
                 for key in self.env.roots:
                     if key.startswith("cell:") and key not in keys:
                         keys.append(key)
@@ -677,16 +744,87 @@ class Cleanup:
         if self.env.refresh().pubsub is None:
             return
         if self.pubsub is not None:
-            self.pubsub.release()
-            self.env.wait(
-                lambda: (
-                    self.pubsub.released()
-                    and self.quiesce() is True
-                    and self.pubsub.cleanup(self.quiesce)
-                ),
-                deadline,
-            )
+            if self.pubsub.supervisor_binding() == "other":
+                # A replacement for a supervisor that joined: that authority is
+                # reclaimed once the runner released and the former Pod ended.
+                self.env.wait(
+                    lambda: (
+                        self.former_gone(self.pubsub.actors())
+                        and self.reap_probe()
+                        # Reclaim refuses rather than waits on a pending
+                        # barrier, so it is asked only once the barrier passes.
+                        and self.quiesce() is True
+                        and self.pubsub.reclaim(self.reclamation_proof)
+                    ),
+                    deadline,
+                )
+            else:
+                self.pubsub.release()
+                self.env.wait(
+                    lambda: (
+                        self.pubsub.released()
+                        and self.reap_probe()
+                        and self.quiesce() is True
+                        and self.pubsub.cleanup(self.quiesce)
+                    ),
+                    deadline,
+                )
         require_pubsub_clean(self.env.refresh())
+
+    def reap_probe(self):
+        """Delete an intended probe Pod that landed after the workload cleared.
+
+        A create whose response was lost can still land once the deletion
+        loop has found the namespace empty, and the namespace barrier would
+        then wait on it for the rest of cleanup. Always True, so it can lead
+        a barrier wait, which calls it again until the Pod is gone. It reads
+        only the Pod the intent names, and a read that says nothing about the
+        cluster is left to the next poll, as the barrier's own reads are.
+        """
+        intent = self.env.records.cache.probe_intent
+        if not intent:
+            return True
+        metadata = intent["metadata"]
+        try:
+            # The namespace must still be the approved one, as every inventory
+            # requires, or a replayed Pod in a replacement would be adopted.
+            self.env.namespaces()
+            obj = self.env.kube.get("Pod", metadata["namespace"], metadata["name"])
+            probe = obj and (self.adopt_intended_probe([obj]) or self.env.root("probe"))
+        except Failure as error:
+            if not transient(error):
+                raise
+            self.env.emit("probe-unread", {"cause": type(error).__name__})
+            return True
+        if probe:
+            try:
+                self.env.kube.delete(probe)
+            except Failure:
+                pass  # Retried on the barrier's next poll.
+        return True
+
+    def former_gone(self, actors):
+        """Whether the former supervisor and the runner can no longer act.
+
+        The runner must have released its own authority: it runs outside the
+        cluster, where nothing here can observe it. The former supervisor Pod
+        must have ended or be gone, which the Job's own Pods show; a Pod that
+        cannot run cannot send a request, and the namespace barrier then
+        covers the workload.
+        """
+        if not runner_released(actors) or not self.former_supervisor:
+            return False
+        for obj in self.inventory():
+            if (
+                obj["kind"] == "Pod"
+                and obj["metadata"]["uid"] == self.former_supervisor
+            ):
+                return obj.get("status", {}).get("phase") in ("Succeeded", "Failed")
+        return True
+
+    def reclamation_proof(self, snapshot):
+        """The external proof `reclaim` records, rechecked on its own snapshot."""
+        return self.former_gone(snapshot["actors"]) and self.quiesce() is True
 
 
 def verify_idle(env):

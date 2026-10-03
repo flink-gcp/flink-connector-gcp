@@ -16,6 +16,7 @@ package tier3
 
 import (
 	"encoding/json"
+	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 	pubsub "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/pubsub"
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
@@ -24,6 +25,10 @@ import (
 pubsubTrial:      *"jm-replacement" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(pubsub_trial)
 pubsubRecords:    *1000 | (int & >=2 & <=10000)                                       @tag(pubsub_records,type=int)
 pubsubEntryPoint: *"datastream" | "table"                                             @tag(pubsub_entry_point)
+// The workload access probe's test plan and program, from `pubsub_plan.prepare`,
+// which checks the rendered Pod against both.
+pubsubProbe:       *"{}" | string @tag(pubsub_probe)
+pubsubProbeSource: *"" | string   @tag(pubsub_probe_source)
 
 if scenario == "pubsub-recovery" {
 	_applications: [for recovery in [false, true] {
@@ -48,5 +53,52 @@ if scenario == "pubsub-recovery" {
 	delivery: resources: config: data: {
 		"application.json": json.Marshal(application)
 		"proposal.json":    proposal
+	}
+	// Runs once, as the workload's service account, before the application
+	// exists; the runner creates it, reads its log and deletes it.
+	delivery: resources: probe: {
+		apiVersion: "v1"
+		kind:       "Pod"
+		metadata: {
+			name:      "\(runID)-access-probe"
+			namespace: "tier3-pubsub"
+			labels: "flink-gcp.io/run-id": runID
+			annotations: {
+				"flink-gcp.io/approval":   nonce
+				"flink-gcp.io/expires-at": expires
+				"flink-gcp.io/scenario":   scenario
+			}
+		}
+		spec: {
+			serviceAccountName:            "pubsub"
+			restartPolicy:                 "Never"
+			activeDeadlineSeconds:         900
+			terminationGracePeriodSeconds: 10
+			nodeSelector: "kubernetes.io/arch": "amd64"
+			affinity: nodeAffinity: requiredDuringSchedulingIgnoredDuringExecution: nodeSelectorTerms: [{
+				matchExpressions: [{key: "cloud.google.com/gke-spot", operator: "NotIn", values: ["true"]}]
+			}]
+			securityContext: {
+				runAsNonRoot: true
+				runAsUser:    65532
+				runAsGroup:   65532
+				seccompProfile: type: "RuntimeDefault"
+			}
+			containers: [{
+				name:  "probe"
+				image: images.lifecycleTools
+				command: ["python3", "-I", "-c", pubsubProbeSource]
+				args: [pubsubProbe]
+				resources: {
+					requests: {cpu: "1", memory: "2Gi", "ephemeral-storage": "128Mi"}
+					limits: {cpu: "1", memory: "2Gi", "ephemeral-storage": "128Mi"}
+				}
+				securityContext: {
+					allowPrivilegeEscalation: false
+					readOnlyRootFilesystem:   true
+					capabilities: drop: ["ALL"]
+				}
+			}]
+		}
 	}
 }

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -34,9 +35,9 @@ from flink_tier3 import (
     workflow,
 )
 from flink_tier3.bundle import delivered_sources
-from flink_tier3.common import Failure, digest
+from flink_tier3.common import Failure, digest, timestamp, verify_pod
 from flink_tier3.model import validate_approval
-from flink_tier3.policy import BIGQUERY_CEILINGS, GAR
+from flink_tier3.policy import BIGQUERY_CEILINGS, GAR, POD_RESOURCES
 
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
@@ -2142,6 +2143,73 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
     assert {
         name: data["flink_tier3_" + name] for name in delivered_sources()
     } == delivered_sources()
+
+
+def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
+    """The probe runs the packaged program, as the workload, outside Spot."""
+    from flink_tier3.bundle import package_sources
+    from flink_tier3.pubsub import ResourcePlan
+    from flink_tier3.pubsub_access import probe_spec
+
+    root = module.parent
+    module.rename(root / "kubernetes")
+    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setenv("GOMAXPROCS", "2")
+    bundle = pubsub_plan.prepare(
+        run_id="proposal-1581",
+        nonce="a" * 32,
+        started_at="2026-09-21T00:00:00Z",
+        expires_at="2026-09-21T01:00:00Z",
+        active_seconds=pubsub_plan.ACTIVE_SECONDS,
+        revision="b" * 40,
+        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        trial={
+            "version": 3,
+            "trial": "jm-replacement",
+            "entry_point": "datastream",
+            "records_per_subscription": 1000,
+            "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
+            "total_request_limit": 100000,
+        },
+    )
+    probe = bundle["delivery"]["probe"]
+    assert probe["kind"] == "Pod" and probe["apiVersion"] == "v1"
+    assert probe["metadata"]["name"] == "proposal-1581-access-probe"
+    assert probe["metadata"]["namespace"] == "tier3-pubsub"
+    assert probe["metadata"]["labels"]["flink-gcp.io/run-id"] == "proposal-1581"
+    assert probe["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32
+    spec = probe["spec"]
+    assert spec["serviceAccountName"] == "pubsub"
+    assert spec["restartPolicy"] == "Never"
+    assert spec["activeDeadlineSeconds"] == 900
+    assert not spec.get("nodeSelector", {}).get("cloud.google.com/gke-spot")
+    (container,) = spec["containers"]
+    assert container["image"] == bundle["proposal"]["images"]["supervisor"]
+    assert container["command"] == [
+        "python3",
+        "-I",
+        "-c",
+        package_sources()["pubsub_probe.py"],
+    ]
+    plan = ResourcePlan("proposal-1581", "a" * 32)
+    window = SimpleNamespace(
+        started=timestamp("2026-09-21T00:00:00Z"),
+        cleanup_at=timestamp("2026-09-21T00:45:00Z"),
+    )
+    tested = json.loads(container["args"][0])
+    assert tested == probe_spec(plan, window)
+    assert tested["deadline"] == timestamp("2026-09-21T00:15:00Z")
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert spec["securityContext"]["runAsNonRoot"] is True
+    # Shaped and placed as the supervisor: its resources, and Spot excluded
+    # by affinity in every term rather than merely not selected.
+    verify_pod(
+        probe,
+        "supervisor",
+        bundle["proposal"]["images"]["supervisor"],
+        POD_RESOURCES["supervisor"],
+        spot=False,
+    )
 
 
 @pytest.mark.parametrize(

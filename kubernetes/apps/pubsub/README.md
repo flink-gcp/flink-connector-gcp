@@ -34,7 +34,7 @@ These are local wiring and state-continuity checks; they do not measure real-ser
 [`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the relay on Flink 2.2.1 / Java 17.
 A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription`, `parallelism` and `entryPoint` inputs.
 The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade, parallelism 1/2 and entry-point combination.
-The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal); there is no committed executable Pub/Sub run delivery or runnable admission yet.
+The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and the runner can [admit](#admission-and-effective-access) a run, but [dispatch](#approval-dispatch) still refuses before the environment lock, so no Pub/Sub run executes yet.
 
 The first verified image reference is:
 
@@ -256,7 +256,7 @@ Policy reads deliberately re-read ownership, so they use more storage reads than
 Policy readback does not prove effective permissions, propagation or the absence of inherited grants.
 During separately approved provisioning, retain fresh-resource version-3 policy responses and verify that empty policies return nonempty etags before installation.
 If that service behavior is absent, stop and clean the owned resources rather than attempting an unconditional policy write.
-Before admission, the later controller must verify access using each participating identity, retain the observations, and account for IAM propagation within its approved deadline and operation ceilings.
+[Admission](#admission-and-effective-access) verifies access with each participating identity, retains the observations and waits for IAM propagation within its deadline and operation bounds.
 The output subscription belongs to the supervisor's independent observation path; runner and workload are not granted consume access there by this plan.
 The [Pub/Sub access-control reference](https://docs.cloud.google.com/pubsub/docs/access-control#required_permissions) lists the permissions for each API operation.
 The workload uses input metadata/consume and output publish access, with no resource creation, deletion or policy mutation.
@@ -319,7 +319,7 @@ A concurrent cleanup or evidence update retains the record and lock for retry; r
 When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) restores the deleted record from the receipt, which still carries the cleaned Pub/Sub portion, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
-Deployed supervisor handoff, integrated message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
+[Admission](#admission-and-effective-access) composes this controller with the actors and the access probes; output observation and the recovery exercise remain [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431).
 
 ### Actor construction and operation bounds
 
@@ -331,7 +331,7 @@ Each actor authenticates its own service account through [`PubSubSession`](../..
 The supervisor's cleanup barrier, [`pubsub_quiesce.barrier`](../../../tools/tier3/src/flink_tier3/pubsub_quiesce.py), is built from the run rather than supplied, and waits until no object of any writer kind remains in `tier3-pubsub`, whoever owns it: the namespace's `pubsub` service account can create Pods and Deployments, and any Pod running as it holds the workload's data grants.
 It proves only that no such object remains after graceful deletion, not that a request a terminated Pod sent has finished at the service; the actors' unsettled-call markers cover only their own requests.
 Outside a run the namespace is expected to hold no such object; dispatch does not refuse one, and one left there keeps the barrier from passing, so cleanup keeps the lock until it is removed.
-`Runner.start` and `Supervisor.supervise` still refuse `pubsub-recovery`, so nothing composes these actors yet.
+`Runner.start` and `Supervisor.supervise` refuse `pubsub-recovery` without these actors, and the supervisor entrypoint builds its own through this factory.
 
 Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub_guard.py) is its `before_operation`.
 The handoff reserves, through the controller's `reserve()`, a method's whole bound before the method starts, and a method called inside another counts against the outer reservation.
@@ -345,18 +345,67 @@ Each bound is the helper count measured above plus one control re-read per resou
 | `publish` | `publish` 3 |
 | `collect` | `collect` 4, `acknowledge` 2 |
 | `cleanup`, `reclaim` | `cleanup` 26 |
-| `initialize`, `join`, `stop`, `release`, `released` | None |
+| `access` | `access` 488: 61 attempts, one per 15-second interval of the 900-second admission window, each of six permission tests and two pulls |
+| `initialize`, `join`, `record`, `stop`, `release`, `released`, `actors` | None |
 
-While a method admits work (`initialize`, `prepare`, `verify`, `join`, `publish` or `collect`), the guard also refuses to start a Pub/Sub request less than 20 seconds, the session's request budget, before the deadline, or one that the approval would no longer validate.
+While a method admits work (`initialize`, `prepare`, `verify`, `access`, `join`, `publish` or `collect`), the guard also refuses to start a Pub/Sub request less than 20 seconds, the session's request budget, before the deadline, or one that the approval would no longer validate.
 The controller and the traffic wrapper call the guard after their own control reads and reservations, so that check is the last step before the request.
 The budget covers the request's authentication, its sending and the response's status and headers; reading a streamed body is bounded only by the transport's per-read timeout and the helpers' 1 MiB response cap, so a slowly arriving body can still end after the deadline.
 The deadline is the admission deadline, the earlier of 900 seconds after the window's start and `cleanup_at`, except that `publish` and `collect` default to `cleanup_at` because later cohorts and collection belong to the exercise; a caller publishing during admission passes the admission deadline.
 Control and storage operations are not held to it, so a stop, a cleared marker or the evidence of a request already sent can still be written; the controller and the traffic wrapper enforce stop and evidence failure where they admit new work.
 These are per-method bounds held in the actor's process, not the aggregate request ceiling across connector, credential and storage calls, which [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433) owns.
 
+### Admission and effective access
+
+`Runner.start(config, job, application, probe)` admits a version 5 `pubsub-recovery` run only with a handoff that carries its `PubSubGuard` and settled-write check, as `pubsub_actors.runner()` builds.
+Before its first write it refuses any input that is not the approved one: both job manifests by digest and by the trial's job, and the probe Pod by the plan it tests and the program it runs.
+After the supervisor Job and the Operator are ready, and while the run is `READY`, [`pubsub_admission`](../../../tools/tier3/src/flink_tier3/pubsub_admission.py) runs these steps in order:
+
+1. Bind the runner and the resource intent in one control update.
+2. Create the six resources, then install their grants: installing a policy reads the resource it belongs to, so creation comes first.
+3. Probe the runner's own access.
+4. Open the application quota, run the workload's probe Pod, read what it saw, delete it, and wait until it is gone, so that no other Pod of the run stands beside the application.
+5. Wait for the supervisor to join and to record its own access.
+6. Re-read every resource and policy.
+7. Publish the first cohort, so that the application finds its input waiting.
+
+It then creates the application and sets `RUNNING`.
+Every step must finish within 900 seconds of the window's start: `admission_open()` refuses after that, and the guard refuses to start a Pub/Sub request too close to it.
+A grant is not taken as proof of access.
+Each identity is tested on all six resources for the one permission the run's bindings decide there, publish on a topic and consume on a subscription, so every resource is a positive or a negative control for each identity.
+A permission test answers only for the identity that sends it, so the runner and the supervisor each probe themselves.
+The workload's service account is reachable only through the `pubsub` Kubernetes service account, so the runner creates a Pod named `<run>-access-probe` that runs as it, through a runner-only Role in `tier3-pubsub`.
+The Pod runs the lifecycle tools image with [`pubsub_probe.py`](../../../tools/tier3/src/flink_tier3/pubsub_probe.py) passed inline, because a Pod cannot mount the control ConfigMap from another namespace; CUE renders it, and the bundle's re-render pins it.
+The runner keeps the Pod's log, at most 64 KiB, as `pubsub-workload-probe` evidence, requires the Pod to succeed, and re-derives the verdict from the log rather than trusting the exit status alone: the log must name the workload identity, show a last attempt that meets every expectation, and end in a pass.
+The program refreshes its own token before each request and then starts the request only while its 20-second timeout still fits before the deadline; it uses a plain HTTP session, so nothing replays a request answered 401 after that check.
+When a request no longer fits, the program logs a refusal and fails.
+As on the runner's side, a slowly arriving response body is bounded only by the per-read timeout and the 1 MiB cap.
+The runner records its intent before it creates the Pod, so cleanup deletes a probe Pod the runner left behind, including one whose creation the runner did not survive to record.
+A create whose response was lost can land after cleanup began, even after the workload is gone, so cleanup looks for that Pod on every pass of its deletion loop and again at each poll of its namespace-barrier wait.
+It adopts the Pod only when it matches the intent, as the runner's own adoption requires, and deletes it even when it cannot record it.
+A Pod that lands between a poll's barrier check and the handoff's own second check ends that cleanup pass with the lock kept, as any other writer appearing there would.
+A grant that is missing may still be propagating, which IAM documents as typically two minutes and potentially seven or longer, so the six tests are repeated every 15 seconds while a whole further round, one test at a time, still fits before the deadline; a local stop ends the wait.
+A grant present where it must not be is refused at once: the resource policies were empty before installation, so the run's own writes cannot explain it.
+Each consumer then pulls its subscriptions once, without acknowledging, while nothing is published yet; a 403 is retried in the same way, and a received message is refused.
+A pull that gets no definite answer sets the session's unsettled-write latch, but the access probe runs outside the handoff's call markers, so it keeps no marker of its own; nothing is published yet, so it cannot lease a message.
+The probe program silences library logging, because a warning on its log would make a passing probe unreadable.
+The observations are recorded under the run control's `pubsub.access`, one entry each for the runner, the workload and the supervisor, and reach the final receipt with the rest of the Pub/Sub state.
+
+The supervisor's entrypoint builds its actor through `pubsub_actors.supervisor()`.
+Once preparation completes it joins, probes its own access, including an empty pull of the output subscription, and waits for admission to finish.
+It then stops with "Pub/Sub recovery exercise is not implemented (#1431)", and cleanup deletes the run's resources; [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431) replaces that stop with the exercise.
+Once the run has Pub/Sub state, a supervisor stopped before supervision starts is not left to a replacement, joined or not: only a supervisor deletes Pub/Sub resources, and a joined one holds authority that no other process can release.
+It waits for the runner to settle and release, then cleans up, which must fit its grace period.
+A replacement that finds another process's binding stops the run, waits for the runner's release, and reclaims the former authority only after the former supervisor Pod has ended or is gone and the namespace barrier passes; until both hold, it waits, and the lock stays if they never do.
+A supervisor whose cleanup outlasts its grace period, or whose Pod is gone with no replacement claiming the run, leaves the lock for an operator.
+
+When admission fails after resources exist, for example through settings or policy drift found by a read, a probe refused or still missing access at the deadline, or a supervisor that never joins, `start` raises with no call in flight, the runner's settlement releases it, and the supervisor, joined or not, deletes the six resources.
+Ownership drift, a replaced manifest or a resource whose labels or live topic binding no longer match, stops the run without completing deletion and keeps the lock, because cleanup cannot prove the resources are this run's.
+A write without a definite answer in a handoff call keeps its marker and the lock, as the [handoff](#actor-ownership-and-cleanup-handoff) describes.
+
 ## Input publication and output collection
 
-[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub_messages.py) supplies internal data helpers for the later runnable controller.
+[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub_messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) publishes the first cohort through them, and collection remains [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431).
 Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the authenticated actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
 The role parameter checks routing only; the caller must authenticate the runner or supervisor and bind that identity, the plan and input domain to current approval.
 The guard must verify prepared resources and effective access, the active run and exclusive actor authority, stop/deadline conditions and the complete traffic, evidence and operation budget before every call.
@@ -505,7 +554,7 @@ Deployed actor wiring, measured quiescence, full numeric execution approval and 
 
 The internal caller may attach its original runner handoff with `Runner(env, pubsub=handoff)` and its supervisor handoff with `Supervisor(env, pubsub=handoff, quiesce=barrier)`; in production, [`pubsub_actors`](#actor-construction-and-operation-bounds) makes both attachments and builds the barrier from the run.
 Each handoff must belong to that exact actor environment; a supervisor attachment requires the external barrier, and a lifecycle cannot attach both BigQuery and Pub/Sub handoffs.
-The caller still initializes, prepares, joins and drives the message operations through `PubSubHandoff` before settlement.
+Admission initializes, prepares and publishes the first cohort, and the supervisor joins, through `PubSubHandoff`; later message operations remain [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431).
 Before entering `Runner.settle()`, the caller must coordinate completion of both runner publication and supervisor output collection and stop concurrent data calls from either process.
 For Pub/Sub, settlement is terminal: even with `request_stop=False`, the runner release closes shared admission, so the supervisor cannot collect further output while the runner waits for cleanup.
 
@@ -516,15 +565,15 @@ No retry repeats publication or reclaims an unresolved invocation.
 Failure to persist stop or evidence still requires the independent stop path described above.
 
 Common cleanup first stops admission and removes the owned Flink workload while the Operator is running.
-It then releases the supervisor, waits for all bound releases and an exactly-`True` external barrier, and rechecks the barrier inside resource cleanup before deletion.
+It then releases the supervisor, waits for all bound releases and an exactly-`True` external barrier, and rechecks the barrier inside resource cleanup before deletion; a replacement reclaims instead, as below.
 Only recorded service cleanup permits checkpoint/state deletion, Operator shutdown and shared completion.
 While service cleanup is unfinished, an unresolved call, missing supervisor attachment or failed service deletion keeps common cleanup from deleting temporary state or stopping the Operator.
-A replacement must use the separately proved `reclaim()` path; common cleanup never takes over an actor or supplies that proof.
+A replacement that finds another supervisor's binding reclaims through `reclaim()`, with `Cleanup.reclamation_proof` as its proof: the runner released, the former supervisor Pod ended or gone, and the namespace barrier passed; common cleanup never takes over an actor otherwise.
 
 Direct `Records.set_phase(CLEANED)`, `Records.settled()` and `verify_idle()` now enforce the same Pub/Sub clean-state gate as final receipt creation.
 Records without Pub/Sub state retain their prior behavior.
 Cleanup routes Pub/Sub resources to `tier3-pubsub` and temporary state to `flink-gcp-tier3-pubsub`; existing smoke, Cloud Tasks and BigQuery inventory scopes remain unchanged.
-This routing does not admit a run: `Runner.start()` and `Supervisor.supervise()` still refuse execution, and no workflow constructs these attachments yet.
+The production attachments are built by [`pubsub_actors`](#actor-construction-and-operation-bounds), and [admission](#admission-and-effective-access) uses them; dispatch still refuses before the environment lock.
 A successful synthetic cleanup is not a recovery verdict; final Pub/Sub success criteria, full numeric approval, input/fault orchestration and deployed evidence remain under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Payload and restoration
@@ -612,12 +661,12 @@ The original receipt is retained; the current plans must still prove the same no
 Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
 
 The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
-Version 5 therefore does not enable runner admission or supervisor execution.
+Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, but dispatch still refuses before the environment lock until that accounting and the supervised exercise exist.
 Complete execution accounting, external fault observations and deployed orchestration remain prerequisites to the live trials under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Approval dispatch
 
-The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery` and builds its version 5 approval, but the run it would admit is still refused.
+The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery` and builds its version 5 approval, but dispatch still refuses before the environment lock.
 The scenario takes four inputs beyond the common ones.
 
 | Input | Contract |
@@ -642,8 +691,8 @@ Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and veri
 The proposal names its second manifest the recovery application; the approval pins that manifest as `upgrade_application_sha256`, the name every service scenario shares, and takes the supervisor image from the proposal's `images`, as a BigQuery approval does.
 The bundle re-renders from the approval alone and refuses a different application, recovery manifest, supervisor image, source or delivery digest, and an approved checkout with local changes or untracked CUE or TOML files under `kubernetes/`, so a trial file the approved commit lacks is refused too.
 
-Dispatch then fails with "Pub/Sub execution admission is not implemented" before it acquires the environment lock.
+Dispatch also confirms that it may create Pods in `tier3-pubsub`, which admission's access probe needs, then fails with "Pub/Sub execution waits on the supervised exercise (#1431) and execution accounting (#1433)" before it acquires the environment lock.
 Apart from the kubeconfig every dispatch writes to authenticate, it writes no lock, no run evidence, no control record, no run document and no step output, so the workflow skips its plan proof and finalization as it does for any refusal before admission.
-Admission itself, with its ordered preparation, is [#1430](https://github.com/flink-gcp/flink-connector-gcp/issues/1430).
+[Admission](#admission-and-effective-access) itself is implemented; the supervised exercise ([#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431)) and execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) keep dispatch closed.
 The workflow job keeps the default 85-minute limit, because the window is one hour, as for smoke.
 Enabling the scenario does not approve a run.

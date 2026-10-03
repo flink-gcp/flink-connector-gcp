@@ -65,8 +65,9 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub_messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
 | `flink_tier3/pubsub_traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
-| `flink_tier3/pubsub_handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, without runnable admission |
-| `flink_tier3/pubsub_actors.py`, `pubsub_auth.py`, `pubsub_guard.py`, `pubsub_quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier; nothing composes them while admission is refused |
+| `flink_tier3/pubsub_handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
+| `flink_tier3/pubsub_actors.py`, `pubsub_auth.py`, `pubsub_guard.py`, `pubsub_quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier |
+| `flink_tier3/pubsub_admission.py`, `pubsub_access.py`, `pubsub_probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program; dispatch still refuses before the lock |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.
@@ -496,7 +497,7 @@ A synthetic digest renders locally but never passes the live registry check that
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
-The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub execution admission remains disabled.
+The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub dispatch still refuses before the environment lock.
 The version 4 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes the trial (`alo-10`, `eo-10`, `alo-50` or `eo-50`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
-A Pub/Sub trial is dispatched the same way from a reviewed file under [pubsub-trials/](pubsub-trials/), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's numbers; dispatch builds and verifies its version 5 approval and bundle, then refuses before the lock, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
+A Pub/Sub trial is dispatched the same way from a reviewed file under [pubsub-trials/](pubsub-trials/), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's numbers; dispatch builds and verifies its version 5 approval and bundle, then refuses before the lock until the supervised exercise and execution accounting exist, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes; the runner's admission itself is [implemented](../apps/pubsub/README.md#admission-and-effective-access).

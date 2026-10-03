@@ -19,6 +19,8 @@ from .bigquery_exercise import require_handoff
 from .bigquery_handoff import require_bigquery_clean
 from .cloudtasks import admission_budget_open, admit_queue
 from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
+from .pubsub_admission import admit, require_admission
+from .pubsub_guard import admission_deadline
 from .pubsub_lifecycle import require_pubsub_clean
 from .records import write_artifact
 
@@ -64,6 +66,10 @@ class Runner:
             >= self.env.schedule.started + BIGQUERY_OBSERVATIONS["startup_seconds"]
         ):
             raise rt.Failure("BigQuery startup deadline expired")
+        if self.env.approval.scenario == "pubsub-recovery" and (
+            self.env.clock() >= admission_deadline(self.env)
+        ):
+            raise rt.Failure("Pub/Sub admission deadline expired")
         # Admission may spend at most one cell's startup allowance, so the
         # first cell keeps the budget the session plan reserved for it.
         if self.cloudtasks:
@@ -169,7 +175,8 @@ class Runner:
 
     def create_root(self, key, manifest):
         self.admission_open()
-        if self.env.kube.get(manifest["kind"], rt.SYSTEM, manifest["metadata"]["name"]):
+        namespace = manifest["metadata"]["namespace"]
+        if self.env.kube.get(manifest["kind"], namespace, manifest["metadata"]["name"]):
             raise rt.Failure("Temporary resource name already exists")
         intent = manifest
         if key == "config":
@@ -192,7 +199,9 @@ class Runner:
             return
         self.env.namespaces()
         obj = self.env.kube.get(
-            manifest["kind"], rt.SYSTEM, manifest["metadata"]["name"]
+            manifest["kind"],
+            manifest["metadata"]["namespace"],
+            manifest["metadata"]["name"],
         )
         if not obj:
             return
@@ -204,9 +213,11 @@ class Runner:
             raise rt.Failure("Temporary object differs from persisted creation intent")
         self.env.remember(key, obj)
 
-    def start(self, config, job, application):
-        if self.env.approval.scenario == "pubsub-recovery":
-            raise rt.Failure("Pub/Sub execution admission is not implemented")
+    def start(self, config, job, application, probe=None):
+        pubsub = self.env.approval.scenario == "pubsub-recovery"
+        if pubsub:
+            require_admission(self, config, application, probe)
+            self.admission_open()
         if self.env.approval.scenario == "bigquery-recovery":
             if self.bigquery is None:
                 raise rt.Failure(
@@ -270,7 +281,13 @@ class Runner:
                 self.bigquery.provision()
                 self.admission_open()
                 self.supervisor_open()
-            self.cleanup.quota(self.namespace, "run")
+            if pubsub:
+                # Opens the application quota itself, for the probe Pod.
+                admit(self, probe)
+                self.admission_open()
+                self.supervisor_open()
+            else:
+                self.cleanup.quota(self.namespace, "run")
             self.create_application(application)
         self.admission_open()
         self.env.records.set_phase(rt.Phase.RUNNING)
@@ -307,6 +324,7 @@ class Runner:
             self.env.records.request_stop()
         self.adopt_root("config")
         self.adopt_root("supervisor")
+        self.adopt_root("probe")
 
         query_failed = False
         released = False

@@ -24,7 +24,7 @@ import signal
 import time
 from pathlib import Path
 
-from flink_tier3 import bigquery_actors
+from flink_tier3 import bigquery_actors, pubsub_actors
 from flink_tier3.bundle import delivery_digest
 from flink_tier3.cloudtasks import Ledger, Queues, load_cells
 from flink_tier3.common import Failure, digest
@@ -63,7 +63,11 @@ def verify_delivery(directory):
         raise Failure("Supervisor application differs from approval")
     approved = Approval.from_dict(approval)
     upgrade, cells = None, None
-    if approved.scenario in ("generic-recovery", "bigquery-recovery"):
+    if approved.scenario in (
+        "generic-recovery",
+        "bigquery-recovery",
+        "pubsub-recovery",
+    ):
         upgrade = mounted(directory, "upgrade-application.json")
         if digest(upgrade) != approved.upgrade_application_sha256:
             raise Failure("Supervisor upgrade differs from approval")
@@ -125,6 +129,12 @@ def supervisor_main(directory):
         # barrier and the exercise are built together and held open for the
         # whole supervision: the session must outlive every query it serves.
         with bigquery_actors.supervisor(env, application, upgrade) as supervisor:
+            supervisor.supervise(os.environ["POD_UID"])
+        return
+    if approved.scenario == "pubsub-recovery":
+        # The factory checks both mounted manifests against the trial, builds
+        # the barrier and authenticates; the session serves the whole run.
+        with pubsub_actors.supervisor(env, application, upgrade) as supervisor:
             supervisor.supervise(os.environ["POD_UID"])
         return
     Supervisor(env, upgrade, cells, hooks).supervise(os.environ["POD_UID"])

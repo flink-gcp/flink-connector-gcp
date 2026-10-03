@@ -270,13 +270,11 @@ def test_application_replacement_and_control_quotas(prepared):
     verify_idle(environment)
 
 
-def test_runnable_entrypoints_remain_disabled(prepared):
+def test_entrypoints_refuse_without_their_handoff(prepared):
     environment, application = prepared
-    with pytest.raises(Failure, match="Pub/Sub execution admission is not implemented"):
+    with pytest.raises(Failure, match="authenticated, guarded handoff"):
         Runner(environment).start(None, None, application)
-    with pytest.raises(
-        Failure, match="Pub/Sub recovery supervision is not implemented"
-    ):
+    with pytest.raises(Failure, match="requires its authenticated handoff"):
         Supervisor(environment).supervise("unused-pod")
 
 

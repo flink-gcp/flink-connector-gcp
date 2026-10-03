@@ -132,10 +132,14 @@ The ordering preserves recovery of an interrupted foundation apply: the helper m
 The KSA selects `tier3-pubsub@flink-gcp.iam.gserviceaccount.com`; the [GCP preparation](../README.md#pubsub-tier-3-preparation) owns its impersonation trust and isolated state bucket.
 The job Role uses the existing Flink Pod, ConfigMap and Deployment permissions within this namespace.
 The runner and supervisor receive the existing application lifecycle Role for admission and cleanup.
+The runner alone also receives `tier3-lifecycle-probe`, which may only create Pods in this namespace, for admission's [workload access probe](../../kubernetes/apps/pubsub/README.md#admission-and-effective-access).
+It adds no reachable authority: the runner could already have the Operator create Pods running as the `pubsub` KSA through a FlinkDeployment.
+The apply identity already holds Pod creation here through the installer Role, so no administrator grant precedes it.
 These identities retain their trusted Operator-administrator boundary described in ADR-0165.
 
 This foundation starts no workload and grants no Pub/Sub service permissions.
-Topics/subscriptions, application delivery, ownership-aware lifecycle and approved recovery trials remain subsequent stages.
+Each run's lifecycle creates its topics, subscriptions and their resource-level grants, and deletes them again; the [Pub/Sub runbook](../../kubernetes/apps/pubsub/README.md#run-identity-and-service-resources) describes them with the application and its admission.
+Dispatch still refuses a Pub/Sub run before the environment lock until the supervised exercise ([#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431)) and execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) land, and no recovery trial is registered before [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434).
 The [namespace apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan.
 Separate namespace/KSA reads and runner-impersonated quota/inventory reads confirmed the applied identity, observed zero quotas and absence of workloads.
 The common helper now includes Pub/Sub in preflight, and the [idle Helm root](../tier3-operator/README.md) adds it to the watch set.
