@@ -37,13 +37,14 @@ import java.util.Map;
  * resource name and fields, the update mask a merge or an update sends, and the precondition a
  * create, an update or a conditional write carries. It is computed from the values rather than by
  * building the message, because the library's conversion to the wire form is package-private
- * ({@code UserDataConverter}, google-cloud-firestore 3.46.0) and building a second copy would cost
+ * ({@code UserDataConverter}, google-cloud-firestore 3.49.0) and building a second copy would cost
  * a second full conversion per record. Firestore's storage-size formula, the unit of its 1 MiB
  * document limit, is not used: for a document of many small fields the wire form is about twice
  * that size, so a request budget kept in storage bytes could pass the request limit.
  *
  * <p>{@code DocumentSizeEstimatorTest} holds the computation equal to the serialized size of the
- * same message built from the proto classes, for every value type and operation.
+ * same message built from the proto classes, for every value type {@code FirestoreWrite} admits and
+ * every operation.
  */
 @Internal
 final class DocumentSizeEstimator {
@@ -171,7 +172,8 @@ final class DocumentSizeEstimator {
             return delimited(coordinate(point.getLatitude()) + coordinate(point.getLongitude()));
         }
         if (value instanceof Blob) {
-            // bytes_value (18).
+            // bytes_value (18). FirestoreWrite admits only a subtype-0 Blob; the library sends any
+            // other subtype as a map_value, which this does not count (#1589).
             long length = ((Blob) value).toByteString().size();
             return TWO_BYTE_TAG + varintSize(length) + length;
         }

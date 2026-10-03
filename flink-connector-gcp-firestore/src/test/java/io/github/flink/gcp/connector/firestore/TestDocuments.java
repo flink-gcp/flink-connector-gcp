@@ -57,7 +57,8 @@ public final class TestDocuments {
      *
      * @param client the client whose database the document belongs to
      * @param path the document path, relative to the database's documents root
-     * @param fields the document's fields; {@code String} and {@code Long} values only
+     * @param fields the document's fields: {@code String} and {@code Long} values, or a {@link
+     *     Value} stored as it is, so that a test states the wire form without the client library
      * @param readTime the read time the snapshot carries
      * @return the snapshot
      */
@@ -93,12 +94,16 @@ public final class TestDocuments {
     }
 
     private static Value encode(Object value) {
+        if (value instanceof Value) {
+            return (Value) value;
+        }
         if (value instanceof String) {
             return Value.newBuilder().setStringValue((String) value).build();
         }
         if (value instanceof Long) {
             return Value.newBuilder().setIntegerValue((Long) value).build();
         }
-        throw new IllegalArgumentException("Only String and Long fields are supported: " + value);
+        throw new IllegalArgumentException(
+                "Only String, Long and Value fields are supported: " + value);
     }
 }

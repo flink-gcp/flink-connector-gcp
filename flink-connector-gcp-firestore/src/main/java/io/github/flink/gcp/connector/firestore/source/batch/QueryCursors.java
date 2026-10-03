@@ -43,6 +43,9 @@ import javax.annotation.Nullable;
 @Internal
 public final class QueryCursors {
 
+    /** The client library's message for a snapshot that lacks an ordered field. */
+    private static final String MISSING_FIELD = "is missing in the provided DocumentSnapshot";
+
     private QueryCursors() {}
 
     /**
@@ -53,7 +56,8 @@ public final class QueryCursors {
      * @param passed how many documents of {@code base} have been passed, including {@code last}
      * @return the continued query
      * @throws IllegalArgumentException if the query orders or filters by a field its projection
-     *     omits, so no cursor can be taken from its documents
+     *     omits, so no cursor can be taken from its documents; a stored value of an ordered field
+     *     the client library cannot decode fails with the library's own exception, unchanged
      */
     public static Query continueAfter(Query base, @Nullable DocumentSnapshot last, long passed) {
         Preconditions.checkNotNull(base, "base must not be null");
@@ -77,12 +81,18 @@ public final class QueryCursors {
      * @param last the last document passed
      * @return the continued query
      * @throws IllegalArgumentException if the query orders or filters by a field its projection
-     *     omits
+     *     omits; a stored value of an ordered field the client library cannot decode fails with the
+     *     library's own exception, unchanged
      */
     public static Query after(Query base, DocumentSnapshot last) {
         try {
             return base.startAfter(last).offset(0);
         } catch (IllegalArgumentException e) {
+            // startAfter also decodes the ordered fields, and a stored value the library cannot
+            // decode throws IllegalArgumentException too; only the missing field gets the hint.
+            if (e.getMessage() == null || !e.getMessage().contains(MISSING_FIELD)) {
+                throw e;
+            }
             throw new IllegalArgumentException(
                     "Cannot continue the Firestore query after "
                             + last.getReference().getPath()

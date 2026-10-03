@@ -20,15 +20,23 @@ import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.Blob;
+import com.google.cloud.firestore.BsonObjectId;
+import com.google.cloud.firestore.BsonTimestamp;
+import com.google.cloud.firestore.Decimal128Value;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.GeoPoint;
+import com.google.cloud.firestore.Int32Value;
+import com.google.cloud.firestore.MaxKey;
+import com.google.cloud.firestore.MinKey;
+import com.google.cloud.firestore.RegexValue;
 import com.google.cloud.firestore.SetOptions;
 import com.google.cloud.firestore.WriteBatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
@@ -38,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -167,6 +176,27 @@ class FirestoreWriteTest {
                 .hasMessageContaining("outer[0]")
                 .hasMessageContaining("subtype 128")
                 .hasMessageContaining("Blob.fromBytes");
+    }
+
+    static Stream<Object> bsonValues() {
+        return Stream.of(
+                MinKey.instance(),
+                MaxKey.instance(),
+                new RegexValue("^a.*", "i"),
+                new BsonObjectId("507f1f77bcf86cd799439011"),
+                new BsonTimestamp(1_700_000_000L, 3L),
+                new Int32Value(7),
+                new Decimal128Value("1.50"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("bsonValues")
+    void aBsonValueClassIsRejected(Object value) {
+        // The library encodes each as a reserved map the writer's size accounting does not count,
+        // and #1589 kept them outside the closed list.
+        assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("v", value)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(value.getClass().getName());
     }
 
     @Test

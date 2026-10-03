@@ -119,6 +119,8 @@ The design, and the alternatives it declined, are recorded in [ADR-0173]({{< par
 
 A `FirestoreDocumentDeserializationSchema` turns each document into zero or more records.
 It receives the client library's `DocumentSnapshot`, whose read time is the job's and which holds only the projected fields when the scan sets `select(...)`.
+The source passes the library's decoding of the values through unchecked.
+Besides the types the sink writes, a field can decode to a `DocumentReference`, a `VectorValue` or a `Blob` with a BSON binary subtype, and, in an Enterprise-edition database, to one of the library's BSON value classes (`MinKey`, `MaxKey`, `RegexValue`, `BsonObjectId`, `BsonTimestamp`, `Int32Value`, `Decimal128Value`), which the Firestore API carries as a reserved single-key map such as `{"__int__": 5}`; a Standard-edition database refuses to store those classes ([#1589]({{< param BookRepo >}}/issues/1589)).
 
 {{< java-snippet file="FirestoreConnectorSourceDeserializer.java" tag="firestore-connector-source-deserializer" >}}
 
@@ -176,7 +178,9 @@ Anything else is rejected when the write is built, which the sink reports as a f
 The list is closed because of how the client library fails.
 A value it cannot encode, such as a `Short` or a `byte[]`, makes it throw after it has already queued the operation, and the rest of that request is then answered out of step: in the measurement, one write was applied while its result never arrived.
 Write an `int` as a `Long`, a `float` as a `Double`, and bytes as `Blob.fromBytes(...)`; an `Integer`, a `Float` or a `byte[]` is rejected.
-A `Blob` must be a plain one: a BSON binary `Blob` of any subtype other than 0 is rejected, because the client library encodes it as a reserved map rather than as bytes and the sink's request-size accounting does not count that form ([#1589]({{< param BookRepo >}}/issues/1589)).
+A `Blob` must have subtype 0, and the library's BSON value classes (`Int32Value`, `Decimal128Value` and the rest) are not accepted.
+The library encodes both as a reserved map rather than as the value itself, and the sink's request-size accounting does not count that form ([#1589]({{< param BookRepo >}}/issues/1589)).
+A document the source read can therefore hold a value the sink refuses: a subtyped `Blob`, which a Standard-edition database stores too, or one of the classes an Enterprise-edition database stores.
 
 Firestore's own limits stay the service's to enforce.
 A document over 1 MiB, a reserved `__name__`-style field or document id, a map nested more than 20 levels deep, or (in a Standard-edition database) an array inside an array is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.

@@ -83,8 +83,10 @@ public final class QuerySplitState {
      *
      * @return the assigned split unchanged when no document has been successfully deserialized,
      *     otherwise a split whose query starts after the last such document
-     * @throws IllegalArgumentException if no cursor can be taken from the document, which the
-     *     planner's check at the start of the job rules out
+     * @throws IllegalArgumentException if no cursor can be taken from the document because the
+     *     query's projection omits an ordered field, which the planner's check at the start of the
+     *     job rules out; a stored value the client library cannot decode fails here too, with the
+     *     library's own exception, and no check rules that out
      */
     public QuerySplit toSplit() {
         if (lastEmitted == null) {
