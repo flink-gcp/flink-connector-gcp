@@ -66,6 +66,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub_messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
 | `flink_tier3/pubsub_traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
 | `flink_tier3/pubsub_handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, without runnable admission |
+| `flink_tier3/pubsub_actors.py`, `pubsub_auth.py`, `pubsub_guard.py`, `pubsub_quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier; nothing composes them while admission is refused |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.

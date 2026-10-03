@@ -14,40 +14,8 @@
 # limitations under the License.
 """Prove the run's writers are gone, and say plainly what that does not prove."""
 
-from .cloudtasks import transient
 from .common import Failure, ownership
-from .policy import POLL
-
-# Kinds that can carry or restore a writer. A Pod runs one; the controllers
-# above it put one back, which is why their absence is required too rather
-# than inferred from an empty Pod list at one instant.
-# Controllers first, Pods last: a Pod created between the two listings by a
-# controller that is itself already listed is still caught, while the reverse
-# order would miss a create-then-collect that straddles them. This is not the
-# same set `verify_idle` refuses after deletion, deliberately in both
-# directions: it adds Deployment and ReplicaSet, which restore a writer but
-# which the idle check tolerates from the Operator, and it omits
-# PersistentVolumeClaim, which the idle check refuses but which writes
-# nothing.
-# Consecutive unreadable attempts tolerated inside one call. The cleanup
-# window cannot bound this: `Cleanup.run` computes its own deadline through
-# `cleanup_window(now)` and `env.schedule.cleanup_end` is the static expiry
-# the run usually reaches before cleanup starts, so reading it here would
-# spend the retry before the first one. One more than the two consecutive
-# transient reads the supervisor already tolerates elsewhere.
-UNREAD_RETRIES = 3
-
-WRITER_KINDS = (
-    "FlinkDeployment",
-    "FlinkSessionJob",
-    "FlinkBlueGreenDeployment",
-    "Deployment",
-    "StatefulSet",
-    "ReplicaSet",
-    "CronJob",
-    "Job",
-    "Pod",
-)
+from .quiesce import namespace_writers, poll_writers
 
 
 def owned_writers(env, seen=None):
@@ -60,18 +28,12 @@ def owned_writers(env, seen=None):
     load-bearing on its own: `env.observed` is not scoped, and carries the
     supervisor's uids because the cleanup inventory seeds from every root.
     """
-    namespace = env.approval.application_namespace
     roots = {
         ref["uid"]
         for key, ref in env.roots.items()
         if key == "application" or key.startswith("cell:")
     }
-    items = [
-        obj
-        for kind in WRITER_KINDS
-        for obj in env.kube.items(kind, namespace)
-        if obj["metadata"]["namespace"] == namespace
-    ]
+    items = namespace_writers(env)
     known = ownership(items, roots | set(env.observed) | set(seen or ()))
     if seen is not None:
         # `Cleanup.run`'s loop stopped growing `env.observed` before this
@@ -113,34 +75,4 @@ def barrier(env):
     if env.actor != "supervisor":
         raise Failure("The quiescence barrier belongs to the supervisor")
     seen = set()
-
-    def quiesce():
-        # Never answer "unknown". The caller asks twice per poll and the second
-        # asker turns anything but True into a failure that ends the cleanup
-        # pass, so a read that says nothing about the cluster is retried here
-        # rather than reported. Exhausting the retries still raises: a cluster
-        # this supervisor cannot read is not one it can call quiescent.
-        for _ in range(UNREAD_RETRIES):
-            try:
-                remaining = owned_writers(env, seen)
-                break
-            except Failure as error:
-                if not transient(error):
-                    raise
-                env.emit("quiescence-unread", {"cause": type(error).__name__})
-                env.sleep(POLL)
-        else:
-            raise Failure("BigQuery quiescence could not be read")
-        if remaining:
-            env.emit(
-                "quiescence-pending",
-                {
-                    "remaining": sorted(
-                        f"{obj['kind']}/{obj['metadata']['name']}" for obj in remaining
-                    )[:20]
-                },
-            )
-            return False
-        return True
-
-    return quiesce
+    return poll_writers(env, lambda: owned_writers(env, seen), "BigQuery")

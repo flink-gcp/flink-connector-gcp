@@ -17,15 +17,15 @@
 from contextlib import contextmanager
 
 from . import bigquery_bundle
+from .actor_auth import authenticate, require_installed_source
 from .bigquery_auth import BigQuerySession
 from .bigquery_handoff import BigQueryHandoff
 from .bigquery_lifecycle import BigQueryLifecycle
 from .bigquery_quiesce import barrier
 from .bigquery_resources import BigQueryResources
-from .bundle import delivery_digest, source_digest
 from .common import Failure, digest
 from .model import validate_approval
-from .policy import BIGQUERY_CEILINGS, BIGQUERY_OBSERVATIONS, HTTP_TIMEOUT
+from .policy import BIGQUERY_CEILINGS, BIGQUERY_OBSERVATIONS
 from .runner import Runner
 from .supervisor import Supervisor
 
@@ -34,14 +34,7 @@ def _handoff(env, application, runner_token, http, role):
     if env.actor != role or env.approval.scenario != "bigquery-recovery":
         raise Failure("BigQuery actor environment has the wrong role or scenario")
     validate_approval(env.approval.to_dict(), env.clock())
-    # The runner runs from a complete installation; the supervisor runs from a
-    # mounted subset, whose digest is the pin the approval carries for it.
-    if role == "supervisor":
-        installed, approved = delivery_digest(), env.approval.delivery_sha256
-    else:
-        installed, approved = source_digest(), env.approval.runtime_sha256
-    if installed != approved:
-        raise Failure("BigQuery actor source differs from approval")
+    require_installed_source(env, role, "BigQuery")
     env.assert_owner()
     resources = BigQueryResources(
         http, env.approval.bigquery_plan, env.schedule.cleanup_end, env.clock
@@ -52,13 +45,6 @@ def _handoff(env, application, runner_token, http, role):
         evidence_bytes=BIGQUERY_CEILINGS["query_bytes"],
         query_until=env.schedule.cleanup_at,
     )
-
-
-def _authenticate(env, http, deadline):
-    http.authenticate(timeout=min(HTTP_TIMEOUT, deadline - env.clock()))
-    if env.clock() >= deadline:
-        raise Failure("BigQuery actor construction deadline expired")
-    env.assert_owner()
 
 
 @contextmanager
@@ -73,7 +59,7 @@ def runner(env, bundle, *, runner_token, credentials=None):
         handoff = _handoff(env, verified["application"], runner_token, http, "runner")
         actor = Runner(env, bigquery=handoff)
         actor.admission_open()
-        _authenticate(
+        authenticate(
             env,
             http,
             min(
@@ -104,5 +90,5 @@ def supervisor(env, application, upgrade, *, credentials=None):
     with BigQuerySession("supervisor", credentials) as http:
         handoff = _handoff(env, application, None, http, "supervisor")
         actor = Supervisor(env, upgrade, bigquery=handoff, quiesce=quiesce)
-        _authenticate(env, http, env.schedule.cleanup_at)
+        authenticate(env, http, env.schedule.cleanup_at)
         yield actor

@@ -46,6 +46,7 @@ limitations under the License.
 - Updated: 2026-09-24 (dispatch of a chosen rig commit; capacity gate)
 - Updated: 2026-09-25 (one-node capacity gate removed)
 - Updated: 2026-09-25 (BigQuery deployed trial findings)
+- Updated: 2026-10-03 (Pub/Sub admission building blocks: actor construction, per-method operation bounds, settled failures)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -587,7 +588,7 @@ A synthetic crash between the former two writes left resource intent without an 
 Atomic initialization leaves no Pub/Sub state before commit, or a complete actor binding after commit; a lost acknowledgement permits only the original token's admission-checked retry, while a dead actor requires the existing external reclamation proof.
 The two actors may overlap while sharing the existing traffic reservations.
 A completion acknowledgement clears only the invocation it names; retries never repeat the service operation or clear a later call.
-Retain failed or ambiguous invocations rather than interpreting client timeout as service quiescence.
+Retain ambiguous invocations rather than interpreting client timeout as service quiescence; a failed call whose actor session saw every write answered releases its marker, as refined under [#1580](https://github.com/flink-gcp/flink-connector-gcp/issues/1580) below.
 Process tokens are identities in the protocol, not authentication or transferable leases.
 
 Require cooperative release of every bound actor before normal service cleanup, followed by the caller's external workload and in-flight-operation barrier.
@@ -674,6 +675,22 @@ The approval's window and source checks, the approved-checkout check, the approv
 The approved-checkout check now also refuses untracked TOML files under `kubernetes/`, ignored ones included, so a dispatch naming a trial file the approved commit lacks is refused at bundle preparation, before the lock; this applies to the BigQuery bundle as well.
 Dispatch then refuses before the environment lock, writing no lock, evidence, control record or run document, and runner admission remains [#1430](https://github.com/flink-gcp/flink-connector-gcp/issues/1430).
 Declined: workflow choice inputs for the trial kind and entry point with policy-fixed numbers, because the numbers differ between the campaign's trials and are preregistered per trial; a JSON trial file, which apache-rat would reject without a licence header; and continuing to the runner's existing refusal after the lock, because a run that cannot execute would then take the lock, write evidence and depend on settlement to release it.
+
+Refined under [#1580](https://github.com/flink-gcp/flink-connector-gcp/issues/1580), the first half of [#1430](https://github.com/flink-gcp/flink-connector-gcp/issues/1430): the parts admission composes exist, and admission is still refused.
+A Pub/Sub handoff is bound to the runner and the supervisor only through one factory each, which authenticates the actor's own service account, checks its source pin and both manifests' digests, and requires both manifests to run exactly the job the approval's trial derives: parallelism, phase, record count, restore requirement and entry point.
+The digests alone do not establish that: the runner's bundle re-render already compared the rendered jobs with the trial, but a supervisor's mounted manifests, which nothing re-renders, met the trial only through the record count the traffic wrapper compares.
+Each actor's production guard reserves a method's whole operation bound before the method starts, refuses an operation outside the reservation, its phases or its bound, and refuses to start a Pub/Sub request within the session's 20-second request budget of its deadline, or one that an approval no longer validating would issue.
+The deadline is the admission deadline, except for message traffic, which belongs to the exercise and defaults to `cleanup_at`.
+The controller and the traffic wrapper consult the guard after their own control I/O, so the deadline is checked immediately before the request rather than before a control read that could outlast it; the request budget covers the response's status and headers, while a streamed body is bounded only by the transport's per-read timeout and the 1 MiB response cap that the resource helper now applies as the message helper already did.
+A bound is the runbook's measured helper count plus the worst case of five-attempt conditional control updates and of a call's own markers.
+The deadline applies to service requests only: a stop, a released marker or the evidence of a request already sent must still be written after it.
+Admission is to create the application within 900 seconds of the window's start, because it also creates and grants six resources, waits for the grants to take effect for each identity and publishes the first cohort; until [#1581](https://github.com/flink-gcp/flink-connector-gcp/issues/1581) composes admission, the guard enforces that deadline only on the admitting methods' Pub/Sub requests.
+The bounds are per method and held in process; the aggregate request ceiling stays with [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433).
+A failed call now releases its marker while the actor's session has seen every Pub/Sub write it sent answered below 500, so read-detected drift stops the run and leaves it cleanable; a write that left without a status, or was answered 5xx, keeps that marker and every later one, and so the lock.
+The runner may publish from `READY`, so the first cohort is waiting before the application exists, while the supervisor still collects only from `RUNNING`.
+Cleanup's barrier waits for every writer in the application namespace, not only this run's, because the namespace's service account can create Pods that hold the workload's data grants; it is accepted as the workload-writer proof the cleanup barrier owes, and it still does not prove that a request a terminated Pod sent has finished at the service.
+The tests' example trial moved out of the reviewed directory, which holds no trial until [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters them, so no dispatch can name an example once admission opens.
+Declined: refusing the example by a reserved name at admission, because the approval carries the trial's content rather than its file name, and either adding the name to the version 5 schema or matching content would guard a file that has no reason to be dispatchable; and keeping every failure's marker, because a refusal before any request, or a drifted read, would then need the external reclamation proof to clean a run that sent nothing ambiguous.
 
 ### Pub/Sub lifecycle IAM preparation
 

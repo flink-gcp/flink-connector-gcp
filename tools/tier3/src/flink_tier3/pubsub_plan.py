@@ -159,6 +159,60 @@ def input_plan(run_id, trial):
     }
 
 
+def manifest_jobs(run_id, trial):
+    """The (parallelism, job arguments) of the initial and recovery manifests.
+
+    Replacement trials keep both manifests at parallelism two; a rescale trial
+    changes one to two or two to one and requires restored state in the
+    upgrade phase.
+    """
+    validate_trial(trial)
+    kind = trial["trial"]
+    jobs = []
+    for parallelism, phase in (
+        (1 if kind == "rescale-out" else 2, "initial"),
+        (
+            1 if kind == "rescale-in" else 2,
+            "upgrade" if kind.startswith("rescale-") else "initial",
+        ),
+    ):
+        jobs.append(
+            (
+                parallelism,
+                [
+                    f"--run-id={run_id}",
+                    f"--phase={phase}",
+                    f"--records-per-subscription={trial['records_per_subscription']}",
+                    f"--parallelism={parallelism}",
+                    f"--require-restored={str(phase == 'upgrade').lower()}",
+                    f"--entry-point={trial['entry_point']}",
+                ],
+            )
+        )
+    return tuple(jobs)
+
+
+def require_trial_jobs(run_id, trial, application, recovery):
+    """Refuse pinned manifests whose jobs are not exactly the trial's.
+
+    An approval pins both manifests by digest and carries the trial, but the
+    digests alone do not say the manifests run that trial.
+    """
+    for manifest, (parallelism, args) in zip(
+        (application, recovery), manifest_jobs(run_id, trial)
+    ):
+        spec = manifest.get("spec") if isinstance(manifest, dict) else None
+        job = spec.get("job") if isinstance(spec, dict) else None
+        if (
+            not isinstance(job, dict)
+            # bool is an int subclass, and True == 1.
+            or type(job.get("parallelism")) is not int
+            or job["parallelism"] != parallelism
+            or job.get("args") != args
+        ):
+            raise Failure("Pinned Pub/Sub manifests differ from the approved trial")
+
+
 def prepare(
     *,
     run_id,
@@ -206,13 +260,9 @@ def prepare(
         pubsub_records=records,
         pubsub_entry_point=trial["entry_point"],
     )
-    for application, parallelism, phase in (
-        (initial, 1 if trial["trial"] == "rescale-out" else 2, "initial"),
-        (
-            recovery,
-            1 if trial["trial"] == "rescale-in" else 2,
-            "upgrade" if trial["trial"].startswith("rescale-") else "initial",
-        ),
+    require_trial_jobs(run_id, trial, initial, recovery)
+    for application, (parallelism, _) in zip(
+        (initial, recovery), manifest_jobs(run_id, trial)
     ):
         metadata = application["metadata"]
         annotations = metadata.get("annotations", {})
@@ -224,19 +274,7 @@ def prepare(
         ):
             raise Failure("Rendered application differs from the Pub/Sub identity")
         spec = application["spec"]
-        if (
-            spec["image"] != application_image
-            or spec["job"]["parallelism"] != parallelism
-            or spec["job"]["args"]
-            != [
-                f"--run-id={run_id}",
-                f"--phase={phase}",
-                f"--records-per-subscription={records}",
-                f"--parallelism={parallelism}",
-                f"--require-restored={str(phase == 'upgrade').lower()}",
-                f"--entry-point={trial['entry_point']}",
-            ]
-        ):
+        if spec["image"] != application_image:
             raise Failure("Rendered application differs from the Pub/Sub trial")
         _pod(spec["podTemplate"]["spec"], "smoke")
         for manager, replicas in (("jobManager", 1), ("taskManager", parallelism)):

@@ -98,13 +98,18 @@ class PubSubHandoff:
     still use the resource controller's caller-owned operation/deadline guard.
     """
 
-    def __init__(self, traffic, *, actor_token):
+    def __init__(self, traffic, *, actor_token, settled=None):
         if not _token(actor_token):
             raise Failure(
                 "Pub/Sub actor token must be 32 lowercase hexadecimal characters"
             )
+        if settled is not None and not callable(settled):
+            raise Failure("Pub/Sub settled-write check must be callable")
         self.traffic, self.controller = traffic, traffic.controller
         self.env, self.token = traffic.env, actor_token
+        # Whether every service write this actor sent has a definite outcome.
+        # Without it, every failed call keeps its marker.
+        self.settled = settled
 
     @staticmethod
     def _new_actor(token):
@@ -170,7 +175,8 @@ class PubSubHandoff:
                 "actors": {"runner": self._new_actor(self.token), "supervisor": None},
             }
 
-        self.controller._change(initialize)
+        with self.controller.reserve("initialize"):
+            self.controller._change(initialize)
 
     def join(self):
         """Claim the one supervisor process after preparation and before its calls."""
@@ -198,7 +204,8 @@ class PubSubHandoff:
             elif self._owned(record)["released"]:
                 raise Failure("Pub/Sub supervisor has released its authority")
 
-        self.controller._change(join)
+        with self.controller.reserve("join"):
+            self.controller._change(join)
 
     def _call(self, operation, callback):
         marker = {"id": uuid.uuid4().hex, "operation": operation}
@@ -223,12 +230,21 @@ class PubSubHandoff:
         try:
             result = callback()
         except (Failure, ValueError, OSError):
-            # Even a transport timeout can leave service work in flight. Keep
-            # its marker; only an external barrier can reclaim that authority.
+            # Even a transport timeout can leave service work in flight, so
+            # the marker stays unless the session saw every write answered;
+            # only an external barrier can reclaim an unsettled call.
             self.env.stopping = True
             self.stop()
+            if self.settled is not None and self.settled() is True:
+                try:
+                    self._finish(marker)
+                except Failure:
+                    pass  # the marker stays, which only keeps the lock
             raise
+        self._finish(marker)
+        return result
 
+    def _finish(self, marker):
         def finish(record):
             actor = self._owned(record)
             if actor["inflight"] is None:
@@ -244,7 +260,7 @@ class PubSubHandoff:
         for attempt in range(3):
             try:
                 self.controller._change(finish)
-                return result
+                return
             except _InvocationChanged:
                 raise
             except Failure:
@@ -258,19 +274,29 @@ class PubSubHandoff:
             self.controller.prepare()
             self.traffic.initialize()
 
-        return self._call("prepare", prepare)
+        with self.controller.reserve("prepare"):
+            return self._call("prepare", prepare)
 
-    def publish(self, input_index, start, count):
+    def verify(self):
+        """Re-read the prepared resources and policies; see the controller."""
+        self._role()
+        with self.controller.reserve("verify"):
+            return self.controller.verify_prepared()
+
+    def publish(self, input_index, start, count, *, deadline=None):
         self._role("runner")
-        return self._call(
-            "publish", lambda: self.traffic.publish(input_index, start, count)
-        )
+        with self.controller.reserve("publish", deadline=deadline):
+            return self._call(
+                "publish", lambda: self.traffic.publish(input_index, start, count)
+            )
 
     def collect(self, batch_id, *, max_messages=MAX_BATCH):
         self._role("supervisor")
-        return self._call(
-            "collect", lambda: self.traffic.collect(batch_id, max_messages=max_messages)
-        )
+        with self.controller.reserve("collect"):
+            return self._call(
+                "collect",
+                lambda: self.traffic.collect(batch_id, max_messages=max_messages),
+            )
 
     def stop(self):
         """Close admission without claiming that any process or request has exited."""
@@ -280,12 +306,12 @@ class PubSubHandoff:
             self._state(record)
             record.stop_requested = True
 
-        self.controller._change(stop)
+        with self.controller.reserve("stop"):
+            self.controller._change(stop)
 
     def release(self):
         """Cooperatively surrender only this process's resolved call authority."""
         self._role()
-        self.stop()
 
         def release(record):
             # A supervisor stopped before join has no data authority to release.
@@ -297,12 +323,15 @@ class PubSubHandoff:
                 raise Failure("Pub/Sub actor call is in flight or unresolved")
             actor["released"] = True
 
-        self.controller._change(release)
+        with self.controller.reserve("release"):
+            self.stop()
+            self.controller._change(release)
 
     def released(self):
         """Observe all bound releases; this is not an external quiescence proof."""
         self._role()
-        record, _ = self.controller._read()
+        with self.controller.reserve("released"):
+            record, _ = self.controller._read()
         return all(
             actor is None or actor["released"]
             for actor in self._state(record)["actors"].values()
@@ -320,7 +349,8 @@ class PubSubHandoff:
             require_handoff_released(state)
             return quiesce()
 
-        return self.controller.cleanup(barrier)
+        with self.controller.reserve("cleanup"):
+            return self.controller.cleanup(barrier)
 
     def reclaim(self, quiesce):
         """Reclaim abandoned actors only after an external proof for their snapshot.
@@ -358,4 +388,5 @@ class PubSubHandoff:
             self.controller._change(fence)
             return True
 
-        return self.controller.cleanup(barrier)
+        with self.controller.reserve("reclaim"):
+            return self.controller.cleanup(barrier)

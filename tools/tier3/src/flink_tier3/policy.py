@@ -69,6 +69,15 @@ BIGQUERY_OBSERVATIONS = {
     "measure_seconds": 60,
 }
 
+PUBSUB_ADMISSION = {
+    # From admission to the application's creation. Beyond the supervisor and
+    # Operator readiness every scenario waits for, Pub/Sub admission creates
+    # and grants six resources, waits for the grants to take effect for each
+    # identity and publishes the first cohort; IAM documents a policy change
+    # as typically taking two minutes and potentially seven or longer.
+    "startup_seconds": 900,
+}
+
 # Application namespaces first, then the control namespace.
 NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, SYSTEM)
 

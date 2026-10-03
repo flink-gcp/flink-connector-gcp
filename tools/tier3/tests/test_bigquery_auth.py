@@ -16,6 +16,7 @@
 
 import json
 
+import google.auth
 import pytest
 import requests
 from flink_tier3 import bigquery_auth as auth
@@ -74,7 +75,7 @@ def identity(role="runner"):
 @pytest.fixture
 def wire(monkeypatch):
     http = Http()
-    monkeypatch.setattr(auth.requests, "Session", lambda: http)
+    monkeypatch.setattr(requests, "Session", lambda: http)
     return http
 
 
@@ -227,7 +228,7 @@ def test_default_credentials_receive_scopes_and_bounded_refresh_adapter(
         request("https://oauth2.googleapis.com/token", timeout=3600)
         return Credentials("default-token"), "flink-gcp"
 
-    monkeypatch.setattr(auth.google.auth, "default", default)
+    monkeypatch.setattr(google.auth, "default", default)
     wire.responses = [{}, {}, identity()]
     with auth.BigQuerySession("runner", monotonic=lambda: 0) as http:
         http.authenticate(timeout=3)

@@ -114,6 +114,34 @@ def test_publish_reserves_exact_input_and_evidence_before_service(setup):
     assert result["message_ids"] == ["id-1", "id-2"]
 
 
+@pytest.mark.parametrize(
+    "phase, publishes, collects",
+    [
+        (Phase.APPROVED, False, False),
+        # The first cohort is published before the application exists.
+        (Phase.READY, True, False),
+        (Phase.RUNNING, True, True),
+    ],
+)
+def test_the_runner_publishes_from_ready_and_the_supervisor_only_once_running(
+    setup, phase, publishes, collects
+):
+    make, env, http, _, _, _ = setup
+    env.records._change(lambda r: setattr(r, "phase", phase))
+    http.responses.extend([Response({"messageIds": ["a"]}), Response({})])
+    if publishes:
+        assert make().publish(0, 0, 1)["message_ids"] == ["a"]
+    else:
+        with pytest.raises(Failure, match="window has closed"):
+            make().publish(0, 0, 1)
+    if collects:
+        make("supervisor").collect("one", max_messages=1)
+    else:
+        with pytest.raises(Failure, match="window has closed"):
+            make("supervisor").collect("one", max_messages=1)
+    assert len(http.calls) == publishes + collects
+
+
 def test_restart_cannot_reset_or_overspend_input_budget(setup):
     make, env, http, _, _, _ = setup
     http.responses.extend(

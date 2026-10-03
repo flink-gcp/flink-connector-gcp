@@ -155,6 +155,112 @@ def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
 
 
 @pytest.mark.parametrize(
+    "kind, initial, recovery",
+    [
+        ("jm-replacement", (2, "initial"), (2, "initial")),
+        ("tm-replacement", (2, "initial"), (2, "initial")),
+        ("rescale-out", (1, "initial"), (2, "upgrade")),
+        ("rescale-in", (2, "initial"), (1, "upgrade")),
+    ],
+)
+def test_the_trial_fixes_each_manifests_job(trial, kind, initial, recovery):
+    trial.update(trial=kind, entry_point="table", records_per_subscription=40)
+    jobs = plan.manifest_jobs("run-1430", trial)
+    assert jobs == tuple(
+        (
+            parallelism,
+            [
+                "--run-id=run-1430",
+                f"--phase={phase}",
+                "--records-per-subscription=40",
+                f"--parallelism={parallelism}",
+                f"--require-restored={str(phase == 'upgrade').lower()}",
+                "--entry-point=table",
+            ],
+        )
+        for parallelism, phase in (initial, recovery)
+    )
+
+
+@pytest.mark.parametrize("kind", plan.TRIALS)
+def test_rendered_manifests_run_the_trial_they_were_rendered_for(
+    inputs, renderer, kind
+):
+    inputs["trial"]["trial"] = kind
+    rendered = plan.prepare(**inputs)
+    plan.require_trial_jobs(
+        inputs["run_id"],
+        inputs["trial"],
+        rendered["application"],
+        rendered["recovery_application"],
+    )
+
+
+def _tamper(job, change):
+    if change == "parallelism":
+        job["parallelism"] = 3 - job["parallelism"]
+    elif change == "parallelism-bool":
+        job["parallelism"] = job["parallelism"] == 1
+    elif change == "dropped":
+        job["args"].pop()
+    elif change == "extra":
+        job["args"].append("--phase=upgrade")
+    elif change == "reordered":
+        job["args"].reverse()
+    elif change == "missing":
+        del job["args"]
+    else:
+        index = next(i for i, a in enumerate(job["args"]) if a.startswith(change))
+        flag, value = job["args"][index].split("=", 1)
+        flipped = {
+            "--run-id": lambda: "other-run",
+            "--phase": lambda: "initial" if value == "upgrade" else "upgrade",
+            "--records-per-subscription": lambda: "999",
+            "--parallelism": lambda: str(3 - int(value)),
+            "--require-restored": lambda: "false" if value == "true" else "true",
+            "--entry-point": lambda: "table",
+        }[flag]()
+        job["args"][index] = flag + "=" + flipped
+
+
+@pytest.mark.parametrize("which", ["application", "recovery_application"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "--run-id",
+        "--phase",
+        "--records-per-subscription",
+        "--parallelism",
+        "--require-restored",
+        "--entry-point",
+        "parallelism",
+        "parallelism-bool",
+        "dropped",
+        "extra",
+        "reordered",
+        "missing",
+    ],
+)
+def test_pinned_manifests_must_run_exactly_the_trial(inputs, renderer, which, change):
+    """A digest pins a manifest; only this says the manifest runs the trial."""
+    rendered = plan.prepare(**inputs)
+    _tamper(rendered[which]["spec"]["job"], change)
+    with pytest.raises(Failure, match="differ from the approved trial"):
+        plan.require_trial_jobs(
+            inputs["run_id"],
+            inputs["trial"],
+            rendered["application"],
+            rendered["recovery_application"],
+        )
+
+
+@pytest.mark.parametrize("manifest", [None, [], {}, {"spec": []}, {"spec": {}}])
+def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
+    with pytest.raises(Failure, match="differ from the approved trial"):
+        plan.require_trial_jobs(inputs["run_id"], inputs["trial"], manifest, manifest)
+
+
+@pytest.mark.parametrize(
     "field,value",
     [
         ("version", True),
@@ -345,23 +451,33 @@ def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, 
 
 
 REVIEWED = Path(__file__).parents[3] / "kubernetes/lifecycle/pubsub-trials"
+# The tests' example trial, kept where no dispatch can name it.
+FIXTURE_TRIALS = Path(__file__).parent / "fixtures/pubsub-trials"
 
 
 def test_every_reviewed_trial_file_is_a_valid_trial():
     """A dispatch names one of these; a broken one would refuse only on the day."""
     from flink_tier3.policy import RUN_ID
 
-    files = sorted(REVIEWED.iterdir())
-    assert files
-    for path in files:
+    for path in sorted(REVIEWED.iterdir()):
+        if path.name == "README.md":
+            continue
         assert path.suffix == ".toml", path
         assert RUN_ID.fullmatch(path.stem), path
         # The one-pass feasibility check dispatch reaches only after the cluster.
         plan.input_plan("feasibility", plan.load_reviewed_trial(path))
 
 
+def test_no_reviewed_trial_is_the_tests_example():
+    """Admission would run any file there, and the example authorizes nothing."""
+    assert not (REVIEWED / "example-wiring.toml").exists()
+    example = plan.load_reviewed_trial(FIXTURE_TRIALS / "example-wiring.toml")
+    for path in REVIEWED.glob("*.toml"):
+        assert plan.load_reviewed_trial(path) != example, path
+
+
 def test_the_example_trial_is_the_one_the_tests_use(trial):
-    assert plan.load_reviewed_trial(REVIEWED / "example-wiring.toml") == trial
+    assert plan.load_reviewed_trial(FIXTURE_TRIALS / "example-wiring.toml") == trial
 
 
 @pytest.mark.parametrize(

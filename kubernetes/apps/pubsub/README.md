@@ -207,6 +207,9 @@ A control-record `PUT` callback denotes the logical create upload, whose GCS HTT
 The caller must reserve the whole adapter call's request and time budget; callback counts are not HTTP-request counts, and credential refresh and the guard's own I/O require additional caller accounting.
 The helper delegates those checks to the caller; it does not implement durable operation counters, the lock, deadlines or independent supervision.
 Pub/Sub HTTP requests use the shared 20-second timeout with redirects disabled and no automatic retry; this is a per-request transport limit, not a total elapsed-time or cost ceiling.
+Responses are read streamed and refused once their body passes 1 MiB, the same local cap the message helper applies; a body that fails while arriving is a transport failure.
+The actor sessions treat no response as a redirect, because requests otherwise reads a redirect's whole body before any cap, even when it does not follow it; a 3xx to a resource, message or identity request therefore returns unread and is refused as a non-success status.
+Credential refresh goes through google-auth's own request, which does not stream, so a token endpoint's response body is still read whole.
 
 ### Permissions and remaining integration
 
@@ -242,9 +245,12 @@ A successful call has the following operation budget, measured with the shared h
 | --- | --- | --- | --- | --- |
 | `install_grants()` | `inspect`: 14; `grant`: 42; `inspect-grants`: 12 | 42 | 26 | 260 |
 | `inspect_grants()` | `inspect`: 7; `inspect-grants`: 12 | 12 | 7 | 70 |
+| `provision()` | `provision`: 20; `inspect`: 7 | 18 | 8, plus one create | 80, plus one upload |
+| `cleanup_or_confirm_absent()`, manifest present | `cleanup`: 26 | 18 | 8 | 80 |
+| `cleanup_or_confirm_absent()`, manifest absent | `cleanup`: 7 | 6 | 1 | 10 |
 
 Reserve these bounds before entering the method and still enforce the guard before each operation.
-These totals exclude initial `provision()`, cleanup, credential refresh and the guard's own I/O; total elapsed time needs its own deadline.
+These totals exclude credential refresh and the guard's own I/O; total elapsed time needs its own deadline.
 Policy reads deliberately re-read ownership, so they use more storage reads than the resource inspection that checks its manifest once.
 
 Policy readback does not prove effective permissions, propagation or the absence of inherited grants.
@@ -282,6 +288,7 @@ Before the helper writes its resource manifest, the controller records `creation
 Successful resource-settings readback and the final explicit-policy readback are retained in that record, outside the workload JVM, before the stage becomes `prepared`.
 The Pub/Sub portion of control is limited to 256 KiB; a failed observation write leaves its partial service work attributable for cleanup, without permitting preparation to resume.
 This is bounded control evidence, not the later output-message evidence stream or proof of effective permissions.
+`verify_prepared()`, which an actor reaches through its handoff's `verify()`, repeats `inspect_grants()` for either actor while the run is still `APPROVED` or `READY` and the stage is `prepared`, so settings, ownership or policy drift since preparation, including an expired subscription, refuses before admission without writing anything; every read rechecks that, so a stop during verification refuses the rest.
 
 Every helper operation retains its original budget callback and rechecks active intent, environment ownership and the relevant stage; preparation also refuses a shared stop, evidence failure or a run phase outside approved/ready.
 The controller guards its own logical accesses with `(control, GET|UPDATE, active-run-path)` callbacks, including repeated edits after conditional-write conflicts.
@@ -313,6 +320,39 @@ When control deletion succeeded and lock release did not, the [recovery workflow
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop/ownership drift, partial mutations, evidence limits and shared settlement gates.
 Deployed supervisor handoff, integrated message publication/observation, access probes and actual recovery remain subsequent [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) work.
+
+### Actor construction and operation bounds
+
+[`pubsub_actors`](../../../tools/tier3/src/flink_tier3/pubsub_actors.py) is the only production path that binds a Pub/Sub handoff to a runner or supervisor.
+Both check the actor's source pin, as the BigQuery actors do, and both require each pinned manifest's digest and that its `spec.job` runs exactly what the approval's trial derives through `pubsub_plan.manifest_jobs()`: its parallelism and the `--run-id`, `--phase`, `--records-per-subscription`, `--parallelism`, `--require-restored` and `--entry-point` arguments, in order.
+A digest pins a manifest, and only this check says the manifest runs the approved trial.
+`runner(env, bundle, runner_token=…)` gets both from re-rendering the bundle against the caller's approval, which `pubsub_plan.prepare()` checks through `require_trial_jobs()`; `supervisor(env, application, upgrade)` checks the manifests its delivery mounted explicitly, because nothing re-renders them.
+Each actor authenticates its own service account through [`PubSubSession`](../../../tools/tier3/src/flink_tier3/pubsub_auth.py) before it is returned, and a supervisor takes a fresh process token each time it is constructed.
+The supervisor's cleanup barrier, [`pubsub_quiesce.barrier`](../../../tools/tier3/src/flink_tier3/pubsub_quiesce.py), is built from the run rather than supplied, and waits until no object of any writer kind remains in `tier3-pubsub`, whoever owns it: the namespace's `pubsub` service account can create Pods and Deployments, and any Pod running as it holds the workload's data grants.
+It proves only that no such object remains after graceful deletion, not that a request a terminated Pod sent has finished at the service; the actors' unsettled-call markers cover only their own requests.
+Outside a run the namespace is expected to hold no such object; dispatch does not refuse one, and one left there keeps the barrier from passing, so cleanup keeps the lock until it is removed.
+`Runner.start` and `Supervisor.supervise` still refuse `pubsub-recovery`, so nothing composes these actors yet.
+
+Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub_guard.py) is its `before_operation`.
+The handoff reserves, through the controller's `reserve()`, a method's whole bound before the method starts, and a method called inside another counts against the outer reservation.
+The guard refuses an operation outside a reservation, in a phase the method does not use, or past its bound, before the request is sent.
+Each bound is the helper count measured above plus one control re-read per resource callback and the worst case of the controller's conditional updates: up to six callbacks each, for the outer guard and five write attempts, and for a process-owned call, its begin update and at worst a stop plus three attempts to clear its marker.
+
+| Method | Phase bounds besides control |
+| --- | --- |
+| `prepare` | `provision` 20, `inspect` 21, `grant` 42, `inspect-grants` 12 |
+| `verify` | `inspect` 7, `inspect-grants` 12 |
+| `publish` | `publish` 3 |
+| `collect` | `collect` 4, `acknowledge` 2 |
+| `cleanup`, `reclaim` | `cleanup` 26 |
+| `initialize`, `join`, `stop`, `release`, `released` | None |
+
+While a method admits work (`initialize`, `prepare`, `verify`, `join`, `publish` or `collect`), the guard also refuses to start a Pub/Sub request less than 20 seconds, the session's request budget, before the deadline, or one that the approval would no longer validate.
+The controller and the traffic wrapper call the guard after their own control reads and reservations, so that check is the last step before the request.
+The budget covers the request's authentication, its sending and the response's status and headers; reading a streamed body is bounded only by the transport's per-read timeout and the helpers' 1 MiB response cap, so a slowly arriving body can still end after the deadline.
+The deadline is the admission deadline, the earlier of 900 seconds after the window's start and `cleanup_at`, except that `publish` and `collect` default to `cleanup_at` because later cohorts and collection belong to the exercise; a caller publishing during admission passes the admission deadline.
+Control and storage operations are not held to it, so a stop, a cleared marker or the evidence of a request already sent can still be written; the controller and the traffic wrapper enforce stop and evidence failure where they admit new work.
+These are per-method bounds held in the actor's process, not the aggregate request ceiling across connector, credential and storage calls, which [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433) owns.
 
 ## Input publication and output collection
 
@@ -390,7 +430,8 @@ Message evidence uses the common byte counter for both actors, including respons
 Cleanup preserves the traffic binding and counters, and final settlement copies them with the complete Pub/Sub control portion into `result.json`.
 
 The explicit `admit_until` timestamp must not exceed the schedule's `cleanup_at`.
-New intents and Pub/Sub requests require `RUNNING`, prepared resources, current ownership and an open admission window with no shared or local stop/evidence failure.
+New intents and Pub/Sub requests require prepared resources, current ownership and an open admission window with no shared or local stop/evidence failure.
+The supervisor's also require `RUNNING`; the runner's may start from `READY`, so admission can publish the first cohort before the application exists and the run becomes `RUNNING` with its input waiting.
 A call already admitted may retain its response, observations or ACK receipt after admission stops and during `CLEANING`, within the remaining evidence budget and approval expiry.
 A following ACK is a new request and is refused after stop.
 Ownership loss, completed service cleanup or approval expiry also closes evidence admission.
@@ -423,12 +464,17 @@ Before each preparation, publication or collection, a conditional update records
 One actor cannot start another call while its marker is present; runner and supervisor calls may overlap and still share the traffic counters.
 A successful call clears only its own marker, making up to three attempts to persist the conditional completion acknowledgement without repeating the service operation.
 If the acknowledgement committed but its response was lost, the retry cannot clear a newer invocation's marker.
-A failed or ambiguous call keeps its marker; handled operation failures request shared stop, while a failed control write may prevent that stop from reaching the other actor.
+A failed call requests shared stop, while a failed control write may prevent that stop from reaching the other actor.
+It keeps its marker unless the handoff was given a settled-write check that answers true: the production actors pass their session's, which is true while every Pub/Sub request other than a GET that the actor's session ever sent received, within its budget, a status below 500.
+The latch is the session's, not the call's, so one unsettled write keeps every later marker too.
+Storage uploads go through another client and are not tracked; a lost upload response can at most leave its object to land after settlement, never a service resource.
+Such a call then clears its own marker, so a refusal before any request, or drift found by a read, leaves the run cleanable through ordinary release; a clearing failure keeps the marker.
+A write that left without a status, or was answered 5xx, may still complete at the service, and its marker stays for the external reclamation below.
 The caller must independently stop actors when shared failure/stop persistence is unavailable.
 If requesting shared stop also fails, that control error propagates with the original operation error as its Python exception context; callers that record only the outer message lose that original diagnostic.
 The marker does not expire, and a timeout does not prove the service operation has ended.
 An original process may retry a lost successful release acknowledgement with its existing token, but unresolved calls require external reclamation.
-Even one transient operation failure can therefore stop both actors and require the external proof below before cleanup; the wrapper does not retry the failed service call.
+Even one transient write failure can therefore stop both actors and require the external proof below before cleanup; the wrapper does not retry the failed service call.
 
 `stop()` closes admission without declaring quiescence.
 Each bound actor calls `release()` to stop admission and permanently surrender its authority once it has no unresolved call.
@@ -457,7 +503,7 @@ Deployed actor wiring, measured quiescence, full numeric execution approval and 
 
 ## Shared settlement integration
 
-The internal caller may attach its original runner handoff with `Runner(env, pubsub=handoff)` and its supervisor handoff with `Supervisor(env, pubsub=handoff, quiesce=barrier)`.
+The internal caller may attach its original runner handoff with `Runner(env, pubsub=handoff)` and its supervisor handoff with `Supervisor(env, pubsub=handoff, quiesce=barrier)`; in production, [`pubsub_actors`](#actor-construction-and-operation-bounds) makes both attachments and builds the barrier from the run.
 Each handoff must belong to that exact actor environment; a supervisor attachment requires the external barrier, and a lifecycle cannot attach both BigQuery and Pub/Sub handoffs.
 The caller still initializes, prepares, joins and drives the message operations through `PubSubHandoff` before settlement.
 Before entering `Runner.settle()`, the caller must coordinate completion of both runner publication and supervisor output collection and stop concurrent data calls from either process.
@@ -585,7 +631,7 @@ A reviewed trial file holds the [offline proposal schema](#offline-trial-proposa
 The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
 The phrase carries the trial's own numbers because they differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one trial therefore does not approve another trial with different numbers.
 The request number is the proposed total ceiling, which is not yet an aggregate meter.
-The only file in the directory is `example-wiring`, which exists to exercise this path; the campaign's trials are preregistered separately.
+The directory holds no trial until [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's, so every dispatch is refused at the trial file for now; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, as the version 5 approval requires.
 The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.

@@ -153,15 +153,22 @@ class PubSubTraffic:
         state, used = self._state(record)
         if self.env.actor != actor:
             raise Failure("Pub/Sub traffic requires the " + actor + " actor")
+        # The runner publishes the first cohort while admission is still
+        # READY, after every access probe and before the application exists,
+        # so the run becomes RUNNING with its input already waiting. The
+        # supervisor collects only from a RUNNING application.
+        admitting = (
+            (Phase.READY, Phase.RUNNING) if actor == "runner" else (Phase.RUNNING,)
+        )
         if (
             state["stage"] not in ("prepared", "cleaning")
-            or record.phase not in (Phase.RUNNING, Phase.CLEANING)
+            or record.phase not in (*admitting, Phase.CLEANING)
             or self.env.clock() >= self.env.schedule.expires_at
         ):
             raise Failure("Pub/Sub traffic evidence window has closed")
         if admit and (
             state["stage"] != "prepared"
-            or record.phase != Phase.RUNNING
+            or record.phase not in admitting
             or record.stop_requested
             or record.evidence_failed
             or self.env.stopping
@@ -196,13 +203,15 @@ class PubSubTraffic:
 
         def guard(phase, method, name):
             nonlocal reserved
-            self.controller.before_operation(phase, method, name)
             if not reserved:
                 # Messages validates its arguments before the first intent guard.
                 self._reserve(amounts(), actor, admit=True)
                 reserved = True
             if method == "POST":
                 self._reserve({"pubsub_requests": 1}, actor, admit=True)
+            # Last, after the reservations' control I/O, so the caller's
+            # deadline check is the one taken just before the operation.
+            self.controller.before_operation(phase, method, name)
 
         class EvidenceStore:
             def write(self, name, value, generation):
