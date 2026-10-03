@@ -71,6 +71,20 @@ limitations under the License.
             <artifactId>google-cloud-firestore</artifactId>
         </dependency>
         <dependency>
+            <!-- The Datastore-mode client. Its Batch is the Datastore sink's write path; FullEntity
+                 and Key are what a DatastoreMutation carries, and so part of this module's public API
+                 surface. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-datastore</artifactId>
+        </dependency>
+        <dependency>
+            <!-- The Datastore protobuf messages: the Datastore sink's lookup builds its
+                 LookupRequest itself, so that it makes exactly one call. Version managed by the
+                 libraries BOM. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-cloud-datastore-v1</artifactId>
+        </dependency>
+        <dependency>
             <!-- StatusCode for the writer's failure classification. Version managed by the
                  libraries BOM. -->
             <groupId>com.google.api</groupId>

@@ -23,7 +23,7 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 | `flink-sql-connector-gcp-bigtable` | The Bigtable connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-spanner` | Spanner sink, bounded source and Change Streams source (both dialects), with Table API / SQL sink, scan, lookup, and change-stream CDC support |
 | `flink-sql-connector-gcp-spanner` | The Spanner connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
-| `flink-connector-gcp-firestore` | Firestore sink and bounded source for Native-mode databases: writes through the client library's `BulkWriter`, and reads a collection group or one query at a single snapshot time. Not released yet ([#1547](https://github.com/flink-gcp/flink-connector-gcp/issues/1547)) |
+| `flink-connector-gcp-firestore` | Firestore sink and bounded source for Native-mode databases: writes through the client library's `BulkWriter`, and reads a collection group or one query at a single snapshot time. A second sink writes Datastore-mode databases in non-transactional commits. Not released yet ([#1547](https://github.com/flink-gcp/flink-connector-gcp/issues/1547)) |
 
 ## Build
 

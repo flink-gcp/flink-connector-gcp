@@ -129,8 +129,8 @@ Two environment facts a first run trips over:
   both, at the price of a missing destination failing the job instead of being created. The
   Pub/Sub source creates a subscription only when given creation settings, the Bigtable sink
   creates its table only under `CREATE_IF_NEEDED` with a declared schema, and the Cloud Tasks
-  and Spanner sinks never create their destinations at all; the Firestore sink needs nothing
-  created beyond its database.
+  and Spanner sinks never create their destinations at all; the Firestore sinks need nothing
+  created beyond their database.
 
 What each connector asks for:
 
@@ -143,7 +143,7 @@ What each connector asks for:
 | Cloud Tasks | `cloudtasks.tasks.create` ([roles/cloudtasks.enqueuer](https://cloud.google.com/tasks/docs/secure-queue-configuration)), which binds to a single queue as well as to the project. The sink never creates a queue |
 | Bigtable | `bigtable.tables.mutateRows` ([roles/bigtable.user](https://docs.cloud.google.com/bigtable/docs/access-control#predefined_roles)), which binds to a single table as well as to the instance. `createDisposition(CREATE_IF_NEEDED)` additionally needs `bigtable.tables.create` and `bigtable.tables.update`; under the default `CREATE_NEVER` the sink creates neither the table nor its column families. For [single-row requests]({{< relref "docs/connectors/datastream/bigtable" >}}#shared-request-runtime), `roles/bigtable.user` includes the permissions listed by the applicable RPC references. The source needs `bigtable.tables.readRows` and `bigtable.tables.sampleRowKeys` ([roles/bigtable.reader](https://cloud.google.com/bigtable/docs/access-control)) and creates nothing |
 | Spanner | `spanner.databases.write` for the mutations, plus `spanner.databases.select` and the read-only-transaction and session permissions the schema read goes through — the sink reads `INFORMATION_SCHEMA` at start-up to weigh mutations against Spanner's per-request limit. [roles/spanner.databaseUser](https://cloud.google.com/spanner/docs/iam) covers all of them |
-| Firestore | `datastore.entities.create`, `datastore.entities.update` and `datastore.entities.delete` for the writes a serializer produces; [roles/datastore.user](https://cloud.google.com/firestore/docs/security/iam) carries all three. The source needs `datastore.entities.get` and `datastore.entities.list` (`roles/datastore.viewer`). Neither creates a database |
+| Firestore | `datastore.entities.create`, `datastore.entities.update` and `datastore.entities.delete` for the writes a serializer produces; [roles/datastore.user](https://cloud.google.com/firestore/docs/security/iam) carries all three. The Datastore-mode sink needs the same three, plus `datastore.entities.get` for the lookup it makes before routing an update's `NOT_FOUND`; `roles/datastore.user` carries it too. The source needs `datastore.entities.get` and `datastore.entities.list` (`roles/datastore.viewer`). None creates a database |
 
 ## Then
 
