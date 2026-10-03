@@ -33,6 +33,6 @@ jobs:
 
       - name: List targets
         id: list-targets
-        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
+        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
         with:
           action: list-targets

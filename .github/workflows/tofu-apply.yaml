@@ -89,7 +89,7 @@ jobs:
 
       - name: Set up tfaction
         id: setup
-        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
+        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
         with:
           action: setup
           github_token: ${{ github.token }}
@@ -137,14 +137,14 @@ jobs:
           uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" ci apply
 
       - name: tofu init
-        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
+        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
         with:
           action: terraform-init
           github_token: ${{ github.token }}
 
       - name: tofu apply
         id: apply
-        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
+        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
         with:
           action: apply
           github_token: ${{ github.token }}
@@ -174,7 +174,7 @@ jobs:
 
       - name: Create the follow-up pull request
         if: failure() && steps.app-token.outcome == 'success'
-        uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
+        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
         with:
           action: create-follow-up-pr
           github_token: ${{ steps.app-token.outputs.token }}
