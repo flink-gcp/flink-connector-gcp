@@ -69,9 +69,10 @@ limitations under the License.
   `BatchCreateTasks` and `BufferTask` were both REST-only and absent from the Java client;
   `google-cloud-tasks` 2.95.0 later exposed `BatchCreateTasks` on v2beta3 and ADR-0129 measured
   and declined it — `BufferTask` remains absent, and no method is configured with gax batching.
-  Queue-level `httpTarget.uriOverride` can silently override per-task URLs and
-  **cannot be detected through the v2 client at all** (the field does not exist in the v2
-  proto).
+  Queue-level `httpTarget.uriOverride` can silently override per-task URLs and, when this was
+  decided, **could not be detected through the v2 client at all** (the field did not exist in the
+  v2 proto). In `google-cloud-tasks` 2.99.0 the v2 `Queue` has `http_target`; the sink still
+  does not check it.
 - The external HTTP serializer uses a two-stage immutable API: `httpTarget(url)` returns a
   non-generic body-binding stage, and `withBody(SerializationSchema<T>)` returns the configured
   schema.

@@ -173,6 +173,7 @@ Anything else is rejected when the write is built, which the sink reports as a f
 The list is closed because of how the client library fails.
 A value it cannot encode, such as a `Short` or a `byte[]`, makes it throw after it has already queued the operation, and the rest of that request is then answered out of step: in the measurement, one write was applied while its result never arrived.
 Write an `int` as a `Long`, a `float` as a `Double`, and bytes as `Blob.fromBytes(...)`; an `Integer`, a `Float` or a `byte[]` is rejected.
+A `Blob` must be a plain one: a BSON binary `Blob` of any subtype other than 0 is rejected, because the client library encodes it as a reserved map rather than as bytes and the sink's request-size accounting does not count that form ([#1589]({{< param BookRepo >}}/issues/1589)).
 
 Firestore's own limits stay the service's to enforce.
 A document over 1 MiB, a reserved `__name__`-style field or document id, a map nested more than 20 levels deep, or (in a Standard-edition database) an array inside an array is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.

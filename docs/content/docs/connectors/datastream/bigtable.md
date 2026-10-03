@@ -509,7 +509,7 @@ The writer passes the complete entry to `BigtableDataClient.newBulkMutationBatch
 [Mutations within one entry](https://cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#mutaterowsrequest.entry) execute in their listed order and atomically; the batch as a whole is not atomic.
 The client offers typed `Value` arguments as well as convenience overloads for integer inputs and encoded accumulator bytes.
 The typed value model is a client-library beta API, so upgrades can move that surface.
-In the pinned SDK 2.82.0, the `mergeToCell` convenience overload encodes accumulator input as `raw_value`.
+The SDK's `mergeToCell` convenience overload encodes accumulator input as `raw_value`.
 The typed SDK `Value` model has no `bytes_value` variant either.
 An Int64 Sum write to real Bigtable on 2026-09-05 rejected that input and required `bytes_value`; ADR-0041 records that observation and the successful rerun.
 The [aggregate example]({{< relref "docs/examples/bigtable" >}}#updating-aggregate-cells) uses the SDK's public beta protobuf wrappers to supply `bytes_value`; the sink forwards that entry unchanged too.
@@ -736,7 +736,7 @@ Branches preserve mutation order and support SetCell, DeleteCells, DeleteFamily,
 Aggregate inputs use `AggregateValue.raw`, `AggregateValue.bytes` or `AggregateValue.int64` and require a compatible aggregate family.
 These preserve distinct `raw_value`, `bytes_value` and `int_value` transport variants.
 For Int64 Sum merging, pass an accumulator read from Bigtable through `AggregateValue.bytes`; `raw` does not select the typed bytes variant.
-The adapter handles the protobuf encoding that SDK 2.82.0's typed `Value` wrapper cannot express (ADR-0041).
+The adapter handles the protobuf encoding that the SDK's typed `Value` wrapper cannot express (ADR-0041).
 Each branch may have up to 100,000 mutations; at least one branch must be nonempty.
 
 Use the schema with a sink when successful responses need no downstream processing:
@@ -1549,7 +1549,7 @@ between you and a new instance. The gated suite shows:
   pass answers was both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be
   answered: a good record written beside a bad one is applied, and only the bad one is routed.
 - **Aggregate and delete-then-write semantics.** The gated sink suite exercises `AddToCell` and `MergeToCell` against a pre-created Int64 Sum family, including repeated inputs with a fixed timestamp.
-  The merge uses an explicit protobuf `bytes_value` input after the service rejected SDK 2.82.0's convenience overload for Int64 Sum on 2026-09-05 (ADR-0041).
+  The merge uses an explicit protobuf `bytes_value` input after the service rejected the SDK's convenience overload for Int64 Sum on 2026-09-05 (ADR-0041).
   It also checks immediate column replacement, replay with no intervening write, and that a rejected compound entry preserves the original versions.
   Its replay cases submit a reserialized input in a second completed job; they do not simulate an SDK retry or a checkpoint restore.
 - **The checkpoint-owned mode over the native client path.** Every emulator and proxy test of
@@ -1596,7 +1596,7 @@ below, and two in the read table further down.
 | Input | Real Bigtable | Emulator |
 |---|---|---|
 | Cell timestamp not a multiple of 1000, **explicitly set** | `INVALID_ARGUMENT`, the whole request rejected: every entry of the batch routed to the handler, nothing written | `INTERNAL` ("invalid timestamp 1234"), the offending entry only — the rest of the batch is written |
-| Cell timestamp not a multiple of 1000, **left to the client's writer clock** | accepted, and stored truncated to the table's millisecond granularity: the mutation carries `timestamp_origin = CLIENT_AUTO_GENERATED` and the service reads it | rejected, `invalid timestamp` — the emulator does not implement the field, so it treats the value as explicitly set. Measured 2026-09-03 under google-cloud-bigtable 2.82.0, which is the release that began marking it; reported upstream, and the harness stamps an explicit timestamp meanwhile |
+| Cell timestamp not a multiple of 1000, **left to the client's writer clock** | accepted, and stored truncated to the table's millisecond granularity: the mutation carries `timestamp_origin = CLIENT_AUTO_GENERATED` and the service reads it | rejected, `invalid timestamp` — the emulator does not implement the field, so it treats the value as explicitly set. Measured 2026-09-03 and reported upstream. A client built with `newBuilderForEmulator`, which the connector's emulator endpoint uses, rounds the value down to a millisecond before sending it, so through that client the write is accepted; the harness stamps an explicit timestamp regardless |
 | Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty", the whole request rejected | `INTERNAL` wrapping the same wording, the offending entry only — the rest of the batch is written. Up to `441.0.0-emulators` the emulator **accepted** the write instead; it now refuses it on this path, and on single-row `MutateRow` it answers the service's own `INVALID_ARGUMENT` unwrapped. `ReadModifyWriteRow` still accepts one — see the read table |
 | Mutation naming a column family the table does not have | `NOT_FOUND`, the offending entry. The rest of the batch was failed with it and not written through 2026-09-19, and was written on 2026-09-26, so the suite asserts neither | `INTERNAL` ("unknown family"), the offending entry only |
 | Mutation against a table that does not exist | `NOT_FOUND`, for every entry — worded "No tables found for instance …" against an instance holding no tables | `NOT_FOUND` ("table ... not found") — the one rejection the emulator answers with the service's status, which is what lets the emulator suite drive the [auto-creation](#table-auto-creation) repair end-to-end; only the wording differs, and the sink classifies by status alone |

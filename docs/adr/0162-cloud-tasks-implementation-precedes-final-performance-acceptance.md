@@ -120,6 +120,7 @@ The throughput threshold still applies, and the mode met it everywhere measured.
 The mode ships as experimental: its public types keep `@Experimental`, and the documentation states the measured throughput, the latency it adds and the scope of its guarantee.
 It is for a sink that cannot assign a unique task ID yet cannot tolerate duplicate tasks; with a stable application key, the at-least-once path with named tasks costs no added latency.
 `BatchCreateTasks` is not revisited: [ADR-0129](0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md) measured it, and google-cloud-tasks 2.96.0 still offers it only on v2beta3; a batch or transactional create on the GA v2 surface is the trigger to measure again.
+That trigger fired on 2026-10-03; ADR-0129 records it and [#1590](https://github.com/flink-gcp/flink-connector-gcp/issues/1590) carries the measurement.
 
 ## Consequences
 

@@ -103,8 +103,15 @@ and a `failed_requests` demultiplexer feeding the existing park/retry loop.
   ([#903]) that surfaced the method and falsified ADR-0048's absence claim — not a runtime
   guard. A throughput motive alone is answered by [#1015] instead, where the measured transport
   ceiling (a single channel's ~100 concurrent streams) is routed.
+- The first trigger fired on 2026-10-03: `google-cloud-tasks` 2.99.0, adopted through
+  `libraries-bom` 26.90.0 ([#1555]), has `BatchCreateTasks` on the v2 `CloudTasksClient`, not
+  `@BetaApi`. That removes the beta surface and the v2-to-v2beta3 request translation from the
+  costs above, but not the three measured grounds; [#1590] re-measures them on v2, and this
+  decision stands until it concludes.
 
 [#903]: https://github.com/flink-gcp/flink-connector-gcp/issues/903
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#1015]: https://github.com/flink-gcp/flink-connector-gcp/issues/1015
+[#1555]: https://github.com/flink-gcp/flink-connector-gcp/issues/1555
+[#1590]: https://github.com/flink-gcp/flink-connector-gcp/issues/1590
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md

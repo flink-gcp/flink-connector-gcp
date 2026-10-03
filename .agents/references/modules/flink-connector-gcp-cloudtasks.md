@@ -23,7 +23,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   p95 threshold does not apply to it (ADR-0162, 2026-09-24). Keep #1241's inconclusive result
   distinct from that sequencing decision.
 - **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
-  (`docs/adr/0129`) — do not adopt a batch create without superseding that record.
+  (`docs/adr/0129`) — do not adopt a batch create without superseding that record. Its arrival on
+  v2 (`google-cloud-tasks` 2.99.0) fired that ADR's re-measure trigger; #1590 carries it.
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
   queue would discard the throttling that is the reason to use the service. External HTTP and
   App Engine targets are separate serializer arms. OIDC vs OAuth is the external HTTP target's
@@ -45,7 +46,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and batching policy stay untouched; staged creates additionally carry an absolute per-attempt deadline. `ChannelPoolSettings` is class-level `@BetaApi` in the
   pinned gax — an internal call, tier-irrelevant under `docs/adr/0141`; reread it on a BOM bump.
 - Recheck the v2beta3 retention client on a BOM bump: `CloudTasksClient` and `CloudTasksSettings`
-  are `@BetaApi` in the pinned 2.96.0 SDK. ADR-0158 records this dependency; losing that surface
+  are `@BetaApi` in the pinned SDK. ADR-0158 records this dependency; losing that surface
   requires a replacement retention readback or an explicit operator-verified deployment decision,
   never silently disabling the default check.
 - Task naming: unnamed in the default eager mode; staged envelopes always carry a persisted name; `taskIdExtractor(...)` on the **sink builder**, key hashed

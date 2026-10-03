@@ -117,6 +117,18 @@ final class FirestoreWriteChecks {
                             + FirestoreWrite.MAX_NESTING_DEPTH
                             + " levels.");
         }
+        if (value instanceof Blob && ((Blob) value).subtype() != 0) {
+            // google-cloud-firestore 3.49.0 encodes a BSON binary of any other subtype as a
+            // reserved map rather than bytes, which the writer's request-size accounting does not
+            // count (#1589).
+            throw new IllegalArgumentException(
+                    "Field '"
+                            + childPath(parent, name, index)
+                            + "' is a BSON binary Blob of subtype "
+                            + ((Blob) value).subtype()
+                            + ", which FirestoreWrite does not accept, because only subtype 0 is"
+                            + " encoded as bytes. Write bytes as Blob.fromBytes(...).");
+        }
         if (value == null
                 || value instanceof String
                 || value instanceof Long

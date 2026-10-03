@@ -156,6 +156,11 @@ public abstract class AbstractBigtableEmulatorITCase {
      * BigtableEmulatorDeviationITCase.rejectsAClientGeneratedTimestampTheServiceTruncates}, which
      * is what fails when the deviation closes.
      *
+     * <p>In google-cloud-bigtable 2.85.0 the client this harness writes through rounds such a
+     * timestamp down to a millisecond itself, because {@code newBuilderForEmulator} installs an
+     * interceptor that does so. The explicit stamp stays anyway, so the seeded rows do not depend
+     * on a client-side mitigation that a later client release could drop.
+     *
      * <p>Removal is tracked by issue #1205, which carries the condition and the upstream fix.
      */
     private static long harnessTimestampMicros() {
@@ -203,25 +208,6 @@ public abstract class AbstractBigtableEmulatorITCase {
     /** Returns what the emulator answers {@code SampleRowKeys} with, for the deviation suite. */
     protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
         return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
-    }
-
-    /**
-     * Writes one cell through the client library's own writer clock, for the deviation suite alone.
-     *
-     * <p>Every other helper here stamps the timestamp explicitly, because since
-     * google-cloud-bigtable 2.82.0 this overload produces a microsecond value the emulator refuses
-     * — which is exactly what the deviation suite exists to pin, and why this stays reachable.
-     *
-     * @param destination the table to write into
-     * @param rowKey the row key
-     * @param qualifier the column qualifier
-     * @param value the cell value
-     */
-    protected static void writeCellWithTheClientsWriterClock(
-            TableDestination destination, String rowKey, String qualifier, String value) {
-        dataClient.mutateRow(
-                RowMutation.create(TableId.of(destination.getTable()), rowKey)
-                        .setCell(FAMILY, qualifier, value));
     }
 
     /**

@@ -149,7 +149,9 @@ which is what that rule protects. A rewording costs the hint and nothing else.
 `com.google.cloud.Service` and nothing else — there is no `close` (verified against
 google-cloud-bigquery 2.68.0, what `libraries-bom` resolves), which is also why `TableAdmin` on the
 sink side is not closeable. A closeable seam here would have to be composed into the enumerator's
-single planner for no released resource.
+single planner for no released resource. In google-cloud-bigquery 2.73.0 `BigQuery` is
+`AutoCloseable`, but its `close` releases only the `BigQueryReadClient`s its Arrow query paths
+create, which this runner never takes, so the decision stands (checked 2026-10-03, [#1555]).
 
 **The load runner's job machinery is not hoisted.** `BigQueryQueryRunner` follows its shape —
 submit, poll through `BigQuery#getJob` and never `Job#reload()` (ADR-0018), an `IOException`
@@ -197,3 +199,4 @@ argument for requiring a project id is one paragraph that would otherwise be res
 [#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
 [#392]: https://github.com/flink-gcp/flink-connector-gcp/issues/392
 [#477]: https://github.com/flink-gcp/flink-connector-gcp/issues/477
+[#1555]: https://github.com/flink-gcp/flink-connector-gcp/issues/1555

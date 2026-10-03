@@ -154,7 +154,7 @@ limitations under the License.
              the parent's ignoreNonResolvableArtifacts=true makes the check log a
              warning and pass. -->
         <japicmp.referenceVersion>1.1.0</japicmp.referenceVersion>
-        <google-cloud-libraries-bom.version>26.87.0</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.90.0</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.2</avro.version>
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
@@ -200,7 +200,7 @@ limitations under the License.
              guarantee is "new gencode + old runtime = never allowed", enforced at runtime
              by a poison pill, while gencode older than the runtime is supported across two
              majors. So this must never be raised above the protobuf-java that libraries-bom
-             resolves (4.33.2 today) — but a BOM bump that raises the runtime and leaves this
+             resolves — but a BOM bump that raises the runtime and leaves this
              behind is the safe direction and needs no action. Getting it wrong fails loudly
              on the first test that touches a generated class, which is why no enforcer rule
              guards it. -->

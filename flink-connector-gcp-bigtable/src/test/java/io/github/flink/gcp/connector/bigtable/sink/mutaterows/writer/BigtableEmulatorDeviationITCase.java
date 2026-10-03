@@ -19,11 +19,19 @@ package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.RowCell;
+import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
@@ -36,6 +44,7 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -62,6 +71,10 @@ import static org.assertj.core.api.Assertions.fail;
  * google-cloud-bigtable} 2.80.0, and re-measured 2026-09-03 under 2.82.0 for the row below that the
  * client change reaches. The image bump moved one row: the emulator now refuses an empty row key
  * instead of storing it. It still answers {@code INTERNAL}, so what the sink sees is unchanged.
+ * Re-measured 2026-10-03 against {@code 587.0.0-emulators} under 2.85.0 for the client-generated
+ * timestamp row, whose emulator client now rounds that timestamp before sending it; {@code
+ * theEmulatorClientRoundsAClientGeneratedTimestampDown} pins that rounding, the one assertion here
+ * about the client rather than the emulator.
  *
  * <p>Each {@code finally} closes the writer plainly, which is an assertion rather than cleanup:
  * every case here leaves a failure in the batcher's accumulated stats, so a close re-reporting
@@ -164,28 +177,40 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
         // refuses it. Reported upstream as googleapis/google-cloud-go#20468 with a fix in #20469;
         // the harness workaround and its removal are tracked by #1205. When a pinned image honours
         // the field this test fails, which is the signal to drop the workaround.
+        //
+        // In 2.85.0 newBuilderForEmulator rounds such a timestamp on the client, which hides the
+        // deviation (theEmulatorClientRoundsAClientGeneratedTimestampDown pins that), so this
+        // writes through dataClientWithoutTheEmulatorRounding to observe the emulator's own answer.
         TableDestination table = createTable("deviation-client-generated-timestamp");
 
-        // Retried, because the client reads a microsecond clock and roughly one reading in a
-        // thousand lands on a millisecond boundary, which the emulator accepts. A single attempt
-        // would be a 0.1% flake. Twenty consecutive aligned readings is not a coincidence worth
-        // planning for; it means either the deviation closed or the clock lost its microsecond
-        // resolution, and the failure message says so rather than blaming the emulator.
-        for (int attempt = 0; attempt < 20; attempt++) {
-            // A key per attempt, and asserted by name rather than by the table being empty. An
-            // earlier attempt that happened to be aligned was accepted and left a row behind, so
-            // "empty" holds only on the run where the first attempt is the rejected one — it would
-            // have moved the flake rather than removed it.
-            String rowKey = "r" + attempt;
-            Throwable failure =
-                    catchThrowable(
-                            () -> writeCellWithTheClientsWriterClock(table, rowKey, "q", "v"));
-            if (failure != null) {
-                assertThat(failure).hasStackTraceContaining("invalid timestamp");
-                assertThat(readRows(table))
-                        .extracting(row -> row.getKey().toStringUtf8())
-                        .doesNotContain(rowKey);
-                return;
+        try (BigtableDataClient client = dataClientWithoutTheEmulatorRounding()) {
+            // Retried, because the client reads a microsecond clock and roughly one reading in a
+            // thousand lands on a millisecond boundary, which the emulator accepts. A single
+            // attempt would be a 0.1% flake. Twenty consecutive aligned readings is not a
+            // coincidence worth planning for; it means either the deviation closed or the clock
+            // lost its microsecond resolution, and the failure message says so rather than
+            // blaming the emulator.
+            for (int attempt = 0; attempt < 20; attempt++) {
+                // A key per attempt, and asserted by name rather than by the table being empty. An
+                // earlier attempt that happened to be aligned was accepted and left a row behind,
+                // so "empty" holds only on the run where the first attempt is the rejected one —
+                // it would have moved the flake rather than removed it.
+                String rowKey = "r" + attempt;
+                Throwable failure =
+                        catchThrowable(
+                                () ->
+                                        client.mutateRow(
+                                                RowMutation.create(
+                                                                TableId.of(table.getTable()),
+                                                                rowKey)
+                                                        .setCell(FAMILY, "q", "v")));
+                if (failure != null) {
+                    assertThat(failure).hasStackTraceContaining("invalid timestamp");
+                    assertThat(readRows(table))
+                            .extracting(row -> row.getKey().toStringUtf8())
+                            .doesNotContain(rowKey);
+                    return;
+                }
             }
         }
         fail(
@@ -194,8 +219,88 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                         + " Mutation.timestamp_origin (drop the harnessTimestampMicros workaround and"
                         + " close #1205), or accept every unaligned timestamp regardless of origin"
                         + " (a different deviation, and #1205 stays open), or the client may have"
-                        + " stopped reading a microsecond clock (this test observes nothing and needs"
-                        + " rewriting).");
+                        + " stopped reading a microsecond clock, or this client may have regained"
+                        + " the emulator rounding through a path other than the channel configurator"
+                        + " (this test observes nothing and needs rewriting).");
+    }
+
+    @Test
+    void theEmulatorClientRoundsAClientGeneratedTimestampDown() throws Exception {
+        // What hides the deviation rejectsAClientGeneratedTimestampTheServiceTruncates pins:
+        // google-cloud-bigtable 2.85.0's newBuilderForEmulator rounds a CLIENT_AUTO_GENERATED
+        // timestamp down to a millisecond before sending it, so the timestamp-less setCell overload
+        // succeeds against the emulator. Written through the connector's own emulator settings,
+        // because that is the path the documentation's deviation row describes.
+        //
+        // This holds the rounding only while the emulator still refuses an unrounded value: an
+        // image that honours timestamp_origin would accept these writes and store them aligned
+        // with no client rounding at all. When the rejection test fails and #1205 closes, rewrite
+        // this one rather than keeping it.
+        TableDestination table = createTable("deviation-client-generated-timestamp-rounded");
+        long beforeMicros = System.currentTimeMillis() * 1_000L;
+        try (BigtableDataClient client =
+                BigtableDataClient.create(
+                        BigtableDataClients.settings(
+                                        table,
+                                        null,
+                                        EmulatorEndpoint.parse(
+                                                emulatorEndpoint(), "emulatorEndpoint"),
+                                        null)
+                                .build())) {
+            // Twenty writes, because an unrounded reading is aligned one time in a thousand: one
+            // lucky reading cannot make this pass if the rounding is gone.
+            for (int attempt = 0; attempt < 20; attempt++) {
+                String rowKey = "r" + attempt;
+                Throwable failure =
+                        catchThrowable(
+                                () ->
+                                        client.mutateRow(
+                                                RowMutation.create(
+                                                                TableId.of(table.getTable()),
+                                                                rowKey)
+                                                        .setCell(FAMILY, "q", "v")));
+                assertThat(failure)
+                        .as(
+                                "a writer-clock write through the connector's emulator client; a"
+                                        + " refusal means newBuilderForEmulator no longer rounds"
+                                        + " the timestamp")
+                        .isNull();
+            }
+        }
+        long afterMicros = System.currentTimeMillis() * 1_000L;
+
+        assertThat(readRows(table))
+                .flatExtracting(Row::getCells)
+                .extracting(RowCell::getTimestamp)
+                .as("cell timestamps rounded down to a millisecond within the write window")
+                .hasSize(20)
+                .allSatisfy(
+                        micros ->
+                                assertThat(micros)
+                                        .isBetween(beforeMicros, afterMicros)
+                                        .matches(m -> m % 1_000L == 0, "a multiple of 1000"));
+    }
+
+    /**
+     * A data client on the emulator without the timestamp rounding {@code newBuilderForEmulator}
+     * installs in google-cloud-bigtable 2.85.0. It keeps the rest of the emulator settings and
+     * replaces only the channel configurator, which is where the rounding interceptor is added.
+     */
+    private static BigtableDataClient dataClientWithoutTheEmulatorRounding() throws IOException {
+        BigtableDataSettings.Builder settings =
+                BigtableDataSettings.newBuilderForEmulator(
+                                EMULATOR.getHost(), EMULATOR.getEmulatorPort())
+                        .setProjectId(PROJECT)
+                        .setInstanceId(INSTANCE);
+        InstantiatingGrpcChannelProvider provider =
+                (InstantiatingGrpcChannelProvider)
+                        settings.stubSettings().getTransportChannelProvider();
+        settings.stubSettings()
+                .setTransportChannelProvider(
+                        provider.toBuilder()
+                                .setChannelConfigurator(builder -> builder.usePlaintext())
+                                .build());
+        return BigtableDataClient.create(settings.build());
     }
 
     @Test
