@@ -19,15 +19,12 @@ package io.github.flink.gcp.connector.bigquery;
 import org.apache.flink.annotation.Internal;
 
 import com.google.auth.oauth2.GoogleCredentials;
-import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.BigQueryOptions;
+import io.github.flink.gcp.connector.base.auth.ServiceAccountKeys;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Collections;
 
 /** Loads credentials shared by the BigQuery and Cloud Storage client families. */
@@ -43,9 +40,8 @@ public final class BigQueryCredentials {
      * Loads a service-account key file, or returns {@code null} to leave application-default
      * credentials in effect.
      *
-     * <p>The path and parser failure are deliberately absent from the exception. A path can expose
-     * a mounted secret's name, and parser exceptions can echo credential material. The actionable
-     * distinction is whether the configured file could be loaded at all.
+     * <p>A failure names only the product, never the path or the parser's exception; {@link
+     * ServiceAccountKeys#load(String, java.util.Collection, String)} owns that rule.
      *
      * @param serviceAccountKeyFile the configured key-file path, or {@code null} for ADC
      * @return the scoped service-account credentials, or {@code null} for ADC
@@ -54,16 +50,8 @@ public final class BigQueryCredentials {
     @Nullable
     public static GoogleCredentials load(@Nullable String serviceAccountKeyFile)
             throws IOException {
-        if (serviceAccountKeyFile == null) {
-            return null;
-        }
-        try (InputStream input = Files.newInputStream(Path.of(serviceAccountKeyFile))) {
-            return ServiceAccountCredentials.fromStream(input)
-                    .createScoped(Collections.singleton(CLOUD_PLATFORM_SCOPE));
-        } catch (IOException | RuntimeException e) {
-            throw new IOException(
-                    "Failed to load the configured BigQuery service-account key file.");
-        }
+        return ServiceAccountKeys.load(
+                serviceAccountKeyFile, Collections.singleton(CLOUD_PLATFORM_SCOPE), "BigQuery");
     }
 
     /** Builds BigQuery REST client options carrying the configured service-account credentials. */

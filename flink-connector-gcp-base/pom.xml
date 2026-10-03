@@ -69,6 +69,12 @@ limitations under the License.
             <artifactId>grpc-api</artifactId>
         </dependency>
         <dependency>
+            <!-- ServiceAccountCredentials behind the shared key-file loader (#1562). gax already
+                 brings it in transitively; declared because base uses it directly. -->
+            <groupId>com.google.auth</groupId>
+            <artifactId>google-auth-library-oauth2-http</artifactId>
+        </dependency>
+        <dependency>
             <!-- ByteString, the payload form FailedElement carries. -->
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>

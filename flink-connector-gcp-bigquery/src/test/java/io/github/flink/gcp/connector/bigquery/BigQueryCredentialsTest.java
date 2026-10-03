@@ -23,8 +23,6 @@ import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,48 +73,5 @@ class BigQueryCredentialsTest {
                 .hasMessage("Failed to load the configured BigQuery service-account key file.")
                 .hasNoCause();
         assertThat(failure.toString()).doesNotContain(path);
-    }
-
-    @Test
-    void malformedCredentialMaterialDoesNotLeakIntoTheFailure() throws Exception {
-        String credentialMaterial = "credential-material-must-not-leak";
-        Path keyFile = tempDir.resolve("malformed.json");
-        Files.writeString(keyFile, credentialMaterial, StandardCharsets.UTF_8);
-
-        Throwable failure = catchThrowable(() -> BigQueryCredentials.load(keyFile.toString()));
-
-        assertThat(failure)
-                .isInstanceOf(java.io.IOException.class)
-                .hasMessage("Failed to load the configured BigQuery service-account key file.")
-                .hasNoCause();
-        assertThat(failure.toString())
-                .doesNotContain(keyFile.toString())
-                .doesNotContain(credentialMaterial);
-    }
-
-    @Test
-    void rejectsAValidNonServiceAccountCredentialWithoutLeakingIt() throws Exception {
-        String refreshToken = "refresh-token-must-not-leak";
-        String credentialMaterial =
-                "{"
-                        + "\"type\":\"authorized_user\","
-                        + "\"client_id\":\"test-client-id\","
-                        + "\"client_secret\":\"test-client-secret\","
-                        + "\"refresh_token\":\""
-                        + refreshToken
-                        + "\""
-                        + "}";
-        Path keyFile = tempDir.resolve("authorized-user.json");
-        Files.writeString(keyFile, credentialMaterial, StandardCharsets.UTF_8);
-
-        Throwable failure = catchThrowable(() -> BigQueryCredentials.load(keyFile.toString()));
-
-        assertThat(failure)
-                .isInstanceOf(java.io.IOException.class)
-                .hasMessage("Failed to load the configured BigQuery service-account key file.")
-                .hasNoCause();
-        assertThat(failure.toString())
-                .doesNotContain(keyFile.toString())
-                .doesNotContain(refreshToken);
     }
 }

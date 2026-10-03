@@ -14,7 +14,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - Lineage is the explicit shared-prerequisite exception to the multiple-consumer rule (ADR-0160).
   Keep factories and vertices internal; only the two immutable listener values stay unrelocated
   in SQL jars. No connector builder gains a manual lineage setter.
-- Dependencies are `flink-core`, `flink-runtime`, and `flink-streaming-java` (provided) plus `gax`/`grpc-api`/`protobuf-java` (BOM-managed).
+- Dependencies are `flink-core`, `flink-runtime`, and `flink-streaming-java` (provided) plus
+  `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http` (BOM-managed).
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
   on the justfile `binary-compat`/`e2e` install lists for the reactor-resolution reason
@@ -25,6 +26,21 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (BigQuery's `CrossVersionCheckpointId` is a `CommittableMessage` accessor, #404).
   `DefaultFailureHandlerContext.of(WriterInitContext)` is not a counter-example — the type and
   both methods it reads exist identically in 1.20 and 2.x.
+
+## `base.auth` (`docs/adr/0174`)
+
+- Every connector loads a configured service-account key file through
+  `ServiceAccountKeys.load(path, scopes, product)`; do not copy the loader into a new module.
+  The connector's `*Credentials` entry point chooses the scopes and, where its client builder
+  takes a gax provider, wraps the returned `GoogleCredentials` in a `FixedCredentialsProvider`.
+  Base returns credentials, not a provider, because Spanner, Firestore and BigQuery's REST and
+  Cloud Storage clients take credentials and would unwrap one.
+- A load failure carries the caller's product name and nothing else: no path, no cause, no
+  suppressed exception. A path can expose a mounted secret's name and a parser exception can echo
+  key material. `ServiceAccountKeysTest` holds the rule, including the `RuntimeException` arm,
+  and each `*Credentials` class's Javadoc points at the helper rather than restating it. A
+  connector test checks its scopes, its wrapping, and that a failure is the helper's message
+  naming its product.
 
 ## `base.failure` (`docs/adr/0036`)
 

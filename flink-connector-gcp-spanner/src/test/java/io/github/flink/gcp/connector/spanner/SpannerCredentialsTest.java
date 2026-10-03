@@ -23,8 +23,6 @@ import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,51 +59,5 @@ class SpannerCredentialsTest {
                 .hasMessage("Failed to load the configured Spanner service-account key file.")
                 .hasNoCause();
         assertThat(failure.toString()).doesNotContain(path);
-    }
-
-    @Test
-    void malformedCredentialMaterialDoesNotLeakIntoTheFailure() throws Exception {
-        String credentialMaterial = "credential-material-must-not-leak";
-        Path keyFile = tempDir.resolve("malformed.json");
-        Files.writeString(keyFile, credentialMaterial, StandardCharsets.UTF_8);
-
-        Throwable failure = catchThrowable(() -> SpannerCredentials.load(keyFile.toString()));
-
-        assertThat(failure)
-                .isInstanceOf(java.io.IOException.class)
-                .hasMessage("Failed to load the configured Spanner service-account key file.")
-                .hasNoCause();
-        assertThat(failure.toString())
-                .doesNotContain(keyFile.toString())
-                .doesNotContain(credentialMaterial);
-    }
-
-    @Test
-    void validNonServiceAccountCredentialsAreRejectedWithoutLeakingDetails() throws Exception {
-        String clientSecret = "client-secret-material-must-not-leak";
-        String refreshToken = "refresh-token-material-must-not-leak";
-        Path keyFile = tempDir.resolve("authorized-user.json");
-        Files.writeString(
-                keyFile,
-                "{\"type\":\"authorized_user\","
-                        + "\"client_id\":\"client-id\","
-                        + "\"client_secret\":\""
-                        + clientSecret
-                        + "\","
-                        + "\"refresh_token\":\""
-                        + refreshToken
-                        + "\"}",
-                StandardCharsets.UTF_8);
-
-        Throwable failure = catchThrowable(() -> SpannerCredentials.load(keyFile.toString()));
-
-        assertThat(failure)
-                .isInstanceOf(java.io.IOException.class)
-                .hasMessage("Failed to load the configured Spanner service-account key file.")
-                .hasNoCause();
-        assertThat(failure.toString())
-                .doesNotContain(keyFile.toString())
-                .doesNotContain(clientSecret)
-                .doesNotContain(refreshToken);
     }
 }

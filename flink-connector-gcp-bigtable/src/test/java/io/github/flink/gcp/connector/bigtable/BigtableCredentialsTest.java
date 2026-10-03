@@ -17,14 +17,20 @@
 package io.github.flink.gcp.connector.bigtable;
 
 import com.google.api.gax.core.CredentialsProvider;
+import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -56,49 +62,52 @@ class BigtableCredentialsTest {
     }
 
     @Test
+    void eachEntryPointScopesToExactlyItsClientFamilies() throws Exception {
+        String keyFile = ServiceAccountKeyFiles.create(tempDir).toString();
+        Collection<String> data =
+                vendorScopes(BigtableDataSettings.newBuilder().getCredentialsProvider());
+        Collection<String> tableAdmin =
+                vendorScopes(BigtableTableAdminSettings.newBuilder().getCredentialsProvider());
+        Collection<String> instanceAdmin =
+                vendorScopes(BigtableInstanceAdminSettings.newBuilder().getCredentialsProvider());
+
+        assertThat(scopesOf(BigtableCredentials.loadData(keyFile)))
+                .containsExactlyInAnyOrderElementsOf(union(data))
+                .doesNotContain("https://www.googleapis.com/auth/bigtable.admin.table");
+        assertThat(scopesOf(BigtableCredentials.loadDataAndTableAdmin(keyFile)))
+                .containsExactlyInAnyOrderElementsOf(union(data, tableAdmin))
+                .doesNotContain("https://www.googleapis.com/auth/bigtable.admin.instance");
+        assertThat(scopesOf(BigtableCredentials.loadAll(keyFile)))
+                .containsExactlyInAnyOrderElementsOf(union(data, tableAdmin, instanceAdmin));
+    }
+
+    @Test
     void anUnreadablePathDoesNotLeakIntoTheFailure() {
         String path = tempDir.resolve("mounted-secret-name.json").toString();
 
         Throwable failure = catchThrowable(() -> BigtableCredentials.loadData(path));
 
-        assertSanitized(failure, path);
-    }
-
-    @Test
-    void malformedCredentialMaterialDoesNotLeakIntoTheFailure() throws Exception {
-        String material = "credential-material-must-not-leak";
-        Path keyFile = tempDir.resolve("malformed.json");
-        Files.writeString(keyFile, material, StandardCharsets.UTF_8);
-
-        Throwable failure = catchThrowable(() -> BigtableCredentials.loadData(keyFile.toString()));
-
-        assertSanitized(failure, keyFile.toString(), material);
-    }
-
-    @Test
-    void rejectsAValidNonServiceAccountCredentialWithoutLeakingIt() throws Exception {
-        String refreshToken = "refresh-token-must-not-leak";
-        String material =
-                "{"
-                        + "\"type\":\"authorized_user\","
-                        + "\"client_id\":\"test-client-id\","
-                        + "\"client_secret\":\"test-client-secret\","
-                        + "\"refresh_token\":\""
-                        + refreshToken
-                        + "\"}";
-        Path keyFile = tempDir.resolve("authorized-user.json");
-        Files.writeString(keyFile, material, StandardCharsets.UTF_8);
-
-        Throwable failure = catchThrowable(() -> BigtableCredentials.loadData(keyFile.toString()));
-
-        assertSanitized(failure, keyFile.toString(), refreshToken);
-    }
-
-    private static void assertSanitized(Throwable failure, String... forbidden) {
         assertThat(failure)
-                .isInstanceOf(java.io.IOException.class)
+                .isInstanceOf(IOException.class)
                 .hasMessage("Failed to load the configured Bigtable service-account key file.")
                 .hasNoCause();
-        assertThat(failure.toString()).doesNotContain(forbidden);
+        assertThat(failure.toString()).doesNotContain(path);
+    }
+
+    private static Collection<String> scopesOf(CredentialsProvider provider) throws IOException {
+        return ((ServiceAccountCredentials) provider.getCredentials()).getScopes();
+    }
+
+    private static Collection<String> vendorScopes(CredentialsProvider provider) {
+        return ((GoogleCredentialsProvider) provider).getScopesToApply();
+    }
+
+    @SafeVarargs
+    private static Set<String> union(Collection<String>... groups) {
+        Set<String> union = new LinkedHashSet<>();
+        for (Collection<String> group : groups) {
+            union.addAll(group);
+        }
+        return union;
     }
 }
