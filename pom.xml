@@ -205,13 +205,13 @@ limitations under the License.
              on the first test that touches a generated class, which is why no enforcer rule
              guards it. -->
         <protoc.version>4.33.2</protoc.version>
-        <protobuf-maven-plugin.version>5.1.8</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>5.1.10</protobuf-maven-plugin.version>
         <!-- Resolves the licence of every bundled dependency for the shaded modules,
              so scripts/check-notice.py can hold their generated META-INF/NOTICE and the
              sha256-pinned licence texts to it. Not managed by any BOM. -->
         <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
         <!-- Adds the per-major compat source root; see the flink.compat property above. -->
-        <build-helper-maven-plugin.version>3.6.1</build-helper-maven-plugin.version>
+        <build-helper-maven-plugin.version>3.6.2</build-helper-maven-plugin.version>
         <!-- The connector parent's release profile pins 1.4 (2010), which predates both
              the bc signer and CI-friendly key handling; 3.x reads the key and passphrase
              from MAVEN_GPG_KEY / MAVEN_GPG_PASSPHRASE (#724, central-release profile
@@ -225,7 +225,7 @@ limitations under the License.
              pins live where dependabot reads. -->
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
-        <versions-maven-plugin.version>2.21.0</versions-maven-plugin.version>
+        <versions-maven-plugin.version>2.22.0</versions-maven-plugin.version>
         <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
 
         <!-- Test execution -->
