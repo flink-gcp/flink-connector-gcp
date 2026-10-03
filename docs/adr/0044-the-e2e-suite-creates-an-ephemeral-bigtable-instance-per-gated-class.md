@@ -21,8 +21,8 @@ limitations under the License.
   recorded here)
 - Issues: [#218], [#245], [#246], [#533], [#1196], [#1199], [#1534], [#1538]
 - Modules: bigtable (tests, `opentofu/`)
-- Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Testing; the root
-  CLAUDE.md `just e2e`/`sweep-e2e` entries
+- Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Testing; the
+  `just e2e`/`sweep-e2e` entries of `.agents/references/repository-guide.md` § Build
 
 ## Decision
 

@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-08-10
 - Issues: [#224], [#441], [#535]
 - Modules: spanner (tests), `opentofu/`, `scripts/`
-- Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Testing; the root
-  CLAUDE.md `just e2e`/`sweep-e2e` entries
+- Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Testing; the
+  `just e2e`/`sweep-e2e` entries of `.agents/references/repository-guide.md` § Build
 
 ## Decision
 

@@ -17,11 +17,16 @@
 package io.github.flink.gcp.connector.docs;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.source.Source;
 
+import io.github.flink.gcp.connector.docs.FirestoreDocumentationTypes.Order;
+import io.github.flink.gcp.connector.docs.FirestoreDocumentationTypes.OrderDeserializer;
 import io.github.flink.gcp.connector.docs.FirestoreDocumentationTypes.OrderEvent;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSink;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
+import io.github.flink.gcp.connector.firestore.source.FirestoreQueryFactory;
+import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
 
 import java.util.Map;
 
@@ -42,5 +47,25 @@ final class JavadocFirestoreExamples {
                         .build();
         // end::sink[]
         return sink;
+    }
+
+    static Source<Order, ?, ?> source() {
+        // tag::source[]
+        Source<Order, ?, ?> source =
+                FirestoreSource.<Order>builder()
+                        .database(DatabaseDestination.of("my-project"))
+                        .collectionGroup("orders")
+                        .deserializer(new OrderDeserializer())
+                        .build();
+        // end::source[]
+        return source;
+    }
+
+    static FirestoreQueryFactory queryFactory() {
+        // tag::query-factory[]
+        FirestoreQueryFactory openOrders =
+                firestore -> firestore.collection("orders").whereEqualTo("status", "open");
+        // end::query-factory[]
+        return openOrders;
     }
 }

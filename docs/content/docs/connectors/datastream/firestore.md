@@ -22,8 +22,9 @@ limitations under the License.
 
 # Firestore connector
 
-An at-least-once sink applies one document write per record to a Firestore database in Native mode.
-It writes through the client library's `BulkWriter`, which batches writes into `BatchWrite` requests and throttles them to Firestore's ramp-up guidance.
+The connector reads and writes a Firestore database in Native mode.
+A bounded source reads a whole collection group or one query at a single snapshot time, and finishes.
+An at-least-once sink applies one document write per record, through the client library's `BulkWriter`, which batches writes into `BatchWrite` requests and throttles them to Firestore's ramp-up guidance.
 
 The connector has not been released yet ([#1547]({{< param BookRepo >}}/issues/1547) tracks the release that first publishes it).
 The module is also the home of the Datastore-mode surface, under its own package root; that half is not implemented yet ([#1542]({{< param BookRepo >}}/issues/1542)).
@@ -31,28 +32,112 @@ Every option is listed on the [Firestore options]({{< relref "docs/reference/fir
 
 ## Credentials
 
-The sink uses Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
+The source and the sink use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
 Set the key file only when the job must select a service-account JSON key that the runtime environment cannot supply through ADC.
 
 {{< java-snippet file="FirestoreConnectorCredentials.java" tag="firestore-connector-credentials" >}}
 
-The connector serializes only the path into the job graph, and each TaskManager reads the file when a writer starts.
-A deployment must therefore mount the same path in every TaskManager container.
+The connector serializes only the path into the job graph, and each TaskManager reads the file when a writer or a source reader starts; the JobManager reads it too, whenever it creates or restores the source's enumerator.
+A deployment must therefore mount the same path in every container that runs the job.
 `serviceAccountKeyFile(...)` and `emulatorEndpoint(...)` are mutually exclusive, because the emulator channel carries no credentials.
 A loading failure is sanitized, so neither the path nor the key's contents enter the exception.
 
 The client library also reads the `FIRESTORE_EMULATOR_HOST` environment variable on its own whenever no emulator endpoint is set, and then sends every request to that host over plaintext, with the emulator's placeholder token in place of the job's credentials.
 The connector cannot switch that lookup off.
-A writer that starts in an environment carrying the variable, with no `emulatorEndpoint(...)` configured, logs a warning naming the variable and its value.
+A writer or a source that starts in an environment carrying the variable, with no `emulatorEndpoint(...)` configured, logs a warning naming the variable and its value.
 
-The identity the job runs as needs permission to create, update and delete documents; [`roles/datastore.user`](https://cloud.google.com/firestore/docs/security/iam) carries all three.
-The sink creates nothing else: collections need no creating, and the database must exist.
+The identity the job runs as needs permission to read documents for the source, and to create, update and delete them for the sink; [`roles/datastore.user`](https://cloud.google.com/firestore/docs/security/iam) carries all four, and `roles/datastore.viewer` is enough for a job that only reads.
+Neither direction creates anything else: collections need no creating, and the database must exist.
 
 ## Lineage
 
-The sink implements Flink's `LineageVertexProvider` and reports an empty dataset list.
-A database does not establish which collections the serializer will write to, and extraction never calls the serializer or opens a client.
+The source and the sink implement Flink's `LineageVertexProvider`, and extraction opens no client.
+A collection-group scan reports the group, with namespace `firestore://{project}/{database}`, the group id as its name, and a `gcp` physical-resource facet.
+A source that reads a query reports an empty dataset list, and so does the sink: a database does not establish which collections a query factory or a serializer will address, and extraction calls neither.
 Flink 2.x extracts lineage automatically; Flink 1.20 supports direct inspection but not native listener delivery.
+
+## Source
+
+The source is bounded: it reads a snapshot of the database and finishes.
+Bounded is not batch-only; the source runs inside a streaming job too, and ends there.
+It reads one of two things, set on the builder as `collectionGroup(...)` or `query(...)`.
+
+A **collection-group scan** reads every document of every collection with one id, at any depth of the database.
+The service cuts it into partitions, so the scan reads in parallel.
+
+{{< java-snippet file="FirestoreConnectorSource.java" tag="firestore-connector-source" >}}
+
+A **query** reads what one query of your own returns: filters, ordering, a projection, cursors, `limit` and `offset` are all honoured.
+The service partitions only a whole collection group, so a query is read as one split, by one subtask.
+
+{{< java-snippet file="FirestoreConnectorSourceQuery.java" tag="firestore-connector-source-query" >}}
+
+The factory runs on the JobManager when the read is planned, and builds the query from the client the source hands it; a query addressing another database is refused.
+An `offset` is resolved once, when the read is planned, into a position after the documents it skips, so the service reads and bills those documents then, as it would for the offset itself.
+A `limitToLast` query reads the same documents in the reverse of its stated order, because the client library carries that reversal outside the query the source ships to its readers.
+
+### One snapshot for the whole read
+
+Every split reads at the same read time, so the job sees the database as it stood at one instant, whatever is written while it runs.
+Without `readTime(...)`, the source takes the service's own time when it plans the read, rather than the JobManager's clock, which could run ahead of the service's: the service refuses a read time in the future.
+
+The service keeps old versions for one hour, or for seven days when [point-in-time recovery](https://cloud.google.com/firestore/native/docs/pitr) is enabled, and a read time older than an hour must then fall on a whole minute.
+The read time the source takes by default is the service's own, to the microsecond, so it is good for an hour whatever the database's settings: a read that may run, or be restored, later than that needs point-in-time recovery and a `readTime(...)` on a whole minute.
+Rounding the default down to a minute was declined, because it would hide what was written in the minute before the job started.
+A configured read time outside that window fails the job when it plans the read.
+The window keeps moving while the job runs, so a read that takes longer than the window, or a restore from a checkpoint older than it, fails every remaining read with an error naming the split and the read time.
+Such a job has to start over; nothing can resume a snapshot the service no longer holds.
+
+The plan, and with it the read time, is recorded in the enumerator's checkpoint.
+A job that restarts before any checkpoint has completed plans again, at a new read time unless `readTime(...)` is set, and a sink that already wrote the first attempt's records then holds records of two snapshots.
+Set `readTime(...)` when that matters.
+
+### Splits, pages and recovery
+
+A scan asks the service for `partitionCount` partitions, the source's parallelism by default.
+It is an upper bound: a small collection group comes back in fewer partitions, and the subtasks left without one finish immediately, which the JobManager logs.
+Asking for more partitions than subtasks lets a subtask that finishes early take another partition while a slower one is still reading.
+The partitions are cut by document name at the time of planning, not at the read time, because the client library's partitioning call takes no read time; that moves nothing, because together they cover every name, so a document of the snapshot falls in exactly one of them.
+
+A reader fetches a split in pages of `pageSize` documents, one request each, continuing after the last document of the page before.
+The client library retries a page whose stream breaks, from the page's last document, without lowering its limit; the reader keeps only the documents the page asked for, and the next page reads the rest.
+A page is held in memory whole before any of its documents is handed on, so `pageSize` times the largest document is what one fetch ordinarily holds; lower it for large documents.
+Until the reader cuts it, a retried page holds the retry's documents as well, up to one page more for each break, so a fetch that meets breaks can briefly hold a multiple of that bound.
+
+A checkpoint records, for each split being read, the query that is left: its start moved to just after the last document the job has passed, its `limit` reduced by the documents already passed, and its `offset` dropped.
+A restore resumes there, without reading a document twice and without skipping one.
+The one query this cannot continue is one whose projection leaves out a field it orders by or filters with an inequality (`<`, `<=`, `>`, `>=`, `!=`, `not-in`), because the position after a document is made of those fields' values.
+The source reads a document when it plans the read, and refuses such a query then, with a message naming the field to add.
+
+The design, and the alternatives it declined, are recorded in [ADR-0173]({{< param BookRepo >}}/blob/main/docs/adr/0173-the-firestore-source-reads-partition-cursor-ranges-at-one-read-time.md).
+
+### Deserialization
+
+A `FirestoreDocumentDeserializationSchema` turns each document into zero or more records.
+It receives the client library's `DocumentSnapshot`, whose read time is the job's and which holds only the projected fields when the scan sets `select(...)`.
+
+{{< java-snippet file="FirestoreConnectorSourceDeserializer.java" tag="firestore-connector-source-deserializer" >}}
+
+A document that produces no record is skipped, counted in `recordsSkipped`, and still passed: a restore does not read it again.
+A deserializer that throws fails the job, and the document is read again after the restore.
+
+### Source metrics
+
+Registered on the source reader's and the split enumerator's metric groups.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsIn` | counter (Flink standard) | Documents handed to the deserializer, one per document whatever it produced, counted before it runs |
+| `documentsRead` | counter | Documents the reader handed on from its pages, counted when a page arrives; a page the client library's retry overfilled counts only what the reader kept |
+| `recordsSkipped` | counter | Documents the deserializer produced no record for |
+| `splitsAssigned` | counter | Splits the enumerator handed to a reader |
+| `splitsReturned` | counter | Splits a failed reader gave back to the enumerator |
+| `readsPlanned` | counter | Planning calls that completed: one on a fresh run, zero on one restored from a checkpoint that recorded the plan |
+
+### Not here yet
+
+There is no unbounded source; [Change data capture](#change-data-capture) explains why.
+Reading a Datastore-mode database is a source of its own, not implemented yet ([#1543]({{< param BookRepo >}}/issues/1543)).
 
 ## Sink
 
@@ -269,7 +354,8 @@ There are no per-destination counters, because the sink writes any number of col
 ## Testing
 
 Functional coverage runs against the Firestore emulator, the `gcloud emulators firestore` binary in the same `google-cloud-cli` image the Bigtable and Pub/Sub tests use, through testcontainers.
-The tests drive the production writer-creation path, so the client and `BulkWriter` are the real ones, and a MiniCluster job covers checkpoint-driven and end-of-input flushes.
+The sink tests drive the production writer-creation path, so the client and `BulkWriter` are the real ones, and a MiniCluster job covers checkpoint-driven and end-of-input flushes.
+The source tests read through the production planner and page reader, and a MiniCluster job that fails once after a checkpoint shows a restored split resuming after its last document.
 The endpoint reaches the client through the builder, never through `FIRESTORE_EMULATOR_HOST`.
 
 ### Emulator deviations
@@ -283,6 +369,8 @@ Where the two disagree, the service decides.
 | Rejection statuses are the emulator's | The error-handling table was measured against the emulator only. The gated real-GCP suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is confirmed |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |
+| `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)). A scan against the emulator needs a partition count of one |
+| Old read times are answered | A read time two hours old was answered, where the service keeps versions for one hour without point-in-time recovery. The read-time window is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 
 ## Scope and provenance
 

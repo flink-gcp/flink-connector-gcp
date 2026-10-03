@@ -26,10 +26,11 @@ import org.apache.flink.annotation.Internal;
  * read ({@code inFlightWrites}), and no name takes Flink's {@code num} prefix — a name meaning the
  * same thing in another connector of this project is spelled the same way there.
  *
- * <p>What is <em>not</em> here: Flink's standard sink names, which come from {@code
- * SinkWriterMetricGroup} accessors rather than from a name, and the subgroup leaves {@code
- * base.metrics} registers on this connector's behalf ({@code errorClass.CODE.errors}). The
- * user-facing meaning of each name is on the connector's documentation page, not duplicated here.
+ * <p>What is <em>not</em> here: Flink's standard sink and source names, which come from {@code
+ * SinkWriterMetricGroup} and {@code SourceReaderMetricGroup} accessors rather than from a name, and
+ * the subgroup leaves {@code base.metrics} registers on this connector's behalf ({@code
+ * errorClass.CODE.errors}). The user-facing meaning of each name is on the connector's
+ * documentation page, not duplicated here.
  */
 @Internal
 public final class FirestoreMetricNames {
@@ -43,6 +44,15 @@ public final class FirestoreMetricNames {
     public static final String WRITES_RETRIED = "writesRetried";
     public static final String BULK_WRITERS_REPLACED = "bulkWritersReplaced";
     public static final String WRITES_CONFIRMED_ALONE = "writesConfirmedAlone";
+
+    // Registered by the batch source's split enumerator (FirestoreBatchSplitEnumerator).
+    public static final String SPLITS_ASSIGNED = "splitsAssigned";
+    public static final String SPLITS_RETURNED = "splitsReturned";
+    public static final String READS_PLANNED = "readsPlanned";
+
+    // Registered by the batch source's reader (FirestoreSourceReaderMetrics). RECORDS_SKIPPED above
+    // is registered there too, for a document the deserializer produced no record for.
+    public static final String DOCUMENTS_READ = "documentsRead";
 
     private FirestoreMetricNames() {}
 }

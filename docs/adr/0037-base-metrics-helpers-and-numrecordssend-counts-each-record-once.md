@@ -21,7 +21,9 @@ limitations under the License.
 - Issues: [#208] (first consumers Pub/Sub and Cloud Tasks [#209]), which superseded the
   [#37] design's "retries re-count"; expanded by [#1056]
 - Modules: base (consumed by every connector)
-- Current behavior: each connector's docs page § Metrics
+- Current behavior: each connector's DataStream docs page — § Metrics on BigQuery, Bigtable and
+  Cloud Tasks, § Sink metrics on Pub/Sub, Spanner and Firestore; the change-stream lag gauges under
+  Spanner § Change Streams source metrics and Bigtable § Source metrics
 
 ## Decision
 

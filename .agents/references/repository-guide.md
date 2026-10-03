@@ -872,8 +872,8 @@ Under `io.github.flink.gcp.connector.<product>` — migrated to ADR (`docs/adr/0
 superseded by `docs/adr/0140`; the unchanged package decisions remain in force). The rules:
 
 - Public API lives at a package's root, implementation in subpackages beneath it; test sources
-  mirror the main-tree packages — the **one** exception being a helper that must declare a
-  vendor's package to reach it (`docs/adr/0067`, and read it before adding a second). The `sink`
+  mirror the main-tree packages — the one exception being a helper that must declare a vendor's
+  package to reach it (`docs/adr/0067`, and read it before adding another). The `sink`
   root holds public sink API plus the `@Internal`
   types shared by every write method, and a new top-level class there needs a reason to be
   public API. The standing exceptions beside the facade: a single-family module's `@Internal`
@@ -959,8 +959,10 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 - `.agents/references/modules/flink-connector-gcp-firestore.md` — one module with two package roots
   for Firestore Native and Datastore modes (#355), and the Native-mode sink (#1540): the
   `BulkWriter` write path, the two client-library defects it works around, solo confirmation of
-  `INVALID_ARGUMENT`, the routed set and `preconditionFailurePolicy`. Recorded in ADRs
-  (`docs/adr/0170`, `0171`)
+  `INVALID_ARGUMENT`, the routed set and `preconditionFailurePolicy`. Also the Native-mode bounded
+  source (#1541): splits as a query's wire form plus one read time, the service-picked snapshot,
+  cursor resume, and the client library's mid-stream retry the reader and planner guard against.
+  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`)
 - `.agents/references/modules/flink-connector-gcp-test-utils.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its
@@ -1077,9 +1079,10 @@ connector gets its own module file rather than a section here.
   in production code, and never by adding a mocking framework. Both halves of the bar are
   required: the type has no public constructor, factory or reachable super-constructor, *and* the
   behaviour under test genuinely reads it. `flink-connector-gcp-bigquery`'s
-  `src/test/java/com/google/cloud/bigquery/TestJobs.java` is the only Java source in this
-  repository whose package is outside `io.github.flink.gcp.*`; a second one is a decision to
-  take, not a precedent to follow. The helper reaches as few package-private members as it can
+  `src/test/java/com/google/cloud/bigquery/TestJobs.java` was the first test helper declared in a
+  vendor's package; Spanner's `TestPartitions` and BigQuery's `TestSplitsChanges` (in Flink's
+  package) followed, and each further one is a decision to take on its own evidence, not a
+  precedent to follow. The helper reaches as few package-private members as it can
   (a redundant overload is one more thing an SDK release can move), and its javadoc names them,
   why no other reach exists, and the SDK version the reach was verified against — a bump that
   moves a reached member then fails a test at compile time, which is the whole safety argument.

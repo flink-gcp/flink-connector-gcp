@@ -22,12 +22,27 @@ limitations under the License.
 
 # Firestore options
 
-Every option the Firestore sink takes.
+Every option the Firestore source and sink take.
 What each one is *for* is on the [Firestore connector]({{< relref "docs/connectors/datastream/firestore" >}}) page; the three forms of the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
 There are no backoff knobs.
 The Firestore client library retries a write itself, and the only part of that loop it lets a caller decide is how many attempts a write gets.
 See [Retries]({{< relref "docs/connectors/datastream/firestore" >}}#retries).
+
+## `FirestoreSource.builder()`
+
+| Option | Default | What it does |
+|---|---|---|
+| `database` | **required** | The database to read, as `DatabaseDestination.of(project)` for the `(default)` database or `DatabaseDestination.of(project, databaseId)` |
+| `deserializer` | **required** | Turns a `DocumentSnapshot` into zero or more records |
+| `collectionGroup` | **required**, unless `query` is set | Reads every document of every collection with this id, at any depth, as a partitioned scan. One path segment: no `/`, no leading or trailing whitespace |
+| `query` | **required**, unless `collectionGroup` is set | A `FirestoreQueryFactory` building the query to read, as one split. It runs on the JobManager, with the source's client, when the read is planned |
+| `select` | every field | Field paths a collection-group scan reads, dot-separated. Repeatable. A query projects in its factory instead |
+| `partitionCount` | the source's parallelism | How many partitions a collection-group scan asks the service for; an upper bound the service may answer below. Scan only |
+| `readTime` | the service's time when the read is planned | The snapshot time every split reads at. Within the past hour, or with point-in-time recovery a whole minute within the past seven days; the default is good for an hour, so a longer read sets a whole minute. See [One snapshot for the whole read]({{< relref "docs/connectors/datastream/firestore" >}}#one-snapshot-for-the-whole-read) |
+| `pageSize` | `500` | Documents one request asks for. A page is held in memory whole, plus up to one page more for each mid-stream retry the client library makes |
+| `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the JobManager when it creates or restores the enumerator and by each TaskManager reader. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) |
+| `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator, which does not partition: a scan against it needs a partition count of one. The only way the source reaches an emulator |
 
 ## `FirestoreSink.builder()`
 

@@ -22,7 +22,7 @@ limitations under the License.
   ([#937], see ADR-0129); revised by [#1048] (2026-08-23)
 - Issues: [#63], [#119], [#121], [#125], [#280], [#937], [#1048]
 - Modules: all connector modules
-- Current behavior: root `AGENTS.md` § Package layout convention (the imperative form)
+- Current behavior: `.agents/references/repository-guide.md` § Package layout convention (the imperative form)
 
 [ADR-0140](0140-bigquery-serialization-apis-use-flinks-schema-vocabulary.md) supersedes only the
 declined `BigQueryProtoSerializer` rename recorded below. Every package, layer and implementation

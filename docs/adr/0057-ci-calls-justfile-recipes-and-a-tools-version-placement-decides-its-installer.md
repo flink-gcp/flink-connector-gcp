@@ -21,7 +21,8 @@ limitations under the License.
   [#113](https://github.com/flink-gcp/flink-connector-gcp/pull/113))
 - Issues: [#111], [#132]
 - Modules: all (build/CI)
-- Current behavior: root `AGENTS.md` § Build (the imperative rules), `justfile`
+- Current behavior: `.agents/references/repository-guide.md` § Build (the imperative rules) and
+  § CI architecture (where a tool's version lives), `justfile`
 
 ## Decision
 
