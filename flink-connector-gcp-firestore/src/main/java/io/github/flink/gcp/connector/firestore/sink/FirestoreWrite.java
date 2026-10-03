@@ -60,14 +60,17 @@ import java.util.Objects;
  *
  * <p>A field value is one of: {@code null}, {@link String}, {@link Long}, {@link Double}, {@link
  * Boolean}, {@link Timestamp}, {@link GeoPoint}, a {@link Blob} of subtype 0, a {@link
- * java.util.List} of values, or a {@link Map} from non-empty {@link String} field names to values,
- * nested at most 500 levels deep. Anything else is rejected when the write is built, which the sink
- * reports as a failure to serialize that record. A BSON binary {@code Blob} of another subtype is
- * rejected because the client library encodes it as a reserved map rather than as bytes, and the
- * sink's request-size accounting does not count that form. The list is closed on purpose: it is the
- * set of values the client library is known to encode, and a value it cannot encode would fail the
- * job rather than one record. Firestore's own rules about the values are the service's to enforce:
- * a document over 1 MiB, or a map nested more than 20 levels, is refused with {@code
+ * FirestoreDocumentReference}, a {@link java.util.List} of values, or a {@link Map} from non-empty
+ * {@link String} field names to values, nested at most 500 levels deep. A {@code
+ * FirestoreDocumentReference} is sent as a reference to that document in the database the sink
+ * writes to. Anything else is rejected when the write is built, which the sink reports as a failure
+ * to serialize that record. A BSON binary {@code Blob} of another subtype is rejected because the
+ * client library encodes it as a reserved map rather than as bytes, and the sink's request-size
+ * accounting does not count that form. The list is closed on purpose: it is the set of values the
+ * client library is known to encode, once the sink has replaced each {@code
+ * FirestoreDocumentReference} with the library's own reference, and a value it cannot encode would
+ * fail the job rather than one record. Firestore's own rules about the values are the service's to
+ * enforce: a document over 1 MiB, or a map nested more than 20 levels, is refused with {@code
  * INVALID_ARGUMENT} for that write.
  *
  * <h2>Preconditions</h2>

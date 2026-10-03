@@ -37,7 +37,10 @@ import java.util.Map;
  * (ADR-0127). The path is parsed here and composed into a document reference, so it is checked
  * against the grammar that reads it. The values are handed to the client library, which fails
  * synchronously on a value it cannot encode in a way that corrupts the rest of its request
- * (ADR-0171), so a value is accepted only if the library is known to encode it.
+ * (ADR-0171), so a value is accepted only if the library is known to encode it. The one exception
+ * is {@link FirestoreDocumentReference}, which the library never sees: the writer replaces it with
+ * the library's own reference before it hands the fields over, and the library would otherwise
+ * encode it as a map of its properties.
  *
  * <p>A field's path is built only for an error message, or once per nested map or list: the copy
  * runs for every record, and most values are scalars that need none.
@@ -136,7 +139,8 @@ final class FirestoreWriteChecks {
                 || value instanceof Boolean
                 || value instanceof Timestamp
                 || value instanceof GeoPoint
-                || value instanceof Blob) {
+                || value instanceof Blob
+                || value instanceof FirestoreDocumentReference) {
             return value;
         }
         if (value instanceof Map) {
@@ -157,9 +161,11 @@ final class FirestoreWriteChecks {
                         + "' has a value of type "
                         + value.getClass().getName()
                         + ", which a Firestore write does not accept. Use String, Long, Double,"
-                        + " Boolean, com.google.cloud.Timestamp, GeoPoint, Blob, a List or a Map"
-                        + " with String keys: an int is written as a Long, a float as a Double,"
-                        + " and bytes as Blob.fromBytes(...).");
+                        + " Boolean, com.google.cloud.Timestamp, GeoPoint, Blob,"
+                        + " FirestoreDocumentReference, a List or a Map with String keys: an int"
+                        + " is written as a Long, a float as a Double, bytes as"
+                        + " Blob.fromBytes(...), and a reference to a document as"
+                        + " FirestoreDocumentReference.of(path).");
     }
 
     private static String childPath(String parent, String name, int index) {

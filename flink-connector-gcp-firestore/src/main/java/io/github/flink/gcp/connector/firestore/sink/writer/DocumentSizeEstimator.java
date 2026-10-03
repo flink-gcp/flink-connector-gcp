@@ -23,6 +23,7 @@ import com.google.cloud.firestore.Blob;
 import com.google.cloud.firestore.GeoPoint;
 import com.google.protobuf.CodedOutputStream;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
+import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 
 import java.util.List;
@@ -54,7 +55,8 @@ final class DocumentSizeEstimator {
      */
     private static final int TWO_BYTE_TAG = 2;
 
-    private final String documentsRoot;
+    /** The UTF-8 length of the database's documents root, which every resource name starts with. */
+    private final long documentsRootLength;
 
     /**
      * Creates the estimator for writes into one database.
@@ -62,7 +64,7 @@ final class DocumentSizeEstimator {
      * @param database the database the writes are bound for
      */
     DocumentSizeEstimator(DatabaseDestination database) {
-        this.documentsRoot = database + "/documents/";
+        this.documentsRootLength = utf8Length(database + "/documents/");
     }
 
     /**
@@ -72,7 +74,7 @@ final class DocumentSizeEstimator {
      * @return the size, positive
      */
     int estimate(FirestoreWrite write) {
-        long name = delimited(utf8Length(documentsRoot) + utf8Length(write.getDocumentPath()));
+        long name = resourceName(write.getDocumentPath());
         long body;
         if (write.getOperation() == FirestoreWrite.Operation.DELETE) {
             // Write.delete (2) is the resource name alone.
@@ -97,6 +99,14 @@ final class DocumentSizeEstimator {
         body += precondition(write);
         // BatchWriteRequest.writes (2): the Write with its tag and length.
         return (int) Math.min(Integer.MAX_VALUE, delimited(body));
+    }
+
+    /**
+     * A document's full resource name as a length-delimited field: the write's own name, or a
+     * reference value naming another document of the same database.
+     */
+    private long resourceName(String documentPath) {
+        return delimited(documentsRootLength + utf8Length(documentPath));
     }
 
     /** Write.current_document (4): what the library sends for the operation. */
@@ -139,12 +149,12 @@ final class DocumentSizeEstimator {
     }
 
     /** One map entry, in Document.fields or MapValue.fields: key (1) and value (2). */
-    private static long mapEntry(String key, Object value) {
+    private long mapEntry(String key, Object value) {
         return delimited(delimited(utf8Length(key)) + delimited(value(value)));
     }
 
     /** The encoded size of one google.firestore.v1.Value, without its own tag and length. */
-    private static long value(Object value) {
+    private long value(Object value) {
         if (value == null || value instanceof Boolean) {
             // null_value (11), an enum, or boolean_value (1).
             return 2;
@@ -170,6 +180,10 @@ final class DocumentSizeEstimator {
             // geo_point_value (8): a LatLng of two doubles, each omitted when its bits are zero.
             GeoPoint point = (GeoPoint) value;
             return delimited(coordinate(point.getLatitude()) + coordinate(point.getLongitude()));
+        }
+        if (value instanceof FirestoreDocumentReference) {
+            // reference_value (5): the referenced document's full resource name.
+            return resourceName(((FirestoreDocumentReference) value).getDocumentPath());
         }
         if (value instanceof Blob) {
             // bytes_value (18). FirestoreWrite admits only a subtype-0 Blob; the library sends any

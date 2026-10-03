@@ -18,12 +18,14 @@ package io.github.flink.gcp.connector.firestore.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreEmulatorITCase;
 import io.github.flink.gcp.connector.firestore.FirestoreMetricNames;
 import io.github.flink.gcp.connector.firestore.sink.FailedWrite;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreBulkWriterSink;
+import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSink;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
@@ -81,6 +83,50 @@ class FirestoreWriterITCase extends AbstractFirestoreEmulatorITCase {
         assertThat(updated.getData()).containsKeys("a", "a.b");
         assertThat(updated.getData().get("a")).isEqualTo(Map.of("b", 1L));
         assertThat(read(path("delete")).exists()).isFalse();
+        assertThat(routed).isEmpty();
+    }
+
+    @Test
+    void aDocumentReferenceIsStoredAsAReferenceInEveryOperationAndAtAnyDepth() throws Exception {
+        client().document(path("update")).set(Map.of("v", 1L)).get();
+        FirestoreDocumentReference alice = FirestoreDocumentReference.of("users/alice");
+        Map<String, Object> fields =
+                Map.of(
+                        "ref",
+                        alice,
+                        "map",
+                        Map.of("ref", FirestoreDocumentReference.of("users/bob/orders/1")),
+                        "list",
+                        List.of("x", alice, Map.of("ref", alice)));
+
+        try (SinkWriter<FirestoreWrite> writer = writer()) {
+            write(writer, FirestoreWrite.set(path("set"), fields));
+            write(writer, FirestoreWrite.setMerge(path("merge"), fields));
+            write(writer, FirestoreWrite.create(path("create"), fields));
+            write(writer, FirestoreWrite.update(path("update"), fields));
+            writer.flush(false);
+        }
+
+        for (String id : List.of("set", "merge", "create", "update")) {
+            DocumentSnapshot stored = read(path(id));
+            assertThat(stored.get("ref")).as(id).isInstanceOf(DocumentReference.class);
+            assertThat(((DocumentReference) stored.get("ref")).getPath())
+                    .as(id)
+                    .isEqualTo("users/alice");
+            assertThat(((Map<?, ?>) stored.get("map")).get("ref"))
+                    .as(id)
+                    .isInstanceOf(DocumentReference.class);
+            assertThat(stored.get("map.ref", DocumentReference.class).getPath())
+                    .as(id)
+                    .isEqualTo("users/bob/orders/1");
+            List<?> list = (List<?>) stored.get("list");
+            assertThat(list.get(0)).as(id).isEqualTo("x");
+            assertThat(list.get(1)).as(id).isInstanceOf(DocumentReference.class);
+            assertThat(((DocumentReference) list.get(1)).getPath()).as(id).isEqualTo("users/alice");
+            assertThat(((Map<?, ?>) list.get(2)).get("ref"))
+                    .as("%s: a reference in a map in a list", id)
+                    .isInstanceOf(DocumentReference.class);
+        }
         assertThat(routed).isEmpty();
     }
 
