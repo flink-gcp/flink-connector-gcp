@@ -27,10 +27,6 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
-import com.google.cloud.bigtable.data.v2.BigtableDataClient;
-import com.google.cloud.bigtable.data.v2.models.Mutation;
-import com.google.cloud.bigtable.data.v2.models.RowMutation;
-import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -228,10 +224,8 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
     void readsTheChangeStreamMutationEnvelopeAndMetadataThroughSql() throws Exception {
         TableDestination table = createChangeStreamTable("table-change-stream-source");
         String sourceCluster = createSingleClusterAppProfile(CHANGE_STREAM_APP_PROFILE);
-        ByteString startMarkerRowKey = ByteString.copyFromUtf8("start-marker");
-        mutateRow(table, startMarkerRowKey, mutation -> mutation.setCell(FAMILY, "q", "marker"));
-        long startMicros = readRows(table).get(0).getCells(FAMILY, "q").get(0).getTimestamp();
-        Instant start = instantFromMicros(startMicros);
+        Instant start =
+                awaitReadableChangeStreamStart(table, CHANGE_STREAM_APP_PROFILE, "start-marker");
         ByteString binaryRowKey = ByteString.copyFrom(new byte[] {0x00, (byte) 0x80, (byte) 0xff});
         ByteString binaryQualifier = ByteString.copyFrom(new byte[] {0x00, (byte) 0xff});
         ByteString binaryValue = ByteString.copyFrom(new byte[] {(byte) 0xff, 0x00});
@@ -299,7 +293,7 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
         TableDestination table = createChangeStreamTable("table-selected-cell-keep-latest");
         String profile = "flink-selected-cell-it";
         String sourceCluster = createSingleClusterAppProfile(profile);
-        Instant start = writeServerTimeMarker(table, "start-marker");
+        Instant start = awaitReadableChangeStreamStart(table, profile, "start-marker");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
@@ -383,22 +377,6 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                         Row.ofKind(RowKind.DELETE, "profile#1", null, null));
     }
 
-    private static Instant writeServerTimeMarker(TableDestination table, String rowKey)
-            throws Exception {
-        try (BigtableDataClient client = BigtableDataClient.create(PROJECT, table.getInstance())) {
-            // The timestamp-free SDK overload stamps client time. Explicit -1 asks Bigtable
-            // for server time; repeated marker versions are harmless on this unrelated cell.
-            client.mutateRow(
-                    RowMutation.create(
-                            TableId.of(table.getTable()),
-                            rowKey,
-                            Mutation.createUnsafe().setCell(FAMILY, "marker", -1L, "time")));
-            var marker = client.readRow(TableId.of(table.getTable()), rowKey);
-            assertThat(marker).isNotNull();
-            return instantFromMicros(marker.getCells(FAMILY, "marker").get(0).getTimestamp());
-        }
-    }
-
     private static void assertRawValue(Row value, ByteString expected) {
         assertThat(value.getField(0)).isEqualTo("RAW_VALUE");
         assertThat((byte[]) value.getField(1)).containsExactly(expected.toByteArray());
@@ -414,11 +392,6 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
         }
         matched.sort(Comparator.comparingInt(row -> (Integer) row.getField(1)));
         return matched;
-    }
-
-    private static Instant instantFromMicros(long micros) {
-        return Instant.ofEpochSecond(
-                Math.floorDiv(micros, 1_000_000L), Math.floorMod(micros, 1_000_000L) * 1_000L);
     }
 
     private static String changeStreamTableDdl(TableDestination table, Instant start, Instant end) {
