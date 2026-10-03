@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0168: Connector catalogs are read-only views of the service schema
 
 - Status: Accepted
-- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582) and [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) (2026-10-03)
-- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214)
-- Modules: base, bigquery, spanner; each later connector catalog adds an adoption section here
-- Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog)
+- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03)
+- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216)
+- Modules: base, bigquery, spanner, bigtable; each later connector catalog adds an adoption section here
+- Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog), [Bigtable catalog](../content/docs/connectors/table/bigtable.md#catalog)
 
 ## Context
 
@@ -99,6 +99,8 @@ SQL reaches them through `CREATE CATALOG`, and Java through `TableEnvironment.cr
 The read-only part of every connector catalog is one `@Internal` base class, `AbstractReadOnlyCatalog` in `flink-connector-gcp-base`'s `base.catalog` package, and `ReadOnlyCatalogDatabase` is the database value every catalog returns, since Flink's `CatalogDatabaseImpl` is `@Internal`.
 The class holds the lifecycle and the lazily opened client, the empty view, partition, function and procedure answers, the `UNKNOWN` statistics, every refused mutation, and `listMaterializedTables` declared without `@Override`.
 Those methods are `final`, so the contract above holds the same way in every connector; the two table-statistics getters are the exception, left open for the reopen condition above.
+A subclass reaches the client only through `withClient`, which runs one request under the read side of a read-write lock, so a lazily paged listing finishes inside it; `close()` takes the write side and therefore waits for every request in flight rather than closing the client under it, and the next request opens a fresh client.
+Flink calls a catalog from one thread in practice, so this guards a session that closes a catalog while another thread still plans against it, a case the first form, which locked only the opening, left to chance (found reviewing [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216)).
 A subclass lists and resolves databases and tables, names its table factory, and keeps its service's database-name grammar.
 The service's name, the read-only message, the client opener and the client closer are constructor arguments rather than overridable hooks, so the constructor calls nothing a subclass defines.
 Flink 2.x's `dropModel` and `renameModel` are declared there without `@Override`, like `listMaterializedTables`; `createModel` and `alterModel` take a `CatalogModel`, a type 1.20 lacks, so the skeleton cannot declare them, and they still throw `UnsupportedOperationException` with Flink's own message.
@@ -124,7 +126,7 @@ The catalog's `Option` table sits in that section, and its `[[config_options]]` 
 
 - The Flink facts above were read from the 1.20.4 and 2.2.1 sources and bytecode on 2026-09-27, and are pinned by `BigQueryCatalogFactoryTest` (offline `CREATE CATALOG` and `USE CATALOG`), `BigQueryCatalogPlanTest` (a hint enabling CDC on a catalog table; the same upsert refused without it) and `BigQueryCatalogTest` (the nullable-key case).
 - A query through a catalog table asked `databaseExists` before `getTable`: the plan test failed with `Object 'analytics' not found within 'bq'` until its stub answered the dataset.
-- `AbstractReadOnlyCatalogTest` pins the shared part: no client before the first metadata call, one client under concurrent first calls (the test fails when `client()` is not synchronized), the close-and-reopen cycle, every refused mutation, and the answers given without the client.
+- `AbstractReadOnlyCatalogTest` pins the shared part: no client before the first metadata call, one client under concurrent first calls (the test fails when opening is not synchronized), a `close()` that waits for a request in flight (the test fails without the lifecycle lock), the close-and-reopen cycle, every refused mutation, and the answers given without the client.
 
 ## Alternatives declined
 
@@ -152,3 +154,12 @@ The catalog's `Option` table sits in that section, and its `[[config_options]]` 
 Two of its answers refine this record, and ADR-0176 gives the reason for each.
 Its `listTables` names base tables only, since the connector reads through Spanner's read API, which cannot read a view; the method set's "names tables and views together" therefore holds for a catalog whose connector can read views.
 It leaves out hidden columns and generated columns that are not stored, the two exceptions to "columns are never dropped".
+
+## Bigtable adoption
+
+[ADR-0178](0178-the-bigtable-catalog-maps-an-instances-tables-and-column-families-to-flink-tables.md) records the Bigtable catalog: one instance as the one database, named by its id, each table as a `_key` row key and one `MAP` column per column family, and change streams not listed.
+Four of its answers refine this record, and ADR-0178 gives the reason for each.
+It takes no `default-database`, since the instance it lists is Bigtable's only container of tables and the `instance` option names it.
+A family whose value type it does not recognize resolves as `MAP<BYTES, BYTES>` rather than failing `getTable`, since `BYTES` returns a cell's stored bytes without decoding them; "fail on a type the connector cannot carry" holds where no type can.
+Its `key-type` option has a default, since it decides the schema, which no hint reaches; "no catalog option has a default" holds for the options that mirror the connector's.
+The type-mapping table gains no column: the catalog maps a family's value type, not a Flink type, so the Catalog section carries its own table from family value type to column type.

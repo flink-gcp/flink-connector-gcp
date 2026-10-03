@@ -305,6 +305,81 @@ A map that takes its row past either limit fails as a serialization failure, whi
 `sink.map-family.update-mode` stays rejected in these modes, because a contribution and a rule add to a cell rather than replace it, and `replace` would need a family delete that a read-modify-write request cannot carry.
 The design record is [ADR-0172]({{< param BookRepo >}}/blob/main/docs/adr/0172-bigtable-column-families-may-be-declared-as-maps.md).
 
+## Catalog
+
+A `bigtable` catalog resolves tables from the column families each Bigtable table already holds, so a statement reads or writes a table without a `CREATE TABLE`.
+One catalog covers one instance, which is the catalog's one database, and the instance's tables are the catalog's tables.
+The catalog is read-only, like the BigQuery and Spanner catalogs.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="catalog" >}}
+
+After `USE CATALOG bt`, `orders` names the `orders` table of `my-instance`, and so does `` bt.`my-instance`.orders ``.
+`SHOW DATABASES` prints the instance id, and `SHOW TABLES` and `DESCRIBE` list and describe what Bigtable holds.
+
+### What a catalog table carries
+
+Bigtable's metadata names a table's column families and each family's value type, and nothing inside a family: neither its qualifiers nor the types of its cells.
+The catalog therefore resolves each family as a [map column family](#map-column-families), which reads every qualifier a row has without the schema naming them, the shape GoogleSQL for Bigtable presents.
+A table the catalog resolves behaves as the equivalent hand-written `CREATE TABLE` would, for scans, lookup joins and `INSERT INTO` alike.
+
+- **Row key**: a `_key` column, GoogleSQL's name for it, declared `NOT NULL` and as the `PRIMARY KEY ... NOT ENFORCED`, so the table serves lookup joins and keyed upserts and deletes without a declaration. Its type is `BYTES`, or `STRING` under `'key-type' = 'string'`, described below.
+- **Column families**: one `MAP` column per family, named after it, in name order. The key is the qualifier, typed like the row key. The value type follows the family's value type:
+
+  | Family value type | Column type with the default key type |
+  |---|---|
+  | None, a raw family | `MAP<BYTES, BYTES>` |
+  | `int64-sum`, `int64-min`, `int64-max` aggregate | `MAP<BYTES, BIGINT>` |
+  | `int64-hll` aggregate | `MAP<BYTES, BYTES>`, the sketch's bytes |
+  | Any other | `MAP<BYTES, BYTES>` |
+
+  `BIGINT` reads an aggregate family's state, which Bigtable stores as eight big-endian bytes, the layout the [type mapping](#type-mapping) gives `BIGINT`. A family whose type the catalog does not recognize, such as an integer in another encoding, reads as `BYTES`, which returns the stored bytes and decodes nothing, so it cannot misread a cell; an empty cell reads as `NULL`, the [null convention](#nulls) for a nullable `BYTES` value, which every catalog map value is.
+- **Options**: `connector`, `project`, `instance` and `table`, and the catalog's `service-account-key-file` and `emulator-endpoint` when those are set. Every other option is per statement, through an `OPTIONS` hint: ``SELECT * FROM orders /*+ OPTIONS('scan.app-profile-id' = 'analytics') */``.
+
+A table with a column family named `_key` fails the lookup, naming the table, because the family and the row key would need the same column name; declare such a table by hand.
+
+Contributions to an aggregate family go through an aggregate input table, as [Aggregate contributions](#aggregate-contributions) describes; the catalog table reads the state they leave.
+
+### Choosing the key type
+
+With the default `'key-type' = 'bytes'`, `_key` and every qualifier keep their stored bytes, which suits any key, including hashed or binary ones.
+Flink does not convert a string literal to `BYTES` implicitly, so a predicate or an entry access spells the bytes: `_key = CAST('user1' AS BYTES)`, `_key = x'7573657231'` or `profile[CAST('name' AS BYTES)]`.
+The planner folds the cast to a literal, so the first form narrows the scan to the row as the second does.
+
+`'key-type' = 'string'` reads `_key` and every qualifier as UTF-8 without validating them, which suits row keys written as human-readable strings, as [Bigtable's schema design guidance](https://docs.cloud.google.com/bigtable/docs/schema-design) recommends.
+A query then compares them with string literals, and GoogleSQL for Bigtable's own example query runs unchanged:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="catalog-string-keys" >}}
+
+The key type leaves the map values' types as the family's value type sets them, and `CAST(address['city'] AS STRING)` reads a `BYTES` value as text.
+A key or qualifier that is not valid UTF-8 keeps its bytes through a `STRING` column, so copying a table through the catalog with `INSERT INTO ... SELECT` writes the same keys back; only its printed form is unreadable.
+GoogleSQL's functions, such as `STARTS_WITH`, are not Flink's, and a `LIKE` on `_key` is evaluated by Flink after a full scan rather than pushed to Bigtable; a range such as `_key >= 'user' AND _key < 'uses'` or a `scan.row-prefix` hint narrows the scan instead.
+
+### What the catalog leaves out
+
+Change Streams tables are not listed.
+A [Change Streams](#change-streams) table's schema is either the fixed envelope, which an `OPTIONS` hint cannot give a catalog table, or the producer's selected cell, which the catalog cannot know, so it is declared by hand.
+`CREATE`, `DROP` and `ALTER` of tables through the catalog are refused; Bigtable itself and the sink's `sink.create-disposition` create tables.
+Table statistics are unknown to the planner.
+
+`CREATE CATALOG`, `USE CATALOG` and `SHOW DATABASES` make no request and need no credentials, so a mistyped instance id shows on the first `SHOW TABLES` or query that names a table: the table lookup finds nothing, Flink lists the tables while validating the query, and that failure names the instance with Bigtable's `NOT_FOUND`. `DESCRIBE` does not list, so it reports the table as not existing instead.
+`SHOW TABLES` lists the instance's tables, which needs `bigtable.tables.list`, and a table lookup reads its column families, which needs `bigtable.tables.get`.
+The planner looks a table up each time a statement names it, and possibly more than once per statement.
+
+### Catalog options
+
+| Option | Required | Type | Meaning |
+|---|---|---|---|
+| `project` | yes | String | The project that owns the instance; carried as each table's `project` |
+| `instance` | yes | String | The instance whose tables are listed, which is also the catalog's one database; carried as each table's `instance` |
+| `key-type` | no | Enum | `bytes` (default) or `string`: the type of `_key` and of every family map's key, as [Choosing the key type](#choosing-the-key-type) describes |
+| `service-account-key-file` | no | String | A service-account JSON key-file path, read where the statement is planned and carried to every table; absent uses ADC. Rejected with `emulator-endpoint` |
+| `emulator-endpoint` | no | String | The emulator's endpoint as `host:port`, used for the catalog's metadata requests and carried to every table |
+
+A tuning option in `CREATE CATALOG` is rejected as unknown: a catalog-level default would apply to statements that never mention it.
+`key-type` is the exception that belongs to the catalog, because it decides the schema, which a hint cannot change.
+The other keys are those of the table options they are carried as, and `project` and `instance` are checked as resource-path components.
+The design record is [ADR-0178]({{< param BookRepo >}}/blob/main/docs/adr/0178-the-bigtable-catalog-maps-an-instances-tables-and-column-families-to-flink-tables.md).
+
 ## Source
 
 With the default `scan.mode = bounded`, a `SELECT` is a **bounded scan** over the DataStream source
@@ -1229,7 +1304,7 @@ the population this model serves has nowhere else to go.
 
 **Map column families are this connector's addition to that model**
 ([ADR-0172]({{< param BookRepo >}}/blob/main/docs/adr/0172-bigtable-column-families-may-be-declared-as-maps.md)).
-They follow GoogleSQL for Bigtable, whose map-per-family shape Bigtable's metadata alone can describe, and they are what a catalog over Bigtable tables can derive.
+They follow GoogleSQL for Bigtable, whose map-per-family shape Bigtable's metadata alone can describe, and they are what the [catalog](#catalog) derives.
 A DDL using one does not move to the HBase connector.
 
 **The encoding is normative.** It exists to be byte-compatible with the HBase ecosystem, so it is

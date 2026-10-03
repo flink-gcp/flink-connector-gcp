@@ -132,6 +132,11 @@ source = "flink-connector-gcp-spanner/src/main/java/io/github/flink/gcp/connecto
 page = "docs/content/docs/connectors/table/spanner.md"
 heading = "Catalog"
 
+[[config_options]]
+source = "flink-connector-gcp-bigtable/src/main/java/io/github/flink/gcp/connector/bigtable/table/BigtableCatalogOptions.java"
+page = "docs/content/docs/connectors/table/bigtable.md"
+heading = "Catalog"
+
 # SOURCE SIDE. Setters that exist and deliberately have no row, keyed
 # `Class.setter`. The bar is that a reader looking the setter up would find
 # nothing new.

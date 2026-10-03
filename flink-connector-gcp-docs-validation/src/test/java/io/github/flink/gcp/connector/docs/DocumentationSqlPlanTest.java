@@ -515,6 +515,22 @@ public class DocumentationSqlPlanTest {
                 scenario(
                         "Bigtable table reference conditional command",
                         snippet("flink/BigtableTableReference.sql", "conditional-command")),
+                // Stops at the catalog boundary: CREATE and USE CATALOG make no request, and a
+                // lookup would ask Bigtable for the table's column families.
+                scenario(
+                        "Bigtable table reference catalog",
+                        snippet("flink/BigtableTableReference.sql", "catalog")),
+                // A catalog lookup asks Bigtable, so a temporary table with the schema the catalog
+                // gives a table under 'key-type' = 'string' stands in for it.
+                scenario(
+                        "Bigtable table reference catalog string keys",
+                        setup(
+                                "CREATE TEMPORARY TABLE myTable ("
+                                        + "_key STRING NOT NULL, address MAP<STRING, BYTES>, "
+                                        + "PRIMARY KEY (_key) NOT ENFORCED) WITH ("
+                                        + "'connector' = 'bigtable', 'project' = 'my-project', "
+                                        + "'instance' = 'my-instance', 'table' = 'myTable')"),
+                        snippet("flink/BigtableTableReference.sql", "catalog-string-keys")),
                 scenario(
                         "Bigtable table reference change stream envelope",
                         snippet("flink/BigtableTableReference.sql", "change-stream-envelope"),

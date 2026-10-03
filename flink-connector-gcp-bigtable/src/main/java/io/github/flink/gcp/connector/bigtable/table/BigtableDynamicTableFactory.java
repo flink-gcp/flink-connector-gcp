@@ -777,7 +777,14 @@ public class BigtableDynamicTableFactory
                 .build();
     }
 
-    private static void validateCredentialsMode(ReadableConfig config) {
+    /**
+     * Refuses a blank {@code service-account-key-file} and one beside {@code emulator-endpoint}.
+     * The catalog factory applies it to its own options, which share these keys.
+     *
+     * @param config the options
+     * @throws ValidationException if either rule is broken
+     */
+    public static void validateCredentialsMode(ReadableConfig config) {
         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                 .ifPresent(
                         path ->

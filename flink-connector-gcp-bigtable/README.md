@@ -61,6 +61,7 @@ Source<OrderEvent, ?, ?> source =
 | `bigtable` table connector; the HBase-compatible DDL model, the cell codec, an upsert `DynamicTableSink` and table auto-creation | Implemented ([#458](https://github.com/flink-gcp/flink-connector-gcp/issues/458)) |
 | `MAP<STRING, V>`/`MAP<BYTES, V>` column families beside `ROW` families, with merge or replace writes | Implemented ([#1215](https://github.com/flink-gcp/flink-connector-gcp/issues/1215)) |
 | `MAP` column families in the `aggregate`, `append` and `increment` modes, one contribution or rule per entry | Implemented ([#1569](https://github.com/flink-gcp/flink-connector-gcp/issues/1569)) |
+| Read-only `bigtable` catalog: an instance's tables as one database, each resolved as a `_key` row key and one `MAP` per column family | Implemented ([#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216)) |
 | Atomic `sink.write-mode = insert-if-absent` with INSERT-only input and whole-row existence checks | Implemented ([#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179)) |
 | DDL-defined `sink.write-mode = conditional` with named predicates and ordered mutation branches | Implemented ([#1226](https://github.com/flink-gcp/flink-connector-gcp/issues/1226)) |
 | Atomic `sink.write-mode = keep-latest` replacement of each written cell | Implemented ([#1177](https://github.com/flink-gcp/flink-connector-gcp/issues/1177)) |

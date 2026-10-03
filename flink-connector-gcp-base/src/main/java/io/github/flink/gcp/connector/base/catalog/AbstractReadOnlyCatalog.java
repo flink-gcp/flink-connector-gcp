@@ -43,6 +43,9 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
 
 /**
  * The part of a read-only connector catalog that does not depend on the service: the lifecycle, the
@@ -51,7 +54,9 @@ import java.util.Optional;
  * <ul>
  *   <li>Nothing touches the network before the first metadata call: {@link #open()} builds no
  *       client and loads no credentials, so {@code CREATE CATALOG} and {@code USE CATALOG} work
- *       offline. The client is opened by {@link #client()} and released by {@link #close()}.
+ *       offline. A metadata request runs through {@link #withClient(Function)}, which opens the
+ *       client on first use, and {@link #close()} releases it only after every request in flight
+ *       has returned, so no request sees its client closed under it.
  *   <li>Every mutating method declared here throws {@link UnsupportedOperationException} with the
  *       message the subclass supplies. Flink 2.x's {@code createModel} and {@code alterModel} are
  *       the exception: they take a {@code CatalogModel}, a type 1.20 lacks, so a source that
@@ -126,6 +131,13 @@ public abstract class AbstractReadOnlyCatalog<C> implements Catalog {
     private final ClientOpener<? extends C> clientOpener;
     private final ClientCloser<? super C> clientCloser;
 
+    /**
+     * Requests hold the read side for as long as they use the client, and {@link #close()} takes
+     * the write side, so it waits for them rather than closing the client they are using.
+     */
+    private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
+
+    /** Guarded by this catalog's monitor; cleared only under the write side of the lifecycle. */
     @Nullable private C client;
 
     /**
@@ -163,12 +175,28 @@ public abstract class AbstractReadOnlyCatalog<C> implements Catalog {
     }
 
     /**
-     * Returns the client, opening it on the first call after construction or {@link #close()}.
+     * Runs one metadata request against the client, opening the client on the first request after
+     * construction or {@link #close()}. The request must finish with the client inside it, a lazily
+     * paged listing included: {@link #close()} waits for it, and a client kept past it may be
+     * closed. Requests run concurrently with each other, and a request that calls {@link #close()}
+     * deadlocks.
      *
-     * @return the client
+     * @param request the request
+     * @param <T> the request's result
+     * @return what the request returned
      * @throws CatalogException if the client cannot be opened
      */
-    protected final synchronized C client() {
+    protected final <T> T withClient(Function<? super C, ? extends T> request) {
+        Lock lock = lifecycle.readLock();
+        lock.lock();
+        try {
+            return request.apply(openedClient());
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private synchronized C openedClient() {
         if (client == null) {
             try {
                 client =
@@ -194,14 +222,28 @@ public abstract class AbstractReadOnlyCatalog<C> implements Catalog {
     public final void open() {}
 
     /**
-     * Releases the client, if one was opened; a reopened catalog builds a fresh one.
+     * Releases the client, if one was opened, once every request in flight has returned; a reopened
+     * catalog builds a fresh one.
      *
      * @throws CatalogException if releasing the client fails
      */
     @Override
-    public final synchronized void close() {
-        C opened = client;
-        client = null;
+    public final void close() {
+        Lock lock = lifecycle.writeLock();
+        lock.lock();
+        try {
+            closeClient();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void closeClient() {
+        C opened;
+        synchronized (this) {
+            opened = client;
+            client = null;
+        }
         if (opened == null) {
             return;
         }

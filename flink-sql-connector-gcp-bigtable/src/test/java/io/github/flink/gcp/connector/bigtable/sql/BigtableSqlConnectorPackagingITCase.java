@@ -20,6 +20,7 @@ import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackaging
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.jar.JarFile;
 
@@ -61,6 +62,23 @@ class BigtableSqlConnectorPackagingITCase extends AbstractSqlConnectorPackagingI
                         .as("%s availability for this Flink major", name)
                         .isEqualTo(flink2);
             }
+        }
+    }
+
+    /** The catalog is found through the same SPI file as the table factory, by its own type. */
+    @Test
+    void sqlCanDiscoverTheCatalogFactory() throws Exception {
+        try (JarFile jar = new JarFile(shadedJar().path().toFile())) {
+            String services =
+                    new String(
+                            jar.getInputStream(
+                                            jar.getJarEntry(
+                                                    "META-INF/services/org.apache.flink.table.factories.Factory"))
+                                    .readAllBytes(),
+                            StandardCharsets.UTF_8);
+            assertThat(services)
+                    .contains(
+                            "io.github.flink.gcp.connector.bigtable.table.catalog.BigtableCatalogFactory");
         }
     }
 
