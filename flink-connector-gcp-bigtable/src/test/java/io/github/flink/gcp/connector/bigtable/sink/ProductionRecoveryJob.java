@@ -36,7 +36,6 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
-import org.apache.flink.util.ExceptionUtils;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
@@ -201,54 +200,6 @@ final class ProductionRecoveryJob {
                     .append(observation.identity.toStringUtf8())
                     .append('=')
                     .append(observation.outcome);
-        }
-        return text.toString();
-    }
-
-    /**
-     * Waits for the job to terminate and returns every failure text it left behind: the job status,
-     * the caller's direct exception, the job result's failure and each execution's own failure
-     * info. A stop-with-savepoint that fails during stopping reports a {@code
-     * StopWithSavepointStoppingException} on both the operation and the job result; among what the
-     * archived execution graph exposes, the task's cause survives only on the failed execution's
-     * failure info, so a rejection message must be read from there. Call it before the cluster
-     * closes; a job that does not terminate fails the assertion naming its state.
-     */
-    static String failureText(LocalStagedJob job, @Nullable Throwable direct) throws Exception {
-        Throwable terminal;
-        try {
-            terminal =
-                    job.result
-                            .handle((result, failure) -> failure)
-                            .get(
-                                    job.run.checkpointOperationTimeoutMillis(),
-                                    java.util.concurrent.TimeUnit.MILLISECONDS);
-        } catch (java.util.concurrent.TimeoutException timeout) {
-            throw new AssertionError(
-                    "The job did not terminate: status="
-                            + job.client.getJobStatus().join()
-                            + " admissions="
-                            + job.run.admissions.size()
-                            + " acknowledgements="
-                            + job.run.acknowledgements.size(),
-                    timeout);
-        }
-        StringBuilder text =
-                new StringBuilder("jobStatus=" + job.client.getJobStatus().join()).append('\n');
-        if (direct != null) {
-            text.append(ExceptionUtils.stringifyException(direct)).append('\n');
-        }
-        if (terminal != null) {
-            text.append(ExceptionUtils.stringifyException(terminal)).append('\n');
-        }
-        var graph = job.cluster.getExecutionGraph(job.client.getJobID()).join();
-        if (graph.getFailureInfo() != null) {
-            text.append(graph.getFailureInfo().getExceptionAsString()).append('\n');
-        }
-        for (var vertex : graph.getAllExecutionVertices()) {
-            vertex.getCurrentExecutionAttempt()
-                    .getFailureInfo()
-                    .ifPresent(info -> text.append(info.getExceptionAsString()).append('\n'));
         }
         return text.toString();
     }

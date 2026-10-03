@@ -80,6 +80,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   stands down — a remote daemon, an IPv6-resolving JVM, or the explicit opt-out above. The BigQuery harness also
   makes its emulator identify itself before any test runs
   (`BigQueryEmulatorContainers.newContainer`), which catches a merely unhealthy container too.
+- **Bind an in-process test server to the loopback address its clients dial, never the wildcard.**
+  `ServerBuilder.forPort(0)` listens on `[::]` with `SO_REUSEADDR`, and on macOS a container another
+  build publishes on `127.0.0.1` can then share its port number and take every `127.0.0.1`
+  connection (ADR-0132's 2026-10-03 refinement, #1585; a Linux kernel refuses that bind). Use
+  `NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))` and dial
+  `127.0.0.1:<port>`; the race then fails the other build's container start instead. The tell is
+  a reply the fake cannot send: #1585's was a bare `UNIMPLEMENTED` to a Bigtable admin call, the
+  Spanner emulator's reply, where a grpc-java server names the missing method.
 - **A local build is only as honest as the local state**: a primed `~/.m2` (this project's own
   SNAPSHOTs from any `install`) and a stale `target/` make reactor, packaging and
   plugin-execution changes look green locally while CI — which starts clean — fails. Verify

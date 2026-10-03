@@ -23,12 +23,13 @@ import com.google.bigtable.v2.BigtableGrpc;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import com.google.bigtable.v2.CheckAndMutateRowResponse;
 import io.grpc.Server;
-import io.grpc.ServerBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -52,7 +53,11 @@ class BigtableAsyncSqlControlITCase {
     void sqlCapacityBoundsOutstandingCallsAndReleasedSlotsAdmitTheRemainingInputs()
             throws Exception {
         ControlledService service = new ControlledService();
-        Server server = ServerBuilder.forPort(0).addService(service).build().start();
+        Server server =
+                NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
+                        .addService(service)
+                        .build()
+                        .start();
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             CompletableFuture<List<Row>> query =
@@ -97,7 +102,11 @@ class BigtableAsyncSqlControlITCase {
     @Test
     void sdkDeadlineCancelsTheRpcAndFailsSqlWithoutAnotherAttempt() throws Exception {
         ControlledService service = new ControlledService();
-        Server server = ServerBuilder.forPort(0).addService(service).build().start();
+        Server server =
+                NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
+                        .addService(service)
+                        .build()
+                        .start();
         try {
             TableEnvironment env = environment(server);
             set(env, "request-timeout", "1 s");
@@ -115,7 +124,7 @@ class BigtableAsyncSqlControlITCase {
     private static TableEnvironment environment(Server server) {
         TableEnvironment env = BigtableAsyncSqlPlanTest.environment();
         env.getConfig().set("parallelism.default", "1");
-        set(env, "emulator-endpoint", "localhost:" + server.getPort());
+        set(env, "emulator-endpoint", "127.0.0.1:" + server.getPort());
         set(env, "predicate.type", "row-exists");
         set(env, "then.0.operation", "delete-row");
         return env;
