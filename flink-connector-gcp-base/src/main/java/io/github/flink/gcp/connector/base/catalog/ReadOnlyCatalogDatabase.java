@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.table.catalog;
+package io.github.flink.gcp.connector.base.catalog;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.catalog.CatalogDatabase;
@@ -27,19 +27,25 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * A BigQuery dataset as a Flink catalog database: its description is the comment, and it carries no
- * properties.
+ * A service database as a Flink catalog database: its description, if the service keeps one, is the
+ * comment.
  *
  * <p>Its own class rather than Flink's {@code CatalogDatabaseImpl}, which is {@code @Internal}
  * (docs/adr/0168).
  */
 @Internal
-final class BigQueryCatalogDatabase implements CatalogDatabase {
+public final class ReadOnlyCatalogDatabase implements CatalogDatabase {
 
     private final Map<String, String> properties;
     @Nullable private final String comment;
 
-    BigQueryCatalogDatabase(Map<String, String> properties, @Nullable String comment) {
+    /**
+     * Creates a database value.
+     *
+     * @param properties the database's properties, copied
+     * @param comment the service's description of the database, or {@code null}
+     */
+    public ReadOnlyCatalogDatabase(Map<String, String> properties, @Nullable String comment) {
         this.properties = Collections.unmodifiableMap(new HashMap<>(properties));
         this.comment = comment;
     }
@@ -62,7 +68,7 @@ final class BigQueryCatalogDatabase implements CatalogDatabase {
 
     @Override
     public CatalogDatabase copy(Map<String, String> properties) {
-        return new BigQueryCatalogDatabase(properties, comment);
+        return new ReadOnlyCatalogDatabase(properties, comment);
     }
 
     @Override
