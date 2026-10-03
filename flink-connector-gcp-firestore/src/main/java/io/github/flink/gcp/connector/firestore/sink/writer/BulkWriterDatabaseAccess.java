@@ -28,11 +28,16 @@ import com.google.cloud.firestore.Precondition;
 import com.google.cloud.firestore.SetOptions;
 import com.google.cloud.firestore.WriteResult;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Function;
 
 /**
  * The production {@link FirestoreDatabaseAccess}: a {@code BulkWriter} over a Firestore client,
@@ -69,7 +74,7 @@ final class BulkWriterDatabaseAccess implements FirestoreDatabaseAccess {
     @Override
     public ApiFuture<WriteResult> submit(FirestoreWrite write) {
         DocumentReference document = firestore.document(write.getDocumentPath());
-        Map<String, Object> fields = write.getFields();
+        Map<String, Object> fields = replaceReferences(write.getFields(), firestore::document);
         switch (write.getOperation()) {
             case SET:
                 return bulkWriter.set(document, fields);
@@ -113,6 +118,59 @@ final class BulkWriterDatabaseAccess implements FirestoreDatabaseAccess {
                         firstPath,
                         first.getValue(),
                         rest);
+    }
+
+    /**
+     * Returns the fields with every {@link FirestoreDocumentReference}, at any depth, replaced by
+     * what {@code document} makes of its path: in production a {@link DocumentReference} of this
+     * client, which is what the library encodes as a reference value. A map or list holding no
+     * reference is returned as it is, so a write without one is not copied.
+     *
+     * @param fields a write's fields
+     * @param document makes the library's reference from a document path
+     * @return the fields to hand to the library
+     */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> replaceReferences(
+            Map<String, Object> fields, Function<String, ?> document) {
+        return (Map<String, Object>) replaceReferencesIn(fields, document);
+    }
+
+    private static Object replaceReferencesIn(Object value, Function<String, ?> document) {
+        if (value instanceof FirestoreDocumentReference) {
+            return document.apply(((FirestoreDocumentReference) value).getDocumentPath());
+        }
+        if (value instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) value;
+            Map<Object, Object> replaced = null;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object element = entry.getValue();
+                Object library = replaceReferencesIn(element, document);
+                if (replaced == null && library != element) {
+                    replaced = new LinkedHashMap<>(map);
+                }
+                if (replaced != null) {
+                    replaced.put(entry.getKey(), library);
+                }
+            }
+            return replaced == null ? map : replaced;
+        }
+        if (value instanceof List) {
+            List<?> list = (List<?>) value;
+            List<Object> replaced = null;
+            for (int i = 0; i < list.size(); i++) {
+                Object element = list.get(i);
+                Object library = replaceReferencesIn(element, document);
+                if (replaced == null && library != element) {
+                    replaced = new ArrayList<>(list);
+                }
+                if (replaced != null) {
+                    replaced.set(i, library);
+                }
+            }
+            return replaced == null ? list : replaced;
+        }
+        return value;
     }
 
     @Override

@@ -32,6 +32,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.NullValue;
 import com.google.type.LatLng;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
+import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 import org.junit.jupiter.api.Test;
 
@@ -114,6 +115,20 @@ class DocumentSizeEstimatorTest {
         fields.put("blob", Blob.fromBytes(new byte[300]));
         fields.put("list", List.of(1L, List.of("nested"), Map.of("k", false)));
         fields.put("map", Map.of("inner", Map.of("deeper", "v"), "emptyMap", Map.of()));
+        fields.put("reference", FirestoreDocumentReference.of("users/alice"));
+        fields.put("unicodeReference", FirestoreDocumentReference.of("c/éあ😀/sub/x"));
+        fields.put(
+                "nestedReferences",
+                Map.of(
+                        "inMap",
+                        FirestoreDocumentReference.of("c/a"),
+                        "inList",
+                        List.of(FirestoreDocumentReference.of("c/b"), 1L)));
+        fields.put(
+                "listedReferences",
+                List.of(
+                        Map.of("inMapInList", FirestoreDocumentReference.of("c/d")),
+                        FirestoreDocumentReference.of("c/e")));
         return fields;
     }
 
@@ -133,6 +148,7 @@ class DocumentSizeEstimatorTest {
         fields.put("back`tick\\slash", "escaped");
         fields.put("9lives", "a leading digit");
         fields.put("nested", Map.of("leaf", 1L, "deeper", Map.of("x", 2L), "none", Map.of()));
+        fields.put("ref", Map.of("leafReference", FirestoreDocumentReference.of("c/b")));
         Timestamp time = Timestamp.ofTimeSecondsAndNanos(1_700_000_000, 5);
 
         return List.of(
@@ -215,6 +231,9 @@ class DocumentSizeEstimatorTest {
                     LatLng.newBuilder()
                             .setLatitude(point.getLatitude())
                             .setLongitude(point.getLongitude()));
+        } else if (value instanceof FirestoreDocumentReference) {
+            builder.setReferenceValue(
+                    ROOT + ((FirestoreDocumentReference) value).getDocumentPath());
         } else if (value instanceof Blob) {
             builder.setBytesValue(ByteString.copyFrom(((Blob) value).toBytes()));
         } else if (value instanceof List) {

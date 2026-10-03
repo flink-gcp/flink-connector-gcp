@@ -120,7 +120,8 @@ The design, and the alternatives it declined, are recorded in [ADR-0173]({{< par
 A `FirestoreDocumentDeserializationSchema` turns each document into zero or more records.
 It receives the client library's `DocumentSnapshot`, whose read time is the job's and which holds only the projected fields when the scan sets `select(...)`.
 The source passes the library's decoding of the values through unchecked.
-Besides the types the sink writes, a field can decode to a `DocumentReference`, a `VectorValue` or a `Blob` with a BSON binary subtype, and, in an Enterprise-edition database, to one of the library's BSON value classes (`MinKey`, `MaxKey`, `RegexValue`, `BsonObjectId`, `BsonTimestamp`, `Int32Value`, `Decimal128Value`), which the Firestore API carries as a reserved single-key map such as `{"__int__": 5}`; a Standard-edition database refuses to store those classes ([#1589]({{< param BookRepo >}}/issues/1589)).
+A reference value decodes to the client library's `DocumentReference` (the sink writes one from a `FirestoreDocumentReference`).
+Besides that and the other types the sink writes, a field can decode to a `VectorValue` or a `Blob` with a BSON binary subtype, and, in an Enterprise-edition database, to one of the library's BSON value classes (`MinKey`, `MaxKey`, `RegexValue`, `BsonObjectId`, `BsonTimestamp`, `Int32Value`, `Decimal128Value`), which the Firestore API carries as a reserved single-key map such as `{"__int__": 5}`; a Standard-edition database refuses to store those classes ([#1589]({{< param BookRepo >}}/issues/1589)).
 
 {{< java-snippet file="FirestoreConnectorSourceDeserializer.java" tag="firestore-connector-source-deserializer" >}}
 
@@ -173,14 +174,17 @@ Every field name is literal in every operation.
 One spelling meaning two things depending on the operation is the confusion this rules out.
 To change one key of a nested map, use `setMerge`.
 
-Field values come from a closed list: `null`, `String`, `Long`, `Double`, `Boolean`, `com.google.cloud.Timestamp`, `GeoPoint`, `Blob`, a `List` of values, or a `Map` from non-empty field names to values.
+Field values come from a closed list: `null`, `String`, `Long`, `Double`, `Boolean`, `com.google.cloud.Timestamp`, `GeoPoint`, `Blob`, `FirestoreDocumentReference`, a `List` of values, or a `Map` from non-empty field names to values.
 Anything else is rejected when the write is built, which the sink reports as a failure to serialize that record.
 The list is closed because of how the client library fails.
 A value it cannot encode, such as a `Short` or a `byte[]`, makes it throw after it has already queued the operation, and the rest of that request is then answered out of step: in the measurement, one write was applied while its result never arrived.
 Write an `int` as a `Long`, a `float` as a `Double`, and bytes as `Blob.fromBytes(...)`; an `Integer`, a `Float` or a `byte[]` is rejected.
+A reference to a document is written as `FirestoreDocumentReference.of("users/alice")`, and Firestore stores it as a reference value, which the source hands back as the client library's `DocumentReference`.
+The library's own `DocumentReference` is rejected, because it belongs to one client and cannot be serialized; the sink makes one from its own client when it sends the write, so a reference always points into the database the sink writes to.
 A `Blob` must have subtype 0, and the library's BSON value classes (`Int32Value`, `Decimal128Value` and the rest) are not accepted.
 The library encodes both as a reserved map rather than as the value itself, and the sink's request-size accounting does not count that form ([#1589]({{< param BookRepo >}}/issues/1589)).
 A document the source read can therefore hold a value the sink refuses: a subtyped `Blob`, which a Standard-edition database stores too, or one of the classes an Enterprise-edition database stores.
+A reference read by the source arrives as the library's `DocumentReference`, which the sink refuses too; a pipeline that copies documents writes it back as `FirestoreDocumentReference.of(reference.getPath())`.
 
 Firestore's own limits stay the service's to enforce.
 A document over 1 MiB, a reserved `__name__`-style field or document id, a map nested more than 20 levels deep, or (in a Standard-edition database) an array inside an array is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.

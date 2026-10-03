@@ -103,6 +103,7 @@ class FirestoreWriteTest {
         fields.put("blob", Blob.fromBytes(new byte[] {1, 2}));
         fields.put("list", list);
         fields.put("map", nested);
+        fields.put("reference", FirestoreDocumentReference.of("users/alice"));
         fields.put("a.b", "a field whose name contains a dot");
 
         FirestoreWrite write = FirestoreWrite.set("c/a", fields);
@@ -112,6 +113,8 @@ class FirestoreWriteTest {
         assertThat(write.getFields()).containsOnlyKeys(fields.keySet());
         assertThat(write.getFields().get("list")).isEqualTo(List.of("x", 2L));
         assertThat(write.getFields().get("map")).isEqualTo(Map.of("inner", true));
+        assertThat(write.getFields().get("reference"))
+                .isEqualTo(FirestoreDocumentReference.of("users/alice"));
         assertThatThrownBy(() -> write.getFields().put("k", 1L))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThat(InstantiationUtil.clone(write)).isEqualTo(write);
@@ -128,6 +131,23 @@ class FirestoreWriteTest {
                 .hasMessageContaining("'l[0]'");
         assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("s", Set.of("x"))))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aClientLibraryDocumentReferenceIsRejectedWithTheValueThatReplacesIt() throws Exception {
+        try (Firestore firestore =
+                FirestoreOptions.newBuilder()
+                        .setProjectId("p")
+                        .setEmulatorHost("localhost:1")
+                        .build()
+                        .getService()) {
+            DocumentReference reference = firestore.document("users/alice");
+
+            assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("r", reference)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("'r'")
+                    .hasMessageContaining("FirestoreDocumentReference.of(path)");
+        }
     }
 
     @Test
@@ -211,7 +231,9 @@ class FirestoreWriteTest {
         // The closed vocabulary exists so that no accepted value makes the library throw after it
         // has queued an operation (ADR-0171). WriteBatch converts synchronously through the same
         // encoder BulkWriter uses and sends nothing until commit, so an unreachable emulator
-        // endpoint is enough.
+        // endpoint is enough. A FirestoreDocumentReference is the one accepted value the library
+        // never sees: the writer replaces it with the library's DocumentReference first, which
+        // FirestoreWriterITCase and DocumentSizeEstimatorITCase send.
         Object deepest = 1L;
         for (int depth = 1; depth < FirestoreWrite.MAX_NESTING_DEPTH; depth++) {
             deepest = List.of(deepest);

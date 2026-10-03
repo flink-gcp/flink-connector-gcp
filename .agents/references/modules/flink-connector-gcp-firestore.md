@@ -51,6 +51,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   none. The transport's per-call retries are the Pub/Sub-shaped `retry*` options, mapped by
   `DefaultFirestoreDatabaseAccessFactory.retrySettings` onto the library's `BatchWrite` values.
 - **Field names are literal in every operation**; `update` goes through the `FieldPath` overload.
+- **`FirestoreDocumentReference` never reaches the library**: `BulkWriterDatabaseAccess` replaces
+  it, at any depth, with a `DocumentReference` of its own client. The library would encode an
+  unreplaced one as a bean map without an error, so any new path that hands fields to the library
+  must replace it too; `FirestoreWriterITCase` reads each operation's reference back.
 - **Same-document order is not kept** — documented, and #1556 is the opt-in mode. Do not add a
   gate outside that issue.
 - The emulator endpoint reaches the client only through the builder; the library also reads
