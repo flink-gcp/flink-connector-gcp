@@ -34,8 +34,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
   A cross-major sink test-double still belongs in the module that needs it.
 - Ordinary SQL lineage packaging assertions inspect only the current module's jar. Never discover
   sibling `target/` artifacts: a scoped reactor does not rebuild them. After a clean full build,
-  the simultaneous five-jar measurement passes `-Dgcp.lineage.sql-jar-manifest=/absolute/file` to
-  `relocatedLineageHelpersShareTheListenerApiAcrossSqlJars`; that file names exactly the five
+  the simultaneous six-jar measurement passes `-Dgcp.lineage.sql-jar-manifest=/absolute/file` to
+  `relocatedLineageHelpersShareTheListenerApiAcrossSqlJars`; that file names exactly the six
   freshly built SQL jars, one absolute path per line. Reuse those floor-built paths for the
   ceiling measurement; do not rebuild them on the ceiling.
 

@@ -42,6 +42,7 @@ MODULES = [
     "flink-connector-gcp-spanner",
     "flink-sql-connector-gcp-spanner",
     "flink-connector-gcp-firestore",
+    "flink-sql-connector-gcp-firestore",
 ]
 
 POM = """<?xml version="1.0" encoding="UTF-8"?>
@@ -424,6 +425,7 @@ def test_full_mode_builds_everything(ci_maven_args):
         "flink-sql-connector-gcp-bigquery",
         "flink-sql-connector-gcp-bigtable",
         "flink-sql-connector-gcp-cloudtasks",
+        "flink-sql-connector-gcp-firestore",
         "flink-sql-connector-gcp-pubsub",
         "flink-sql-connector-gcp-spanner",
     ]
@@ -585,6 +587,7 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
         "flink-sql-connector-gcp-bigquery",
         "flink-sql-connector-gcp-bigtable",
         "flink-sql-connector-gcp-cloudtasks",
+        "flink-sql-connector-gcp-firestore",
         "flink-sql-connector-gcp-pubsub",
         "flink-sql-connector-gcp-spanner",
     ]

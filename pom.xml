@@ -114,6 +114,7 @@ limitations under the License.
         <module>flink-connector-gcp-spanner</module>
         <module>flink-sql-connector-gcp-spanner</module>
         <module>flink-connector-gcp-firestore</module>
+        <module>flink-sql-connector-gcp-firestore</module>
     </modules>
 
     <properties>
@@ -1260,7 +1261,7 @@ limitations under the License.
                     <plugins>
                         <plugin>
                             <!-- Central requires a javadoc jar for every jar-packaging
-                                 artifact, and the five SQL uber-jars have no sources of
+                                 artifact, and the six SQL uber-jars have no sources of
                                  their own: they repackage classes whose Javadoc ships
                                  with the connector artifacts and renders on the
                                  documentation site. The sanctioned answer for a shaded

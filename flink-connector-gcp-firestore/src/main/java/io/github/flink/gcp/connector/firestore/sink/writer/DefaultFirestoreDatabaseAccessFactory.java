@@ -165,6 +165,38 @@ public final class DefaultFirestoreDatabaseAccessFactory implements FirestoreDat
      */
     @Nullable
     public static RetrySettings retrySettings(FirestoreWriterOptions writerOptions) {
+        return retrySettings(
+                writerOptions,
+                "retryInitialDelay",
+                "retryMaxDelay",
+                "retryInitialRpcTimeout",
+                "retryMaxRpcTimeout",
+                "The retry* options");
+    }
+
+    /**
+     * {@link #retrySettings(FirestoreWriterOptions)} with the failure messages naming the knobs as
+     * the caller spells them: the Table API passes its option keys, so a refusal names what the
+     * {@code WITH} clause contains rather than a builder setter.
+     *
+     * @param writerOptions the writer options
+     * @param initialDelayName the name of the initial retry delay
+     * @param maxDelayName the name of the maximum retry delay
+     * @param initialRpcTimeoutName the name of the initial attempt timeout
+     * @param maxRpcTimeoutName the name of the maximum attempt timeout
+     * @param allName how to name the retry knobs as a whole, at the start of a sentence
+     * @return the settings, or {@code null} to keep the library's
+     * @throws IllegalArgumentException if a maximum is shorter than its initial value, or the
+     *     overrides equal gax's defaults
+     */
+    @Nullable
+    public static RetrySettings retrySettings(
+            FirestoreWriterOptions writerOptions,
+            String initialDelayName,
+            String maxDelayName,
+            String initialRpcTimeoutName,
+            String maxRpcTimeoutName,
+            String allName) {
         if (writerOptions.getRetryTotalTimeout() == null
                 && writerOptions.getRetryInitialDelay() == null
                 && writerOptions.getRetryDelayMultiplier() == null
@@ -205,21 +237,22 @@ public final class DefaultFirestoreDatabaseAccessFactory implements FirestoreDat
         checkPair(
                 retry.getMaxRetryDelayDuration(),
                 writerOptions.getRetryMaxDelay() != null,
-                "retryMaxDelay",
+                maxDelayName,
                 retry.getInitialRetryDelayDuration(),
                 writerOptions.getRetryInitialDelay() != null,
-                "retryInitialDelay");
+                initialDelayName);
         checkPair(
                 retry.getMaxRpcTimeoutDuration(),
                 writerOptions.getRetryMaxRpcTimeout() != null,
-                "retryMaxRpcTimeout",
+                maxRpcTimeoutName,
                 retry.getInitialRpcTimeoutDuration(),
                 writerOptions.getRetryInitialRpcTimeout() != null,
-                "retryInitialRpcTimeout");
+                initialRpcTimeoutName);
         RetrySettings settings = retry.build();
         if (settings.equals(ServiceOptions.getDefaultRetrySettings())) {
             throw new IllegalArgumentException(
-                    "The retry* options add up to gax's default retry settings, "
+                    allName
+                            + " add up to gax's default retry settings, "
                             + settings
                             + ", which the Firestore client library treats as unset and replaces"
                             + " with its own BatchWrite settings. Change one of them, or unset them"

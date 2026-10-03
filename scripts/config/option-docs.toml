@@ -132,6 +132,10 @@ source = "flink-connector-gcp-spanner/src/main/java/io/github/flink/gcp/connecto
 page = "docs/content/docs/connectors/table/spanner.md"
 heading = "Catalog"
 
+[[config_options]]
+source = "flink-connector-gcp-firestore/src/main/java/io/github/flink/gcp/connector/firestore/table/FirestoreConnectorOptions.java"
+page = "docs/content/docs/connectors/table/firestore.md"
+
 # SOURCE SIDE. Setters that exist and deliberately have no row, keyed
 # `Class.setter`. The bar is that a reader looking the setter up would find
 # nothing new.

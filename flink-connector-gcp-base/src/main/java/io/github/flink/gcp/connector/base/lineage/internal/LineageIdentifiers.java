@@ -118,6 +118,20 @@ public final class LineageIdentifiers {
     }
 
     /**
+     * Names a configured Firestore collection by its path relative to the database, such as {@code
+     * users} or {@code users/alice/orders}: the documents directly in it, not those of its
+     * subcollections. No document id or query filter is reported.
+     */
+    public static ResourceIdentifier firestoreCollection(
+            String project, String database, String collection) {
+        return new ResourceIdentifier(
+                "firestore-collection",
+                "firestore://" + project + "/" + database,
+                collection,
+                Map.of("project", project, "database", database, "collection", collection));
+    }
+
+    /**
      * Names a configured Firestore collection group: every collection with that id, at any depth,
      * in one database. No document path or query filter is reported.
      */

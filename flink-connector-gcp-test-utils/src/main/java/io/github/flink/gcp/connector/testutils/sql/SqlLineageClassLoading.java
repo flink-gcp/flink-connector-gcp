@@ -114,12 +114,13 @@ final class SqlLineageClassLoading {
         for (String path : Files.readAllLines(Path.of(manifest))) {
             jars.add(Path.of(path).toRealPath());
         }
-        assertThat(jars).hasSize(5).doesNotHaveDuplicates();
+        assertThat(jars).hasSize(6).doesNotHaveDuplicates();
         assertThat(jars.stream().map(path -> path.getParent().getParent().getFileName().toString()))
                 .containsExactlyInAnyOrder(
                         "flink-sql-connector-gcp-bigquery",
                         "flink-sql-connector-gcp-bigtable",
                         "flink-sql-connector-gcp-cloudtasks",
+                        "flink-sql-connector-gcp-firestore",
                         "flink-sql-connector-gcp-pubsub",
                         "flink-sql-connector-gcp-spanner");
         return jars;
