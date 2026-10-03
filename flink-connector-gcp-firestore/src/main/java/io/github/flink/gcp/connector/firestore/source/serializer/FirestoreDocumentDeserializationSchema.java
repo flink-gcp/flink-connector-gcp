@@ -45,7 +45,8 @@ import java.io.Serializable;
  * snapshot holds only the projected fields.
  *
  * <p>Implementations are {@link Serializable} because the source configuration travels in the job
- * graph. Anything that cannot be serialized is a {@code transient} field rebuilt in {@link #open}.
+ * graph. Anything that cannot be serialized is a {@code transient} field rebuilt in {@link
+ * #open(DeserializationSchema.InitializationContext)}.
  *
  * @param <T> the record type produced
  */

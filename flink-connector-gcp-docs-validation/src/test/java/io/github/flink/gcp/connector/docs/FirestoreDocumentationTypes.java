@@ -19,7 +19,9 @@ package io.github.flink.gcp.connector.docs;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
 
+import com.google.cloud.datastore.Entity;
 import com.google.cloud.firestore.DocumentSnapshot;
+import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityDeserializationSchema;
 import io.github.flink.gcp.connector.firestore.source.serializer.FirestoreDocumentDeserializationSchema;
 
 final class FirestoreDocumentationTypes {
@@ -61,6 +63,22 @@ final class FirestoreDocumentationTypes {
         @Override
         public void deserialize(DocumentSnapshot document, Collector<Order> out) {
             out.collect(new Order(document.getId(), document.getLong("total")));
+        }
+
+        @Override
+        public TypeInformation<Order> getProducedType() {
+            return TypeInformation.of(Order.class);
+        }
+    }
+
+    static final class OrderEntityDeserializer
+            implements DatastoreEntityDeserializationSchema<Order> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public void deserialize(Entity entity, Collector<Order> out) {
+            out.collect(new Order(entity.getKey().getName(), entity.getLong("total")));
         }
 
         @Override

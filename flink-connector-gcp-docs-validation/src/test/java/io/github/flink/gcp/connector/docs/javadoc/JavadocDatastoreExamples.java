@@ -17,12 +17,16 @@
 package io.github.flink.gcp.connector.docs;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.source.Source;
 
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreSink;
+import io.github.flink.gcp.connector.datastore.source.DatastoreSource;
+import io.github.flink.gcp.connector.docs.FirestoreDocumentationTypes.Order;
+import io.github.flink.gcp.connector.docs.FirestoreDocumentationTypes.OrderEntityDeserializer;
 import io.github.flink.gcp.connector.docs.FirestoreDocumentationTypes.OrderEvent;
 
 final class JavadocDatastoreExamples {
@@ -48,5 +52,17 @@ final class JavadocDatastoreExamples {
                         .build();
         // end::sink[]
         return sink;
+    }
+
+    static Source<Order, ?, ?> source() {
+        // tag::source[]
+        Source<Order, ?, ?> source =
+                DatastoreSource.<Order>builder()
+                        .database(DatabaseDestination.of("my-project"))
+                        .kind("Order")
+                        .deserializer(new OrderEntityDeserializer())
+                        .build();
+        // end::source[]
+        return source;
     }
 }

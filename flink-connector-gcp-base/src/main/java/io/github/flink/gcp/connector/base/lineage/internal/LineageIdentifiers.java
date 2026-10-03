@@ -136,6 +136,35 @@ public final class LineageIdentifiers {
                         collectionGroup));
     }
 
+    /**
+     * Names a configured Datastore kind in one namespace of a Firestore database in Datastore mode.
+     * No key, ancestor or query filter is reported.
+     *
+     * <p>The namespace is part of the canonical namespace, not of the name, because a kind may
+     * contain {@code '/'} and a namespace may not: {@code datastore://{project}/{database}} for the
+     * default namespace, followed by {@code /{namespace}} for any other. The empty namespace, the
+     * default, is absent from the identity.
+     */
+    public static ResourceIdentifier datastoreKind(
+            String project, String database, String namespace, String kind) {
+        Map<String, String> identity = new HashMap<>();
+        identity.put("project", project);
+        identity.put("database", database);
+        identity.put("kind", kind);
+        if (!namespace.isEmpty()) {
+            identity.put("namespace", namespace);
+        }
+        return new ResourceIdentifier(
+                "datastore-kind",
+                "datastore://"
+                        + project
+                        + "/"
+                        + database
+                        + (namespace.isEmpty() ? "" : "/" + namespace),
+                kind,
+                identity);
+    }
+
     /** Names a configured Cloud Tasks queue, without reporting task URLs or request payloads. */
     public static ResourceIdentifier cloudTasksQueue(
             String project, String location, String queue) {
