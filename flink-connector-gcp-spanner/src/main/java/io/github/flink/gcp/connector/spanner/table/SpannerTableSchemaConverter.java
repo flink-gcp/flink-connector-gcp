@@ -81,7 +81,33 @@ public final class SpannerTableSchemaConverter implements Serializable {
             List<String> uuidPaths,
             Map<String, String> protoTypes,
             Map<String, String> enumTypes) {
-        Markers markers = new Markers(jsonPaths, uuidPaths, protoTypes, enumTypes);
+        return of(
+                rowType,
+                primaryKeyIndexes,
+                dialect,
+                jsonPaths,
+                uuidPaths,
+                Collections.emptyList(),
+                protoTypes,
+                enumTypes);
+    }
+
+    /**
+     * Parses and validates one physical table schema, including the columns Spanner generates.
+     * Those are read like any column and left out of written mutations, since Spanner refuses a
+     * value for a generated column; a generated key column still keys a delete.
+     */
+    public static SpannerTableSchemaConverter of(
+            RowType rowType,
+            int[] primaryKeyIndexes,
+            Dialect dialect,
+            List<String> jsonPaths,
+            List<String> uuidPaths,
+            List<String> generatedColumns,
+            Map<String, String> protoTypes,
+            Map<String, String> enumTypes) {
+        Markers markers =
+                new Markers(jsonPaths, uuidPaths, generatedColumns, protoTypes, enumTypes);
         List<Column> columns = new ArrayList<>(rowType.getFieldCount());
         for (int i = 0; i < rowType.getFieldCount(); i++) {
             String name = rowType.getFieldNames().get(i);
@@ -91,7 +117,8 @@ public final class SpannerTableSchemaConverter implements Serializable {
                             name,
                             i,
                             logicalType,
-                            toSpannerType(name, logicalType, dialect, markers)));
+                            toSpannerType(name, logicalType, dialect, markers),
+                            markers.generated(name)));
         }
         markers.checkAllConsumed();
         checkPrimaryKey(primaryKeyIndexes, columns);
@@ -295,12 +322,19 @@ public final class SpannerTableSchemaConverter implements Serializable {
         private final int index;
         private final LogicalType logicalType;
         private final Type spannerType;
+        private final boolean generated;
 
-        private Column(String name, int index, LogicalType logicalType, Type spannerType) {
+        private Column(
+                String name,
+                int index,
+                LogicalType logicalType,
+                Type spannerType,
+                boolean generated) {
             this.name = name;
             this.index = index;
             this.logicalType = logicalType;
             this.spannerType = spannerType;
+            this.generated = generated;
         }
 
         public String getName() {
@@ -319,6 +353,11 @@ public final class SpannerTableSchemaConverter implements Serializable {
             return spannerType;
         }
 
+        /** Returns whether Spanner generates this column, so a write leaves it out. */
+        public boolean isGenerated() {
+            return generated;
+        }
+
         @Override
         public boolean equals(Object o) {
             if (this == o) {
@@ -329,6 +368,7 @@ public final class SpannerTableSchemaConverter implements Serializable {
             }
             Column column = (Column) o;
             return index == column.index
+                    && generated == column.generated
                     && name.equals(column.name)
                     && logicalType.equals(column.logicalType)
                     && spannerType.equals(column.spannerType);
@@ -336,24 +376,33 @@ public final class SpannerTableSchemaConverter implements Serializable {
 
         @Override
         public int hashCode() {
-            return Objects.hash(name, index, logicalType, spannerType);
+            return Objects.hash(name, index, logicalType, spannerType, generated);
         }
     }
 
     private static final class Markers {
         private final Set<String> json;
         private final Set<String> uuid;
+        private final Set<String> generated;
         private final Map<String, String> proto;
         private final Map<String, String> enumTypes;
         private final Set<String> consumed = new LinkedHashSet<>();
 
+        /**
+         * Kept apart from {@code consumed}: a type marker's recursion consumes an element path such
+         * as {@code tags[]}, which must not make the same path count as a generated column.
+         */
+        private final Set<String> generatedConsumed = new LinkedHashSet<>();
+
         private Markers(
                 List<String> json,
                 List<String> uuid,
+                List<String> generated,
                 Map<String, String> proto,
                 Map<String, String> enumTypes) {
             this.json = new LinkedHashSet<>(json);
             this.uuid = new LinkedHashSet<>(uuid);
+            this.generated = new LinkedHashSet<>(generated);
             this.proto = new LinkedHashMap<>(proto);
             this.enumTypes = new LinkedHashMap<>(enumTypes);
         }
@@ -379,6 +428,17 @@ public final class SpannerTableSchemaConverter implements Serializable {
             return uuid.contains(path);
         }
 
+        /**
+         * Asked of top-level fields only: a generated column is a whole column, so an element path
+         * such as {@code tags[]} names nothing and is reported as unknown.
+         */
+        private boolean generated(String path) {
+            if (generated.contains(path)) {
+                generatedConsumed.add(path);
+            }
+            return generated.contains(path);
+        }
+
         private String enumType(String path) {
             if (enumTypes.containsKey(path)) {
                 consumed.add(path);
@@ -395,6 +455,14 @@ public final class SpannerTableSchemaConverter implements Serializable {
             if (!declared.isEmpty()) {
                 throw new ValidationException(
                         "Special Spanner type markers name unknown field paths: " + declared + ".");
+            }
+            Set<String> unknownGenerated = new LinkedHashSet<>(generated);
+            unknownGenerated.removeAll(generatedConsumed);
+            if (!unknownGenerated.isEmpty()) {
+                throw new ValidationException(
+                        "schema.generated-columns names "
+                                + unknownGenerated
+                                + ", which are not top-level physical fields of the table.");
             }
         }
     }

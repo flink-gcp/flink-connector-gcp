@@ -147,6 +147,56 @@ class SpannerTableSchemaConverterTest {
     }
 
     @Test
+    void aGeneratedMarkerFlagsItsColumnAndCombinesWithATypeMarker() {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                                        DataTypes.FIELD("doc", DataTypes.STRING()))
+                                .getLogicalType();
+
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        row,
+                        new int[] {0},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.singletonList("doc"),
+                        Collections.emptyList(),
+                        Collections.singletonList("doc"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+
+        assertThat(schema.getColumns().get(0).isGenerated()).isFalse();
+        assertThat(schema.getColumns().get(1).isGenerated()).isTrue();
+        assertThat(schema.getColumns().get(1).getSpannerType()).isEqualTo(Type.json());
+    }
+
+    @Test
+    void aGeneratedMarkerNamingNoTopLevelFieldIsRejected() {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(DataTypes.FIELD("tags", DataTypes.ARRAY(DataTypes.STRING())))
+                                .getLogicalType();
+        for (String path : new String[] {"missing", "tags[]"}) {
+            // tags[] is also a type-marker element path below, which must not make it count here.
+            assertThatThrownBy(
+                            () ->
+                                    SpannerTableSchemaConverter.of(
+                                            row,
+                                            new int[0],
+                                            Dialect.GOOGLE_STANDARD_SQL,
+                                            Collections.singletonList("tags[]"),
+                                            Collections.emptyList(),
+                                            Collections.singletonList(path),
+                                            Collections.emptyMap(),
+                                            Collections.emptyMap()))
+                    .as(path)
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("schema.generated-columns names [" + path + "]");
+        }
+    }
+
+    @Test
     void uuidMarkersRejectNonStringCarriersAndConflictingMarkers() {
         RowType bigint =
                 (RowType) DataTypes.ROW(DataTypes.FIELD("id", DataTypes.BIGINT())).getLogicalType();

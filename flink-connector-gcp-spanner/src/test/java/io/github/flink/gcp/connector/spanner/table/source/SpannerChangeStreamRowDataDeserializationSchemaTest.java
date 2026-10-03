@@ -216,6 +216,7 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
                                                                 null))),
                                         collector))
                 .isInstanceOf(IOException.class)
+                .hasMessageContaining("record primary key differs from the table DDL")
                 .hasMessageContaining("modIndex=-1");
     }
 
@@ -293,9 +294,37 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
                 .hasMessageContaining("transaction=tx-1")
                 .hasMessageContaining("sequence=0001")
                 .hasMessageContaining("modIndex=1")
+                .hasMessageContaining("a required row value is absent")
                 .hasMessageNotContaining("secret-first")
                 .hasNoCause();
         assertThat(rows).isEmpty();
+    }
+
+    @Test
+    void aValueThatFailsToParseIsNeitherQuotedNorGivenAsTheReason() {
+        SpannerChangeStreamRowDataDeserializationSchema deserializer =
+                deserializer(ChangeStreamChangelogMode.FULL, table(null, "people"));
+
+        assertThatThrownBy(
+                        () ->
+                                deserializer.deserialize(
+                                        record(
+                                                "people",
+                                                COLUMNS,
+                                                ModType.INSERT,
+                                                ValueCaptureType.NEW_ROW_AND_OLD_VALUES,
+                                                Collections.singletonList(
+                                                        new Mod(
+                                                                "{\"id\":\"secret-key\"}",
+                                                                "{\"name\":\"Ada\"}",
+                                                                null))),
+                                        collector(new ArrayList<>())))
+                .isInstanceOf(IOException.class)
+                .hasMessageStartingWith(
+                        "Could not convert Spanner change-stream record (table=people")
+                .hasMessageContaining("modIndex=0")
+                .hasMessageNotContaining("secret-key")
+                .hasNoCause();
     }
 
     @Test
@@ -394,6 +423,7 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
                                                                 null))),
                                         collector(rows)))
                 .isInstanceOf(IOException.class)
+                .hasMessageContaining("the record omits a declared table column")
                 .hasMessageContaining("modIndex=-1");
     }
 

@@ -24,6 +24,7 @@ limitations under the License.
 
 The `spanner` connector reads bounded Table API and SQL scans, emits unbounded Change Streams changelogs, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
 It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/spanner" >}}), so partitioning, snapshot, batching, retry, delivery, metrics, and failure behavior remain the same.
+A read-only [catalog](#catalog) resolves tables from each database's `INFORMATION_SCHEMA`, so a statement can use them without a `CREATE TABLE`.
 
 {{< sql-snippet file="flink/SpannerTableReference.sql" tag="overview" >}}
 
@@ -96,20 +97,22 @@ Quote a reserved word when it is used as the schema, the first component of the 
 ### Type mapping
 
 Spanner's [GoogleSQL data types](https://cloud.google.com/spanner/docs/reference/standard-sql/data-types) and [PostgreSQL data types](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) define the native column and key constraints that this mapping enforces.
+A [catalog](#catalog) table is derived from the live schema instead of declared; the last column gives the Flink type each Spanner column resolves to.
+JSON (`jsonb`), PROTO and ENUM columns resolve as their marked `STRING`, `BYTES` and `BIGINT` carriers, as the [type markers](#lookup-behavior) describe.
 
-| Flink SQL type | Spanner type |
-|---|---|
-| `BOOLEAN` | `BOOL` |
-| `BIGINT` | `INT64` |
-| `FLOAT` / `DOUBLE` | `FLOAT32` / `FLOAT64` |
-| `DECIMAL(38, 9)` | GoogleSQL `NUMERIC` |
-| `DECIMAL(p, s)` | PostgreSQL `numeric` |
-| `CHAR` / `VARCHAR` / `STRING` | `STRING` |
-| marked `CHAR` / `VARCHAR` / `STRING` | `UUID` |
-| `BINARY` / `VARBINARY` / `BYTES` | `BYTES` |
-| `DATE` | `DATE` |
-| `TIMESTAMP_LTZ(0..9)` | `TIMESTAMP` |
-| `ARRAY<T>` | `ARRAY<T>` |
+| Flink SQL type | Spanner type | Read back through the catalog as |
+|---|---|---|
+| `BOOLEAN` | `BOOL` | `BOOLEAN` |
+| `BIGINT` | `INT64` | `BIGINT` |
+| `FLOAT` / `DOUBLE` | `FLOAT32` / `FLOAT64` | `FLOAT` / `DOUBLE` |
+| `DECIMAL(38, 9)` | GoogleSQL `NUMERIC` | `DECIMAL(38, 9)` |
+| `DECIMAL(p, s)` | PostgreSQL `numeric` | `DECIMAL(38, 9)` |
+| `CHAR` / `VARCHAR` / `STRING` | `STRING` | `STRING`, whatever the declared length |
+| marked `CHAR` / `VARCHAR` / `STRING` | `UUID` | `STRING`, marked |
+| `BINARY` / `VARBINARY` / `BYTES` | `BYTES` | `BYTES` |
+| `DATE` | `DATE` | `DATE` |
+| `TIMESTAMP_LTZ(0..9)` | `TIMESTAMP` | `TIMESTAMP_LTZ(9)` |
+| `ARRAY<T>` | `ARRAY<T>` | `ARRAY<T>`, with nullable elements |
 
 The mapping applies to one-dimensional array elements, and nullable Flink values become null Spanner values.
 Nested arrays are rejected because neither Spanner dialect permits an array whose element is another array.
@@ -121,6 +124,84 @@ On reads, a PostgreSQL numeric value must fit the declared Flink precision witho
 Precision overflow, scale loss, and PostgreSQL numeric `NaN` fail conversion instead of rounding or turning a non-null value into null.
 The error names the physical column and declared Flink shape without including the stored value.
 `FLOAT` cannot be a primary-key column in either dialect, and no PostgreSQL decimal can be a primary-key column because PostgreSQL `numeric` is not a key type.
+
+## Catalog
+
+A `spanner` catalog resolves tables from the schema each Spanner database already holds, so a statement reads or writes a table without a `CREATE TABLE`.
+One catalog covers one instance: its databases are the catalog's databases, in either dialect, and their base tables are the catalog's tables.
+The catalog is read-only, like the BigQuery catalog and the JDBC connector's.
+
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="catalog" >}}
+
+After `USE CATALOG sp`, `orders` names the `orders` table in the default schema of `orders-db`, and `` `sales.orders` `` names the `orders` table in its `sales` schema.
+`SHOW DATABASES`, `SHOW TABLES` and `DESCRIBE` list and describe what Spanner holds.
+
+### Table names
+
+A Spanner table has three levels of address below its instance, a database, a schema and the table, while a Flink catalog has two, so a named schema travels inside the table name.
+A table in the default schema, the empty GoogleSQL schema or PostgreSQL `public`, is listed by its name alone, and a table in a named schema as `schema.table`.
+Each part uses the [canonical quoting](#named-schemas) the `schema` and `table` options accept.
+A GoogleSQL part outside the plain identifier grammar is backtick-quoted.
+A PostgreSQL part is double-quoted when it has an upper-case letter or a character outside the plain grammar, since an unquoted PostgreSQL part folds to lower case.
+In Flink SQL the whole name is one identifier, so it is written in Flink backticks: `` `sales.orders` ``, or `` `"Sales"."Orders"` `` for a PostgreSQL table whose schema and table were created with quoted mixed-case names.
+
+Every name `SHOW TABLES` prints resolves to the table it came from.
+A GoogleSQL name is compared case-insensitively, as Spanner compares it, and a PostgreSQL name exactly after its quoting is decoded.
+
+### What a catalog table carries
+
+A table the catalog resolves behaves as the equivalent hand-written `CREATE TABLE` would, for scans, lookup joins and `INSERT INTO` alike.
+
+- **Options**: `connector`, `project`, `instance`, `database` and `dialect`, the table's name, and the catalog's `service-account-key-file` and `emulator-endpoint` when those are set.
+  A default-schema table carries `table` alone, holding the native name; a named-schema table carries `schema` and `table` in canonical quoting.
+  The markers its columns need are set from the column metadata: the type markers `schema.json-field-paths`, `schema.uuid-field-paths`, `schema.proto-type-names` and `schema.enum-type-names`, and `schema.generated-columns`, which is a marker but not a type marker.
+  Every other option is per statement, through an `OPTIONS` hint, which resolves an index in the table's own schema: ``SELECT * FROM `sales.orders` /*+ OPTIONS('scan.index' = 'orders_by_total') */``.
+- **Schema**: each column resolves as the last column of the [type mapping](#type-mapping) gives, and a column Spanner declares `NOT NULL` resolves as `NOT NULL`.
+  Spanner names a PROTO or ENUM column's type as `PROTO<pkg.Message>` or `ENUM<pkg.Enum>`; the emulator names only the fully qualified type, so there the catalog reads the database's proto bundle to tell a message from an enum.
+  A PostgreSQL `numeric` resolves as `DECIMAL(38, 9)`, so a stored value with more fractional or integer digits than that fails the read, naming the column, rather than rounding.
+- **Primary key**: the Spanner primary key becomes a `PRIMARY KEY ... NOT ENFORCED` in key order, over `NOT NULL` columns, so the table serves lookup joins and keyed upserts and deletes without a declaration.
+  A GoogleSQL key column that Spanner allows to hold `NULL` is declared `NOT NULL` all the same, because the planner requires it of a key; a row whose key is `NULL` breaks that declaration.
+  A key whose type the connector cannot key on, such as `FLOAT32`, PostgreSQL `numeric` or an ENUM, resolves, and a statement over the table is refused when it is planned, as for a hand-written table with that key.
+- **Stored generated columns** resolve as ordinary columns listed in `schema.generated-columns`: reads return them, and the sink leaves them out of every mutation, since Spanner refuses a value for a generated column.
+  A generated column that is not stored is left out, because Spanner's read API, which scans and lookups go through, refuses to return one; the [DataStream source]({{< relref "docs/connectors/datastream/spanner" >}}) reading through a SQL query can select it.
+  A generated column outside the key is nullable in the Flink schema, so an `INSERT INTO` that names the other columns need not supply it.
+  A generated key column is `NOT NULL` like any key column, so an `INSERT INTO` must supply it, and the value supplied must be the one Spanner computes, as the [sink](#mutation-behavior) explains.
+- **Hidden columns**, such as the `TOKENLIST` columns a search index reads, are left out, as Spanner's own `SELECT *` leaves them out; a hidden key column would be kept, since the key names it.
+
+A column whose Spanner type the mapping has no row for, such as `INTERVAL`, fails the lookup, naming the table, the column and its Spanner type; the table never resolves with the column missing.
+
+### Change streams
+
+Change streams are not listed.
+An `OPTIONS` hint turns a catalog table into its change-stream source instead: ``SELECT * FROM `sales.orders` /*+ OPTIONS('scan.mode' = 'change-stream', 'scan.change-stream.name' = 'order_changes', 'scan.change-stream.changelog-mode' = 'upsert') */``.
+Spanner change streams do not watch a generated column outside the primary key, so a table with one refuses the hint when the statement is planned.
+Such a table's change stream is read through a hand-written table that leaves those columns out, as [Change Streams scan behavior](#change-streams-scan-behavior) describes.
+
+### What the catalog leaves out
+
+Views are not listed: the table source reads through Spanner's read API, which takes a table.
+`CREATE`, `DROP` and `ALTER` of tables and databases through the catalog are refused; Spanner's own DDL creates them.
+Table statistics are unknown to the planner.
+
+`CREATE CATALOG` and `USE CATALOG` make no request and need no credentials.
+`SHOW DATABASES` and a database's dialect come from the database admin API, which needs the `spanner.databases.list` and `spanner.databases.get` permissions respectively.
+Where a column's type names a proto type without saying whether it is a message or an enum, as on the emulator, the catalog also reads the database's proto bundle, which needs `spanner.databases.getDdl`.
+Tables and columns come from `INFORMATION_SCHEMA`, read with the catalog's credentials.
+The catalog asks a database's dialect once, and asks again only after finding the database dropped; the planner looks a table's columns up each time a statement names it, and possibly more than once per statement.
+
+### Catalog options
+
+| Option | Required | Type | Meaning |
+|---|---|---|---|
+| `project` | yes | String | The project that owns the instance; carried as each table's `project` |
+| `instance` | yes | String | The instance whose databases are listed; carried as each table's `instance` |
+| `default-database` | yes | String | The database a table name without a database resolves against, as a Spanner database id |
+| `service-account-key-file` | no | String | A service-account JSON key-file path, read where the statement is planned and carried to every table; absent uses ADC. Rejected with `emulator-endpoint` |
+| `emulator-endpoint` | no | String | The emulator's endpoint as `host:port`, used for the catalog's metadata requests and carried to every table |
+
+A tuning option in `CREATE CATALOG` is rejected as unknown: a catalog-level default would apply to statements that never mention it.
+The keys are those of the table options they are carried as.
+`project`, `instance` and `default-database` are checked as resource-path components, and `default-database` also against Spanner's database-id grammar, since a name outside it names no database.
 
 ## Source
 
@@ -174,6 +255,10 @@ A declared `PRIMARY KEY` makes the sink an upsert sink.
 `INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
 The key may be composite, but every member must map to a Spanner key type.
 
+A field listed in `schema.generated-columns` is left out of every mutation, because Spanner refuses a value for a generated column.
+An upsert lets Spanner compute a generated key column from the columns written, but a delete still names the row by the value the row carries, and the planner keys its upserts by it, so that value must equal the one Spanner computes.
+Rows read from the same table carry it; a value a statement invents does not, and a delete keyed by it removes nothing.
+
 Without a primary key, the sink accepts insert-only input and uses Spanner `insert`.
 This preserves duplicate-key errors instead of pretending that an unknown physical key can support upserts or deletes.
 As with other Flink connectors, `PRIMARY KEY ... NOT ENFORCED` describes the contract to the planner; the connector does not verify uniqueness.
@@ -205,7 +290,7 @@ Malformed sink or lookup input fails conversion with the physical column name bu
 Set `dialect = 'POSTGRESQL'` for PostgreSQL-dialect databases; JSON markers then produce `jsonb` values.
 PROTO and ENUM markers require `GOOGLE_STANDARD_SQL` and are rejected for PostgreSQL databases.
 A marker names one top-level physical field or an entire array field.
-Every marker must resolve to exactly one physical field and no field may have more than one marker.
+Every marker must resolve to exactly one physical field and no field may have more than one type marker; `schema.generated-columns` is not a type marker and combines with them.
 
 The connector does not inspect or migrate the live Spanner schema.
 Changing an existing column from `STRING` to `UUID` therefore requires coordinating the Spanner DDL and this option before redeploying the Flink job, and every stored string must already be valid canonical UUID input before migration.
@@ -239,6 +324,7 @@ The adjacent before and after rows produced for one full-mode update carry the s
 
 Each data-change record is validated against the DDL's physical names, native Spanner types, and, in upsert mode, primary-key column membership before any row from that record is emitted.
 Extra watched columns are ignored, while a missing declared column, a type mismatch, an incompatible value-capture mode, or an absent required row value fails deserialization.
+Spanner change streams do not watch a generated column outside the primary key, so a change-stream table that lists a column outside its declared `PRIMARY KEY` in `schema.generated-columns` is refused when it is planned; one declared without the marker fails on the first record, as any missing declared column does, with a message saying the record omits a declared column.
 Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
 A conversion failure identifies the table, commit timestamp, transaction, record sequence, and mod index without including row JSON or credential paths.
 
@@ -258,6 +344,7 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, Change Streams scan, and lookup paths; rejected with `emulator-endpoint` |
 | `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
 | `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
+| `schema.generated-columns` | empty | Semicolon-separated top-level fields Spanner generates: reads return them, writes leave them out, and a change-stream table refuses one outside its declared primary key |
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
@@ -317,3 +404,14 @@ guaranteed, so successive updates to the same key do not provide a latest-input-
 The Table connector composes the bounded source, Change Streams source, and sink implementations documented on the
 [DataStream connector page]({{< relref "docs/connectors/datastream/spanner" >}}); its Table-only lookup behavior is documented above.
 That page records the underlying design decisions, emulator deviations, and gated real-GCP coverage.
+
+**The catalog derives tables and never creates them.** It follows the read-only shape
+[ADR-0168]({{< param BookRepo >}}/blob/main/docs/adr/0168-connector-catalogs-are-read-only-views-of-the-service-schema.md) records for every connector catalog, and
+[ADR-0176]({{< param BookRepo >}}/blob/main/docs/adr/0176-the-spanner-catalog-maps-an-instances-databases-and-information-schema-to-flink-tables.md)
+records the Spanner mapping: the `SPANNER_TYPE` grammar of both dialects, the `schema.table` naming,
+and the answers for generated, hidden, PROTO and ENUM columns, views and change streams.
+The catalog's unit tests drive it against an in-memory instance, including every listed name
+resolving back to its table in both dialects. `SpannerCatalogITCase` then runs it through the
+planner against the emulator in both dialects: listing, the type mapping, a write Spanner completes
+with a generated column, a lookup join and an index hint on a named schema, a change-stream hint, and
+PROTO and ENUM columns.

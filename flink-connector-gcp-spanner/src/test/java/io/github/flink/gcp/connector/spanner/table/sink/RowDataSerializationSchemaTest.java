@@ -40,6 +40,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -106,6 +107,45 @@ class RowDataSerializationSchemaTest {
         assertThat(mutation.asMap().get("payload").getBytes())
                 .isEqualTo(ByteArray.copyFrom(new byte[] {1, 2, 3}));
         assertThat(mutation.asMap().get("labels").getStringArray()).containsExactly("a", "b");
+    }
+
+    /**
+     * Spanner refuses a mutation that sets a generated column, a generated key column included
+     * (measured on the emulator in both dialects): an upsert leaves it out and Spanner computes the
+     * key from the columns written, while a delete still names the row by it.
+     */
+    @Test
+    void aGeneratedColumnIsLeftOutOfWritesButStillKeysADelete() throws Exception {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("a", DataTypes.BIGINT().notNull()),
+                                        DataTypes.FIELD("k", DataTypes.BIGINT().notNull()),
+                                        DataTypes.FIELD("total", DataTypes.BIGINT()))
+                                .getLogicalType();
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[] {1},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Arrays.asList("k", "total"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        RowDataSerializationSchema serializer = new RowDataSerializationSchema(schema, "orders");
+        GenericRowData upsert = GenericRowData.of(2L, 20L, 40L);
+        upsert.setRowKind(RowKind.UPDATE_AFTER);
+        GenericRowData delete = GenericRowData.of(2L, 20L, 40L);
+        delete.setRowKind(RowKind.DELETE);
+
+        Mutation written = serializer.serialize(upsert, null);
+        Mutation deleted = serializer.serialize(delete, null);
+
+        assertThat(written.getOperation()).isEqualTo(Mutation.Op.INSERT_OR_UPDATE);
+        assertThat(written.asMap()).containsOnlyKeys("a");
+        assertThat(deleted.getOperation()).isEqualTo(Mutation.Op.DELETE);
+        assertThat(deleted.getKeySet().getKeys()).containsExactly(Key.of(20L));
     }
 
     @Test

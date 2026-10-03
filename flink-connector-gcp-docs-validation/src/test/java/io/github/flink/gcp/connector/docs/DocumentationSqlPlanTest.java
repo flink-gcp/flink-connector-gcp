@@ -655,6 +655,11 @@ public class DocumentationSqlPlanTest {
                                 "flink/SpannerTableReference.sql",
                                 "named-schema",
                                 "SELECT * FROM sales_orders;")),
+                // Stops at the catalog boundary: CREATE and USE CATALOG make no request, and a
+                // lookup would ask Spanner for the database's dialect.
+                scenario(
+                        "Spanner table reference catalog",
+                        snippet("flink/SpannerTableReference.sql", "catalog")),
                 scenario(
                         "Spanner table reference change stream",
                         withFollowup(

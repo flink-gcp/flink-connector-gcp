@@ -28,7 +28,14 @@ import java.io.Serializable;
 import java.util.Locale;
 import java.util.Objects;
 
-/** A table name as rendered for Spanner APIs and compared with {@code INFORMATION_SCHEMA}. */
+/**
+ * A table name as rendered for Spanner APIs and compared with {@code INFORMATION_SCHEMA}.
+ *
+ * <p>It is built from one configured table's {@code schema} and {@code table} options. A name the
+ * {@code spanner} catalog lists or parses from a Flink object name is a {@link SpannerObjectName}
+ * instead; "catalog" in this class's methods, such as {@link #catalogKey(String, String, Dialect)},
+ * means an {@code INFORMATION_SCHEMA} row, not the Flink catalog.
+ */
 @Internal
 public final class SpannerTableName implements Serializable {
     private static final long serialVersionUID = 1L;

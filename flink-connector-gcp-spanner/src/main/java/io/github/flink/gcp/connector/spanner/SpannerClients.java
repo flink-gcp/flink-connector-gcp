@@ -73,11 +73,27 @@ public final class SpannerClients {
             DatabaseDestination database,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride) {
+        return settings(database.getProject(), emulatorEndpoint, credentialsOverride);
+    }
+
+    /**
+     * Builds client settings for a project, for a caller that reaches more than one database, as
+     * the catalog does: the handle carries only the project, and each database is named per call.
+     *
+     * @param project the project the handle will reach
+     * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
+     * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
+     *     ADC
+     * @return the settings
+     */
+    public static SpannerOptions settings(
+            String project,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Credentials credentialsOverride) {
         Preconditions.checkArgument(
                 emulatorEndpoint == null || credentialsOverride == null,
                 "credentialsOverride cannot be combined with an emulator endpoint");
-        SpannerOptions.Builder settings =
-                SpannerOptions.newBuilder().setProjectId(database.getProject());
+        SpannerOptions.Builder settings = SpannerOptions.newBuilder().setProjectId(project);
         if (emulatorEndpoint != null) {
             settings.setEmulatorHost(emulatorEndpoint.getTarget());
         } else if (credentialsOverride != null) {
@@ -114,10 +130,22 @@ public final class SpannerClients {
      */
     public static Spanner open(DatabaseDestination database, SpannerOptions settings)
             throws IOException {
+        return open(String.valueOf(database), settings);
+    }
+
+    /**
+     * Opens a handle from settings, naming what it reaches in the failure message.
+     *
+     * @param target what the handle reaches, for the failure message
+     * @param settings the settings to open the handle from
+     * @return the handle, which the caller owns and must close
+     * @throws IOException if the handle cannot be created
+     */
+    public static Spanner open(String target, SpannerOptions settings) throws IOException {
         try {
             return settings.getService();
         } catch (RuntimeException e) {
-            throw new IOException("Failed to create the Spanner client for " + database + ".", e);
+            throw new IOException("Failed to create the Spanner client for " + target + ".", e);
         }
     }
 }

@@ -20,6 +20,7 @@ import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackaging
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.jar.JarFile;
 
@@ -55,6 +56,23 @@ class SpannerSqlConnectorPackagingITCase extends AbstractSqlConnectorPackagingIT
                             jar.getJarEntry(
                                     "io/github/flink/gcp/connector/spanner/table/source/SpannerChangeStreamDynamicSource.class"))
                     .isNotNull();
+        }
+    }
+
+    /** The catalog is found through the same SPI file as the table factory, by its own type. */
+    @Test
+    void sqlCanDiscoverTheCatalogFactory() throws Exception {
+        try (JarFile jar = new JarFile(UberJar.SHADED.path().toFile())) {
+            String services =
+                    new String(
+                            jar.getInputStream(
+                                            jar.getJarEntry(
+                                                    "META-INF/services/org.apache.flink.table.factories.Factory"))
+                                    .readAllBytes(),
+                            StandardCharsets.UTF_8);
+            assertThat(services)
+                    .contains(
+                            "io.github.flink.gcp.connector.spanner.table.catalog.SpannerCatalogFactory");
         }
     }
 

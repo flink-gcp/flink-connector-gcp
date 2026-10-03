@@ -70,7 +70,7 @@ class InformationSchemaCellWeightsTest {
                 .contains("information_schema.index_columns")
                 .contains(
                         "table_schema NOT IN"
-                                + " ('pg_catalog', 'information_schema', 'SPANNER_SYS')")
+                                + " ('pg_catalog', 'information_schema', 'spanner_sys')")
                 .doesNotContain("table_schema = 'public'")
                 .contains("index_name != 'PRIMARY_KEY'");
     }

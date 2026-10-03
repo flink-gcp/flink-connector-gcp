@@ -61,6 +61,11 @@ public final class RowDataSerializationSchema
                         ? Mutation.newInsertOrUpdateBuilder(table)
                         : Mutation.newInsertBuilder(table);
         for (SpannerTableSchemaConverter.Column column : schema.getColumns()) {
+            if (column.isGenerated()) {
+                // Spanner computes it, and refuses a mutation that sets it, a key column
+                // included: the row's key is computed from the columns written.
+                continue;
+            }
             builder.set(column.getName())
                     .to(
                             RowDataToSpannerValueConverter.convert(

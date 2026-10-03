@@ -57,6 +57,7 @@ An absent JSON member remains distinct from explicit JSON null and fails when th
 All mods are converted into staged rows before the collector receives any of them.
 A later malformed mod therefore cannot leave an earlier mod from the same record partially emitted before source progress fails.
 The cause-free error identifies the table, commit timestamp, transaction, record sequence, and mod index without including row JSON, credential paths, or a nested exception.
+When the converter's own validation refused the record, the error also names that check's reason, such as a declared column the record omits; those reasons are constant sentences, never a value from the record, and any other failure still reports no reason (refined by [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), 2026-10-03).
 
 **Stable scalar record and transaction fields are readable metadata.**
 For the Spanner fields Debezium also exposes as source metadata, the SQL keys translate its snake-case vocabulary to this connector's hyphenated spelling: commit timestamp, record sequence, server transaction identifier, final-record flag, table, value-capture type, transaction record and partition counts, transaction tag, system-transaction flag, and mod number.

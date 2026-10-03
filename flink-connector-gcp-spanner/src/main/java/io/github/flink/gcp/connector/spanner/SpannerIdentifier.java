@@ -18,15 +18,23 @@ package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.spanner.Dialect;
 
 import java.util.Locale;
+import java.util.regex.Pattern;
 
-/** Decodes one configured identifier component for Spanner catalog and data API names. */
+/**
+ * Decodes one configured identifier component for Spanner catalog and data API names, and encodes a
+ * native name into the canonical form that decodes back to it.
+ */
 @Internal
 final class SpannerIdentifier {
+
+    private static final Pattern BARE_GOOGLE_SQL = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    private static final Pattern BARE_POSTGRESQL = Pattern.compile("[a-z_][a-z0-9_]*");
 
     private SpannerIdentifier() {}
 
@@ -45,7 +53,29 @@ final class SpannerIdentifier {
         }
     }
 
-    private static String decode(String value, Dialect dialect) {
+    /**
+     * Encodes a native name as one component in canonical quoting: bare where a bare spelling
+     * decodes back to it, quoted otherwise. A PostgreSQL name is bare only when it is all lower
+     * case, since an unquoted component folds; a GoogleSQL name, only when it is a plain
+     * identifier.
+     */
+    static String encode(String nativeName, Dialect dialect) {
+        Preconditions.checkArgument(!nativeName.isEmpty(), "A Spanner name is never empty.");
+        if (dialect == Dialect.POSTGRESQL) {
+            return BARE_POSTGRESQL.matcher(nativeName).matches()
+                    ? nativeName
+                    : '"' + nativeName.replace("\"", "\"\"") + '"';
+        }
+        return BARE_GOOGLE_SQL.matcher(nativeName).matches()
+                ? nativeName
+                : '`' + nativeName.replace("\\", "\\\\").replace("`", "\\`") + '`';
+    }
+
+    /**
+     * Decodes one component in canonical quoting, as {@link #configured(String, Dialect, String)}
+     * does without an option.
+     */
+    static String decode(String value, Dialect dialect) {
         if (StringUtils.isNullOrWhitespaceOnly(value)) {
             throw new IllegalArgumentException("The identifier is blank.");
         }
@@ -104,7 +134,7 @@ final class SpannerIdentifier {
         return decoded.toString();
     }
 
-    private static char quote(Dialect dialect) {
+    static char quote(Dialect dialect) {
         return dialect == Dialect.POSTGRESQL ? '"' : '`';
     }
 

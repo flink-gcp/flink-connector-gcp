@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0168: Connector catalogs are read-only views of the service schema
 
 - Status: Accepted
-- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582) (2026-10-03)
-- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582)
-- Modules: base, bigquery; each later connector catalog adds an adoption section here
-- Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog)
+- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582) and [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) (2026-10-03)
+- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214)
+- Modules: base, bigquery, spanner; each later connector catalog adds an adoption section here
+- Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog)
 
 ## Context
 
@@ -46,7 +46,7 @@ Four facts about Flink decide most of that shape, measured against flink-table-c
 A connector catalog implements `Catalog` directly, the JDBC catalog's read-only set.
 
 - `listDatabases`, `getDatabase`, `databaseExists`, `listTables`, `getTable` and `tableExists` answer from the service.
-  `listTables` names tables and views together, as `Catalog.listTables` specifies.
+  `listTables` names tables and views together, as `Catalog.listTables` specifies, where the connector can read a view; an adoption section records a catalog that lists tables only.
 - `getTable` returns a `CatalogTable`, never a `CatalogView`.
   A service view is defined in the service's SQL, which Flink cannot expand, so `listViews` returns an empty list after confirming the database exists.
   How a connector reads a view is its adoption section's decision.
@@ -145,3 +145,10 @@ The catalog's `Option` table sits in that section, and its `[[config_options]]` 
 ## BigQuery adoption
 
 [ADR-0169](0169-the-bigquery-catalog-maps-a-projects-datasets-and-rest-schemas-to-flink-tables.md) records the BigQuery catalog: one project, datasets as databases, the type mapping, views resolved as tables that materialize, and statistics declined.
+
+## Spanner adoption
+
+[ADR-0176](0176-the-spanner-catalog-maps-an-instances-databases-and-information-schema-to-flink-tables.md) records the Spanner catalog: one instance, its databases in either dialect, a named schema's tables as canonical `schema.table` names, the `SPANNER_TYPE` mapping, generated columns kept and marked, hidden columns left out, and views and change streams not listed.
+Two of its answers refine this record, and ADR-0176 gives the reason for each.
+Its `listTables` names base tables only, since the connector reads through Spanner's read API, which cannot read a view; the method set's "names tables and views together" therefore holds for a catalog whose connector can read views.
+It leaves out hidden columns and generated columns that are not stored, the two exceptions to "columns are never dropped".

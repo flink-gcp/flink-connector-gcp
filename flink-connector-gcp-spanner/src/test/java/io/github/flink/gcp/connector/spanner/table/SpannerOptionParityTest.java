@@ -47,6 +47,8 @@ class SpannerOptionParityTest {
                                 "metadata;nested.payload",
                                 "schema.uuid-field-paths",
                                 "id;nested.id",
+                                "schema.generated-columns",
+                                "total;tokens",
                                 "schema.proto-type-names",
                                 "event:example.Event,nested.event:example.Nested"));
 
@@ -54,6 +56,8 @@ class SpannerOptionParityTest {
                 .containsExactly("metadata", "nested.payload");
         assertThat(options.get(SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS))
                 .containsExactly("id", "nested.id");
+        assertThat(options.get(SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS))
+                .containsExactly("total", "tokens");
         assertThat(options.get(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES))
                 .containsExactlyInAnyOrderEntriesOf(
                         Map.of("event", "example.Event", "nested.event", "example.Nested"));
@@ -196,6 +200,7 @@ class SpannerOptionParityTest {
                         "service-account-key-file",
                         "schema.json-field-paths",
                         "schema.uuid-field-paths",
+                        "schema.generated-columns",
                         "schema.proto-type-names",
                         "schema.enum-type-names",
                         "scan.mode",

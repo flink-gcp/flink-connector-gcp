@@ -52,6 +52,17 @@ CREATE TABLE sales_orders (
 );
 -- end::named-schema[]
 
+-- tag::catalog[]
+CREATE CATALOG sp WITH (
+  'type' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'default-database' = 'orders-db'
+);
+
+USE CATALOG sp;
+-- end::catalog[]
+
 -- tag::change-stream[]
 CREATE TABLE order_changes (
   order_id BIGINT,

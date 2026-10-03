@@ -117,6 +117,16 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("Field paths whose STRING values use native Spanner UUID.");
 
+    /** Columns Spanner generates, which reads return and writes leave out of their mutations. */
+    public static final ConfigOption<List<String>> SCHEMA_GENERATED_COLUMNS =
+            ConfigOptions.key("schema.generated-columns")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Columns Spanner generates, which reads return and writes leave out of"
+                                    + " their mutations.");
+
     /** Field paths to fully qualified Spanner PROTO type names. */
     public static final ConfigOption<Map<String, String>> SCHEMA_PROTO_TYPE_NAMES =
             ConfigOptions.key("schema.proto-type-names")

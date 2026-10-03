@@ -37,9 +37,11 @@ import io.github.flink.gcp.connector.spanner.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -83,6 +85,7 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCHEMA,
                         SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS,
+                        SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS,
                         SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
                         SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES,
                         SpannerConnectorOptions.SCAN_MODE,
@@ -192,6 +195,37 @@ public final class SpannerDynamicTableFactory
                 SpannerTableLineage.from(context.getObjectIdentifier().asSummaryString(), config));
     }
 
+    /**
+     * Refuses a generated column outside the declared primary key: Spanner change streams do not
+     * watch one outside Spanner's primary key, so no record carries its value, and the converter
+     * would fail on the first record rather than invent a {@code NULL} for it (docs/adr/0105). A
+     * generated key column is watched. The check can only see the key the DDL declares, so a table
+     * that leaves Spanner's key undeclared is refused for a generated key column too, and the
+     * message says how to answer that.
+     */
+    private static void rejectUnwatchedGeneratedColumns(SpannerTableSchemaConverter schema) {
+        Set<Integer> key = new HashSet<>();
+        for (int index : schema.getPrimaryKeyIndexes()) {
+            key.add(index);
+        }
+        List<String> unwatched = new ArrayList<>();
+        for (SpannerTableSchemaConverter.Column column : schema.getColumns()) {
+            if (column.isGenerated() && !key.contains(column.getIndex())) {
+                unwatched.add(column.getName());
+            }
+        }
+        if (!unwatched.isEmpty()) {
+            throw new ValidationException(
+                    "scan.mode=change-stream cannot read the generated columns "
+                            + unwatched
+                            + ", which are outside the declared PRIMARY KEY: Spanner change"
+                            + " streams do not watch a generated column outside the primary key,"
+                            + " so no change record carries its value. Declare the table's"
+                            + " Spanner primary key, or read the change stream through a table"
+                            + " that does not declare these columns.");
+        }
+    }
+
     private static void validateSourceMode(
             Map<String, String> supplied,
             ReadableConfig config,
@@ -230,6 +264,7 @@ public final class SpannerDynamicTableFactory
             throw new ValidationException(
                     "scan.change-stream.changelog-mode=upsert requires a PRIMARY KEY declared NOT ENFORCED in the table DDL.");
         }
+        rejectUnwatchedGeneratedColumns(schema);
         ChangeStreamStartPositionMapper.validate(config, supplied);
     }
 
@@ -286,7 +321,13 @@ public final class SpannerDynamicTableFactory
         }
     }
 
-    private static void validateCredentialsMode(ReadableConfig config) {
+    /**
+     * Refuses a blank key file and a key file beside an emulator endpoint, which connects without
+     * credentials. Shared with the catalog factory, which reads the same keys.
+     *
+     * @param config the options
+     */
+    public static void validateCredentialsMode(ReadableConfig config) {
         String keyFile =
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null);
         if (keyFile != null && keyFile.isBlank()) {
@@ -332,6 +373,8 @@ public final class SpannerDynamicTableFactory
                 config.getOptional(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS)
                         .orElse(Collections.emptyList()),
                 config.getOptional(SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS)
+                        .orElse(Collections.emptyList()),
+                config.getOptional(SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS)
                         .orElse(Collections.emptyList()),
                 config.getOptional(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES)
                         .orElse(Collections.emptyMap()),

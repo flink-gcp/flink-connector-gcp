@@ -69,9 +69,12 @@ import java.util.UUID;
  *
  * <p><b>A failure names the record and carries no cause.</b> {@code failure(...)} reports table,
  * commit timestamp, transaction id, record sequence and mod index — enough to find the record in
- * Spanner — and deliberately attaches no cause, because the exception underneath holds the JSON
- * that failed to parse, which is the row's own data. The mod index is tracked as the loop runs so
- * that it survives into the message.
+ * Spanner — and deliberately attaches no cause, because the exception underneath may hold the JSON
+ * that failed to parse, which is the row's own data. When one of this class's own checks refused
+ * the record, the message also carries that check's reason: those reasons are constant sentences
+ * thrown as {@code RecordRefusal}, never a value from the record, so they are the one part of the
+ * underlying failure safe to repeat. The mod index is tracked as the loop runs so that it survives
+ * into the message.
  *
  * <p>Physical conversion lives here rather than in the deserialization schema that wraps it: that
  * class is the collector and produced-type adapter, and growing conversion branches back into it
@@ -115,6 +118,8 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
                 appendRows(record, record.getMods().get(index), index, rows);
             }
             return rows;
+        } catch (RecordRefusal refusal) {
+            throw failure(record, modIndex, refusal.getMessage());
         } catch (RuntimeException ignored) {
             throw failure(record, modIndex);
         }
@@ -344,7 +349,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
             case DATE:
                 return Value.date(Date.parseDate(json.getAsString()));
             default:
-                throw new IllegalArgumentException("Unsupported change-stream value type.");
+                throw new RecordRefusal("unsupported change-stream value type");
         }
     }
 
@@ -447,7 +452,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
                                                 ? null
                                                 : Date.parseDate(item.getAsString())));
             default:
-                throw new IllegalArgumentException("Unsupported change-stream ARRAY element type.");
+                throw new RecordRefusal("unsupported change-stream ARRAY element type");
         }
     }
 
@@ -484,7 +489,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
             case DATE:
                 return Value.date(null);
             default:
-                throw new IllegalArgumentException("Unsupported null value type.");
+                throw new RecordRefusal("unsupported null value type");
         }
     }
 
@@ -521,7 +526,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
             case DATE:
                 return Value.dateArray(null);
             default:
-                throw new IllegalArgumentException("Unsupported null ARRAY element type.");
+                throw new RecordRefusal("unsupported null ARRAY element type");
         }
     }
 
@@ -558,13 +563,19 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
 
     private static void require(boolean condition, String message) {
         if (!condition) {
-            throw new IllegalArgumentException(message);
+            throw new RecordRefusal(message);
         }
     }
 
     static IOException failure(DataChangeRecord record, int modIndex) {
+        return failure(record, modIndex, null);
+    }
+
+    private static IOException failure(
+            DataChangeRecord record, int modIndex, @Nullable String reason) {
         return new IOException(
                 "Could not convert Spanner change-stream record"
+                        + (reason == null ? "" : ": " + reason)
                         + " (table="
                         + record.getTableName()
                         + ", commitTimestamp="
@@ -576,6 +587,18 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
                         + ", modIndex="
                         + modIndex
                         + ").");
+    }
+
+    /**
+     * A record this converter's own checks refuse. Its message is a constant sentence, never a
+     * value from the record, which is what lets {@code failure(...)} repeat it.
+     */
+    private static final class RecordRefusal extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        RecordRefusal(String reason) {
+            super(reason, null, false, false);
+        }
     }
 
     @FunctionalInterface

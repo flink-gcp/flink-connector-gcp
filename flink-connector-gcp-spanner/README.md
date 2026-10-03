@@ -19,6 +19,7 @@ Both dialects, GoogleSQL and PostgreSQL.
 | Relocated SQL uber-jar | Implemented ([#505](https://github.com/flink-gcp/flink-connector-gcp/issues/505)) |
 | Gated real-GCP integration tests | Implemented ([#224](https://github.com/flink-gcp/flink-connector-gcp/issues/224)) |
 | Change-stream CDC changelog scan, readable metadata, and source watermarks in the Table API and SQL | Implemented ([#582](https://github.com/flink-gcp/flink-connector-gcp/issues/582), [#583](https://github.com/flink-gcp/flink-connector-gcp/issues/583)) |
+| Read-only `spanner` catalog: an instance's databases as databases and base tables resolved from `INFORMATION_SCHEMA`, in both dialects | Implemented ([#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214)) |
 
 <!-- readme-example file="SpannerReadmeOverview.java" tag="spanner-readme-overview" -->
 ```java
