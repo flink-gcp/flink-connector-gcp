@@ -95,7 +95,7 @@ jobs:
       # uv runs scripts/stage-release-guard.py inside the recipe. Shims stay
       # off the PATH so mise's java can never shadow the setup-java JDK the
       # published bytecode is compiled with (ADR-0057).
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with:
           install_args: uv
           add_shims_to_path: false
