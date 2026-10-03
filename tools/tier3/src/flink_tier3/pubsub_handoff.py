@@ -15,12 +15,16 @@
 """Process-owned Pub/Sub calls and explicit release before service cleanup."""
 
 import copy
+import math
 import re
 import uuid
 
 from .common import Failure, json_bytes
 from .model import Phase
-from .pubsub_messages import MAX_BATCH
+from .policy import HTTP_TIMEOUT
+from .pubsub_messages import COHORTS, MAX_BATCH, cohort_ranges
+
+COHORT_FIELDS = {"deadline", "requested_at", "started_at", "published_at"}
 
 
 def _token(value):
@@ -74,6 +78,42 @@ def _handoff(state):
     return value
 
 
+def _time(value, *, optional=True):
+    if value is None:
+        return optional
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _cohorts(state):
+    """The recorded cohorts, each published only after the one before it."""
+    value = state.get("cohorts", {})
+    if not isinstance(value, dict) or not set(value) <= set(COHORTS):
+        raise Failure("Invalid Pub/Sub cohort record")
+    for index, name in enumerate(COHORTS):
+        cohort = value.get(name)
+        if cohort is None:
+            continue
+        if (
+            not isinstance(cohort, dict)
+            or set(cohort) != COHORT_FIELDS
+            or not _time(cohort["deadline"], optional=False)
+            or not all(
+                _time(cohort[key])
+                for key in ("requested_at", "started_at", "published_at")
+            )
+            # Admission publishes the first cohort unasked; the supervisor
+            # requests the others.
+            or (cohort["requested_at"] is None) != (index == 0)
+            or (cohort["published_at"] is not None and cohort["started_at"] is None)
+            or (
+                index > 0
+                and (value.get(COHORTS[index - 1]) or {}).get("published_at") is None
+            )
+        ):
+            raise Failure("Invalid Pub/Sub cohort record")
+    return value
+
+
 def require_handoff_released(state):
     """A recorded actor protocol must be released before deletion or settlement."""
     value = _handoff(state)
@@ -91,6 +131,10 @@ def runner_released(actors):
 
 class _InvocationChanged(Failure):
     """A completion acknowledgement no longer names the active call."""
+
+
+class CohortUnstarted(Failure):
+    """The run closed before a cohort's start was recorded; nothing was sent."""
 
 
 class PubSubHandoff:
@@ -317,6 +361,136 @@ class PubSubHandoff:
                 "collect",
                 lambda: self.traffic.collect(batch_id, max_messages=max_messages),
             )
+
+    def request_cohort(self, name, *, deadline):
+        """Ask the runner to publish a later cohort, once the one before it is out.
+
+        Only the runner may publish input. Repeating a request with the same
+        deadline changes nothing, even after that deadline or a stop, so a
+        retry after a lost response confirms the recorded request; another
+        deadline is refused.
+        """
+        self._role("supervisor")
+        if name not in COHORTS[1:]:
+            raise ValueError("Unknown requestable Pub/Sub cohort: " + str(name))
+        if not _time(deadline, optional=False):
+            raise ValueError("Pub/Sub cohort deadline must be a finite time")
+
+        def request(record):
+            state = self.controller._state(record)
+            cohorts = _cohorts(state)
+            if name in cohorts:
+                if cohorts[name]["deadline"] != deadline:
+                    raise Failure("Pub/Sub cohort deadline cannot be changed")
+                return
+            if not self.env.clock() < deadline <= self.env.schedule.cleanup_at:
+                raise Failure("Pub/Sub cohort deadline is outside the run window")
+            if self._owned(record)["released"]:
+                raise Failure("Pub/Sub supervisor has released its authority")
+            self.traffic._allow(record, "supervisor", admit=True)
+            previous = cohorts.get(COHORTS[COHORTS.index(name) - 1])
+            if previous is None or previous["published_at"] is None:
+                raise Failure("Pub/Sub cohort requested before the previous one")
+            state["cohorts"] = {
+                **cohorts,
+                name: {
+                    "deadline": deadline,
+                    "requested_at": self.env.clock(),
+                    "started_at": None,
+                    "published_at": None,
+                },
+            }
+
+        with self.controller.reserve("request_cohort"):
+            self.controller._change(request)
+
+    def cohorts(self):
+        """The recorded cohort publications, read through this actor's guard."""
+        self._role()
+        with self.controller.reserve("read_cohorts"):
+            record, state = self.controller._read()
+        self._state(record)
+        return copy.deepcopy(_cohorts(state))
+
+    def publish_cohort(self, name, *, deadline=None, check=None):
+        """Publish one cohort to both input topics, once, before its deadline.
+
+        Admission publishes the first cohort with its own ``deadline``; a later
+        one is published only as requested, by its recorded deadline. The
+        start is recorded before the first request, so it precedes every
+        message of the cohort, and only while a request still fits before the
+        deadline. ``check`` runs before each batch. A cohort that started is
+        never started again: a failed batch stops the run.
+        """
+        self._role("runner")
+        if name not in COHORTS:
+            raise ValueError("Unknown Pub/Sub cohort: " + str(name))
+        if (deadline is None) != (name != COHORTS[0]) or not _time(deadline):
+            raise ValueError("Only the first Pub/Sub cohort takes a deadline")
+        cohort = cohort_ranges(self.traffic.records)[name]
+        until = deadline
+
+        def begin(record):
+            nonlocal until
+            # A stop can land between the caller's last read and this one;
+            # refusing here sends nothing, which a failure would misreport.
+            if self._owned(record)["released"]:
+                raise CohortUnstarted("Pub/Sub runner has released its authority")
+            # A missing or replaced binding is not a close; only admission is.
+            self.traffic._state(record)
+            try:
+                self.traffic._allow(record, "runner", admit=True)
+            except Failure as error:
+                raise CohortUnstarted(str(error)) from error
+            state = self.controller._state(record)
+            cohorts = _cohorts(state)
+            current = cohorts.get(name)
+            if name == COHORTS[0]:
+                if current is not None:
+                    raise Failure("Pub/Sub cohort has already started")
+                current = {"deadline": deadline, "requested_at": None}
+            elif current is None or current["started_at"] is not None:
+                raise Failure("Pub/Sub cohort was not requested or already started")
+            until = current["deadline"]
+            now = self.env.clock()
+            # The guard refuses a request that would start within its budget
+            # of the deadline; a start recorded then could never publish.
+            if now + HTTP_TIMEOUT > until:
+                raise Failure("Pub/Sub cohort deadline expired before publication")
+            state["cohorts"] = {
+                **cohorts,
+                name: {**current, "started_at": now, "published_at": None},
+            }
+
+        def finish(record):
+            state = self.controller._state(record)
+            current = _cohorts(state).get(name)
+            if current is None or current["started_at"] is None:
+                raise Failure("Pub/Sub cohort publication was not started")
+            if current["published_at"] is None:
+                current["published_at"] = self.env.clock()
+
+        with self.controller.reserve("mark_cohort"):
+            self.controller._change(begin)
+        end = cohort["start"] + cohort["count"]
+        for index in range(2):
+            for start in range(cohort["start"], end, MAX_BATCH):
+                if check is not None:
+                    check()
+                self.publish(index, start, min(MAX_BATCH, end - start), deadline=until)
+        with self.controller.reserve("mark_cohort"):
+            self.controller._change(finish)
+
+    def serve(self):
+        """Publish a cohort the supervisor requested; return its name, or None."""
+        self._role("runner")
+        cohorts = self.cohorts()
+        for name in COHORTS[1:]:
+            cohort = cohorts.get(name)
+            if cohort is not None and cohort["started_at"] is None:
+                self.publish_cohort(name)
+                return name
+        return None
 
     def stop(self):
         """Close admission without claiming that any process or request has exited."""

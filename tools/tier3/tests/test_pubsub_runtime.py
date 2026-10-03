@@ -38,6 +38,11 @@ from test_tier3_lifecycle import obj, rt
 
 @pytest.fixture
 def runtime(env, request):
+    return compose(env, getattr(request, "param", "running"))
+
+
+def compose(env, stage, *, records=1000, limits=None):
+    """Both actors over one synthetic service, at ``stage`` of preparation."""
     kube, store, value, clock = env
     approved_smoke = Approval.from_dict(value)
     namespaces = copy.deepcopy(approved_smoke.namespaces)
@@ -57,7 +62,7 @@ def runtime(env, request):
         "job": {
             "args": [
                 "--run-id=" + approved_smoke.run_id,
-                "--records-per-subscription=1000",
+                f"--records-per-subscription={records}",
             ]
         },
     }
@@ -74,7 +79,8 @@ def runtime(env, request):
         },
     )
     service, guards = Service(), []
-    limits = TrafficLimits(4, 4, 4, 1000, 4, 10, 200000, clock() + 1000)
+    if limits is None:
+        limits = TrafficLimits(4, 4, 4, 1000, 4, 10, 200000, clock() + 1000)
 
     def make(role, token):
         environment = Environment(kube, store, approval, clock, clock.sleep, actor=role)
@@ -88,7 +94,6 @@ def runtime(env, request):
 
     sender = make("runner", "b" * 32)
     observer = make("supervisor", "c" * 32)
-    stage = getattr(request, "param", "running")
     if stage != "uninitialized":
         sender.initialize()
     if stage == "running":
@@ -125,13 +130,22 @@ def checkpoint_exists(a):
     return a.store.read(a.checkpoint, PUBSUB_STATE)[0] is not None
 
 
-def supervise_on_wait(runner, callback):
+def supervise_on_wait(runner, callback, *, stop=None):
+    """Run the supervisor's side once, as the runner starts waiting.
+
+    A runner that is not stopping keeps its authority to serve cohorts, so
+    the supervisor's cleanup first stops admission, which the runner's next
+    poll observes and answers with its release; ``stop`` is that first step.
+    """
     called = False
 
     def wait(predicate, deadline):
         nonlocal called
         if not called:
             called = True
+            if stop is not None:
+                stop()
+                predicate()
             callback()
         return Environment.wait(runner.env, predicate, deadline)
 
@@ -173,7 +187,7 @@ def test_runner_releases_before_supervisor_cleanup_and_complete_settlement(runti
             a.observer.collect("too-late", max_messages=1)
         supervisor.cleanup.run("synthetic completion", True)
 
-    supervise_on_wait(runner, cleanup)
+    supervise_on_wait(runner, cleanup, stop=a.observer.stop)
     runner.settle()
     assert events.count("service-delete") == 6
     assert events.index("operator-stop") > events.index("service-delete")
@@ -225,7 +239,11 @@ def test_lost_runner_release_acknowledgement_retries_without_claiming_success(ru
     a.sender.release = release_with_observation
     runner = Runner(a.sender.env, pubsub=a.sender)
     supervisor = Supervisor(a.observer.env, pubsub=a.observer, quiesce=lambda: True)
-    supervise_on_wait(runner, lambda: supervisor.cleanup.run("stopped", True))
+    supervise_on_wait(
+        runner,
+        lambda: supervisor.cleanup.run("stopped", True),
+        stop=a.observer.stop,
+    )
     runner.settle()
     assert len(lost) == 1
     assert len(attempts) == 2

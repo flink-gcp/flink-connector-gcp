@@ -19,8 +19,8 @@ import json
 from .common import Failure, digest
 from .pubsub_access import evaluate_workload_log
 from .pubsub_guard import PubSubGuard, admission_deadline
-from .pubsub_messages import MAX_BATCH
-from .pubsub_plan import input_plan, require_probe, require_trial_jobs
+from .pubsub_messages import COHORTS
+from .pubsub_plan import require_probe, require_trial_jobs
 
 # The probe prints one short line per attempt; a longer log is refused after
 # it is read, which `Kubernetes.logs` requests with a 1 MiB `limitBytes`.
@@ -134,13 +134,4 @@ def admit(runner, probe):
     run_probe(runner, probe, deadline)
     env.wait(lambda: supervisor_participating(runner), deadline)
     handoff.verify()
-    cohort = input_plan(env.approval.run_id, env.approval.pubsub_trial)[
-        "cohorts_per_subscription"
-    ]["before_recovery"]
-    for index in range(2):
-        for start in range(
-            cohort["start"], cohort["start"] + cohort["count"], MAX_BATCH
-        ):
-            runner.admission_open()
-            count = min(MAX_BATCH, cohort["start"] + cohort["count"] - start)
-            handoff.publish(index, start, count, deadline=deadline)
+    handoff.publish_cohort(COHORTS[0], deadline=deadline, check=runner.admission_open)

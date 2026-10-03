@@ -15,6 +15,7 @@
 """Exercise the CUE hierarchy with disposable manifests; never contact a cluster."""
 
 import copy
+import itertools
 import json
 import os
 import shutil
@@ -2302,7 +2303,7 @@ def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_
         ("rescale-in", 2, 1, "upgrade"),
     ],
 )
-@pytest.mark.parametrize("records", [2, 1001, 10000])
+@pytest.mark.parametrize("records", [3, 1001, 10000])
 @pytest.mark.parametrize("entry_point", ["datastream", "table"])
 def test_pubsub_proposal_from_real_cue(
     module,
@@ -2362,11 +2363,13 @@ def test_pubsub_proposal_from_real_cue(
         for n in range(records)
     )
     cohorts = proposal["input"]["cohorts_per_subscription"]
-    before, after = cohorts["before_recovery"], cohorts["after_recovery"]
-    assert before["start"] == 0
-    assert before["count"] == after["start"]
-    assert after["start"] + after["count"] == records
-    assert min(before["count"], after["count"]) > 0
+    assert list(cohorts) == ["before_checkpoint", "after_checkpoint", "after_recovery"]
+    ranges = list(cohorts.values())
+    assert ranges[0]["start"] == 0
+    for previous, cohort in itertools.pairwise(ranges):
+        assert previous["start"] + previous["count"] == cohort["start"]
+    assert ranges[-1]["start"] + ranges[-1]["count"] == records
+    assert min(cohort["count"] for cohort in ranges) > 0
     assert proposal["cleanup_at"] == "2026-09-21T00:45:00Z"
     assert proposal["limits"]["pods"] == 7
     data = bundle["delivery"]["config"]["data"]

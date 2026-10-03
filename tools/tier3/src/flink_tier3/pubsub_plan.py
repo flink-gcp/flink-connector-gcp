@@ -33,7 +33,7 @@ from .model import Schedule
 from .policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
 from .pubsub import ResourcePlan
 from .pubsub_access import probe_spec
-from .pubsub_messages import MAX_BATCH
+from .pubsub_messages import MAX_BATCH, cohort_ranges
 from .pubsub_traffic import COUNTER_CEILINGS, TrafficLimits
 from .workflow import render
 
@@ -57,7 +57,7 @@ def validate_trial(value):
         raise Failure("Pub/Sub trial fields must match the version 3 schema")
     for key, low, high in (
         ("version", 3, 3),
-        ("records_per_subscription", 2, 10000),
+        ("records_per_subscription", 3, 10000),
         ("total_request_limit", 1, 100000),
     ):
         if type(value[key]) is not int or not low <= value[key] <= high:
@@ -161,11 +161,7 @@ def input_plan(run_id, trial):
     """Validate one feasible pass and derive its exact logical input domain."""
     validate_trial(trial)
     records = trial["records_per_subscription"]
-    boundary = records // 2
-    cohorts = {
-        "before_recovery": {"start": 0, "count": boundary},
-        "after_recovery": {"start": boundary, "count": records - boundary},
-    }
+    cohorts = cohort_ranges(records)
     # The helper's payload has no attributes; this excludes service framing.
     input_bytes = sum(
         len(f"v1|{run_id}|{i}|{n}".encode()) for i in range(2) for n in range(records)
@@ -181,7 +177,8 @@ def input_plan(run_id, trial):
         limits.input_messages < 2 * records
         or limits.input_bytes < input_bytes
         or limits.publish_calls < publish_calls
-        or limits.output_messages < 2 * records
+        # Every pull reserves its whole batch, even when fewer arrive.
+        or limits.output_messages < minimum_pulls * MAX_BATCH
         or limits.pull_calls < minimum_pulls
         or limits.pubsub_requests < publish_calls + 2 * minimum_pulls
     ):
