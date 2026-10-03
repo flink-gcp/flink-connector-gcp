@@ -25,11 +25,12 @@ import com.google.bigtable.v2.BigtableGrpc;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import com.google.bigtable.v2.CheckAndMutateRowResponse;
 import io.grpc.Server;
-import io.grpc.ServerBuilder;
 import io.grpc.Status;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
 /** Local service boundary for production-path recovery tests; no cloud credentials or resources. */
@@ -42,8 +43,11 @@ final class StagedRpcTestService implements AutoCloseable {
     volatile boolean invalidProfile;
 
     StagedRpcTestService() throws Exception {
+        // Bound to the address its clients dial, not the wildcard: on macOS a container another
+        // build publishes on 127.0.0.1 can take a wildcard listener's port number and its loopback
+        // traffic with it (ADR-0132, #1585).
         server =
-                ServerBuilder.forPort(0)
+                NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
                         .addService(
                                 new BigtableGrpc.BigtableImplBase() {
                                     @Override

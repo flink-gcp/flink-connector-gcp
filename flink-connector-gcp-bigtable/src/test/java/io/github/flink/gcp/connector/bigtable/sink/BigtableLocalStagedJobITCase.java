@@ -24,8 +24,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -215,6 +218,54 @@ class BigtableLocalStagedJobITCase {
         }
     }
 
+    /**
+     * A stop whose savepoint expires leaves the job running, so the harness reports the job's state
+     * as it stands instead of waiting for a termination that never comes.
+     */
+    @Test
+    void stopWhoseSavepointExpiresReportsTheRunningJobWithoutWaitingForItToEnd() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        try (LocalStagedHarness run =
+                        new LocalStagedHarness(1024, true, true, 1) {
+                            @Override
+                            long checkpointTimeoutMillis() {
+                                return 2_000;
+                            }
+
+                            @Override
+                            void prepared(Collection<CheckAndMutateRowRequest> requests)
+                                    throws IOException {
+                                try {
+                                    release.await();
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new InterruptedIOException();
+                                }
+                            }
+                        };
+                LocalStagedJob job =
+                        new LocalStagedJob(
+                                run,
+                                directory,
+                                true,
+                                false,
+                                1,
+                                12,
+                                LocalStagedJob.HELD_INTERVAL_MILLIS,
+                                true,
+                                null,
+                                false)) {
+            job.awaitAdmissions(12);
+            try {
+                assertThatThrownBy(() -> job.savepoint(directory, true))
+                        .hasMessageContaining("jobStatus=RUNNING")
+                        .hasStackTraceContaining("expired");
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
     @Test
     void failedStopRequiresItsSavepointInsteadOfTheEarlierCheckpoint() throws Exception {
         try (LocalStagedHarness run = new LocalStagedHarness(1024, true, true, 1)) {
@@ -241,7 +292,9 @@ class BigtableLocalStagedJobITCase {
                 job.awaitAdmissions(12);
                 run.failWriterClose.set(true);
                 assertThatThrownBy(() -> job.savepoint(directory, true))
-                        .hasStackTraceContaining("failed during stopping");
+                        .hasStackTraceContaining("failed during stopping")
+                        .hasStackTraceContaining("Injected writer close failure after stop")
+                        .hasStackTraceContaining("(1/1)=FAILED");
                 assertThat(totalSum(run)).isEqualTo(12);
             }
             String completedSavepoint;

@@ -129,7 +129,8 @@ class BigtableMutateRowsSinkTest {
                                                         .getDefaultInstance()))
                                 .build();
         io.grpc.Server server =
-                io.grpc.ServerBuilder.forPort(0)
+                io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder.forAddress(
+                                new java.net.InetSocketAddress("127.0.0.1", 0))
                         .addService(
                                 io.grpc.ServerServiceDefinition.builder(
                                                 "google.bigtable.admin.v2.BigtableTableAdmin")
@@ -166,7 +167,7 @@ class BigtableMutateRowsSinkTest {
                                     .table(TABLE)
                                     .serializer(SERIALIZER)
                                     .failedMutationHandler(handler)
-                                    .emulatorEndpoint("localhost:" + server.getPort())
+                                    .emulatorEndpoint("127.0.0.1:" + server.getPort())
                                     .build();
             BigtableMutateRowsSink<String> aggregate =
                     new BigtableMutateRowsSink<>(

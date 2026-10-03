@@ -36,7 +36,8 @@ class Stage2RpcBudgetTest {
         AtomicInteger attempts = new AtomicInteger();
         AtomicInteger received = new AtomicInteger();
         io.grpc.Server server =
-                io.grpc.ServerBuilder.forPort(0)
+                io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder.forAddress(
+                                new java.net.InetSocketAddress("127.0.0.1", 0))
                         .addService(
                                 new com.google.bigtable.v2.BigtableGrpc.BigtableImplBase() {
                                     @Override

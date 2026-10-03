@@ -280,7 +280,7 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
                 job.awaitRunning();
                 Throwable direct =
                         catchThrowable(() -> job.savepoint(directory.resolve("stop-no-tx"), true));
-                failures = ProductionRecoveryJob.failureText(job, direct);
+                failures = job.failureText(direct);
             }
             assertThat(failures)
                     .as("the committer reads the profile before its first CheckAndMutateRow")
@@ -296,7 +296,7 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
             String failures;
             run.minPauseMillis = HELD_INTERVAL_MILLIS;
             try (var job = job(run, "marker-gc", sink, 1, HELD_INTERVAL_MILLIS, null)) {
-                failures = ProductionRecoveryJob.failureText(job, null);
+                failures = job.failureText(null);
             }
             assertThat(failures)
                     .as("the Table writer validates the declared schema when it opens")

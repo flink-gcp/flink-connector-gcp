@@ -29,15 +29,16 @@ import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.grpc.MethodDescriptor;
 import io.grpc.Server;
-import io.grpc.ServerBuilder;
 import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
 import io.grpc.Status;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.protobuf.ProtoUtils;
 import io.grpc.stub.ServerCalls;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -70,7 +71,7 @@ class BigtableTableAdminRpcTest {
         AtomicReference<Table> current = new AtomicReference<>(original);
         AtomicReference<ModifyColumnFamiliesRequest> modified = new AtomicReference<>();
         Server server =
-                ServerBuilder.forPort(0)
+                NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
                         .addService(
                                 ServerServiceDefinition.builder(SERVICE)
                                         .addMethod(
@@ -121,7 +122,7 @@ class BigtableTableAdminRpcTest {
         try (BigtableTableAdmin admin =
                 new BigtableTableAdmin(
                         EmulatorEndpoint.parse(
-                                "localhost:" + server.getPort(), "emulator-endpoint"))) {
+                                "127.0.0.1:" + server.getPort(), "emulator-endpoint"))) {
             TableAdmin.EnsureResult result =
                     admin.ensureTable(
                             TableDestination.of("p", "i", "t"),

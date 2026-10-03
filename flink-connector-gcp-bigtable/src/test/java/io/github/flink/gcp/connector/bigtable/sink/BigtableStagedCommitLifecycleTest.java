@@ -74,7 +74,7 @@ class BigtableStagedCommitLifecycleTest {
                                                 com.google.cloud.bigtable.data.v2.models.Mutation
                                                         .fromProtoUnsafe(input.mutations())))
                         .appProfileId("original-profile")
-                        .emulatorEndpoint("localhost:" + service.server.getPort())
+                        .emulatorEndpoint("127.0.0.1:" + service.server.getPort())
                         .deliveryGuarantee(BigtableDeliveryGuarantee.EXACTLY_ONCE)
                         .stagedOptions(
                                 BigtableStagedOptions.builder()

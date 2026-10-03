@@ -27,10 +27,15 @@ import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.util.ExceptionUtils;
+
+import javax.annotation.Nullable;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static io.github.flink.gcp.connector.testutils.Awaits.await;
 
@@ -265,23 +270,105 @@ final class LocalStagedJob implements AutoCloseable {
      * RUNNING asynchronously after it has started on the TaskManager, so a signal raised inside the
      * task, such as a reader starting or a record being admitted, can arrive first; the trigger
      * would then fail because not all required tasks are running.
+     *
+     * <p>A stop that fails or times out is rethrown with each execution's state and failure info in
+     * its message, because the {@code StopWithSavepointStoppingException} it reports names neither
+     * the execution that failed nor why. They are read as they stand rather than after the job
+     * ends: Flink reports a failure during stopping only once every execution has terminated, so
+     * the failed one's cause is already recorded, and a savepoint that expires leaves the job
+     * running.
      */
     String savepoint(Path directory, boolean stop) throws Exception {
         awaitRunning();
-        String path =
-                (stop
-                                ? client.stopWithSavepoint(
-                                        false,
-                                        directory.toUri().toString(),
-                                        SavepointFormatType.CANONICAL)
-                                : client.triggerSavepoint(
-                                        directory.toUri().toString(),
-                                        SavepointFormatType.CANONICAL))
-                        .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
-        if (stop) {
-            result.get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
+        if (!stop) {
+            return client.triggerSavepoint(
+                            directory.toUri().toString(), SavepointFormatType.CANONICAL)
+                    .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
         }
-        return path;
+        try {
+            String path =
+                    client.stopWithSavepoint(
+                                    false,
+                                    directory.toUri().toString(),
+                                    SavepointFormatType.CANONICAL)
+                            .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
+            result.get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
+            return path;
+        } catch (ExecutionException | TimeoutException failure) {
+            String state;
+            try {
+                state = jobState(null, null);
+            } catch (Exception unreadable) {
+                if (unreadable instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                failure.addSuppressed(unreadable);
+                throw failure;
+            }
+            throw new IllegalStateException(
+                    "Stop-with-savepoint failed; the job's state:\n" + state, failure);
+        }
+    }
+
+    /**
+     * Waits for the job to terminate and returns every failure text it left behind: the job status,
+     * the caller's direct exception, the job result's failure and each execution's state and own
+     * failure info. A stop-with-savepoint that fails during stopping reports a {@code
+     * StopWithSavepointStoppingException} on both the operation and the job result; among what the
+     * archived execution graph exposes, the task's cause survives only on the failed execution's
+     * failure info, so a rejection message must be read from there. Call it before the cluster
+     * closes; a job that does not terminate fails the assertion naming its state.
+     */
+    String failureText(@Nullable Throwable direct) throws Exception {
+        Throwable terminal;
+        try {
+            terminal =
+                    result.handle((value, failure) -> failure)
+                            .get(run.checkpointOperationTimeoutMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException timeout) {
+            throw new AssertionError(
+                    "The job did not terminate: status="
+                            + jobStatus()
+                            + " admissions="
+                            + run.admissions.size()
+                            + " acknowledgements="
+                            + run.acknowledgements.size(),
+                    timeout);
+        }
+        return jobState(direct, terminal);
+    }
+
+    /**
+     * The job status, the given failures, and each execution's state and failure info as they
+     * stand.
+     */
+    private String jobState(@Nullable Throwable direct, @Nullable Throwable terminal)
+            throws Exception {
+        StringBuilder text = new StringBuilder("jobStatus=" + jobStatus()).append('\n');
+        if (direct != null) {
+            text.append(ExceptionUtils.stringifyException(direct)).append('\n');
+        }
+        if (terminal != null) {
+            text.append(ExceptionUtils.stringifyException(terminal)).append('\n');
+        }
+        var graph = cluster.getExecutionGraph(client.getJobID()).get(10, TimeUnit.SECONDS);
+        if (graph.getFailureInfo() != null) {
+            text.append(graph.getFailureInfo().getExceptionAsString()).append('\n');
+        }
+        for (var vertex : graph.getAllExecutionVertices()) {
+            text.append(vertex.getTaskNameWithSubtaskIndex())
+                    .append('=')
+                    .append(vertex.getExecutionState())
+                    .append('\n');
+            vertex.getCurrentExecutionAttempt()
+                    .getFailureInfo()
+                    .ifPresent(info -> text.append(info.getExceptionAsString()).append('\n'));
+        }
+        return text.toString();
+    }
+
+    private JobStatus jobStatus() throws Exception {
+        return client.getJobStatus().get(10, TimeUnit.SECONDS);
     }
 
     /**
@@ -324,7 +411,7 @@ final class LocalStagedJob implements AutoCloseable {
             if (!result.isDone()) {
                 try {
                     client.cancel().get(30, TimeUnit.SECONDS);
-                } catch (java.util.concurrent.ExecutionException failure) {
+                } catch (ExecutionException failure) {
                     // Terminal job status can reach the dispatcher before its result reaches us.
                     if (!(failure.getCause()
                             instanceof

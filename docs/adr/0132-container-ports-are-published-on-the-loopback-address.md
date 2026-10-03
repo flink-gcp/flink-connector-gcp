@@ -17,9 +17,11 @@ limitations under the License.
 # ADR-0132: Container ports are published on the loopback address
 
 - Status: Accepted
-- Date: 2026-08-22
+- Date: 2026-08-22; refined by [#1585](https://github.com/flink-gcp/flink-connector-gcp/issues/1585)
+  (2026-10-03)
 - Issues: [#1021](https://github.com/flink-gcp/flink-connector-gcp/issues/1021),
-  [#1003](https://github.com/flink-gcp/flink-connector-gcp/issues/1003)
+  [#1003](https://github.com/flink-gcp/flink-connector-gcp/issues/1003),
+  [#1585](https://github.com/flink-gcp/flink-connector-gcp/issues/1585)
 - Modules: all (tests)
 - Current behavior: `LoopbackPortPublisher` in `flink-connector-gcp-test-utils`, registered through
   `META-INF/services`
@@ -228,3 +230,45 @@ on a shipped path breaks if it waits.
   Desktop for macOS is itself VM-backed and is measured working without it; colima and a tunnelled
   daemon are **not measured here**, which is why the escape is documented rather than the topology
   being claimed either way.
+
+## Refinement (2026-10-03): a loopback publish wins over a wildcard listener
+
+The Decision's "the collision has nowhere to form", and the Evidence's "a loopback publish cannot
+form the collision", hold against a holder bound to the loopback address, and on macOS not against
+one bound to the wildcard address.
+[#1585](https://github.com/flink-gcp/flink-connector-gcp/issues/1585) met the second case. An
+in-process gRPC test service bound with `ServerBuilder.forPort(0)`, which on the JDK is a
+dual-stack wildcard socket with `SO_REUSEADDR` set, shared its port number with a Spanner emulator
+that another build had published on `127.0.0.1`. The Bigtable committer dialled
+`127.0.0.1:<port>` to validate its app profile, and the emulator answered `UNIMPLEMENTED`, so a
+stop-with-savepoint failed in a test that sends nothing to Docker. This is the Context's shadowing
+with the roles reversed: the more specific bind still takes the IPv4 loopback traffic, but now the
+container holds it.
+
+Measured 2026-10-03 on Docker Desktop for macOS:
+
+- With a grpc-java `ServerBuilder.forPort(0)` server listening on `[::]:<port>`,
+  `docker run -p 127.0.0.1:<port>:8000` **starts**, and `curl http://127.0.0.1:<port>/` reads the
+  container's reply. With a `NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))`
+  server instead, the same command is **refused** with `bind: address already in use`. A plain
+  socket holder with the JDK's options gives the same pair, and `curl` then reaches the holder.
+- The overlap is a BSD-kernel one. The same explicit `127.0.0.1:<port>` bind over a wildcard
+  listener, run inside a Linux container on Docker Desktop's VM kernel, is refused with or without
+  `SO_REUSEADDR`, so a Linux host, the CI runners among them, is not expected to form it. No runner
+  was measured, and the rule below costs nothing there.
+- Neither party's own port choice produced the overlap in these trials. Kernel ephemeral selection
+  landed on a held port in 0 of 1,500 to 2,000 binds for each arrangement tried, and twelve
+  containers published as `-p 127.0.0.1::8000` avoided 6,000 held ports, 3,000 of them wildcard.
+  The likeliest remaining route is that both parties take the port between Docker's availability
+  check and its host bind. That route is inferred, not observed; the overlap itself was reached
+  once in 400 runs of the affected test while other builds started emulator containers.
+- The reply names the server that sent it. For `GetAppProfile`, the Spanner emulator answers
+  `UNIMPLEMENTED` with no description, the Bigtable emulator `UNIMPLEMENTED: unimplemented
+  feature`, and a grpc-java server without the service `UNIMPLEMENTED: Method not found: …`.
+
+So an in-process test server binds the loopback address its clients dial, never the wildcard
+address. A container publish racing for that port is then refused in the build that started the
+container, which fails loudly there, instead of answering another build's client silently. The
+Cloud Tasks fakes already bound `127.0.0.1`; #1585 moved the six Bigtable servers that used
+`ServerBuilder.forPort(0)`. No checker holds the rule; `.agents/references/repository-guide.md`
+states it.
