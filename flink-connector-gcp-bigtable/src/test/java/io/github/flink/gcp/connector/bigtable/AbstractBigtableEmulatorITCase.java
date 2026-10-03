@@ -192,6 +192,22 @@ public abstract class AbstractBigtableEmulatorITCase {
                         .setCell(family, qualifier, harnessTimestampMicros(), value));
     }
 
+    /** Writes one cell under an arbitrary binary row key and binary qualifier. */
+    protected static void writeCell(
+            TableDestination destination,
+            ByteString rowKey,
+            String family,
+            ByteString qualifier,
+            String value) {
+        dataClient.mutateRow(
+                RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                        .setCell(
+                                family,
+                                qualifier,
+                                harnessTimestampMicros(),
+                                ByteString.copyFromUtf8(value)));
+    }
+
     /** Writes one cell at an explicit version timestamp, in microseconds. */
     protected static void writeCell(
             TableDestination destination,

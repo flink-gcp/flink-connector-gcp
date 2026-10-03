@@ -239,6 +239,51 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
                 .isEqualTo("bob".getBytes(StandardCharsets.UTF_8));
     }
 
+    /**
+     * The catalog's read-only skeleton lives in the base module, which this jar relocates, so a
+     * catalog the planner opens through the shaded factory proves the relocated skeleton is still a
+     * Flink {@code Catalog}, and its listing proves the relocated admin client reaches the
+     * emulator.
+     */
+    @Test
+    void aCatalogListsAndResolvesTablesThroughTheShadedClasses() throws Exception {
+        adminClient.createTable(CreateTableRequest.of("catalog-smoke").addFamily("cf"));
+        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        tEnv.executeSql(
+                "CREATE CATALOG bt WITH ('type' = 'bigtable', 'project' = '"
+                        + PROJECT
+                        + "', 'instance' = '"
+                        + INSTANCE
+                        + "', 'emulator-endpoint' = '"
+                        + EMULATOR.getHost()
+                        + ":"
+                        + EMULATOR.getEmulatorPort()
+                        + "')");
+        tEnv.executeSql("USE CATALOG bt");
+        try {
+            assertCatalogResolvesThroughTheShadedClasses(tEnv);
+        } finally {
+            tEnv.getCatalog("bt").orElseThrow().close();
+        }
+    }
+
+    private static void assertCatalogResolvesThroughTheShadedClasses(TableEnvironment tEnv)
+            throws Exception {
+        assertThat(tEnv.getCatalog("bt").orElseThrow().getClass().getSuperclass().getName())
+                .as("the skeleton the planner's catalog extends")
+                .isEqualTo(
+                        "io.github.flink.gcp.connector.bigtable.shaded."
+                                + "io.github.flink.gcp.connector.base.catalog.AbstractReadOnlyCatalog");
+        List<String> tables = new ArrayList<>();
+        try (CloseableIterator<org.apache.flink.types.Row> rows =
+                tEnv.executeSql("SHOW TABLES").collect()) {
+            rows.forEachRemaining(row -> tables.add(row.getFieldAs(0).toString()));
+        }
+        assertThat(tables).contains("catalog-smoke");
+        assertThat(tEnv.from("`catalog-smoke`").getResolvedSchema().getColumnNames())
+                .containsExactly("_key", "cf");
+    }
+
     private static byte[] cellValue(Row row, String qualifier) {
         assertThat(row.getCells("cf1", qualifier))
                 .as("cell cf1:%s of row %s", qualifier, row.getKey().toStringUtf8())

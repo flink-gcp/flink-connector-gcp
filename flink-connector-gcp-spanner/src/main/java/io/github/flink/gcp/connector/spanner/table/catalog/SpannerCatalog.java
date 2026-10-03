@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -151,7 +152,7 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
     @Override
     public List<String> listDatabases() {
         return ask(
-                () -> client().listDatabases(),
+                SpannerCatalogClient::listDatabases,
                 () -> "list the databases of Spanner instance '" + instanceName() + "'");
     }
 
@@ -179,7 +180,7 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
         }
         Dialect dialect =
                 ask(
-                        () -> client().dialect(databaseName),
+                        client -> client.dialect(databaseName),
                         () -> "read Spanner database '" + qualified(databaseName) + "'");
         if (dialect != null) {
             dialects.put(databaseName, dialect);
@@ -204,7 +205,7 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
         try {
             tables =
                     ask(
-                            () -> client().listTables(databaseName, dialect),
+                            client -> client.listTables(databaseName, dialect),
                             () ->
                                     "list the tables of Spanner database '"
                                             + qualified(databaseName)
@@ -231,7 +232,7 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
         Supplier<Map<String, SpannerCatalogClient.NamedTypeKind>> protoBundleTypes =
                 () ->
                         ask(
-                                () -> client().protoBundleTypes(database),
+                                client -> client.protoBundleTypes(database),
                                 () ->
                                         "read the proto bundle of Spanner database '"
                                                 + qualified(database)
@@ -273,12 +274,12 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
         }
         try {
             return ask(
-                    () ->
-                            client().table(
-                                            tablePath.getDatabaseName(),
-                                            dialect,
-                                            parsed.get().schema(),
-                                            parsed.get().table()),
+                    client ->
+                            client.table(
+                                    tablePath.getDatabaseName(),
+                                    dialect,
+                                    parsed.get().schema(),
+                                    parsed.get().table()),
                     () -> "read Spanner table '" + qualified(tablePath) + "'");
         } catch (DatabaseNotFoundException e) {
             // Dropped since its dialect was cached: the table is gone with it.
@@ -288,14 +289,15 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
     }
 
     /**
-     * Runs one metadata request. A database dropped while the catalog was open passes through for
-     * the caller to report as missing; the catalog's own exceptions pass through as they are; any
-     * other failure, the service's or the client's, becomes a {@link CatalogException} naming what
-     * was asked.
+     * Runs one metadata request against the client. A database dropped while the catalog was open
+     * passes through for the caller to report as missing; the catalog's own exceptions pass through
+     * as they are; any other failure, the service's or the client's, becomes a {@link
+     * CatalogException} naming what was asked.
      */
-    private static <T> T ask(Supplier<T> request, Supplier<String> asked) {
+    private <T> T ask(
+            Function<? super SpannerCatalogClient, ? extends T> request, Supplier<String> asked) {
         try {
-            return request.get();
+            return withClient(request);
         } catch (DatabaseNotFoundException | CatalogException e) {
             throw e;
         } catch (RuntimeException e) {

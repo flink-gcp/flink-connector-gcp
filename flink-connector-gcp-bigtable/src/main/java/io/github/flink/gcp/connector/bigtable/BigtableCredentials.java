@@ -52,6 +52,13 @@ public final class BigtableCredentials {
         return load(serviceAccountKeyFile, dataScopes());
     }
 
+    /** Loads credentials for a table-admin client, or returns {@code null} to preserve ADC. */
+    @Nullable
+    public static CredentialsProvider loadTableAdmin(@Nullable String serviceAccountKeyFile)
+            throws IOException {
+        return load(serviceAccountKeyFile, tableAdminScopes());
+    }
+
     /** Loads one provider shared by data and table-admin clients. */
     @Nullable
     public static CredentialsProvider loadDataAndTableAdmin(@Nullable String serviceAccountKeyFile)

@@ -43,6 +43,7 @@ class BigtableCredentialsTest {
     void nullLeavesApplicationDefaultCredentialsInEffect() throws Exception {
         assertThat(BigtableCredentials.loadData(null)).isNull();
         assertThat(BigtableCredentials.loadDataAndTableAdmin(null)).isNull();
+        assertThat(BigtableCredentials.loadTableAdmin(null)).isNull();
         assertThat(BigtableCredentials.loadAll(null)).isNull();
     }
 
@@ -74,6 +75,10 @@ class BigtableCredentialsTest {
         assertThat(scopesOf(BigtableCredentials.loadData(keyFile)))
                 .containsExactlyInAnyOrderElementsOf(union(data))
                 .doesNotContain("https://www.googleapis.com/auth/bigtable.admin.table");
+        assertThat(scopesOf(BigtableCredentials.loadTableAdmin(keyFile)))
+                .containsExactlyInAnyOrderElementsOf(union(tableAdmin))
+                .doesNotContain("https://www.googleapis.com/auth/bigtable.data")
+                .doesNotContain("https://www.googleapis.com/auth/bigtable.admin.instance");
         assertThat(scopesOf(BigtableCredentials.loadDataAndTableAdmin(keyFile)))
                 .containsExactlyInAnyOrderElementsOf(union(data, tableAdmin))
                 .doesNotContain("https://www.googleapis.com/auth/bigtable.admin.instance");

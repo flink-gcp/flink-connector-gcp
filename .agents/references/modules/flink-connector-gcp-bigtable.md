@@ -751,6 +751,30 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   the whole surface this layer needs, up to `DefaultLookupCache`, is in it, so `flink-table-runtime`
   stays test scope and nothing here needs a `flink-api-tiers.toml` entry.
 
+## Catalog (`docs/adr/0178`; shared shape `docs/adr/0168`)
+
+- **One instance is the one database, named by its id**; no `default-database`, and
+  `databaseExists` asks nothing. A table resolves as `_key` (the `PRIMARY KEY`, `NOT NULL`) plus
+  one `MAP` per family in **name order** — the admin protobuf map has no order contract, and a
+  column order that moved between lookups would move a plan. Keep the order sorted.
+- **`key-type` (`bytes` default, `string`) types `_key` and every map key, never a value.** It is
+  the one catalog-owned option and the one with a default, because a hint cannot change a schema
+  (ADR-0168 refined). Under `bytes`, Flink rejects `_key = 'x'` and `m['q']` (no string-to-`BYTES`
+  literal coercion, unlike GoogleSQL); `CAST('x' AS BYTES)` folds and is still pushed. Under
+  `string`, `LIKE` on `_key` is not pushed.
+- **Value types:** `BIGINT` only for a sum/min/max aggregate whose input, and reported state if
+  any, is a big-endian or unset-encoding `int64` (unset only with no unknown field in the
+  encoding — that is how a newer encoding parses); every other family is `BYTES`, never a
+  `getTable` failure. **HLL is decided by its aggregator, never by its state type**: the proto
+  names `int64` as the sketch's count-estimate conversion, and `BIGINT` would read each sketch's
+  first eight bytes under the default trailing-bytes policy. The emulator has no aggregate
+  families, so `BigtableCatalogSchemaTest` builds the client's protobufs instead.
+- A family named `_key` fails `getTable` naming the table (the emulator accepts the family).
+  Change Streams tables, authorized views and materialized views are not listed; the catalog
+  emits no `sink.aggregate.column-family-types`, which the source path rejects.
+- Families are read through the protobuf client with `SCHEMA_VIEW`, as `BigtableTableAdmin` reads
+  them, so an unknown value type reaches the mapping instead of failing in the client's models.
+
 ## Explicit service-account credentials (`docs/adr/0086`)
 
 - ADC remains the default.
