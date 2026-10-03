@@ -51,6 +51,7 @@ class LineageTest {
                         LineageIdentifiers.spannerChangeStream("p", "i", "d", "Changes"),
                         LineageIdentifiers.cloudTasksQueue("p", "loc", "q"),
                         LineageIdentifiers.firestoreCollectionGroup("p", "(default)", "orders"),
+                        LineageIdentifiers.firestoreCollection("p", "db", "users/alice/orders"),
                         LineageIdentifiers.datastoreKind("p", "(default)", "", "Task"));
         assertThat(resources)
                 .extracting(ResourceIdentifier::kind)
@@ -63,6 +64,7 @@ class LineageTest {
                         "spanner-change-stream",
                         "cloudtasks-queue",
                         "firestore-collection-group",
+                        "firestore-collection",
                         "datastore-kind");
         assertThat(resources)
                 .extracting(ResourceIdentifier::namespace)
@@ -75,6 +77,7 @@ class LineageTest {
                         "spanner://p:i",
                         "cloudtasks://p/loc",
                         "firestore://p/(default)",
+                        "firestore://p/db",
                         "datastore://p/(default)");
         assertThat(resources)
                 .extracting(ResourceIdentifier::name)
@@ -87,6 +90,7 @@ class LineageTest {
                         "d/changeStreams/Changes",
                         "q",
                         "orders",
+                        "users/alice/orders",
                         "Task");
         assertThat(resources)
                 .extracting(ResourceIdentifier::identity)
@@ -113,6 +117,13 @@ class LineageTest {
                                 "(default)",
                                 "collectionGroup",
                                 "orders"),
+                        Map.of(
+                                "project",
+                                "p",
+                                "database",
+                                "db",
+                                "collection",
+                                "users/alice/orders"),
                         Map.of("project", "p", "database", "(default)", "kind", "Task"));
     }
 

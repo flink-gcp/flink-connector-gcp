@@ -683,7 +683,7 @@ facts); the rules a session needs:
   lines: bare `X.Y.Z` built for the 2.x range (ADR-0053's one artifact) and `X.Y.Z-1.20` built
   for the 1.x LTS — the recipe adds `-Dflink.compat=flink1` itself, requires the matching
   `-Dflink.version=1.20.<patch>`, and refuses a mislabelled pairing in either direction. The
-  published set per line is 13 artifacts — the parent POM, base, six connectors, five SQL
+  published set per line is 14 artifacts — the parent POM, base, six connectors, six SQL
   uber-jars; `flink-connector-gcp-test-utils`
   skips itself in its own POM (test-scope-only consumption; freezing its API buys users
   nothing), and the signing key is a dedicated project release key read from
@@ -841,8 +841,8 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   interpolates into the `META-INF/NOTICE`, the `META-INF/DEPENDENCIES` and the
   `Implementation-Vendor` / `Specification-Vendor` manifest entries of every module jar, and which
   maven-javadoc's default `bottom` renders into the published API reference. The shade transformer's
-  `organizationName`, which the five SQL uber-jars aggregate and `AbstractSqlConnectorPackagingITCase`
-  pins. And the eleven NOTICE files, which `check-notice.py` holds only against each other — it
+  `organizationName`, which the six SQL uber-jars aggregate and `AbstractSqlConnectorPackagingITCase`
+  pins. And the thirteen NOTICE files, which `check-notice.py` holds only against each other — it
   compares a `NOTICE.template` with its generated `META-INF/NOTICE` and never with the POM. So the
   headers and the uber-jars are guarded while `<organization>` and the NOTICE prose are not: those
   two can drift alone, and only reading a built jar would show it
@@ -981,8 +981,10 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   cursor resume, and the client library's mid-stream retry the reader and planner guard against.
   Also the Datastore-mode sink (#1542): non-transactional commits through the client's `Batch`,
   the flush before a repeated key, the sink-owned retry loop, solo confirmation with a lookup
-  before `NOT_FOUND` is routed, and ramp-up throttling.
-  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`, `0175`)
+  before `NOT_FOUND` is routed, and ramp-up throttling. Also the Native-mode Table API sink and
+  the SQL uber-jar (#1607): one collection keyed by document id, the type mapping and its two
+  markers, the cross-checks restated in option keys, and the unkept same-document order.
+  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`, `0175`, `0179`)
 - `.agents/references/modules/flink-connector-gcp-test-utils.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

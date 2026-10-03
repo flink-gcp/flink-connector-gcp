@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Collects one version line's five shaded SQL uber-jars and their .asc
+# Collects one version line's six shaded SQL uber-jars and their .asc
 # signatures for the GitHub Release (issue #724, ADR-0147). The glob
 # shape is load-bearing: the module-directory anchor keeps the unshaded
 # original-*.jar out, the exact -<version>.jar suffix keeps -sources/-javadoc
@@ -49,8 +49,8 @@ mkdir -p "$dest"
 shopt -s nullglob
 jars=(flink-sql-connector-gcp-*/target/flink-sql-connector-gcp-*-"$version".jar)
 ascs=(flink-sql-connector-gcp-*/target/flink-sql-connector-gcp-*-"$version".jar.asc)
-if [ "${#jars[@]}" -ne 5 ] || [ "${#ascs[@]}" -ne 5 ]; then
-    echo "collect-release-jars: expected 5 uber-jars and 5 signatures for $version," \
+if [ "${#jars[@]}" -ne 6 ] || [ "${#ascs[@]}" -ne 6 ]; then
+    echo "collect-release-jars: expected 6 uber-jars and 6 signatures for $version," \
         "found ${#jars[@]} and ${#ascs[@]} — run from the repository root after" \
         "\`just stage-release $version\`" >&2
     exit 1
