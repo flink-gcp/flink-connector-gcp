@@ -87,6 +87,39 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - A user query is planned from its wire form (`Query.fromProto(toProto())`), which is what readers
   rebuild; planning on the original reverses a `limitToLast` offset.
 
+## Datastore-mode sink (`docs/adr/0175`)
+
+- **The SPI carries the client library's `FullEntity<Key>` and `Key`** (both serializable; a test
+  round-trips every value type). Their protobuf conversion is package-private, so do not add a
+  proto-building path; `FailedMutation`'s payload is the Java-serialized `DatastoreMutation`.
+- **The writer is synchronous** (Spanner shape): one non-transactional commit at a time through
+  the client's `Batch`, on the task thread. **It commits before a key repeats** — `Batch` would
+  merge or refuse a second write to one key — and that rule is also what keeps one subtask's
+  writes to a key in order (barring a timed-out attempt the service applies late). Do not let a
+  batch hold a key twice.
+- **The client makes one attempt per call** (`DatastoreClients` sets single-attempt
+  `RetrySettings`, which the library applies to `RetryHelper` and to every generated call); the
+  writer owns retries on the `recovery*` schedule. **The host is always set**, so
+  `DATASTORE_EMULATOR_HOST` never chooses the endpoint; the emulator path uses `NoCredentials`.
+- **The default database id is empty** in the Datastore API, which refuses `(default)`;
+  `DatabaseDestination` normalizes it. A key of another project or database is routed before it is
+  sent.
+- **Routing**: a refused commit whose status a write could earn (`INVALID_ARGUMENT` always,
+  `ALREADY_EXISTS` beside an insert, `NOT_FOUND` beside an update) is re-sent one write at a time;
+  a write refused alone is routed only for an operation that can earn the status. **`NOT_FOUND` is
+  routed only after a lookup of the key is answered** (owner's decision, 2026-10-03); a refused
+  lookup fails the job as a missing database. The lookup is one `Lookup` through the client's RPC
+  object, never `Datastore.get`, which re-sends a deferred key without a bound. `maxConsecutiveRejections` counts `INVALID_ARGUMENT`
+  and keys addressing another database, never the replay answers. `DatastoreErrorClassifierTest` iterates every gax code.
+- **Ramp-up throttling** (`RampUpThrottle`) is Beam's `RampupThrottlingFn` shape, one permit per
+  record that reaches the buffer; retries and solo re-sends are not throttled.
+- The emulator (same binary, `--database-mode=datastore-mode`, set in
+  `AbstractDatastoreEmulatorITCase`) applies nothing of a refused commit except, for an oversized
+  entity, the writes ahead of it in the request, which `Batch` orders by operation (so a refused
+  commit can be partly applied), serves any database id
+  and enforces no request size; `DatastoreRejectionITCase` pins each fact it asserts. The lookup
+  discriminator and request size belong to the gated suite (#1546).
+
 ## Testing
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image

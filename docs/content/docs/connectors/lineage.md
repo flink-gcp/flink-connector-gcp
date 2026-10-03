@@ -31,7 +31,7 @@ Pub/Sub and Bigtable also test extraction against their builder-returned Source/
 Pub/Sub covers multiple subscriptions and ordering-key routing; Bigtable covers scans, bounded and unbounded Change Streams, and every Table write mode.
 Spanner implements the contract for the paths documented in its [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}) and [Table]({{< relref "docs/connectors/table/spanner" >}}) references.
 The [Cloud Tasks guide]({{< relref "docs/connectors/datastream/cloudtasks" >}}#lineage) describes its fixed-queue coverage for DataStream and Table/SQL; its connector tests exercise the builder-returned sink, listener delivery and planner facets.
-The [Firestore]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) collection-group scan reports its collection group; a Firestore source reading a query, and the Firestore sink, report an empty dataset list, because the query factory or the serializer, not the configuration, names the collections.
+The [Firestore]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) collection-group scan reports its collection group; a Firestore source reading a query, and the Firestore sinks in both modes, report an empty dataset list, because the query factory or the serializer, not the configuration, names the collections or kinds.
 
 ## Metadata and resource identities
 

@@ -31,7 +31,7 @@ Every option each connector takes, with its default, in one place per connector.
 | [Cloud Tasks]({{< relref "docs/reference/cloudtasks" >}}) | The sink builder, writer concurrency and retry budgets, and staged recovery settings |
 | [Bigtable]({{< relref "docs/reference/bigtable" >}}) | The sink builder and the writer's batch thresholds and in-flight bounds, and the source builder's ranges, prefixes and filter |
 | [Spanner]({{< relref "docs/reference/spanner" >}}) | The sink builder, the writer's batch limits, commit delay, RPC priority and retry budget |
-| [Firestore]({{< relref "docs/reference/firestore" >}}) | The source builder's read shape, partitions, read time and page size; the sink builder, the client library's throttle and retry budget, and the writer's in-flight bounds |
+| [Firestore]({{< relref "docs/reference/firestore" >}}) | The source builder's read shape, partitions, read time and page size; the sink builder, the client library's throttle and retry budget, and the writer's in-flight bounds; the Datastore-mode sink builder, its batch bounds, retry budget and ramp-up throttle |
 
 **These pages answer *what*; the connector pages answer *why*.** A row here gives you the option's
 name, its default and one line on what it does. The reasoning behind a default — why

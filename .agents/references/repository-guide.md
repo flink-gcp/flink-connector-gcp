@@ -978,7 +978,10 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   `INVALID_ARGUMENT`, the routed set and `preconditionFailurePolicy`. Also the Native-mode bounded
   source (#1541): splits as a query's wire form plus one read time, the service-picked snapshot,
   cursor resume, and the client library's mid-stream retry the reader and planner guard against.
-  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`)
+  Also the Datastore-mode sink (#1542): non-transactional commits through the client's `Batch`,
+  the flush before a repeated key, the sink-owned retry loop, solo confirmation with a lookup
+  before `NOT_FOUND` is routed, and ramp-up throttling.
+  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`, `0175`)
 - `.agents/references/modules/flink-connector-gcp-test-utils.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

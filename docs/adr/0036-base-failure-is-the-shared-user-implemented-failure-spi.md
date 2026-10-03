@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0036: `base.failure` is the shared, user-implemented failure SPI — the module's one public package
 
 - Status: Accepted
-- Date: 2026-08-01 ([#205], first consumer BigQuery; the [#37] design)
-- Issues: [#37], [#205], [#61]
+- Date: 2026-08-01 ([#205], first consumer BigQuery; the [#37] design); connector-id rule
+  refined 2026-10-03 ([#1542])
+- Issues: [#37], [#205], [#61], [#1542]
 - Modules: base (consumed by every connector)
 - Current behavior: each connector's docs page § Error handling / Dead-lettering
 
@@ -54,7 +55,9 @@ Decisions not to re-litigate:
   `FailureHandler<FailedElement>` is accepted without a cast.
 - `getConnector()` values are lower-case module words and are API — dead-letter consumers key on
   them. [#205] shipped `bigquery`, `pubsub` and `cloudtasks`; each later sink adds its own module
-  word, and the current list lives in `FailedElement.getConnector()`'s javadoc rather than here.
+  word, or its package-root word where one module holds two connectors (`datastore`, beside
+  `firestore` in the Firestore module; ADR-0175), and the current list lives in
+  `FailedElement.getConnector()`'s javadoc rather than here.
   `describeDestination()` is not `getDestination()`
   because a connector's concrete type keeps a typed `getDestination()`, and a same-signature
   `String` override would be an irreconcilable clash.
@@ -68,3 +71,4 @@ Decisions not to re-litigate:
 [#205]: https://github.com/flink-gcp/flink-connector-gcp/issues/205
 [#206]: https://github.com/flink-gcp/flink-connector-gcp/issues/206
 [#207]: https://github.com/flink-gcp/flink-connector-gcp/issues/207
+[#1542]: https://github.com/flink-gcp/flink-connector-gcp/issues/1542

@@ -95,7 +95,7 @@ import java.util.concurrent.TimeoutException;
  *   <caption>Attributes of a dead-lettered message</caption>
  *   <tr><th>Attribute</th><th>Value</th></tr>
  *   <tr><td>{@code dlq-connector}</td><td>{@code bigquery}, {@code bigtable}, {@code cloudtasks},
- *       {@code firestore}, {@code pubsub} or {@code spanner}</td></tr>
+ *       {@code datastore}, {@code firestore}, {@code pubsub} or {@code spanner}</td></tr>
  *   <tr><td>{@code dlq-destination}</td><td>the resource the element was bound for, or a
  *       connector-defined sentinel such as {@code unresolved}</td></tr>
  *   <tr><td>{@code dlq-error}</td><td>the failure description, truncated to Pub/Sub's 1024-byte

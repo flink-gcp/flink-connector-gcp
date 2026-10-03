@@ -52,8 +52,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 - Handler `flush()` runs after each writer's write-path drain; the guarantee is at-least-once
   for failures that recur on replay; `open()` grows only for a real consumer. Which failures are
-  row-level stays per-connector. `getConnector()` values are lower-case module words and are
-  API. The policy semantics every writer shares live in the `FailureHandler` javadoc.
+  row-level stays per-connector. `getConnector()` values are lower-case module words (or
+  package-root words where one module holds two connectors, as `datastore` does) and are API.
+  The policy semantics every writer shares live in the `FailureHandler` javadoc.
 
 ## `base.metrics` and metric naming (`docs/adr/0037`, `0038`)
 

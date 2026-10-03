@@ -22,17 +22,18 @@ limitations under the License.
 
 # Firestore connector
 
-The connector reads and writes a Firestore database in Native mode.
+The connector reads and writes a Firestore database in Native mode, and writes one in Datastore mode.
 A bounded source reads a whole collection group or one query at a single snapshot time, and finishes.
 An at-least-once sink applies one document write per record, through the client library's `BulkWriter`, which batches writes into `BatchWrite` requests and throttles them to Firestore's ramp-up guidance.
+A second at-least-once sink applies one entity write per record to a database in Datastore mode, in non-transactional commits; [Datastore mode](#datastore-mode) covers it.
 
 The connector has not been released yet ([#1547]({{< param BookRepo >}}/issues/1547) tracks the release that first publishes it).
-The module is also the home of the Datastore-mode surface, under its own package root; that half is not implemented yet ([#1542]({{< param BookRepo >}}/issues/1542)).
+The Datastore-mode sink lives under its own package root, `io.github.flink.gcp.connector.datastore`, and reaches the database through the Datastore client library; a Datastore-mode source is not implemented yet ([#1543]({{< param BookRepo >}}/issues/1543)).
 Every option is listed on the [Firestore options]({{< relref "docs/reference/firestore" >}}) page.
 
 ## Credentials
 
-The source and the sink use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
+The source and both sinks use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
 Set the key file only when the job must select a service-account JSON key that the runtime environment cannot supply through ADC.
 
 {{< java-snippet file="FirestoreConnectorCredentials.java" tag="firestore-connector-credentials" >}}
@@ -45,15 +46,16 @@ A loading failure is sanitized, so neither the path nor the key's contents enter
 The client library also reads the `FIRESTORE_EMULATOR_HOST` environment variable on its own whenever no emulator endpoint is set, and then sends every request to that host over plaintext, with the emulator's placeholder token in place of the job's credentials.
 The connector cannot switch that lookup off.
 A writer or a source that starts in an environment carrying the variable, with no `emulatorEndpoint(...)` configured, logs a warning naming the variable and its value.
+The Datastore-mode sink is not exposed to the same lookup: it always gives its client a host, the service's own or the emulator's, and the Datastore client library takes its endpoint from `DATASTORE_EMULATOR_HOST` only when none is given.
 
-The identity the job runs as needs permission to read documents for the source, and to create, update and delete them for the sink; [`roles/datastore.user`](https://cloud.google.com/firestore/docs/security/iam) carries all four, and `roles/datastore.viewer` is enough for a job that only reads.
-Neither direction creates anything else: collections need no creating, and the database must exist.
+The identity the job runs as needs permission to read documents for the source, and to create, update and delete them for the sinks; [`roles/datastore.user`](https://cloud.google.com/firestore/docs/security/iam) carries all four, in either mode (the Datastore-mode sink also reads, through the lookup it makes before routing an update's `NOT_FOUND`), and `roles/datastore.viewer` is enough for a job that only reads.
+Nothing creates anything else: collections and kinds need no creating, and the database must exist.
 
 ## Lineage
 
-The source and the sink implement Flink's `LineageVertexProvider`, and extraction opens no client.
+The source and both sinks implement Flink's `LineageVertexProvider`, and extraction opens no client.
 A collection-group scan reports the group, with namespace `firestore://{project}/{database}`, the group id as its name, and a `gcp` physical-resource facet.
-A source that reads a query reports an empty dataset list, and so does the sink: a database does not establish which collections a query factory or a serializer will address, and extraction calls neither.
+A source that reads a query reports an empty dataset list, and so do both sinks: a database does not establish which collections or kinds a query factory or a serializer will address, and extraction calls neither.
 Flink 2.x extracts lineage automatically; Flink 1.20 supports direct inspection but not native listener delivery.
 
 ## Source
@@ -352,12 +354,143 @@ There is no `batchesSent`: the library batches internally and exposes no hook fo
 There are no per-destination counters, because the sink writes any number of collections and that cardinality is the serializer's to choose.
 `currentSendTime` is unset, as on the sibling sinks, because a request's latency covers unrelated writes.
 
+## Datastore mode
+
+A database in Datastore mode answers the Datastore API (`datastore.v1`) rather than the Firestore one, and refuses Firestore API writes.
+The module writes it through a sink of its own, `DatastoreSink`, which shares nothing with the Native-mode sink beyond the credentials and emulator conventions above.
+It reaches the database through the Datastore client library, whose entity and key types it carries.
+
+### Keys address the entity
+
+The sink is configured with the Datastore root's own `DatabaseDestination` (`io.github.flink.gcp.connector.datastore.DatabaseDestination`, not the Native-mode type of the same name): a project and a database id.
+The Datastore API names the default database with an empty id and refuses the spelling `(default)`, so `DatabaseDestination.of(project)` and `DatabaseDestination.of(project, "(default)")` both address the default database with the empty id.
+The serializer returns a `DatastoreMutation`, and its key names the entity: project, database, namespace, kind, ancestors and a name or an id.
+One sink therefore writes to as many kinds and namespaces as its serializer produces, and nothing needs creating.
+A key must address the sink's own project and database; one that does not is routed to the failure handler before it is sent, because the service would refuse the whole commit it joined (the emulator answers `INVALID_ARGUMENT`, "mismatched databases within request").
+
+{{< java-snippet file="DatastoreConnectorSink.java" tag="datastore-connector-sink" >}}
+
+A `DatastoreMutation` carries one of four operations, named as the Datastore API names its mutations.
+
+| Operation | Effect |
+|---|---|
+| `upsert` | Writes the entity, replacing whatever the key held |
+| `insert` | Writes the entity; refused with `ALREADY_EXISTS` if the key holds one |
+| `update` | Replaces the entity whole; refused with `NOT_FOUND` if the key holds none |
+| `delete` | Deletes the entity; deleting a missing entity succeeds |
+
+The key must be complete, a name or an id rather than a key the service fills in.
+An id allocated on the first attempt would be lost to a retry, which would then write a second entity, so the sink leaves id allocation to the pipeline.
+Property values are the client library's own value types, and the service enforces its limits: an indexed string over 1,500 bytes, an entity over 1 MiB, or a reserved `__name__`-style kind or property is refused with `INVALID_ARGUMENT`.
+`setExcludeFromIndexes(true)` lifts the 1,500-byte limit for a property that no query filters on.
+
+### How the Datastore sink writes
+
+Each writer subtask buffers writes and applies them in one non-transactional `Commit` at a time, waiting for each before it sends the next.
+It commits the buffer at every checkpoint barrier, when the next write would take it past `maxBatchMutations` (500 by default) or `maxBatchBytes` (9,000,000 bytes by default, against the documented 10 MiB request limit), and before a write to a key the buffer already holds.
+The size is the request's protobuf size on the wire: each mutation's, which the client library computes for an entity, plus the request's project, database and mode fields.
+A commit names each key at most once, which the Datastore API requires of a non-transactional commit, and that rule has a useful side effect: the writes of one subtask to one key are applied in the order the serializer returned them, including across retries.
+The one exception is a commit that timed out on the client: the writer retries it and moves on, and the service may still apply the abandoned attempt after a later commit to the same key.
+Writes from different subtasks are not ordered against each other.
+
+Returning `null` from the serializer skips the record, as on every sink here, and throwing routes it.
+
+### Delivery guarantee in Datastore mode
+
+The Datastore sink is at-least-once and stateless, with the same checkpoint behavior as the Native-mode sink: a completed checkpoint means every record up to it was applied, skipped, or handed to the failure handler.
+A record can reach the database twice: after a job restart, when a commit whose outcome never arrived is retried, and when a refused commit is re-sent one write at a time (see below).
+A failed non-transactional commit "may not apply as all or none", in the service's own words, so a re-send can repeat a write that was already applied.
+
+| Operation | Same write replayed |
+|---|---|
+| `upsert`, `delete` | Idempotent for that write |
+| `insert` | Refused with `ALREADY_EXISTS`, routed to the failure handler |
+| `update` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler |
+
+Under the default `FailureHandler.failJob()`, a stream of `insert` writes, or of `update` writes followed by deletes of the same keys, fails again on every restart whose replay reaches a write already applied.
+`upsert` is the operation for a stream that needs neither failure.
+There is no exactly-once mode, for the reasons the Native-mode section gives.
+
+### Refused writes in Datastore mode
+
+A `Commit` reports no outcome per mutation: a refusal is the request's, and does not say which write earned it.
+The writer therefore confirms a refusal before it routes anything.
+When a commit is refused with a status one of its writes could have earned, the writer re-sends each write of the commit as a commit of its own, in order.
+A write that succeeds alone is applied; a write refused alone is routed if the status is one that write can earn.
+
+| What the write did | Status | What the sink does |
+|---|---|---|
+| `insert` of a key that holds an entity | `ALREADY_EXISTS` | Confirmed alone, then routed |
+| `update` of a key that holds none | `NOT_FOUND` | Confirmed alone, checked with a lookup, then routed |
+| An indexed string over 1,500 bytes, an entity over 1 MiB, a reserved kind or property name | `INVALID_ARGUMENT` | Confirmed alone, then routed |
+| `delete` of a key that holds none | *applied* | None |
+| `ALREADY_EXISTS` or `NOT_FOUND` for any other operation, and every other status | | **Fails the job** |
+
+Measured against the emulator, 2026-10-03: the refusals in this table applied none of the other writes of their commit, except an entity over 1 MiB, before which the commit had already applied the writes ahead of it in the request; the client library orders a request by operation (inserts, updates, upserts, deletes), not as the writes arrived.
+That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `update` and `delete` absorb, and which an `insert` answers with a routed `ALREADY_EXISTS`.
+
+`NOT_FOUND` is routed only after a lookup of the same key is answered.
+The status alone does not say whether the entity or the database is missing, and a job pointed at a missing database could otherwise drop every update it makes.
+A lookup of a missing entity is an ordinary answer, while a missing database refuses the lookup as it refused the update, so a refused lookup fails the job instead.
+That rests on the service's behavior, which the emulator cannot show, because it serves any database id; the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is measured.
+
+Confirming costs one commit per write of the refused commit, sequentially on the task thread, and `mutationsConfirmedAlone` counts them.
+`maxConsecutiveRejections` (100 by default) fails the job once that many confirmed `INVALID_ARGUMENT` refusals, or keys addressing another database, arrive with no write applied between them, after routing each of them; a dropping or dead-lettering handler is where it matters.
+A key addressing another database counts because it is what the service would refuse with `INVALID_ARGUMENT`, and a sink whose every key names the wrong database is a configuration error.
+`ALREADY_EXISTS` and `NOT_FOUND` do not count toward it, because they are what a restart's replay answers.
+A transient status anywhere in a failure's cause chain is never routed, and a failure of the request itself, such as `PERMISSION_DENIED`, or the `FAILED_PRECONDITION` a database in Native mode is reported to answer (not yet measured; [#1546]({{< param BookRepo >}}/issues/1546)), fails the job.
+
+`FailedMutation.getPayloadBytes()` is the Java-serialized `DatastoreMutation`; reading it back takes an `ObjectInputStream` with this connector and the Datastore client library on the classpath.
+A handler that wants the mutation itself should take `FailureHandler<FailedMutation>` and read `getMutation()`; the bytes exist for the cross-connector dead-letter queue, which sees only the shared `FailedElement` view.
+The client library's conversion of an entity to its protobuf is package-private, while its entity and key types are serializable, so this is the only encoding its public API supports.
+The reasoning and the declined alternatives are in [ADR-0175]({{< param BookRepo >}}/blob/main/docs/adr/0175-the-datastore-sink-commits-batches-and-confirms-a-refusal-one-write-at-a-time.md).
+
+### Retries and ramp-up in Datastore mode
+
+The writer owns the retry loop, and its client makes one attempt per call.
+The client library's own retries would re-send a commit on their own schedule, and the writer has to see each refusal to confirm it.
+A commit that failed with `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED` or `RESOURCE_EXHAUSTED` is re-sent whole, on the `recovery*` schedule (500 ms doubling to 10 s, jittered, at most 10 attempts by default); exhausting it fails the job, naming `recoveryMaxAttempts`.
+Each attempt is bounded by `requestTimeout`, 60 seconds by default.
+With the defaults, a service answering every attempt at once with a transient status spends the budget in about a minute of backoff, while one whose every attempt times out takes about eleven minutes, longer than Flink's default checkpoint timeout; each solo re-send of a refused commit has a budget of its own, so size the two settings and the checkpoint timeout together.
+The writer logs nothing while it retries; `mutationsRetried` and `errorClass.CODE.errors` are the signal.
+
+By default each writer subtask paces itself with the 500/50/5 rule from Datastore's [best practices](https://cloud.google.com/datastore/docs/best-practices): start new traffic at 500 operations per second, and raise it by at most 50% every five minutes.
+The sink as a whole starts at 500, shared among `throttlingParallelism` subtasks (the sink's parallelism unless set), and the budget grows by half for every five minutes past the first five since a subtask's first write.
+A restarted job ramps up again from its first write.
+`throttlingEnabled(false)` removes the pacing, and a burst may then be answered with `RESOURCE_EXHAUSTED`, which the retry loop absorbs within its budget; the same status for an exhausted quota is not cured by retrying, and fails the job once the budget is spent.
+Set `throttlingParallelism` above the sink's parallelism when other writers share the database, so that together they start where the guidance says.
+
+{{< java-snippet file="DatastoreConnectorTuning.java" tag="datastore-connector-tuning" >}}
+
+The same best practices warn that writing one entity at a high rate causes contention, and against keys that increase monotonically; a serializer that derives names from a hash avoids the second.
+
+### Datastore sink metrics
+
+Registered on the Datastore sink writer's metric group.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsSend` | counter (Flink standard) | Records added to a commit. Counted once per record, never again for a retry or a solo re-send |
+| `numBytesSend` | counter (Flink standard) | Their size on the wire, computed from each mutation's protobuf size |
+| `numRecordsSendErrors` | counter (Flink standard) | Records routed to the failure handler, whether the serializer rejected them, their key addressed another database, or the service refused the write |
+| `recordsSkipped` | counter | Records the serializer returned `null` for |
+| `batchesSent` | counter | Commit requests sent: first attempts, retries and solo re-sends alike |
+| `mutationsRetried` | counter | Mutations re-sent after a transient failure, one per mutation per retry |
+| `mutationsConfirmedAlone` | counter | Mutations re-sent alone to confirm a refused commit, whatever the verdict |
+| `throttledMillis` | counter | Cumulative milliseconds the ramp-up throttle has held the writer; its rate is the share of time spent waiting |
+| `bufferedMutations` | gauge | Mutations waiting for the next commit |
+| `bufferedBytes` | gauge | Their size on the wire |
+| `errorClass.CODE.errors` | counter | Failed calls by status code, `CODE` being a gRPC status name or `UNCLASSIFIED`: every transient failure the writer retries, and every final verdict. A refused commit that is then confirmed write by write is counted by those confirmations. A verdict that fails the job is counted as the task fails, so the job's failure cause, rather than this counter, is where it shows reliably |
+
+`errorClass` counts the transient failures the writer recovered from, because the writer sees its own retries; on the Native-mode sink the client library absorbs those.
+
 ## Testing
 
 Functional coverage runs against the Firestore emulator, the `gcloud emulators firestore` binary in the same `google-cloud-cli` image the Bigtable and Pub/Sub tests use, through testcontainers.
 The sink tests drive the production writer-creation path, so the client and `BulkWriter` are the real ones, and a MiniCluster job covers checkpoint-driven and end-of-input flushes.
 The source tests read through the production planner and page reader, and a MiniCluster job that fails once after a checkpoint shows a restored split resuming after its last document.
 The endpoint reaches the client through the builder, never through `FIRESTORE_EMULATOR_HOST`.
+The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and a MiniCluster job; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
 
 ### Emulator deviations
 
@@ -367,10 +500,12 @@ Where the two disagree, the service decides.
 | Deviation | Consequence |
 |---|---|
 | Request size is not enforced | A `BatchWrite` of about 10.5 MiB (twelve documents of 900 KiB) was applied. The writer's 9 MiB request budget is untested against a real refusal until the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) covers it, including whether the service answers an oversized request with `INVALID_ARGUMENT` |
-| Rejection statuses are the emulator's | The error-handling table was measured against the emulator only. The gated real-GCP suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is confirmed |
+| Rejection statuses are the emulator's | Both error-handling tables were measured against the emulator only. The gated real-GCP suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is confirmed |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |
 | `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)). A scan against the emulator needs a partition count of one |
+| Any Datastore-mode database id is served | A database that was never created answered a lookup and an update alike, so the lookup that tells a missing entity from a missing database before a `NOT_FOUND` is routed is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| Datastore-mode request size is not enforced | A commit of about 10.5 MiB was applied, so `maxBatchBytes` is untested against a real refusal until the gated suite covers it |
 | Old read times are answered | A read time two hours old was answered, where the service keeps versions for one hour without point-in-time recovery. The read-time window is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 
 ## Scope and provenance

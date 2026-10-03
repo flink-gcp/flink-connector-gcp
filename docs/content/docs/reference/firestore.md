@@ -22,12 +22,13 @@ limitations under the License.
 
 # Firestore options
 
-Every option the Firestore source and sink take.
+Every option the Firestore source and sink take, and the Datastore-mode sink's.
 What each one is *for* is on the [Firestore connector]({{< relref "docs/connectors/datastream/firestore" >}}) page; the three forms of the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
-There are no backoff knobs.
+The Native-mode sink has no backoff knobs.
 The Firestore client library retries a write itself, and the only part of that loop it lets a caller decide is how many attempts a write gets.
 See [Retries]({{< relref "docs/connectors/datastream/firestore" >}}#retries).
+The Datastore-mode sink owns its retry loop instead, and [`DatastoreWriterOptions`](#datastorewriteroptions) budgets it.
 
 ## `FirestoreSource.builder()`
 
@@ -99,3 +100,31 @@ It also refuses values that add up exactly to gax's own defaults, because the li
 | `maxInFlightWrites` | `250` | Caps the writes handed to the client library and not yet answered, **at most `500`**: past that many the library queues further writes without bound instead of sending them. The default leaves half the library's slots for failed writes, which hold theirs until the writer replaces its `BulkWriter` |
 | `maxInFlightBytes` | `64 MiB` | Caps their size in the request. This is the bound that actually bounds memory, since a document may be up to 1 MiB |
 | `maxConsecutiveRejections` | `100` | How many confirmed refusals in a row, with no write applied between them, fail the job after being routed. `-1` removes the bound. `ALREADY_EXISTS` for a create and a routed `FAILED_PRECONDITION` for a conditional write do not count. Matters only beside a dropping `failedWriteHandler` |
+
+## `DatastoreSink.builder()`
+
+| Option | Default | What it does |
+|---|---|---|
+| `database` | **required** | The database in Datastore mode every write goes to, as the Datastore root's `DatabaseDestination.of(project)` for the default database or `DatabaseDestination.of(project, databaseId)`. Which kind is not configured here; the key of the write the serializer returns names it, and must name this project and database |
+| `serializer` | **required** | Turns a record into a `DatastoreMutation`, or into `null` to skip it |
+| `writerOptions` | [defaults](#datastorewriteroptions) | The batch bounds, the request timeout, the retry budget, the ramp-up throttle and the rejection bound |
+| `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a write the service terminally refused, a write whose key addresses another database, or a record the serializer could not turn into a write. See [Refused writes in Datastore mode]({{< relref "docs/connectors/datastream/firestore" >}}#refused-writes-in-datastore-mode) |
+| `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by each TaskManager writer at runtime. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) |
+| `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started with `--database-mode=datastore-mode`. Setting it also stops the client looking for credentials. The only way the sink reaches an emulator; `DATASTORE_EMULATOR_HOST` never chooses the endpoint |
+
+## `DatastoreWriterOptions`
+
+Built with `DatastoreWriterOptions.builder()`, passed to `writerOptions(...)`.
+Every knob is defaulted, so `DatastoreWriterOptions.defaults()` is the same as not setting options at all.
+
+| Option | Default | What it does |
+|---|---|---|
+| `maxBatchMutations` | `500` | Caps the mutations in one commit. Datastore documents no count for a non-transactional commit; the default is Apache Beam's ceiling on its adaptive batch size |
+| `maxBatchBytes` | `9,000,000` | Caps the protobuf size of one commit request, its project, database and mode fields included, **at most 10 MiB**, Datastore's request limit. A single larger mutation is still sent, alone |
+| `requestTimeout` | `60 s` | Timeout of one commit attempt, and of the lookup that checks a `NOT_FOUND`. The client makes one attempt per call; the `recovery*` options own every retry |
+| `recoveryInitialBackoff` | `500 ms` | First backoff of the writer's retry loop |
+| `recoveryMaxBackoff` | `10 s` | Cap on the backoff, at least `recoveryInitialBackoff`. Backoffs are jittered by ±25% |
+| `recoveryMaxAttempts` | `10` | Attempts per commit, the first included; exhausting them fails the job. A write re-sent alone to confirm a refusal gets a budget of its own |
+| `throttlingEnabled` | `true` | Whether each writer subtask paces itself with the 500/50/5 ramp-up guidance |
+| `throttlingParallelism` | *unset ⇒ the sink's parallelism* | How many subtasks share the ramp-up's starting 500 operations per second. Each subtask's share is at least one per second |
+| `maxConsecutiveRejections` | `100` | How many confirmed `INVALID_ARGUMENT` refusals or keys addressing another database in a row, with no write applied between them, fail the job after being routed. `-1` removes the bound. `ALREADY_EXISTS` and `NOT_FOUND` do not count. Matters only beside a dropping `failedMutationHandler` |
