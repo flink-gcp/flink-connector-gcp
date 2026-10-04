@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Minimal Cloud Tasks acceptance handler deployed from retained source."""
+"""Minimal Cloud Tasks acceptance handler for the retained-source fixture."""
 
 import hashlib
 import os

@@ -126,7 +126,7 @@ The OpenTofu deployer holds `roles/iam.serviceAccountUser` separately on the run
 Both grants are scoped to their service accounts, and version deployment waits for them.
 The bucket has no monthly base fee; charges follow stored bytes and operations, with free-tier eligibility depending on other usage ([Cloud Storage pricing](https://cloud.google.com/storage/pricing)).
 
-The migration changes the deployment's `source_url` and can incur one-time App Engine deployment and Cloud Build costs.
+The migration changes the deployment's `source_url` and can incur one-time App Engine deployment and Cloud Build costs; a recovery redeployment can incur them too.
 Review the plan for an in-place update of the existing version, with the new source object and reading grant available before deployment.
 Apply through the normal merge workflow, which stops the fixture even after a partially successful apply.
 Manual-scaling instance hours continue to accrue for 15 minutes after shutdown ([App Engine pricing](https://cloud.google.com/appengine/pricing)).
@@ -136,6 +136,10 @@ After a failed deployment, compare the Admin API's `deployment.files.main.py.sou
 Google provider 7.42.0 does not refresh these fields from the API; a failed apply can retain the attempted deployment in state while App Engine still reports the old one.
 The recovery for [PR #1654](https://github.com/flink-gcp/flink-connector-gcp/pull/1654) adds the missing default-identity grant and changes the handler's docstring to produce a new hash, scheduling an in-place redeployment without changing request handling.
 Check the API readback again after the recovery apply, as well as fixture shutdown and the exit-0 refreshed plan.
+Also require the deployment operation to finish without an error: the [PR #1658 apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/37192557175) had matching API source fields but its operation later failed and requested redeployment.
+The version's update timeout is 45 minutes, to keep polling past the provider's default 20-minute wait.
+The GCP apply job has a 90-minute timeout to accommodate the environment lock's maximum 20-minute wait, update polling, setup and fixture cleanup; other roots retain their 60-minute timeout.
+This changes the client waiting budget; a server-side deployment error still fails the apply.
 
 ## Tier-3 Kubernetes environment
 

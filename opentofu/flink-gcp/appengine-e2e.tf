@@ -131,11 +131,12 @@ resource "google_service_account_iam_member" "appengine_e2e_build_deployer" {
 # main.py — it serves that same hash, so `curl` against a started version
 # compared with `sha1sum` of the file is the check that does notice.
 #
-# Allow **at least fifteen minutes** for an apply here. A successful update takes
-# around ten; the ten-second failure above is what a *failure* looks like. A
-# client-side timeout shorter than that kills the wait while the deployment
-# succeeds server-side, which produces the divergence in the opposite direction —
-# observed, and repaired by re-applying.
+# A client timeout can expire while the deployment continues server-side.
+# The #1658 update exceeded the provider's default twenty-minute wait; its
+# operation returned a server-side error after thirty-six minutes. Poll updates
+# for forty-five minutes within the GCP apply job's ninety-minute budget,
+# allowing for its twenty-minute lock wait plus setup and fixture cleanup.
+# Server-side errors still fail the apply.
 resource "google_app_engine_standard_app_version" "e2e" {
   project         = local.project_id
   service         = local.cloudtasks_appengine_e2e_service
@@ -169,6 +170,10 @@ resource "google_app_engine_standard_app_version" "e2e" {
     # The provider explicitly requires this exclusion when the Admin API owns
     # the live manual-scaling count, otherwise every E2E run creates drift.
     ignore_changes = [manual_scaling[0].instances]
+  }
+
+  timeouts {
+    update = "45m"
   }
 
   depends_on = [

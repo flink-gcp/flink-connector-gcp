@@ -136,6 +136,24 @@ An IAM-only follow-up would therefore leave the deployment unrepaired.
 Post-apply acceptance compares the API's source URL and SHA-1 with the tracked deployment, in addition to retained-source, stopped-fixture and exit-0-plan checks.
 The existing apply workflow stops the fixture even after a failed deployment; no paid acceptance run is part of this recovery.
 
+### Retry after the deployment timeout
+
+The [#1658 apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/37192557175) created the missing default-identity grant and uploaded the new source.
+Cloud Build completed successfully in about twenty seconds using the default App Engine identity.
+The provider stopped waiting for the version update after twenty minutes; App Engine's operation continued and ended after about thirty-six minutes with code 13.
+Its debug details reported that the version was created but its state could not be checked within the server's retry limit, and requested redeployment.
+The API already returned the expected source URL and SHA-1 before that terminal error, so matching deployment metadata alone does not establish success.
+The failed apply's cleanup stopped the fixture with zero instances and released the environment lock; a refreshed plan still proposed only deletion of the old, deposed staging-bucket reading grant.
+
+[PR #1661](https://github.com/flink-gcp/flink-connector-gcp/pull/1661) changes only the handler's docstring to schedule another in-place source upload and version update through a fresh plan.
+The update timeout is 45 minutes, exceeding the observed operation duration.
+The GCP apply job's timeout is 90 minutes: the previous 60-minute limit could expire during a 45-minute update after a long wait for the environment lock, whose acquisition can take twenty minutes.
+The remaining budget allows for setup and fixture cleanup; other roots retain their 60-minute timeout.
+The longer timeout controls client polling and does not repair or suppress server-side errors.
+Request handling, runtime identity, source retention and scaling remain unchanged.
+Post-apply acceptance requires an operation that finishes without error, matching API source URL and SHA-1, a stopped zero-instance fixture and an exit-0 refreshed plan.
+The recovery adds no persistent resource; the one-time redeployment can incur costs and no paid acceptance run is included.
+
 ## Tier-3 deployment infrastructure (2026-09-11)
 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) extends the existing GCP root with a shared regional GKE Autopilot cluster, private network, node identity and Artifact Registry repository.
