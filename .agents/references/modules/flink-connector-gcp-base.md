@@ -24,6 +24,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   instead. The source adapter also forwards Flink 2.x generalized watermark declarations through
   its compat seam. Its public `delegate()` supports this delegation and connector factory tests;
   the sink's public `@VisibleForTesting` `delegate()` serves those tests.
+- `LineageMetadata` holds the optional logical Table name and selects DataStream/Table reporting
+  through the existing `Lineage` vertex helpers (ADR-0160, #1660). Use it in concrete runtimes and
+  the base Table adapters; keep namespace and physical identity construction in the connector.
+  It stores no resources, vertices or callbacks. Share this value without replacing runtime
+  interfaces that expose state, committers or topologies.
 - Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
   (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
   (BOM-managed). `flink-table-common` serves `base.catalog` and `base.table`; base has no other

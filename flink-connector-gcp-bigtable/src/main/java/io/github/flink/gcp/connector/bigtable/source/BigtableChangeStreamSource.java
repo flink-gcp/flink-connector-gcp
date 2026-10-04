@@ -33,6 +33,7 @@ import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
@@ -67,7 +68,7 @@ public final class BigtableChangeStreamSource<T>
 
     private static final long serialVersionUID = 1L;
     private final BigtableChangeStreamSourceConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
 
     BigtableChangeStreamSource(BigtableChangeStreamSourceConfig<T> config) {
         this(config, null);
@@ -76,7 +77,7 @@ public final class BigtableChangeStreamSource<T>
     private BigtableChangeStreamSource(
             BigtableChangeStreamSourceConfig<T> config, @Nullable String lineageTableName) {
         this.config = Objects.requireNonNull(config, "config");
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /** Returns a copy carrying the logical Table identity with the same source configuration. */
@@ -88,7 +89,7 @@ public final class BigtableChangeStreamSource<T>
 
     @Override
     public SourceLineageVertex getLineageVertex() {
-        return BigtableLineage.source(config.getTable(), getBoundedness(), lineageTableName);
+        return BigtableLineage.source(config.getTable(), getBoundedness(), lineage);
     }
 
     /**

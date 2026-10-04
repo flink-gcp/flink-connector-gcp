@@ -29,8 +29,8 @@ import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
@@ -57,7 +57,7 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T>, LineageVerte
     private static final long serialVersionUID = 1L;
 
     private final PubSubSinkConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
 
     /**
      * Creates the sink; called by {@link PubSubSinkBuilder}.
@@ -70,7 +70,7 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T>, LineageVerte
 
     private PubSubPublisherSink(PubSubSinkConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /**
@@ -90,9 +90,7 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T>, LineageVerte
             resources =
                     List.of(LineageIdentifiers.pubSubTopic(topic.getProject(), topic.getTopic()));
         }
-        return lineageTableName == null
-                ? Lineage.sink(resources)
-                : Lineage.tableSink(lineageTableName, "pubsub", resources);
+        return lineage.sink("pubsub", resources);
     }
 
     /** Returns the sink configuration. */

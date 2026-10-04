@@ -845,6 +845,8 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
 
 - Keep lineage on both concrete sources and all three sink families returned by public builders.
   Inspect the effective fixed resolver, including single-row request configuration, without evaluating it.
+- Store runtime catalog names and DataStream/Table selection in `LineageMetadata`; keep physical
+  table identities and unknown-destination namespaces in `BigtableLineage`.
 - Table factory catalog names survive Dynamic Table copies and runtime copies. Retain the MutateRows
   aggregate startup destination and expected families when making a lineage copy.
 - Both Change Streams Table modes name the data table and use the source's actual boundedness.

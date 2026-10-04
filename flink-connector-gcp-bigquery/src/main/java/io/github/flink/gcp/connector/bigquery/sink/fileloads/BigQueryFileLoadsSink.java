@@ -38,7 +38,7 @@ import org.apache.flink.streaming.api.lineage.LineageVertex;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -100,7 +100,7 @@ public class BigQueryFileLoadsSink<T>
     private static final Duration QUOTA_WARN_CHECKPOINT_INTERVAL = Duration.ofMinutes(5);
 
     private final BigQuerySinkConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
     private final FileLoadsOptions options;
     private final StagingStorage storage;
 
@@ -129,7 +129,7 @@ public class BigQueryFileLoadsSink<T>
         this.config = config;
         this.options = options;
         this.storage = storage;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     @Override
@@ -140,12 +140,7 @@ public class BigQueryFileLoadsSink<T>
 
     @Override
     public LineageVertex getLineageVertex() {
-        return lineageTableName == null
-                ? Lineage.sink(BigQueryLineage.resources(config.getDestinationResolver()))
-                : Lineage.tableSink(
-                        lineageTableName,
-                        "bigquery",
-                        BigQueryLineage.resources(config.getDestinationResolver()));
+        return lineage.sink("bigquery", BigQueryLineage.resources(config.getDestinationResolver()));
     }
 
     /** Returns the staging storage wired from this sink's configuration. */

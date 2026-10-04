@@ -19,14 +19,19 @@ package io.github.flink.gcp.connector.bigtable.sink;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.CheckpointingMode;
+import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.util.InstantiationUtil;
 
 import com.google.bigtable.v2.Mutation;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
@@ -37,11 +42,48 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigtableStagedSinkTest {
+    @Test
+    void tableMetadataCopiesRetainStagedCapabilitiesAndUnknownResourcesAfterSerialization()
+            throws Exception {
+        var original = (BigtableStagedSink<String>) builder().build();
+        var table = original.withTableConfiguration(Map.of(), "catalog.db.output");
+        for (var candidate : List.of(table, InstantiationUtil.clone(table))) {
+            assertThat(candidate)
+                    .isExactlyInstanceOf(original.getClass())
+                    .isInstanceOf(SupportsCommitter.class)
+                    .isInstanceOf(SupportsPreCommitTopology.class);
+            assertThat(candidate.getCommittableSerializer()).isNotNull();
+            var dataset = candidate.getLineageVertex().datasets().get(0);
+            assertThat(dataset.name()).isEqualTo("catalog.db.output");
+            assertThat(dataset.namespace()).isEqualTo("bigtable://p/i");
+            assertThat(((PhysicalResourceFacet) dataset.facets().get("gcp")).resources())
+                    .containsExactly(LineageIdentifiers.bigtableTable("p", "i", "t"));
+        }
+        assertThat(original.getLineageVertex().datasets().get(0).name()).isEqualTo("t");
+
+        var dynamic =
+                ((BigtableStagedSink<String>)
+                                builder()
+                                        .destinationResolver(
+                                                (value, context) -> {
+                                                    throw new AssertionError(
+                                                            "Metadata must not resolve records");
+                                                })
+                                        .build())
+                        .withTableConfiguration(Map.of(), "catalog.db.dynamic");
+        var restored = InstantiationUtil.clone(dynamic);
+        var dataset = restored.getLineageVertex().datasets().get(0);
+        assertThat(dataset.name()).isEqualTo("catalog.db.dynamic");
+        assertThat(dataset.namespace()).isEqualTo("bigtable");
+        assertThat(((PhysicalResourceFacet) dataset.facets().get("gcp")).resources()).isEmpty();
+    }
+
     @Test
     void writerFreezesOnceAndSkipsNullWithoutRetainingAMarker() throws Exception {
         List<String> calls = new ArrayList<>();

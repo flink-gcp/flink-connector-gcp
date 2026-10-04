@@ -37,6 +37,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
@@ -68,7 +69,7 @@ public final class BigtableStagedSink<T>
     private final BigtableSinkConfig<T> config;
     private final BigtableStagedOptions options;
     private final Map<String, ColumnFamilyType> expectedFamilies;
-    @Nullable private final String logicalTableName;
+    private final LineageMetadata lineage;
 
     /** Creates the staged sink selected by the public builder. */
     public BigtableStagedSink(BigtableSinkConfig<T> config, BigtableStagedOptions options) {
@@ -83,7 +84,7 @@ public final class BigtableStagedSink<T>
         this.config = config;
         this.options = options;
         this.expectedFamilies = Map.copyOf(expectedFamilies);
-        this.logicalTableName = logicalTableName;
+        this.lineage = LineageMetadata.of(logicalTableName);
         validate();
     }
 
@@ -119,7 +120,7 @@ public final class BigtableStagedSink<T>
 
     @Override
     public LineageVertex getLineageVertex() {
-        return BigtableLineage.sink(config.getDestinationResolver(), logicalTableName);
+        return BigtableLineage.sink(config.getDestinationResolver(), lineage);
     }
 
     @Override

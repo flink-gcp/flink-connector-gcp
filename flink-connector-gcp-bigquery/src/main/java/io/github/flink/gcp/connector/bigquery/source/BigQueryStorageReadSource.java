@@ -35,7 +35,7 @@ import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorStateSerializer;
@@ -75,7 +75,7 @@ public class BigQueryStorageReadSource<T>
     private static final long serialVersionUID = 1L;
 
     private final BigQuerySourceConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
 
     /**
      * Creates the source.
@@ -89,7 +89,7 @@ public class BigQueryStorageReadSource<T>
     private BigQueryStorageReadSource(
             BigQuerySourceConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /** Returns a copy carrying the SQL catalog identity for the internal Table adapter. */
@@ -99,13 +99,8 @@ public class BigQueryStorageReadSource<T>
 
     @Override
     public SourceLineageVertex getLineageVertex() {
-        return lineageTableName == null
-                ? Lineage.source(getBoundedness(), BigQueryLineage.resources(config.getTable()))
-                : Lineage.tableSource(
-                        lineageTableName,
-                        "bigquery",
-                        getBoundedness(),
-                        BigQueryLineage.resources(config.getTable()));
+        return lineage.source(
+                getBoundedness(), "bigquery", BigQueryLineage.resources(config.getTable()));
     }
 
     @VisibleForTesting

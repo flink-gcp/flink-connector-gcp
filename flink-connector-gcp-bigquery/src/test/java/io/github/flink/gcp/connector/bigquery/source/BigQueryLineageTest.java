@@ -17,8 +17,11 @@
 package io.github.flink.gcp.connector.bigquery.source;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.sink2.SupportsCommitter;
+import org.apache.flink.api.connector.sink2.SupportsWriterState;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.lineage.LineageDataset;
 import org.apache.flink.streaming.api.lineage.LineageVertex;
 import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
@@ -159,9 +162,17 @@ class BigQueryLineageTest {
         Sink<String> adapted =
                 ((BigQueryLineageSink<String>) original).withTableLineage("catalog.db.output");
         assertThat(adapted).isExactlyInstanceOf(original.getClass()).isNotSameAs(original);
-        assertThat(vertex(InstantiationUtil.clone(adapted)).datasets())
-                .singleElement()
-                .satisfies(dataset -> assertPhysical(dataset, "catalog.db.output", TABLE));
+        for (Sink<String> candidate : List.of(adapted, InstantiationUtil.clone(adapted))) {
+            assertThat(candidate).isExactlyInstanceOf(original.getClass());
+            assertThat(candidate instanceof SupportsWriterState)
+                    .isEqualTo(method == WriteMethod.STORAGE_API_EXACTLY_ONCE);
+            boolean commits = method != WriteMethod.STORAGE_API_AT_LEAST_ONCE;
+            assertThat(candidate instanceof SupportsCommitter).isEqualTo(commits);
+            assertThat(candidate instanceof SupportsPreCommitTopology).isEqualTo(commits);
+            assertThat(vertex(candidate).datasets())
+                    .singleElement()
+                    .satisfies(dataset -> assertPhysical(dataset, "catalog.db.output", TABLE));
+        }
         assertThat(vertex(original).datasets())
                 .singleElement()
                 .satisfies(dataset -> assertPhysical(dataset, name(TABLE), TABLE));

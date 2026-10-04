@@ -36,8 +36,8 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.cloudtasks.sink.committer.CloudTasksStagedCommitter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksStagedWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
@@ -68,7 +68,7 @@ public class CloudTasksStagedCreateTaskSink<T>
     private final CloudTasksSinkConfig<T> config;
     private final CloudTasksStagingConfig staging;
     private final CloudTasksStagedOptions options;
-    @Nullable private final String logicalTableName;
+    private final LineageMetadata lineage;
 
     CloudTasksStagedCreateTaskSink(
             CloudTasksSinkConfig<T> config, CloudTasksStagingConfig staging) {
@@ -93,7 +93,7 @@ public class CloudTasksStagedCreateTaskSink<T>
             CloudTasksSinkConfig<T> config,
             CloudTasksStagedOptions options,
             @Nullable String logicalTableName) {
-        this.logicalTableName = logicalTableName;
+        this.lineage = LineageMetadata.of(logicalTableName);
         this.config = Preconditions.checkNotNull(config, "config");
         this.options = Preconditions.checkNotNull(options, "stagedOptions");
         this.staging = options.toStagingConfig();
@@ -107,9 +107,7 @@ public class CloudTasksStagedCreateTaskSink<T>
         var resource =
                 LineageIdentifiers.cloudTasksQueue(
                         queue.getProject(), queue.getLocation(), queue.getQueue());
-        return logicalTableName == null
-                ? Lineage.sink(List.of(resource))
-                : Lineage.tableSink(logicalTableName, resource.namespace(), List.of(resource));
+        return lineage.sink(resource.namespace(), List.of(resource));
     }
 
     /** Returns the validated sink configuration. */

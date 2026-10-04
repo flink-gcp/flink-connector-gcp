@@ -10,7 +10,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Keep extraction on the public builders' concrete Source/Sink objects. Read only configured
   `TableDestination` values and the effective `FixedDestinationResolver`; never evaluate a user
   resolver or discover query/view dependencies. The SQL factory's logical identity travels through
-  Dynamic Source/Sink copies into the concrete runtime metadata adapter, preserving sink abilities.
+  Dynamic Source/Sink copies into the concrete runtime's shared `LineageMetadata` value,
+  preserving sink abilities.
 - Keep graph/planner tests in `src/test/java-flink2`; direct metadata and Java serialization tests
   also run on 1.20. The shared listener and SQL classloader contract is ADR-0160's.
 

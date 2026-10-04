@@ -39,7 +39,7 @@ import org.apache.flink.streaming.api.lineage.LineageVertex;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -101,7 +101,7 @@ public class BigQueryBufferedStreamSink<T>
     private static final long serialVersionUID = 1L;
 
     private final BigQuerySinkConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
     private final BufferedStreamOptions options;
     private final BufferedStreamServiceFactory serviceFactory;
 
@@ -136,7 +136,7 @@ public class BigQueryBufferedStreamSink<T>
         this.config = config;
         this.options = options;
         this.serviceFactory = serviceFactory;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     @Override
@@ -147,12 +147,7 @@ public class BigQueryBufferedStreamSink<T>
 
     @Override
     public LineageVertex getLineageVertex() {
-        return lineageTableName == null
-                ? Lineage.sink(BigQueryLineage.resources(config.getDestinationResolver()))
-                : Lineage.tableSink(
-                        lineageTableName,
-                        "bigquery",
-                        BigQueryLineage.resources(config.getDestinationResolver()));
+        return lineage.sink("bigquery", BigQueryLineage.resources(config.getDestinationResolver()));
     }
 
     @Override
