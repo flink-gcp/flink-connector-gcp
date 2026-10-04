@@ -78,7 +78,7 @@ class AbstractReadOnlyCatalogTest {
             new CatalogPartitionSpec(Collections.singletonMap("p", "1"));
 
     private final AtomicInteger opened = new AtomicInteger();
-    private final List<String> closed = new ArrayList<>();
+    private final List<String> closed = Collections.synchronizedList(new ArrayList<>());
 
     private StubCatalog catalog() {
         return new StubCatalog(
@@ -144,6 +144,11 @@ class AbstractReadOnlyCatalogTest {
                 Thread.onSpinWait();
             }
             assertThat(entered).as("threads inside the opener before it was released").hasValue(1);
+            // Blocked on the opening monitor, so inside the request's read lock: requests run
+            // concurrently. A lock that serialised requests would leave them WAITING instead.
+            assertThat(blockedCount(threads))
+                    .as("requests waiting on the opener rather than on each other")
+                    .isEqualTo(3);
             release.countDown();
             for (Future<List<String>> call : calls) {
                 call.get(10, TimeUnit.SECONDS);
@@ -155,6 +160,100 @@ class AbstractReadOnlyCatalogTest {
 
         assertThat(opened).hasValue(1);
         assertThat(catalog.clients).hasSize(4).containsOnly("client-1");
+    }
+
+    /**
+     * Two requests run their bodies at the same time: each waits inside its request for the other
+     * to arrive. Serialising requests, by a lock or by {@code synchronized}, leaves the second
+     * outside, and both waits time out.
+     */
+    @Test
+    void requestsRunTheirBodiesConcurrently() throws Exception {
+        StubCatalog catalog = catalog();
+        CountDownLatch bothInside = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Boolean>> requests = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                requests.add(
+                        pool.submit(
+                                () ->
+                                        catalog.request(
+                                                client -> {
+                                                    bothInside.countDown();
+                                                    try {
+                                                        return bothInside.await(
+                                                                10, TimeUnit.SECONDS);
+                                                    } catch (InterruptedException e) {
+                                                        Thread.currentThread().interrupt();
+                                                        return false;
+                                                    }
+                                                })));
+            }
+            for (Future<Boolean> request : requests) {
+                assertThat(request.get(30, TimeUnit.SECONDS))
+                        .as("both requests were inside at once")
+                        .isTrue();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(opened).hasValue(1);
+    }
+
+    /**
+     * {@code close()} waits for a request in flight rather than closing the client under it, and
+     * the next request opens a fresh client. Without the lifecycle lock the closer runs while the
+     * request still holds the client, and the request sees it closed.
+     */
+    @Test
+    void closeWaitsForARequestInFlightAndTheNextRequestOpensAFreshClient() throws Exception {
+        CountDownLatch inside = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        StubCatalog catalog = catalog();
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        Thread closer = new Thread(catalog::close);
+        try {
+            Future<Boolean> closedUnderTheRequest =
+                    pool.submit(
+                            () ->
+                                    catalog.request(
+                                            client -> {
+                                                inside.countDown();
+                                                try {
+                                                    release.await(10, TimeUnit.SECONDS);
+                                                } catch (InterruptedException e) {
+                                                    Thread.currentThread().interrupt();
+                                                }
+                                                synchronized (closed) {
+                                                    return closed.contains(client);
+                                                }
+                                            }));
+            assertThat(inside.await(10, TimeUnit.SECONDS)).isTrue();
+            closer.start();
+            // Parked on the lifecycle lock, or already finished if nothing made it wait.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (closer.getState() != Thread.State.WAITING
+                    && closer.getState() != Thread.State.TERMINATED
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            release.countDown();
+
+            assertThat(closedUnderTheRequest.get(10, TimeUnit.SECONDS))
+                    .as("the client was closed while the request still used it")
+                    .isFalse();
+            closer.join(TimeUnit.SECONDS.toMillis(10));
+            synchronized (closed) {
+                assertThat(closed).containsExactly("client-1");
+            }
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+
+        catalog.listDatabases();
+        assertThat(catalog.clients).containsExactly("client-2");
     }
 
     private static long blockedCount(List<Thread> threads) {
@@ -438,10 +537,17 @@ class AbstractReadOnlyCatalogTest {
             return Optional.empty();
         }
 
+        <T> T request(java.util.function.Function<String, T> request) {
+            return withClient(request);
+        }
+
         @Override
         public List<String> listDatabases() {
-            clients.add(client());
-            return Collections.singletonList("analytics");
+            return withClient(
+                    client -> {
+                        clients.add(client);
+                        return Collections.singletonList("analytics");
+                    });
         }
 
         @Override

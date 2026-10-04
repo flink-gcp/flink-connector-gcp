@@ -76,7 +76,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
   lazily opened client, the empty view, partition, function and procedure answers, `UNKNOWN`
   statistics and every refused mutation. Those methods are **`final`**, so a connector cannot answer
   Flink's contract differently from its siblings; only the two table-statistics getters stay open,
-  for ADR-0168's reopen condition. A subclass supplies listing and resolution, its table factory,
+  for ADR-0168's reopen condition. A subclass reaches the client only through `withClient`, whose
+  request must finish with the client inside it (a lazily paged listing included): `close()` waits
+  for requests in flight under a read-write lock, and a client kept past the request may be closed.
+  A subclass supplies listing and resolution, its table factory,
   and its database-name grammar in `databaseExists`. `AbstractReadOnlyCatalogTest` holds both the
   `final` set and the refused mutators reflectively, so a mutator a later Flink adds shows up there.
 - Service-specific inputs (service name, read-only message, client opener and closer) are

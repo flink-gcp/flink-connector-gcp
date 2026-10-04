@@ -13,3 +13,4 @@
 # limitations under the License.
 
 io.github.flink.gcp.connector.bigtable.table.BigtableDynamicTableFactory
+io.github.flink.gcp.connector.bigtable.table.catalog.BigtableCatalogFactory

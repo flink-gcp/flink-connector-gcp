@@ -159,16 +159,20 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
 
     @Override
     public List<String> listDatabases() {
-        List<String> databases = new ArrayList<>();
         try {
-            for (Dataset dataset : client().listDatasets(project).iterateAll()) {
-                databases.add(dataset.getDatasetId().getDataset());
-            }
+            // The page iteration requests further pages, so it runs inside the request.
+            return withClient(
+                    client -> {
+                        List<String> databases = new ArrayList<>();
+                        for (Dataset dataset : client.listDatasets(project).iterateAll()) {
+                            databases.add(dataset.getDatasetId().getDataset());
+                        }
+                        return databases;
+                    });
         } catch (BigQueryException e) {
             throw new CatalogException(
                     "Failed to list the datasets of BigQuery project '" + project + "'.", e);
         }
-        return databases;
     }
 
     @Override
@@ -191,7 +195,7 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
             return null;
         }
         try {
-            return client().getDataset(DatasetId.of(project, databaseName));
+            return withClient(client -> client.getDataset(DatasetId.of(project, databaseName)));
         } catch (BigQueryException e) {
             throw new CatalogException(
                     "Failed to read BigQuery dataset '" + project + "." + databaseName + "'.", e);
@@ -207,12 +211,17 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
      */
     @Override
     public List<String> listTables(String databaseName) throws DatabaseNotExistException {
-        List<String> tables = new ArrayList<>();
         try {
-            for (Table table :
-                    client().listTables(DatasetId.of(project, databaseName)).iterateAll()) {
-                tables.add(table.getTableId().getTable());
-            }
+            return withClient(
+                    client -> {
+                        List<String> tables = new ArrayList<>();
+                        for (Table table :
+                                client.listTables(DatasetId.of(project, databaseName))
+                                        .iterateAll()) {
+                            tables.add(table.getTableId().getTable());
+                        }
+                        return tables;
+                    });
         } catch (BigQueryException e) {
             if (e.getCode() == HttpURLConnection.HTTP_NOT_FOUND) {
                 throw new DatabaseNotExistException(name(), databaseName, e);
@@ -225,7 +234,6 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
                             + "'.",
                     e);
         }
-        return tables;
     }
 
     @Override
@@ -268,11 +276,13 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
     @Nullable
     private Table table(ObjectPath tablePath) {
         try {
-            return client().getTable(
-                            TableId.of(
-                                    project,
-                                    tablePath.getDatabaseName(),
-                                    tablePath.getObjectName()));
+            return withClient(
+                    client ->
+                            client.getTable(
+                                    TableId.of(
+                                            project,
+                                            tablePath.getDatabaseName(),
+                                            tablePath.getObjectName())));
         } catch (BigQueryException e) {
             throw new CatalogException(
                     "Failed to read BigQuery table '" + qualified(tablePath) + "'.", e);
