@@ -39,12 +39,15 @@ class FirestoreConnectorOptionsTest {
     @Test
     void onlyTheRecordedOptionsCarryADefault() {
         // A mapped option's default lives on the connector's own builder and is applied by not
-        // calling a setter. sink.write-mode is table-owned: no builder setter takes it, and the
-        // factory reads it with get().
+        // calling a setter. These three are table-owned: no builder setter takes them, and the
+        // factory reads each with get().
         assertThat(DeclaredOptions.all()).isNotEmpty();
         assertThat(DeclaredOptions.all())
                 .filteredOn(ConfigOption::hasDefaultValue)
-                .containsExactly(FirestoreConnectorOptions.SINK_WRITE_MODE);
+                .containsExactlyInAnyOrder(
+                        FirestoreConnectorOptions.SINK_WRITE_MODE,
+                        FirestoreConnectorOptions.TYPE_MISMATCH_POLICY,
+                        FirestoreConnectorOptions.SCAN_COLLECTION_GROUP);
     }
 
     @Test
@@ -83,6 +86,19 @@ class FirestoreConnectorOptionsTest {
         assertThat(List.of(WriteMode.values()))
                 .extracting(WriteMode::toString)
                 .containsExactly("set", "merge", "update");
+    }
+
+    @Test
+    void everyTypeMismatchPolicyParsesFromItsDdlSpelling() {
+        ConfigOption<TypeMismatchPolicy> option =
+                ConfigOptions.key("k").enumType(TypeMismatchPolicy.class).noDefaultValue();
+        for (TypeMismatchPolicy policy : TypeMismatchPolicy.values()) {
+            assertThat(Configuration.fromMap(Map.of("k", policy.toString())).get(option))
+                    .isEqualTo(policy);
+        }
+        assertThat(List.of(TypeMismatchPolicy.values()))
+                .extracting(TypeMismatchPolicy::toString)
+                .containsExactly("fail", "null");
     }
 
     @Test

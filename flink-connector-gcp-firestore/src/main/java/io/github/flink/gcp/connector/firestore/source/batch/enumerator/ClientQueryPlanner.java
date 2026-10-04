@@ -24,6 +24,7 @@ import com.google.auth.Credentials;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.CollectionGroup;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryPartition;
@@ -139,7 +140,14 @@ public class ClientQueryPlanner implements QueryPlanner {
 
     private static Query project(Query query, FirestoreSourceConfig<?> config) {
         List<String> fieldMask = config.getFieldMask();
-        return fieldMask.isEmpty() ? query : query.select(fieldMask.toArray(new String[0]));
+        if (fieldMask.isEmpty()) {
+            return query;
+        }
+        FieldPath[] paths = new FieldPath[fieldMask.size()];
+        for (int i = 0; i < paths.length; i++) {
+            paths[i] = FieldPath.fromServerFormat(fieldMask.get(i));
+        }
+        return query.select(paths);
     }
 
     private static Query userQuery(Firestore firestore, FirestoreSourceConfig<?> config)

@@ -38,7 +38,7 @@ The Datastore-mode sink owns its retry loop instead, and [`DatastoreWriterOption
 | `deserializer` | **required** | Turns a `DocumentSnapshot` into zero or more records |
 | `collectionGroup` | **required**, unless `query` is set | Reads every document of every collection with this id, at any depth, as a partitioned scan. One path segment: no `/`, no leading or trailing whitespace |
 | `query` | **required**, unless `collectionGroup` is set | A `FirestoreQueryFactory` building the query to read, as one split. It runs on the JobManager, with the source's client, when the read is planned |
-| `select` | every field | Field paths a collection-group scan reads, dot-separated. Repeatable. A query projects in its factory instead |
+| `select` | every field | Field paths a collection-group scan reads: dot-separated strings, or `FieldPath`s whose segments are literal names, for a field whose name contains a dot or one of `~`, `*`, `/`, `[` and `]`. Repeatable. A query projects in its factory instead |
 | `partitionCount` | the source's parallelism | How many partitions a collection-group scan asks the service for; an upper bound the service may answer below. Scan only |
 | `readTime` | the service's time when the read is planned | The snapshot time every split reads at. Within the past hour, or with point-in-time recovery a whole minute within the past seven days; the default is good for an hour, so a longer read sets a whole minute. See [One snapshot for the whole read]({{< relref "docs/connectors/datastream/firestore" >}}#one-snapshot-for-the-whole-read) |
 | `pageSize` | `500` | Documents one request asks for. A page is held in memory whole, plus up to one page more for each mid-stream retry the client library makes |

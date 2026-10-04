@@ -115,6 +115,26 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `NoSuchMethodError`. In `flink-sql-connector-gcp-firestore`, never pass an ITCase to `-Dtest`:
   the default test execution would run it against the unshaded classes before the jar exists.
 
+## Native-mode Table API scan (`docs/adr/0179`, scan section)
+
+- **The read mapping is the write mapping, strictly** (owner, 2026-10-04): only a 32-bit BSON
+  integer widens (into BIGINT) and an exact integer into DOUBLE (|n| ≤ 2^53); every other value
+  outside the mapping is a mismatch under `type-mismatch-policy`, including a reference into
+  another database (`DocumentReference.getPath()` drops the database). Do not add a lenient
+  string rendering; widening the mapping is a decision, recorded in ADR-0179.
+- **A failure's remedy follows `Mismatch.readableAsNull()`**: offer `type-mismatch-policy = 'null'`
+  only when a nullable field lies around the value, which a `NOT NULL` column can still contain.
+- **Every field is selected as a literal `FieldPath`**: the single collection's
+  `CollectionQueryFactory`, and the collection-group scan through the builder's
+  `select(FieldPath...)`, whose field mask holds encoded paths read back with
+  `FieldPath.fromServerFormat`. Never pass a column name to `select(String...)`, which splits dots.
+- **A collection-group table declares no PRIMARY KEY** (ids repeat across the group, and the planner
+  trusts a key to be unique); `document-path` identifies a document there.
+- **The emulator can run a collection-group scan only with `scan.partition.max-partitions = 1`**:
+  the library answers `getPartitions(1)` without the RPC the emulator lacks.
+- `type-mismatch-policy` and the markers carry no `scan.` prefix because #1609's lookup reads
+  through the same converter (`FirestoreToRowDataConverter`); reuse it there.
+
 ## Datastore-mode sink (`docs/adr/0175`)
 
 - **The SPI carries the client library's `FullEntity<Key>` and `Key`** (both serializable; a test

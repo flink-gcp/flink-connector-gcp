@@ -162,7 +162,10 @@ same `of(project, …)` shape in the same role, was the one outlier; it is renam
 **Absolute instants:** the Kafka-shaped startup pair spells epoch millis
 (`scan.startup.timestamp-millis`), and a point-in-time read consistency choice is an ISO-8601
 instant (`scan.snapshot-time` — a different concept, not a divergent spelling of the same
-one).
+one). The read-time key of a point-in-time read takes each vendor's word under the SDK-seam rule
+above — BigQuery's `scan.snapshot-time` (`snapshot_time`), Spanner's
+`scan.timestamp-bound.read-timestamp`, Firestore's `scan.read-time` (`readTime`; [ADR-0179]) — so
+those three are one concept spelled the vendor's way, not a divergence to align.
 
 ## Alternatives declined
 
@@ -666,3 +669,4 @@ classifier, so one classifier serves both families and a family word would be th
 [ADR-0085]: 0085-the-spanner-batch-source-splits-by-server-planned-partition.md
 [ADR-0117]: 0117-metric-tables-are-held-bidirectionally-to-connector-inventories.md
 [ADR-0140]: 0140-bigquery-serialization-apis-use-flinks-schema-vocabulary.md
+[ADR-0179]: 0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md

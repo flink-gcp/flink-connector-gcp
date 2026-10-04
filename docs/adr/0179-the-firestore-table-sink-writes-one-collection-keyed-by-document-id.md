@@ -19,9 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-10-04 (client library facts read in google-cloud-firestore 3.49.0 through
   libraries-bom 26.90.0; emulator behavior measured 2026-10-04 against the pinned
-  `google-cloud-cli` emulators image, one run)
-- Issues: [#1607], [#1544], [#355], [#1556]
-- Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`); base (`lineage.internal`); flink-sql-connector-gcp-firestore
+  `google-cloud-cli` emulators image, one run); revised 2026-10-04 by [#1608] (the scan)
+- Issues: [#1607], [#1608], [#1544], [#355], [#1556]
+- Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`, `table.source`); base (`lineage.internal`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/firestore.md`
 
 ## Context
@@ -49,12 +49,24 @@ limitations under the License.
 - **The sink reports a `firestore-collection` lineage resource**, named by the collection path relative to the database, through `Lineage.tableSink` under the table's catalog identifier (ADR-0160).
 - **`flink-sql-connector-gcp-firestore` bundles the whole module, both package roots unrelocated** (ADR-0170, ADR-0015). Beyond the Cloud Tasks module's relocations it relocates `io.opentelemetry` and `com.fasterxml.jackson`, and it excludes `slf4j-api` (ADR-0035) and `javax.annotation-api` (ADR-0015); `org.checkerframework` stays unrelocated as annotation-only, as in the Bigtable jar.
 
+### The scan ([#1608], revised 2026-10-04)
+
+[#1608] added the read direction over the bounded `FirestoreSource` (ADR-0173). The owner settled its public names and semantics on 2026-10-04:
+
+- **Option keys follow the other connectors where the meaning is the same (ADR-0137)**: `scan.partition.max-partitions` is Spanner's key for the desired maximum number of read partitions, which is what the client library's `CollectionGroup.getPartitions(desiredPartitionCount)` takes (it asks `PartitionQuery` for one fewer partition point and adds a final open partition); `scan.max-rows-per-fetch` is Spanner's and Bigtable's key for what one fetch hands on, and a Firestore fetch is one request of `pageSize` documents; `scan.read-time` takes Firestore's own word under ADR-0137's rule that at an SDK-owned seam the vendor's word wins (the value is the client library's `readTime`, as BigQuery's `scan.snapshot-time` is its `snapshot_time` and Spanner's `scan.timestamp-bound.read-timestamp` its read timestamp), with BigQuery's ISO-8601 instant as its value; ADR-0137's absolute-instant paragraph names this. `scan.collection-group` reads every collection whose id is the last segment of `collection`; without it, the one collection is read as a single-split query.
+- **`type-mismatch-policy`** (`fail`, the default, or `null`) decides what a stored value whose type does not match its column does; it carries no `scan.` prefix because the lookup ([#1609]) reads through the same mapping. Under `null` the innermost nullable field around the value reads as NULL; a `NOT NULL` field cannot, so the nullable field around it does, and a `NOT NULL` column fails the read.
+- **The read mapping is the write mapping, strictly**: a 32-bit BSON integer widens into `BIGINT`, which a table sink writes back as a 64-bit integer, and an integer into `DOUBLE` only when the double represents it exactly (|n| ≤ 2^53); every other value outside the mapping is a mismatch — bytes of a BSON subtype (whose subtype `BYTES` would drop, so a table sink would write the value back changed), the other BSON value types an Enterprise-edition database stores (`Decimal128Value`, `BsonObjectId`, `RegexValue`, `MinKey`, `MaxKey`, `BsonTimestamp`), a vector, a reference in an unmarked `STRING`, and a reference into another database, whose path the library returns relative to that database, so it would read as a path in this one (whether the service stores such a reference is unmeasured). Accepting more later is compatible; reading these as strings would not round-trip. A BSON binary of subtype 0 decodes to a `Blob` the library cannot tell apart from bytes (`decodeBsonBinary`, 3.49.0), so it reads as `BYTES` and a table sink writes it back as native bytes; whether an Enterprise-edition database treats the two forms as one type is unmeasured.
+- **Readable metadata**: `document-path`, which tells a collection-group scan's parents apart, and the snapshot's `create-time`, `update-time` and `read-time`, all `NOT NULL`, in the planner's order after the physical columns. An undeclared key fails, as a compiled plan restored against another build applies its keys without the planner's validation.
+- **Only the produced columns' fields are read, each a literal field**: the declared columns, or the projected ones (top-level projection pushdown). The single collection's query selects them as `FieldPath.of(name)`; for a collection-group scan the DataStream builder gained `select(FieldPath...)` (review round one), because its `select(String...)` takes dot-separated paths (`FieldPath.fromDotSeparatedString` splits on `.` and refuses `~`, `*`, `/`, `[` and `]`). The builder now keeps the field mask in the library's encoded form and the planner reads it back with `FieldPath.fromServerFormat`. The builder parses a dot-separated path itself, because the library's parser is `@InternalApi`: it refuses the same reserved characters, and also an empty segment, which the library keeps. With two varargs overloads an argument-less `select()` no longer compiles; the builder is unreleased, so no caller is broken. A read of no field selects `__name__`.
+- **A collection-group scan's table declares no PRIMARY KEY**: ids repeat across a group's collections, and the planner trusts a declared key to be unique (`FlinkRelMdUniqueKeys`; `FlinkAggregateRemoveRule` drops a GROUP BY over it), so a keyed table could return repeated ids unaggregated without an error: measured on Flink 2.2.1 and 1.20.4, in batch and streaming mode, a `GROUP BY` or `DISTINCT` over a declared key plans to a bare scan. The `document-path` metadata column identifies a document instead.
+- **Lineage**: a single-collection scan reports `firestore-collection`, and a collection-group scan `firestore-collection-group` named by the collection id, through `Lineage.tableSource`.
+- **Emulator coverage**: the client library answers `getPartitions(1)` without a `PartitionQuery` (`CollectionGroup.getPartitions`, 3.49.0), so the emulator, which does not implement that RPC, can run a collection-group scan with `scan.partition.max-partitions = 1`; real partition counts belong to the gated suite ([#1546]).
+
 ## Consequences
 
 - An aggregation or any input that updates one key repeatedly can leave an older value in the document until [#1556] lands; the table docs carry the warning beside the changelog section.
 - A refused write, including an `update` of a missing document, fails the job: the table layer has no dead-letter path.
 - A table without a key can leave duplicate documents after a restart.
-- Reading a `firestore` table is refused at planning until [#1608]; the factory implements only the sink factory interface.
 - The release publishes six SQL uber jars rather than five; `collect-release-jars.sh` and the lineage class-loading measurement count six.
 
 ## Alternatives declined
@@ -71,6 +83,7 @@ limitations under the License.
 [#1545]: https://github.com/flink-gcp/flink-connector-gcp/issues/1545
 [#1556]: https://github.com/flink-gcp/flink-connector-gcp/issues/1556
 [#1606]: https://github.com/flink-gcp/flink-connector-gcp/issues/1606
+[#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1607]: https://github.com/flink-gcp/flink-connector-gcp/issues/1607
 [#1608]: https://github.com/flink-gcp/flink-connector-gcp/issues/1608
 [#1609]: https://github.com/flink-gcp/flink-connector-gcp/issues/1609

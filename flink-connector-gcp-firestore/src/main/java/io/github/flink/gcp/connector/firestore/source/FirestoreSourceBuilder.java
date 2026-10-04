@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.firestore.FieldPath;
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
@@ -52,6 +53,9 @@ public class FirestoreSourceBuilder<T> {
 
     /** The default number of documents one request asks for. */
     public static final int DEFAULT_PAGE_SIZE = 500;
+
+    /** The characters a dot-separated field path cannot hold. */
+    private static final String RESERVED = "~*/[]";
 
     private @Nullable DatabaseDestination database;
     private @Nullable FirestoreDocumentDeserializationSchema<T> deserializer;
@@ -131,18 +135,57 @@ public class FirestoreSourceBuilder<T> {
      * field is read when unset. Repeatable, adding to the fields already set.
      *
      * <p>Field paths are dot-separated, as the client library's {@code Query.select(String...)}
-     * takes them. A query read through {@link #query(FirestoreQueryFactory)} projects in the
-     * factory instead, with {@code select} on the query it returns.
+     * takes them: {@code a.b} is field {@code b} inside map {@code a}. Name a field whose name
+     * contains a dot, or one of the characters {@code ~}, {@code *}, {@code /}, {@code [} and
+     * {@code ]}, with {@link #select(FieldPath...)}. A query read through {@link
+     * #query(FirestoreQueryFactory)} projects in the factory instead, with {@code select} on the
+     * query it returns.
      *
      * @param fieldPaths the field paths to read
      * @return this builder
+     * @throws IllegalArgumentException if a path is blank, holds an empty segment, or holds a
+     *     character a dot-separated path cannot
      */
     public FirestoreSourceBuilder<T> select(String... fieldPaths) {
         Preconditions.checkNotNull(fieldPaths, "fieldPaths must not be null");
         for (String fieldPath : fieldPaths) {
             Preconditions.checkNotNull(fieldPath, "a field path must not be null");
             Preconditions.checkArgument(!fieldPath.isBlank(), "a field path must not be blank");
-            fieldMask.add(fieldPath);
+            // Parsed here rather than by the library's FieldPath.fromDotSeparatedString, which is
+            // @InternalApi: the same reserved characters, and an empty segment, which the library
+            // keeps and only the planner would refuse, naming the encoded path.
+            Preconditions.checkArgument(
+                    fieldPath.chars().noneMatch(c -> RESERVED.indexOf(c) >= 0),
+                    "the field path '%s' holds one of ~, *, /, [ and ]; name such a field with"
+                            + " select(FieldPath...)",
+                    fieldPath);
+            Preconditions.checkArgument(
+                    !fieldPath.startsWith(".")
+                            && !fieldPath.endsWith(".")
+                            && !fieldPath.contains(".."),
+                    "the field path '%s' has an empty segment",
+                    fieldPath);
+            fieldMask.add(FieldPath.of(fieldPath.split("\\.")).toString());
+        }
+        return this;
+    }
+
+    /**
+     * Reads only the given fields of each document of a collection-group scan, each named by its
+     * path segments, as the client library's {@code Query.select(FieldPath...)} takes them: {@code
+     * FieldPath.of("a.b")} is one top-level field whose name contains a dot. Optional and
+     * repeatable, like {@link #select(String...)}, which it adds to.
+     *
+     * @param fieldPaths the field paths to read
+     * @return this builder
+     */
+    public FirestoreSourceBuilder<T> select(FieldPath... fieldPaths) {
+        Preconditions.checkNotNull(fieldPaths, "fieldPaths must not be null");
+        for (FieldPath fieldPath : fieldPaths) {
+            Preconditions.checkNotNull(fieldPath, "a field path must not be null");
+            // The encoded form, which FieldPath.fromServerFormat reads back: FieldPath is not
+            // serializable, and the configuration travels with the job.
+            fieldMask.add(fieldPath.toString());
         }
         return this;
     }

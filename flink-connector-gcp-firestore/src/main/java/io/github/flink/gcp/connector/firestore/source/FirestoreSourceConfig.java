@@ -117,7 +117,10 @@ public final class FirestoreSourceConfig<T> implements Serializable {
         return queryFactory;
     }
 
-    /** Returns the field paths a scan projects, empty for every field. */
+    /**
+     * Returns the field paths a scan projects, each in the client library's encoded form ({@code
+     * FieldPath.toString()}), empty for every field.
+     */
     public List<String> getFieldMask() {
         return Collections.unmodifiableList(fieldMask);
     }
