@@ -54,13 +54,8 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
+import static io.github.flink.gcp.connector.spanner.table.UnboundedQueryRows.firstRows;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -358,7 +353,8 @@ class SpannerCatalogITCase extends AbstractSpannerEmulatorITCase {
                                 + " 'scan.startup.timestamp-millis' = '"
                                 + firstCommit.toSqlTimestamp().getTime()
                                 + "', 'scan.change-stream.heartbeat-interval' = '1 s') */",
-                        2);
+                        2,
+                        ROW_DEADLINE);
 
         // Both inserts are one commit, so one record carries them; asking for no row a later
         // commit would have to deliver keeps the read from waiting on the emulator's timing.
@@ -403,7 +399,7 @@ class SpannerCatalogITCase extends AbstractSpannerEmulatorITCase {
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining(
                         "scan.mode=change-stream cannot read the generated columns [Doubled]");
-        assertThat(firstRows(streaming, "SELECT * FROM Keyed" + hint, 1))
+        assertThat(firstRows(streaming, "SELECT * FROM Keyed" + hint, 1, ROW_DEADLINE))
                 .containsExactly(Row.ofKind(RowKind.INSERT, 5L, 50L));
     }
 
@@ -617,52 +613,6 @@ class SpannerCatalogITCase extends AbstractSpannerEmulatorITCase {
             iterator.forEachRemaining(rows::add);
         }
         return rows;
-    }
-
-    /**
-     * The first rows of an unbounded query, read within a deadline. {@code hasNext()} blocks until
-     * a row arrives and ignores interruption, so a row that never comes would hang the fork rather
-     * than fail the test; past the deadline the iterator is closed, which cancels the job, and the
-     * rows read so far are what the failure shows.
-     */
-    private static List<Row> firstRows(TableEnvironment table, String sql, int count)
-            throws Exception {
-        List<Row> rows = new CopyOnWriteArrayList<>();
-        CloseableIterator<Row> iterator = table.executeSql(sql).collect();
-        ExecutorService reader =
-                Executors.newSingleThreadExecutor(
-                        runnable -> {
-                            Thread thread = new Thread(runnable, "catalog-it-first-rows");
-                            thread.setDaemon(true);
-                            return thread;
-                        });
-        try {
-            Future<?> reading =
-                    reader.submit(
-                            () -> {
-                                while (rows.size() < count && iterator.hasNext()) {
-                                    rows.add(iterator.next());
-                                }
-                            });
-            try {
-                reading.get(ROW_DEADLINE.toMillis(), TimeUnit.MILLISECONDS);
-            } catch (TimeoutException e) {
-                throw new AssertionError(
-                        "Read "
-                                + rows
-                                + " within "
-                                + ROW_DEADLINE
-                                + " where "
-                                + count
-                                + " rows were expected from: "
-                                + sql,
-                        e);
-            }
-            return new ArrayList<>(rows);
-        } finally {
-            iterator.close();
-            reader.shutdownNow();
-        }
     }
 
     private static byte[] protoDescriptors() {
