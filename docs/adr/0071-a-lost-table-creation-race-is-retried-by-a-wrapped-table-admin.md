@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0071: A lost table-creation race is retried by a wrapped `TableAdmin`
+# ADR-0071: A lost table-creation race is retried by a wrapped `TableAdmin`, and the REST verdict lives with the REST client
 
 - Status: Accepted
 - Date: 2026-08-08 (measured); revised by [#1344] (2026-09-20)

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0073: Bigtable auto-creation parks `NOT_FOUND` and repairs through an ensure
+# ADR-0073: Bigtable auto-creation parks `NOT_FOUND` and repairs through an idempotent add-only ensure
 
 - Status: Accepted
 - Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11, and its description match corrected against the service by [#948] on 2026-08-17; admin requests built as protobufs since [#1622] on 2026-10-04)
