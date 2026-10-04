@@ -326,6 +326,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   guards the descriptions; the reference page or the table page's row is where a default is
   written. "Unset fails the source" on `scan.resume-fallback.mode` is a contract, not a
   default, and stays.
+- No option key starts with `schema` (`docs/adr/0096`): Flink drops such a key when it rebuilds a
+  table from a persisting catalog's properties. `SpannerConnectorOptionsTest` holds it, and the
+  persisting round trip for every declared option. The five 1.0.0/1.1.0 `schema`-prefixed keys
+  stay `withDeprecatedKeys` spellings; the factory refuses an option set under both spellings by
+  reading `fallbackKeys()` of every registered option, so a future deprecated key is covered
+  without a list to update, and names a malformed schema by the key the DDL wrote.
 - The value converters ride two class-level `@BetaApi` core types, `com.google.cloud.ByteArray`
   and `com.google.cloud.Date` — internal calls, tier-irrelevant under `docs/adr/0141`; reread
   them on a BOM bump.
@@ -387,14 +393,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   name on `.` by hand, and never emit a PostgreSQL part bare without checking that it folds to
   itself; `SpannerObjectNameTest` holds the round trip over an adversarial alphabet.
 - A default-schema table carries `table` alone, in the native spelling; a named-schema table
-  carries `schema` and `table` in canonical quoting. Mixing the two forms targets a different
+  carries `named-schema` and `table` in canonical quoting. Mixing the two forms targets a different
   table for a mixed-case PostgreSQL name.
 - `SPANNER_TYPE` is parsed by `SpannerTypeSpelling` from the spellings measured on the service and the
   emulator, which differ: the service reports `PROTO<fqn>`/`ENUM<fqn>`, the emulator a backticked
   FQN alone, which is classified from `GetDatabaseDdl`'s proto descriptors, never from the name.
 - Marker values pass through `SpannerMarkerValues`, which quotes as Flink's own option serializer
   does: a quoted Spanner column name may contain `;`, `,` or `:`.
-- Stored generated columns stay in the schema and are listed in `schema.generated-columns`; the
+- Stored generated columns stay in the schema and are listed in `generated-columns`; the
   sink skips them, and a change-stream table refuses a non-key one at planning, because Spanner
   change streams do not watch it. Hidden columns and generated columns that are not stored are left
   out; the service's read API refuses the latter, which the emulator does not.

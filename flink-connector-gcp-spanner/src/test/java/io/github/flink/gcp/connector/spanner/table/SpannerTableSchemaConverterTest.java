@@ -192,7 +192,7 @@ class SpannerTableSchemaConverterTest {
                                             Collections.emptyMap()))
                     .as(path)
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("schema.generated-columns names [" + path + "]");
+                    .hasMessageStartingWith("generated-columns names [" + path + "]");
         }
     }
 

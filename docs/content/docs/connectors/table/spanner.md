@@ -53,7 +53,7 @@ Lookup joins are outside this extraction path.
 Physical tables use namespace `spanner://{project}:{instance}` and name `{database}.{schema}.{table}`, omitting an absent schema segment.
 The existing dialect rules determine schema/table spelling, including PostgreSQL's `public` default for an unqualified native table name.
 A legacy native `schema.table` value already carries its qualification and does not receive another default schema prefix.
-The facet retains the original configured schema/table syntax, including quotes and case; an omitted `schema` option stays absent from the identity map even when the canonical name uses a default schema.
+The facet retains the original configured schema/table syntax, including quotes and case; an omitted `named-schema` option leaves `schema` absent from the identity map even when the canonical name uses a default schema.
 Extraction changes neither record routing nor source boundedness.
 
 Flink 2.x retains the physical facet during planner extraction.
@@ -74,12 +74,12 @@ See the [DataStream credential deployment contract]({{< relref "docs/connectors/
 
 ### Named schemas
 
-Set `schema` when the destination or source table belongs to a named Spanner schema.
+Set `named-schema` when the destination or source table belongs to a named Spanner schema.
 The connector qualifies that schema with `table` for mutations, bounded scans, and synchronous and asynchronous lookups.
 When `scan.index` is set, the same schema also qualifies the index because Spanner requires a table and its index to share a schema.
-Leaving `schema` unset retains the empty GoogleSQL schema or PostgreSQL `public`.
+Leaving `named-schema` unset retains the empty GoogleSQL schema or PostgreSQL `public`.
 
-The `schema`, `table`, and `scan.index` values each name one identifier component when `schema` is set.
+The `named-schema`, `table`, and `scan.index` values each name one identifier component when `named-schema` is set.
 Do not put a dot-qualified name in any of these options.
 GoogleSQL accepts an unquoted identifier or a backtick-quoted identifier, and PostgreSQL accepts an unquoted identifier or a double-quoted identifier.
 PostgreSQL folds unquoted values to lower case and preserves quoted values, including their case.
@@ -140,7 +140,7 @@ After `USE CATALOG sp`, `orders` names the `orders` table in the default schema 
 
 A Spanner table has three levels of address below its instance, a database, a schema and the table, while a Flink catalog has two, so a named schema travels inside the table name.
 A table in the default schema, the empty GoogleSQL schema or PostgreSQL `public`, is listed by its name alone, and a table in a named schema as `schema.table`.
-Each part uses the [canonical quoting](#named-schemas) the `schema` and `table` options accept.
+Each part uses the [canonical quoting](#named-schemas) the `named-schema` and `table` options accept.
 A GoogleSQL part outside the plain identifier grammar is backtick-quoted.
 A PostgreSQL part is double-quoted when it has an upper-case letter or a character outside the plain grammar, since an unquoted PostgreSQL part folds to lower case.
 In Flink SQL the whole name is one identifier, so it is written in Flink backticks: `` `sales.orders` ``, or `` `"Sales"."Orders"` `` for a PostgreSQL table whose schema and table were created with quoted mixed-case names.
@@ -153,8 +153,8 @@ A GoogleSQL name is compared case-insensitively, as Spanner compares it, and a P
 A table the catalog resolves behaves as the equivalent hand-written `CREATE TABLE` would, for scans, lookup joins and `INSERT INTO` alike.
 
 - **Options**: `connector`, `project`, `instance`, `database` and `dialect`, the table's name, and the catalog's `service-account-key-file` and `emulator-endpoint` when those are set.
-  A default-schema table carries `table` alone, holding the native name; a named-schema table carries `schema` and `table` in canonical quoting.
-  The markers its columns need are set from the column metadata: the type markers `schema.json-field-paths`, `schema.uuid-field-paths`, `schema.proto-type-names` and `schema.enum-type-names`, and `schema.generated-columns`, which is a marker but not a type marker.
+  A default-schema table carries `table` alone, holding the native name; a named-schema table carries `named-schema` and `table` in canonical quoting.
+  The markers its columns need are set from the column metadata: the type markers `json-field-paths`, `uuid-field-paths`, `proto-type-names` and `enum-type-names`, and `generated-columns`, which is a marker but not a type marker.
   Every other option is per statement, through an `OPTIONS` hint, which resolves an index in the table's own schema: ``SELECT * FROM `sales.orders` /*+ OPTIONS('scan.index' = 'orders_by_total') */``.
 - **Schema**: each column resolves as the last column of the [type mapping](#type-mapping) gives, and a column Spanner declares `NOT NULL` resolves as `NOT NULL`.
   Spanner names a PROTO or ENUM column's type as `PROTO<pkg.Message>` or `ENUM<pkg.Enum>`; the emulator names only the fully qualified type, so there the catalog reads the database's proto bundle to tell a message from an enum.
@@ -162,7 +162,7 @@ A table the catalog resolves behaves as the equivalent hand-written `CREATE TABL
 - **Primary key**: the Spanner primary key becomes a `PRIMARY KEY ... NOT ENFORCED` in key order, over `NOT NULL` columns, so the table serves lookup joins and keyed upserts and deletes without a declaration.
   A GoogleSQL key column that Spanner allows to hold `NULL` is declared `NOT NULL` all the same, because the planner requires it of a key; a row whose key is `NULL` breaks that declaration.
   A key whose type the connector cannot key on, such as `FLOAT32`, PostgreSQL `numeric` or an ENUM, resolves, and a statement over the table is refused when it is planned, as for a hand-written table with that key.
-- **Stored generated columns** resolve as ordinary columns listed in `schema.generated-columns`: reads return them, and the sink leaves them out of every mutation, since Spanner refuses a value for a generated column.
+- **Stored generated columns** resolve as ordinary columns listed in `generated-columns`: reads return them, and the sink leaves them out of every mutation, since Spanner refuses a value for a generated column.
   A generated column that is not stored is left out, because Spanner's read API, which scans and lookups go through, refuses to return one; the [DataStream source]({{< relref "docs/connectors/datastream/spanner" >}}) reading through a SQL query can select it.
   A generated column outside the key is nullable in the Flink schema, so an `INSERT INTO` that names the other columns need not supply it.
   A generated key column is `NOT NULL` like any key column, so an `INSERT INTO` must supply it, and the value supplied must be the one Spanner computes, as the [sink](#mutation-behavior) explains.
@@ -255,7 +255,7 @@ A declared `PRIMARY KEY` makes the sink an upsert sink.
 `INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
 The key may be composite, but every member must map to a Spanner key type.
 
-A field listed in `schema.generated-columns` is left out of every mutation, because Spanner refuses a value for a generated column.
+A field listed in `generated-columns` is left out of every mutation, because Spanner refuses a value for a generated column.
 An upsert lets Spanner compute a generated key column from the columns written, but a delete still names the row by the value the row carries, and the planner keys its upserts by it, so that value must equal the one Spanner computes.
 Rows read from the same table carry it; a value a statement invents does not, and a delete keyed by it removes nothing.
 
@@ -290,7 +290,7 @@ Malformed sink or lookup input fails conversion with the physical column name bu
 Set `dialect = 'POSTGRESQL'` for PostgreSQL-dialect databases; JSON markers then produce `jsonb` values.
 PROTO and ENUM markers require `GOOGLE_STANDARD_SQL` and are rejected for PostgreSQL databases.
 A marker names one top-level physical field or an entire array field.
-Every marker must resolve to exactly one physical field and no field may have more than one type marker; `schema.generated-columns` is not a type marker and combines with them.
+Every marker must resolve to exactly one physical field and no field may have more than one type marker; `generated-columns` is not a type marker and combines with them.
 
 The connector does not inspect or migrate the live Spanner schema.
 Changing an existing column from `STRING` to `UUID` therefore requires coordinating the Spanner DDL and this option before redeploying the Flink job, and every stored string must already be valid canonical UUID input before migration.
@@ -299,7 +299,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 
 Set `scan.mode = 'change-stream'` to replace the bounded scan with an unbounded CDC source over one Spanner Change Stream.
 The default remains `bounded`, so existing DDL keeps its snapshot behavior.
-Change-stream mode maps the declared `schema` and `table` to the exact dialect-aware native table name and silently advances past records for other watched tables.
+Change-stream mode maps the declared `named-schema` and `table` to the exact dialect-aware native table name and silently advances past records for other watched tables.
 It does not support lookup joins, projection or filter pushdown, bounded-scan fetch, partition, and timestamp options, or lookup options.
 A change-stream table is source-only.
 Its declared columns are the watched table's own, so an `INSERT INTO` naming one would otherwise write into the very table being watched; it is rejected when the statement is planned instead.
@@ -324,7 +324,7 @@ The adjacent before and after rows produced for one full-mode update carry the s
 
 Each data-change record is validated against the DDL's physical names, native Spanner types, and, in upsert mode, primary-key column membership before any row from that record is emitted.
 Extra watched columns are ignored, while a missing declared column, a type mismatch, an incompatible value-capture mode, or an absent required row value fails deserialization.
-Spanner change streams do not watch a generated column outside the primary key, so a change-stream table that lists a column outside its declared `PRIMARY KEY` in `schema.generated-columns` is refused when it is planned; one declared without the marker fails on the first record, as any missing declared column does, with a message saying the record omits a declared column.
+Spanner change streams do not watch a generated column outside the primary key, so a change-stream table that lists a column outside its declared `PRIMARY KEY` in `generated-columns` is refused when it is planned; one declared without the marker fails on the first record, as any missing declared column does, with a message saying the record omits a declared column.
 Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
 A conversion failure identifies the table, commit timestamp, transaction, record sequence, and mod index without including row JSON or credential paths.
 
@@ -338,16 +338,16 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 | `project` | **required** | The Google Cloud project containing the instance |
 | `instance` | **required** | The Spanner instance containing the database |
 | `database` | **required** | The database containing the table |
-| `schema` | *unset ⇒ empty GoogleSQL schema or PostgreSQL `public`* | Named schema containing the table; one canonical quoted or unquoted identifier component |
-| `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `schema` is set |
+| `named-schema` | *unset ⇒ empty GoogleSQL schema or PostgreSQL `public`* | Named schema containing the table; one canonical quoted or unquoted identifier component |
+| `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `named-schema` is set |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery. Parsed when a statement over the table is planned — not at `CREATE TABLE`, which registers the options without calling the connector — so a malformed value fails on the client for every direction, whether the table is written to, scanned, watched as a Change Stream, or joined as a lookup dimension. The rejection names `emulator-endpoint`, the key written in the DDL |
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, Change Streams scan, and lookup paths; rejected with `emulator-endpoint` |
-| `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
-| `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
-| `schema.generated-columns` | empty | Semicolon-separated top-level fields Spanner generates: reads return them, writes leave them out, and a change-stream table refuses one outside its declared primary key |
+| `json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
+| `uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
+| `generated-columns` | empty | Semicolon-separated top-level fields Spanner generates: reads return them, writes leave them out, and a change-stream table refuses one outside its declared primary key |
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
-| `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
-| `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
+| `proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
+| `enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
 | `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits an unbounded CDC changelog and makes the table source-only, so writing to it is rejected |
 | `scan.change-stream.name` | **required in change-stream mode** | Change Stream whose generated read function supplies records |
 | `scan.change-stream.changelog-mode` | **required in change-stream mode** | `full` emits retract rows from `NEW_ROW_AND_OLD_VALUES`; `upsert` emits keyed upserts from `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` |
@@ -387,6 +387,29 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 | `sink.parallelism` | *unset ⇒ operator parallelism* | Flink's standard sink parallelism override |
 
 The sink options map directly onto the DataStream writer options; their validation limits are listed in the [Spanner reference]({{< relref "docs/reference/spanner" >}}#spannerwriteroptions).
+
+### Former option keys
+
+Releases up to 1.1.0 named five of these options with a `schema` prefix.
+A catalog that stores a table as properties, such as Flink's Hive catalog for a generic table, loses an option under such a key without an error.
+Flink rebuilds the table's options from those properties and drops every key it takes for part of the serialized table schema: every key starting with `schema.`, and from Flink 2.2 a bare `schema` too.
+The options therefore have keys without the prefix, and each former key is still accepted as a deprecated key:
+
+| Former key | Current key |
+|---|---|
+| `schema` | `named-schema` |
+| `schema.json-field-paths` | `json-field-paths` |
+| `schema.uuid-field-paths` | `uuid-field-paths` |
+| `schema.proto-type-names` | `proto-type-names` |
+| `schema.enum-type-names` | `enum-type-names` |
+
+A former key keeps working in a `WITH` clause or an `OPTIONS` hint, and Flink logs a warning naming the current key when it reads one.
+A table stored in such a catalog under a former key that Flink drops is read back without the option: without the named schema, writes and scans address the same-named table in the default schema, and without a marker, the column is written and read as its plain carrier type.
+Recreate such a table with the current keys.
+Setting one option under both its current and its former key is refused when a statement is planned, because Flink would read the current key and ignore the other.
+An `OPTIONS` hint counts, because Flink merges it into the table's options: a hint overrides an option only under the key the table already sets, which for a `spanner` catalog table is the current key.
+`generated-columns` arrived after 1.1.0 and has no former key, so `schema.generated-columns` is an unsupported option.
+The `spanner` catalog sets the current keys, and the catalogs that keep a table's options as written, such as Flink's in-memory catalog, lose no key.
 
 ## Delivery guarantee
 

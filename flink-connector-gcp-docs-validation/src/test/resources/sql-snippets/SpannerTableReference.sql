@@ -46,7 +46,7 @@ CREATE TABLE sales_orders (
   'project' = 'my-project',
   'instance' = 'my-instance',
   'database' = 'orders-db',
-  'schema' = 'sales',
+  'named-schema' = 'sales',
   'table' = 'orders',
   'scan.index' = 'orders_by_total'
 );
@@ -89,9 +89,9 @@ CREATE TABLE order_changes (
 
 -- tag::schema-markers[]
 WITH (
-  'schema.uuid-field-paths' = 'id;related_ids',
-  'schema.json-field-paths' = 'metadata;payloads',
-  'schema.proto-type-names' = 'event:example.events.Event',
-  'schema.enum-type-names' = 'status:example.events.Status'
+  'uuid-field-paths' = 'id;related_ids',
+  'json-field-paths' = 'metadata;payloads',
+  'proto-type-names' = 'event:example.events.Event',
+  'enum-type-names' = 'status:example.events.Status'
 )
 -- end::schema-markers[]

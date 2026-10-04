@@ -71,10 +71,9 @@ class SpannerMarkerValuesTest {
                 Map<String, String> read =
                         Configuration.fromMap(
                                         Collections.singletonMap(
-                                                SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES
-                                                        .key(),
+                                                SpannerConnectorOptions.PROTO_TYPE_NAMES.key(),
                                                 value))
-                                .get(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES);
+                                .get(SpannerConnectorOptions.PROTO_TYPE_NAMES);
                 assertThat(read).as(value).isEqualTo(entries);
             }
         }
@@ -95,9 +94,8 @@ class SpannerMarkerValuesTest {
         List<String> read =
                 Configuration.fromMap(
                                 Collections.singletonMap(
-                                        SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS.key(),
-                                        value))
-                        .get(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS);
+                                        SpannerConnectorOptions.JSON_FIELD_PATHS.key(), value))
+                        .get(SpannerConnectorOptions.JSON_FIELD_PATHS);
         assertThat(read).as(value).isEqualTo(names);
     }
 

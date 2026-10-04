@@ -188,6 +188,15 @@ reason = """
 Write-side twin of DataInputDeserializer in the same serializers; same
 rationale and same fallback."""
 
+[unannotated."org.apache.flink.configuration.FallbackKey"]
+reason = """
+The element type of the @PublicEvolving ConfigOption#fallbackKeys(), which the
+Spanner table factory reads to refuse a DDL that sets an option under both its
+key and a deprecated one (issue #1617). Reading the keys from the options
+themselves keeps the check from drifting from the withDeprecatedKeys
+declarations; the fallback is a hand-kept map of each renamed key to its old
+spelling."""
+
 [unannotated."org.apache.flink.formats.avro.typeutils.GenericRecordAvroTypeInfo"]
 reason = """
 What the BigQuery source's GenericRecord deserializer answers getProducedType()

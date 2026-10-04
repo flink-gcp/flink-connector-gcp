@@ -35,8 +35,8 @@ import java.util.function.Supplier;
 
 /**
  * The inverse of the connector page's type mapping: a Spanner table's {@code INFORMATION_SCHEMA}
- * columns as a Flink schema, plus the {@code schema.*} options that mark the columns whose Flink
- * type alone does not name their Spanner type.
+ * columns as a Flink schema, plus the marker options for the columns whose Flink type alone does
+ * not name their Spanner type.
  *
  * <p>Each Spanner type maps to the one Flink type a hand-written table would declare for it
  * (docs/adr/0168): JSON, UUID, PROTO and ENUM columns map to their carrier types and are marked,
@@ -175,11 +175,11 @@ final class SpannerSchemaToFlinkConverter {
         }
 
         Map<String, String> options = new LinkedHashMap<>();
-        putList(options, SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS.key(), json);
-        putList(options, SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS.key(), uuid);
-        putList(options, SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS.key(), generated);
-        putMap(options, SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES.key(), protos);
-        putMap(options, SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES.key(), enums);
+        putList(options, SpannerConnectorOptions.JSON_FIELD_PATHS.key(), json);
+        putList(options, SpannerConnectorOptions.UUID_FIELD_PATHS.key(), uuid);
+        putList(options, SpannerConnectorOptions.GENERATED_COLUMNS.key(), generated);
+        putMap(options, SpannerConnectorOptions.PROTO_TYPE_NAMES.key(), protos);
+        putMap(options, SpannerConnectorOptions.ENUM_TYPE_NAMES.key(), enums);
         return new Converted(schema.build(), options);
     }
 

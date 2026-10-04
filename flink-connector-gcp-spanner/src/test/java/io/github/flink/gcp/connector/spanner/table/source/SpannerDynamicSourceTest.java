@@ -55,7 +55,7 @@ class SpannerDynamicSourceTest {
         assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
         assertThat(source).isNotEqualTo(SCHEMA);
 
-        assertThat(source(config("schema", "analytics"))).isNotEqualTo(source);
+        assertThat(source(config("named-schema", "analytics"))).isNotEqualTo(source);
         assertThat(source(config("dialect", "POSTGRESQL"))).isNotEqualTo(source);
         assertThat(source(config("scan.index", "by_name"))).isNotEqualTo(source);
         assertThat(source(config("scan.partition.max-partitions", "10"))).isNotEqualTo(source);

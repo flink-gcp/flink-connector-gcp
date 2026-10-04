@@ -186,7 +186,8 @@ class SpannerCatalogTest {
                         Map.entry("service-account-key-file", "/key.json"));
         assertThat(catalog.getTable(new ObjectPath("pg", "\"Sales\".\"Items\"")).getOptions())
                 .containsEntry("dialect", "POSTGRESQL")
-                .containsEntry("schema", "\"Sales\"")
+                .containsEntry("named-schema", "\"Sales\"")
+                .doesNotContainKey("schema")
                 .containsEntry("table", "\"Items\"")
                 .containsEntry("service-account-key-file", "/key.json");
     }
@@ -223,8 +224,8 @@ class SpannerCatalogTest {
         assertThat(client.requests).doesNotContain("protoBundleTypes gsql");
 
         assertThat(catalog.getTable(new ObjectPath("gsql", "Events")).getOptions())
-                .containsEntry("schema.proto-type-names", "Ev:example.Event")
-                .containsEntry("schema.enum-type-names", "St:example.Status");
+                .containsEntry("proto-type-names", "Ev:example.Event")
+                .containsEntry("enum-type-names", "St:example.Status");
     }
 
     @Test

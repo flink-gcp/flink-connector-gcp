@@ -262,7 +262,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 + "  'dialect' = '"
                 + dialect.name()
                 + "',\n"
-                + "  'schema.uuid-field-paths' = 'id;related',\n"
+                + "  'uuid-field-paths' = 'id;related',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'\n"

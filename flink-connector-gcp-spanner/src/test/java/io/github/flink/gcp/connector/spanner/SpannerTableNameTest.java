@@ -131,7 +131,7 @@ class SpannerTableNameTest {
                         () -> SpannerTableName.of("\u2028", "orders", Dialect.GOOGLE_STANDARD_SQL))
                 .as("SpannerIdentifier, reached through a configured schema")
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("schema");
+                .hasMessageContaining("named-schema");
         assertThatThrownBy(
                         () ->
                                 SpannerTableName.of(null, "orders", Dialect.POSTGRESQL)
@@ -162,7 +162,7 @@ class SpannerTableNameTest {
     void rejectsBlankMultipartAndDialectMismatchedIdentifiers() {
         assertThatThrownBy(() -> SpannerTableName.of(" ", "orders", Dialect.GOOGLE_STANDARD_SQL))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("schema");
+                .hasMessageContaining("named-schema");
         assertThatThrownBy(() -> SpannerTableName.of("sales", " ", Dialect.POSTGRESQL))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("table");
@@ -189,7 +189,7 @@ class SpannerTableNameTest {
                                 SpannerTableName.of(
                                         "`sales\\q`", "orders", Dialect.GOOGLE_STANDARD_SQL))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("schema");
+                .hasMessageContaining("named-schema");
         assertThatThrownBy(
                         () ->
                                 SpannerTableName.of(

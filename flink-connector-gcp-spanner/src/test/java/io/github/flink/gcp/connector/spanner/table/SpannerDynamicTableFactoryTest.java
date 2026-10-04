@@ -138,7 +138,7 @@ class SpannerDynamicTableFactoryTest {
     @Test
     void qualifiesNamedSchemaSinksAndScans() throws Exception {
         Map<String, String> options = options();
-        options.put("schema", "analytics");
+        options.put("named-schema", "analytics");
 
         SpannerMutationsSink<?> sink = built(SCHEMA, options);
         Mutation mutation =
@@ -151,10 +151,149 @@ class SpannerDynamicTableFactoryTest {
     }
 
     @Test
+    void theDeprecatedSchemaKeyStillQualifiesSinksAndScans() throws Exception {
+        // 1.0.0 and 1.1.0 published the key as "schema"; a WITH clause that still writes it keeps
+        // working (issue #1617), beside a former marker key as a 1.1.0 DDL would have it. A catalog
+        // that persists the table as properties can still lose it.
+        Map<String, String> options = options();
+        options.put("schema", "analytics");
+        options.put("schema.json-field-paths", "name");
+
+        SpannerMutationsSink<?> sink = built(SCHEMA, options);
+        Mutation mutation =
+                ((RowDataSerializationSchema) sink.getConfig().getSerializer())
+                        .serialize(GenericRowData.of(1L, null), null);
+        SpannerSourceConfig<?> source = builtSource(SCHEMA, options);
+
+        assertThat(mutation.getTable()).isEqualTo("analytics.people");
+        assertThat(source.getReadOperation().getTable()).isEqualTo("analytics.people");
+    }
+
+    @Test
+    void theDeprecatedSchemaPrefixedMarkerKeysStillMarkTheirFields() {
+        // Each marker on a field of the wrong carrier type: the rejection proves the marker
+        // reached the type mapping under its old key, on both paths. A map option also reads one
+        // key.name entry per field, which must not count as setting the option twice.
+        Map<String, String> markers =
+                Map.of(
+                        "schema.json-field-paths", "id",
+                        "schema.uuid-field-paths", "id",
+                        "schema.proto-type-names", "id:example.Event",
+                        "schema.proto-type-names.id", "example.Event",
+                        "schema.enum-type-names", "name:example.Status");
+        Map<String, String> expected =
+                Map.of(
+                        "schema.json-field-paths", "JSON must be declared as STRING",
+                        "schema.uuid-field-paths", "UUID must be declared as STRING",
+                        "schema.proto-type-names", "PROTO must be declared as BYTES",
+                        "schema.proto-type-names.id", "PROTO must be declared as BYTES",
+                        "schema.enum-type-names", "ENUM must be declared as BIGINT");
+        markers.forEach(
+                (key, value) -> {
+                    Map<String, String> options = options();
+                    options.put(key, value);
+                    assertThatThrownBy(() -> sink(SCHEMA, options))
+                            .as(key)
+                            .hasStackTraceContaining(expected.get(key));
+                    assertThatThrownBy(() -> source(SCHEMA, options))
+                            .as(key)
+                            .hasStackTraceContaining(expected.get(key));
+                });
+    }
+
+    @Test
+    void theUnreleasedSchemaGeneratedColumnsKeyIsNotAccepted() {
+        // generated-columns arrived with the catalog and was renamed before any release carried
+        // its schema-prefixed spelling, so that spelling is an unknown option.
+        Map<String, String> options = options();
+        options.put("schema.generated-columns", "name");
+
+        assertThatThrownBy(() -> sink(SCHEMA, options))
+                .hasStackTraceContaining("Unsupported options")
+                .hasStackTraceContaining("schema.generated-columns");
+        assertThatThrownBy(() -> source(SCHEMA, options))
+                .hasStackTraceContaining("Unsupported options")
+                .hasStackTraceContaining("schema.generated-columns");
+    }
+
+    @Test
+    void rejectsAnOptionSetUnderBothItsKeyAndItsDeprecatedKey() {
+        // Flink would read the current key and drop the deprecated one without a word; two
+        // schema values would address two different tables.
+        Map<String, Map<String, String>> conflicts =
+                Map.of(
+                        "named-schema",
+                        Map.of("named-schema", "analytics", "schema", "sales"),
+                        "json-field-paths",
+                        Map.of("json-field-paths", "name", "schema.json-field-paths", "name"),
+                        "uuid-field-paths",
+                        Map.of("uuid-field-paths", "name", "schema.uuid-field-paths", "name"),
+                        "proto-type-names",
+                        // A map option also reads one key.name entry per field.
+                        Map.of(
+                                "proto-type-names.id",
+                                "example.Event",
+                                "schema.proto-type-names",
+                                "name:example.Other"),
+                        "enum-type-names",
+                        Map.of(
+                                "enum-type-names",
+                                "id:example.Status",
+                                "schema.enum-type-names.id",
+                                "example.Status"));
+        conflicts.forEach(
+                (key, spellings) -> {
+                    Map<String, String> options = options();
+                    options.putAll(spellings);
+                    String deprecated = key.equals("named-schema") ? "schema" : "schema." + key;
+                    String message =
+                            key
+                                    + " and its deprecated key "
+                                    + deprecated
+                                    + " are both set; set only one of them";
+                    assertThatThrownBy(() -> sink(SCHEMA, options))
+                            .as(key)
+                            .hasStackTraceContaining(message);
+                    assertThatThrownBy(() -> source(SCHEMA, options))
+                            .as(key)
+                            .hasStackTraceContaining(message);
+                });
+    }
+
+    @Test
+    void namesAMalformedSchemaByTheKeyTheDdlWrote() {
+        // The value reaches the name parser through either key, so the rejection must say which
+        // one: a DDL that wrote only "schema" has no named-schema to correct.
+        for (String key : Arrays.asList("named-schema", "schema")) {
+            Map<String, String> options = options();
+            options.put(key, "sales.eu");
+            String message = ": " + key + " must be one non-blank GoogleSQL identifier";
+            assertThatThrownBy(() -> sink(SCHEMA, options))
+                    .as(key)
+                    .hasStackTraceContaining(message);
+            assertThatThrownBy(() -> source(SCHEMA, options))
+                    .as(key)
+                    .hasStackTraceContaining(message);
+        }
+    }
+
+    @Test
+    void aDeprecatedMarkerKeyDoesNotCountAsTheDeprecatedSchemaKey() {
+        // "schema" is a string option, so a schema.json-field-paths entry is not a value for it:
+        // the current schema key beside an old marker key is not a conflict.
+        Map<String, String> options = options();
+        options.put("named-schema", "analytics");
+        options.put("schema.json-field-paths", "name");
+
+        assertThat(builtSource(SCHEMA, options).getReadOperation().getTable())
+                .isEqualTo("analytics.people");
+    }
+
+    @Test
     void appliesPostgresqlIdentifierFoldingToNamedSchemaPaths() {
         Map<String, String> options = options();
         options.put("dialect", Dialect.POSTGRESQL.name());
-        options.put("schema", "Analytics");
+        options.put("named-schema", "Analytics");
         options.put("table", "People");
         options.put("scan.index", "ByName");
 
@@ -168,13 +307,13 @@ class SpannerDynamicTableFactoryTest {
     @Test
     void rejectsMalformedNamedSchemaComponentsDuringFactoryValidation() {
         Map<String, String> multipartTable = options();
-        multipartTable.put("schema", "analytics");
+        multipartTable.put("named-schema", "analytics");
         multipartTable.put("table", "analytics.people");
         assertThatThrownBy(() -> source(SCHEMA, multipartTable))
                 .hasStackTraceContaining("table must be one non-blank GoogleSQL identifier");
 
         Map<String, String> multipartIndex = options();
-        multipartIndex.put("schema", "analytics");
+        multipartIndex.put("named-schema", "analytics");
         multipartIndex.put("scan.index", "analytics.by_name");
         assertThatThrownBy(() -> source(SCHEMA, multipartIndex))
                 .hasStackTraceContaining("scan.index must be one non-blank GoogleSQL identifier");
@@ -188,7 +327,7 @@ class SpannerDynamicTableFactoryTest {
         // checks behind them return to trim().isEmpty(). SpannerIdentifier has no test class of
         // its own and is reached only this way.
         Map<String, String> blankTable = options();
-        blankTable.put("schema", "analytics");
+        blankTable.put("named-schema", "analytics");
         blankTable.put("table", "\u2028");
         assertThatThrownBy(() -> source(SCHEMA, blankTable))
                 .hasStackTraceContaining("table must be one non-blank GoogleSQL identifier");
@@ -423,7 +562,7 @@ class SpannerDynamicTableFactoryTest {
     @Test
     void factoryWrappingKeepsTheActionableMarkerErrorInTheCause() {
         Map<String, String> options = options();
-        options.put("schema.json-field-paths", "missing");
+        options.put("json-field-paths", "missing");
 
         assertThatThrownBy(() -> sink(SCHEMA, options))
                 .hasStackTraceContaining("unknown field paths")
@@ -433,7 +572,7 @@ class SpannerDynamicTableFactoryTest {
     @Test
     void rejectsAUuidMarkerOnANonStringCarrierDuringFactoryValidation() {
         Map<String, String> options = options();
-        options.put("schema.uuid-field-paths", "id");
+        options.put("uuid-field-paths", "id");
 
         assertThatThrownBy(() -> sink(SCHEMA, options))
                 .hasStackTraceContaining("UUID must be declared as STRING");
@@ -646,7 +785,7 @@ class SpannerDynamicTableFactoryTest {
     @Test
     void aChangeStreamTableRefusesANonKeyGeneratedColumnButReadsAGeneratedKey() {
         Map<String, String> nonKey = changeStreamOptions("full");
-        nonKey.put("schema.generated-columns", "name");
+        nonKey.put("generated-columns", "name");
         assertThatThrownBy(() -> source(withPrimaryKey(), nonKey))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining(
@@ -654,7 +793,7 @@ class SpannerDynamicTableFactoryTest {
                                 + " which are outside the declared PRIMARY KEY");
 
         Map<String, String> key = changeStreamOptions("full");
-        key.put("schema.generated-columns", "id");
+        key.put("generated-columns", "id");
         assertThat(source(withPrimaryKey(), key)).isInstanceOf(ScanTableSource.class);
         // The check sees only the key the DDL declares, so the same column is refused without it.
         assertThatThrownBy(() -> source(SCHEMA, key))
@@ -663,7 +802,7 @@ class SpannerDynamicTableFactoryTest {
                 .hasStackTraceContaining("Declare the table's Spanner primary key");
 
         Map<String, String> bounded = options();
-        bounded.put("schema.generated-columns", "name");
+        bounded.put("generated-columns", "name");
         assertThat(source(withPrimaryKey(), bounded)).isInstanceOf(ScanTableSource.class);
     }
 

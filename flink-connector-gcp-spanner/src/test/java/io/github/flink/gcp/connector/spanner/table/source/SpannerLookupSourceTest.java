@@ -156,11 +156,11 @@ class SpannerLookupSourceTest {
     void passesTheQualifiedTableToSyncAndAsyncPointReads() {
         LookupFunctionProvider sync =
                 (LookupFunctionProvider)
-                        provider(config("schema", "analytics"), new int[][] {{0}, {1}});
+                        provider(config("named-schema", "analytics"), new int[][] {{0}, {1}});
         AsyncLookupFunctionProvider async =
                 (AsyncLookupFunctionProvider)
                         provider(
-                                config("schema", "analytics", "lookup.async", "true"),
+                                config("named-schema", "analytics", "lookup.async", "true"),
                                 new int[][] {{0}, {1}});
 
         assertThat(((SpannerRowDataLookupFunction) sync.createLookupFunction()).rowLookup())

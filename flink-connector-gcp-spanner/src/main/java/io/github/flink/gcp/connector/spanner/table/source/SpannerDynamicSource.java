@@ -136,7 +136,7 @@ public final class SpannerDynamicSource
 
     private static SpannerTableName tableName(String table, ReadableConfig config) {
         return SpannerTableName.of(
-                config.getOptional(SpannerConnectorOptions.SCHEMA).orElse(null),
+                config.getOptional(SpannerConnectorOptions.NAMED_SCHEMA).orElse(null),
                 table,
                 config.get(SpannerConnectorOptions.DIALECT));
     }

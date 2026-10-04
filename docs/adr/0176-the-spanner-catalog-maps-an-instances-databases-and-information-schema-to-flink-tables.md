@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0176: The Spanner catalog maps an instance's databases and INFORMATION_SCHEMA to Flink tables
 
 - Status: Accepted
-- Date: 2026-10-03
-- Issues: [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212)
+- Date: 2026-10-03, revised by [#1617](https://github.com/flink-gcp/flink-connector-gcp/issues/1617) on 2026-10-04
+- Issues: [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1617](https://github.com/flink-gcp/flink-connector-gcp/issues/1617)
 - Modules: spanner
-- Refines: ADR-0096's "the DDL must match the live schema and is not read at planning", which now holds for hand-written tables only, and its marker options, which gain `schema.generated-columns`; ADR-0105's column validation, which a change-stream table with a non-key generated column now meets at planning
+- Refines: ADR-0096's "the DDL must match the live schema and is not read at planning", which now holds for hand-written tables only, and its marker options, which gain `generated-columns`; ADR-0105's column validation, which a change-stream table with a non-key generated column now meets at planning
 - Current behavior: [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog)
 
 ## Context
@@ -51,13 +51,13 @@ The catalog answers such a name in `databaseExists` without a request, for the r
 ### Table names
 
 A table in the default schema, the empty GoogleSQL schema or PostgreSQL `public`, is the Flink object name alone; a table in a named schema is `schema.table`.
-Each part is rendered in the canonical quoting the connector's `schema` and `table` options already decode (ADR-0096): a GoogleSQL part outside the plain identifier grammar is backtick-quoted, a PostgreSQL part with an upper-case letter or a character outside the plain grammar is double-quoted.
+Each part is rendered in the canonical quoting the connector's `named-schema` and `table` options already decode (ADR-0096): a GoogleSQL part outside the plain identifier grammar is backtick-quoted, a PostgreSQL part with an upper-case letter or a character outside the plain grammar is double-quoted.
 `getTable` splits the name on dots outside quotes and decodes each part with the same decoder.
 The rendering and the parse are inverses, so every name `listTables` returns resolves to the table it came from; a name that is not one or two canonical parts is `TableNotExistException`, never a `CatalogException`.
 The lookup compares a GoogleSQL name case-insensitively and a PostgreSQL name exactly, the rule `SpannerTableName.catalogKey` applies, and the resolved table carries the native spelling `INFORMATION_SCHEMA` reports.
 
 A default-schema table carries `table` alone, holding the native name, which the connector passes to Spanner without decoding.
-A named-schema table carries `schema` and `table`, each in canonical quoting, which the connector decodes back to the native names.
+A named-schema table carries `named-schema` and `table`, each in canonical quoting, which the connector decodes back to the native names.
 
 ### Type mapping
 
@@ -74,10 +74,10 @@ A named-schema table carries `schema` and `table`, each in canonical quoting, wh
 | `BYTES(n)`, `BYTES(MAX)` | `bytea` | `BYTES` | |
 | `DATE` | `date` | `DATE` | |
 | `TIMESTAMP` | `timestamp with time zone`, `spanner.commit_timestamp` | `TIMESTAMP_LTZ(9)` | |
-| `JSON` | `jsonb` | `STRING` | `schema.json-field-paths` |
-| `UUID` | `uuid` | `STRING` | `schema.uuid-field-paths` |
-| `PROTO<pkg.Message>`, or `` `pkg.Message` `` on the emulator | | `BYTES` | `schema.proto-type-names` |
-| `ENUM<pkg.Enum>`, or `` `pkg.Enum` `` on the emulator | | `BIGINT` | `schema.enum-type-names` |
+| `JSON` | `jsonb` | `STRING` | `json-field-paths` |
+| `UUID` | `uuid` | `STRING` | `uuid-field-paths` |
+| `PROTO<pkg.Message>`, or `` `pkg.Message` `` on the emulator | | `BYTES` | `proto-type-names` |
+| `ENUM<pkg.Enum>`, or `` `pkg.Enum` `` on the emulator | | `BIGINT` | `enum-type-names` |
 | `ARRAY<T>`, with an optional `(vector_length=>n)` | `T[]`; a vector column as `ARRAY<T>(vector_length=>n)`, or `T[] vector length n` | `ARRAY<T>`, nullable elements | the element's, on the array field |
 
 Spanner reports a PROTO or ENUM column with its kind, as `PROTO<pkg.Message>` or `ENUM<pkg.Enum>`.
@@ -94,7 +94,7 @@ A key whose type the connector cannot key on, such as `FLOAT32`, PostgreSQL `num
 
 ### Generated and hidden columns
 
-A stored generated column (`IS_GENERATED = 'ALWAYS'`, `IS_STORED = 'YES'`) resolves as an ordinary column and is listed in a new connector option, `schema.generated-columns`.
+A stored generated column (`IS_GENERATED = 'ALWAYS'`, `IS_STORED = 'YES'`) resolves as an ordinary column and is listed in a new connector option, `generated-columns`.
 A generated column that is not stored is left out: Spanner's read API, which the table source and the lookup both go through, refuses to return one ("Cannot read generated column without STORED attribute"), so resolving it would leave a table no scan can read.
 The sink leaves a listed column out of every insert and upsert, because Spanner refuses a mutation that sets a generated column, a generated key column included; an upsert without the key column lets Spanner compute the key, and a delete still names the row by it.
 A generated key column is `NOT NULL`, as every key column is, so an `INSERT INTO` must supply it even though an upsert leaves the value out.
@@ -120,7 +120,7 @@ Statistics are `UNKNOWN`: `INFORMATION_SCHEMA` holds no row count, and ADR-0168'
 ### Tier
 
 `SpannerCatalogOptions` is `@PublicEvolving`; the catalog and its factory are `@Internal` (ADR-0168).
-`schema.generated-columns` is a `SpannerConnectorOptions` constant at that class's tier.
+`generated-columns` is a `SpannerConnectorOptions` constant at that class's tier.
 
 ## Evidence
 
@@ -165,5 +165,5 @@ Not measured: which permissions listing needs at the least, since the suite runs
 ## Consequences
 
 - A Spanner table is usable from SQL with no DDL, in either dialect and in any schema.
-- `schema.generated-columns` makes a hand-written table with generated columns writable too.
+- `generated-columns` makes a hand-written table with generated columns writable too.
 - The catalog's credentials need the database admin permissions for listing and dialect, and on the emulator, whose `SPANNER_TYPE` omits a proto type's kind, for the proto bundle, beside the data permissions the tables' reads and writes already need.

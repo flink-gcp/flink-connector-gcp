@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.spanner.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.FallbackKey;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
@@ -40,6 +42,7 @@ import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -82,12 +85,12 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.EMULATOR_ENDPOINT,
                         SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         SpannerConnectorOptions.DIALECT,
-                        SpannerConnectorOptions.SCHEMA,
-                        SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS,
-                        SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS,
-                        SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS,
-                        SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
-                        SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES,
+                        SpannerConnectorOptions.NAMED_SCHEMA,
+                        SpannerConnectorOptions.JSON_FIELD_PATHS,
+                        SpannerConnectorOptions.UUID_FIELD_PATHS,
+                        SpannerConnectorOptions.GENERATED_COLUMNS,
+                        SpannerConnectorOptions.PROTO_TYPE_NAMES,
+                        SpannerConnectorOptions.ENUM_TYPE_NAMES,
                         SpannerConnectorOptions.SCAN_MODE,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
@@ -133,6 +136,7 @@ public final class SpannerDynamicTableFactory
         // Before validating, as Bigtable's sink does: a table that cannot be written to at all is
         // the reason to report, not whichever secondary complaint validate() reaches first.
         checkNotAChangeStreamTable(helper.getOptions());
+        rejectBothSpellings(context.getCatalogTable().getOptions());
         helper.validate();
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
@@ -141,7 +145,7 @@ public final class SpannerDynamicTableFactory
         validateEmulatorEndpoint(config);
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
-        SpannerTableName table = tableName(config);
+        SpannerTableName table = tableName(context.getCatalogTable().getOptions(), config);
 
         return SpannerDynamicSink.builder()
                 .schema(schema)
@@ -166,6 +170,7 @@ public final class SpannerDynamicTableFactory
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        rejectBothSpellings(context.getCatalogTable().getOptions());
         helper.validate();
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
@@ -174,12 +179,15 @@ public final class SpannerDynamicTableFactory
         validateSourceMode(context.getCatalogTable().getOptions(), config, schema);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
+        // Before anything else parses the name, so a malformed one is reported under the key the
+        // DDL wrote.
+        SpannerTableName table = tableName(context.getCatalogTable().getOptions(), config);
         if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
             return SpannerChangeStreamDynamicSource.from(
                     schema,
                     physicalType,
                     config,
-                    tableName(config),
+                    table,
                     SpannerTableLineage.from(
                             context.getObjectIdentifier().asSummaryString(), config));
         }
@@ -224,6 +232,65 @@ public final class SpannerDynamicTableFactory
                             + " Spanner primary key, or read the change stream through a table"
                             + " that does not declare these columns.");
         }
+    }
+
+    /**
+     * Refuses an option written under both its key and a deprecated key, in the table's options or
+     * through an {@code OPTIONS} hint Flink has merged into them. Flink would read the current key
+     * and ignore the other without a word, and two values for the named schema would address two
+     * different tables.
+     */
+    private void rejectBothSpellings(Map<String, String> supplied) {
+        Set<ConfigOption<?>> options = new HashSet<>(requiredOptions());
+        options.addAll(optionalOptions());
+        for (ConfigOption<?> option : options) {
+            for (FallbackKey deprecated : option.fallbackKeys()) {
+                if (deprecated.isDeprecated()
+                        && suppliedUnder(supplied, option, option.key())
+                        && suppliedUnder(supplied, option, deprecated.getKey())) {
+                    throw new ValidationException(
+                            option.key()
+                                    + " and its deprecated key "
+                                    + deprecated.getKey()
+                                    + " are both set; set only one of them, and in an OPTIONS"
+                                    + " hint use the key the table already sets.");
+                }
+            }
+        }
+    }
+
+    /** The key {@code option} was written under: its own, or the fallback key that supplied it. */
+    private static String suppliedKey(Map<String, String> supplied, ConfigOption<?> option) {
+        for (FallbackKey fallback : option.fallbackKeys()) {
+            if (suppliedUnder(supplied, option, fallback.getKey())) {
+                return fallback.getKey();
+            }
+        }
+        return option.key();
+    }
+
+    /**
+     * Whether {@code option} is set under {@code key}, once the entries under its other keys are
+     * removed. Flink's own lookup decides what counts as set, so a map option's {@code key.name}
+     * entries count and a string option's do not.
+     */
+    private static boolean suppliedUnder(
+            Map<String, String> supplied, ConfigOption<?> option, String key) {
+        Set<String> others = new HashSet<>();
+        others.add(option.key());
+        option.fallbackKeys().forEach(fallback -> others.add(fallback.getKey()));
+        others.remove(key);
+        Map<String, String> remaining = new HashMap<>(supplied);
+        remaining
+                .keySet()
+                .removeIf(
+                        entry ->
+                                others.stream()
+                                        .anyMatch(
+                                                other ->
+                                                        entry.equals(other)
+                                                                || entry.startsWith(other + ".")));
+        return Configuration.fromMap(remaining).contains(option);
     }
 
     private static void validateSourceMode(
@@ -357,9 +424,10 @@ public final class SpannerDynamicTableFactory
                                         value, SpannerConnectorOptions.EMULATOR_ENDPOINT.key()));
     }
 
-    private static SpannerTableName tableName(ReadableConfig config) {
+    private static SpannerTableName tableName(Map<String, String> supplied, ReadableConfig config) {
         return SpannerTableName.of(
-                config.getOptional(SpannerConnectorOptions.SCHEMA).orElse(null),
+                config.getOptional(SpannerConnectorOptions.NAMED_SCHEMA).orElse(null),
+                suppliedKey(supplied, SpannerConnectorOptions.NAMED_SCHEMA),
                 config.get(SpannerConnectorOptions.TABLE),
                 config.get(SpannerConnectorOptions.DIALECT));
     }
@@ -370,15 +438,15 @@ public final class SpannerDynamicTableFactory
                 (RowType) physicalType.getLogicalType(),
                 context.getPrimaryKeyIndexes(),
                 config.get(SpannerConnectorOptions.DIALECT),
-                config.getOptional(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS)
+                config.getOptional(SpannerConnectorOptions.JSON_FIELD_PATHS)
                         .orElse(Collections.emptyList()),
-                config.getOptional(SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS)
+                config.getOptional(SpannerConnectorOptions.UUID_FIELD_PATHS)
                         .orElse(Collections.emptyList()),
-                config.getOptional(SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS)
+                config.getOptional(SpannerConnectorOptions.GENERATED_COLUMNS)
                         .orElse(Collections.emptyList()),
-                config.getOptional(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES)
+                config.getOptional(SpannerConnectorOptions.PROTO_TYPE_NAMES)
                         .orElse(Collections.emptyMap()),
-                config.getOptional(SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES)
+                config.getOptional(SpannerConnectorOptions.ENUM_TYPE_NAMES)
                         .orElse(Collections.emptyMap()));
     }
 }

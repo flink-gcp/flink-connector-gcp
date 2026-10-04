@@ -1027,7 +1027,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 + "'database'='"
                 + namedSchemaDatabase.getDatabase()
                 + "', "
-                + "'schema'='"
+                + "'named-schema' = '"
                 + schema
                 + "', 'table'='"
                 + table
