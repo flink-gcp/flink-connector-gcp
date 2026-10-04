@@ -18,7 +18,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import workflow
+from . import repository
 from .bundle import source_digest
 from .common import Failure, json_bytes, timestamp, utc
 from .model import Approval
@@ -50,7 +50,7 @@ def check_revision(revision):
         try:
             result = subprocess.run(
                 ["git", "--no-optional-locks", *args],
-                cwd=workflow.ROOT,
+                cwd=repository.ROOT,
                 env={
                     key: value
                     for key, value in os.environ.items()

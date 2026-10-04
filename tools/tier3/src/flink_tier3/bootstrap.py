@@ -31,7 +31,8 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path.cwd()
+from . import repository
+
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
 NAMESPACES = (
     "tier3-system",
@@ -211,10 +212,10 @@ def prepare_operator_chart(root, *, download=True):
         archive.write_bytes(data)
     values = yaml.safe_load((root / "values.yaml").read_text())
     image = values.get("image") if isinstance(values, dict) else None
-    repository = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator"
+    image_repository = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator"
     if (
         not isinstance(image, dict)
-        or image.get("repository") != repository
+        or image.get("repository") != image_repository
         or not isinstance(image.get("digest"), str)
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", image["digest"])
     ):
@@ -233,7 +234,7 @@ def prepare_operator_chart(root, *, download=True):
             str(root / "values.yaml"),
         ]
     ).stdout
-    documents = operator_documents(rendered, repository + "@" + image["digest"])
+    documents = operator_documents(rendered, image_repository + "@" + image["digest"])
     (cache / "operator-rendered.yaml").write_text(rendered)
     print(
         f"Verified Operator chart {pin['version']} and {len(documents)} idle resources"
@@ -260,7 +261,7 @@ class Cluster:
         if root not in ("bootstrap", "operator"):
             raise ValueError("Unknown Tier-3 root")
         self.root = root
-        self.root_path = ROOT / ("opentofu/tier3-" + root)
+        self.root_path = repository.ROOT / ("opentofu/tier3-" + root)
         self.kubeconfig = Path(kubeconfig).absolute()
         if self.kubeconfig.resolve() == (Path.home() / ".kube/config").resolve():
             raise ValueError("Use a dedicated kubeconfig, not the default kubeconfig")

@@ -18,6 +18,7 @@ import argparse
 from importlib import import_module
 from pathlib import Path
 
+from . import repository
 from .bundle import DISPATCHED
 
 
@@ -43,20 +44,18 @@ def main(argv=None):
     ):
         commands.add_parser(command, add_help=False)
     args, remaining = parser.parse_known_args(argv)
-    # The delivery is computed from this same table, because a computed import
-    # is the one edge its walk cannot follow; one table keeps them in step.
+    # The delivery is computed from this same table, because the walk cannot
+    # follow a computed import; one table keeps them in step.
     module = import_module(
         "." + DISPATCHED.get(args.command, args.command), __package__
     )
     # The supervisor runs in-cluster; offline analysis commands need no checkout.
     if args.command not in ("supervisor", "analyze", "vm-analyze", "bigquery"):
-        from . import bootstrap, lifecycle, schemas, workflow
-
         root = args.repository.resolve()
         if not any(flag in remaining for flag in ("--help", "-h")) and not (
             (root / "kubernetes/cue.mod/module.cue").is_file()
             and (root / "opentofu").is_dir()
         ):
             parser.error("--repository must name the flink-connector-gcp checkout")
-        bootstrap.ROOT = lifecycle.ROOT = schemas.ROOT = workflow.ROOT = root
+        repository.ROOT = root
     return module.main(remaining)

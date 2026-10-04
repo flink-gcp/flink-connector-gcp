@@ -29,6 +29,7 @@ import requests
 import urllib3
 import yaml
 from flink_tier3 import lifecycle as cli
+from flink_tier3 import repository
 from google.cloud import storage
 
 rt = cli.rt
@@ -1785,7 +1786,7 @@ def test_plan_timeout_preserves_partial_output_and_exact_lock(
         rt.Failure,
         match=f"flink-gcp init exhausted the {rt.Schedule.plan_budget_seconds}-second plan budget",
     ):
-        cli.wf.plans(
+        cli.plans(
             SimpleNamespace(directory=tmp_path, kubeconfig=tmp_path / "kubeconfig"),
             env[1],
         )
@@ -2160,7 +2161,7 @@ def test_plan_timeout_workflow_output_is_bounded(env, monkeypatch, tmp_path, cap
 
     monkeypatch.setattr(subprocess, "run", timeout)
     with pytest.raises(rt.Failure, match="inspect the output above"):
-        cli.wf.plans(
+        cli.plans(
             SimpleNamespace(directory=tmp_path, kubeconfig=tmp_path / "kubeconfig"),
             env[1],
         )
@@ -2733,9 +2734,9 @@ def test_successful_plans_feed_cli_finish_and_release_lock(env, monkeypatch, tmp
     monkeypatch.setattr(cli.bootstrap, "Cluster", Cluster)
     monkeypatch.setattr(cli.bootstrap, "prepare_operator_chart", lambda _path: None)
     monkeypatch.setattr(cli.bootstrap, "provider_environment", lambda _path: {})
-    monkeypatch.setattr(cli.wf, "external", lambda _path: env[0])
+    monkeypatch.setattr(cli, "external", lambda _path: env[0])
     args = SimpleNamespace(directory=tmp_path, kubeconfig=tmp_path / "kubeconfig")
-    cli.wf.plans(args, env[1])
+    cli.plans(args, env[1])
     cli.finish(args, env[1])
     assert len(commands) == 6
     assert env[1].read(rt.ENVIRONMENT)[0] is None
@@ -3055,7 +3056,7 @@ def test_cli_completed_recovery_reaches_idle_and_retains_lock_for_plans(
         env[1].write("runs/test-1310/application.json", app(env))
     snapshots = []
     monkeypatch.setattr(cli.wf, "snapshot", lambda kube, *_a: snapshots.append(kube))
-    monkeypatch.setattr(cli.wf, "external", lambda _path, **kwargs: env[0])
+    monkeypatch.setattr(cli, "external", lambda _path, **kwargs: env[0])
     monkeypatch.setattr(
         cli.wf,
         "github_run",
@@ -3129,7 +3130,7 @@ def test_cli_start_settles_once_after_the_last_admission_call(
     monkeypatch.setattr(cli.uuid, "uuid4", lambda: next(uuids, None) or new_uuid())
     monkeypatch.setattr(cli.time, "time", env[3])
     monkeypatch.setattr(cli.wf, "execution", lambda _kind, _nonce: owner)
-    monkeypatch.setattr(cli.wf, "external", lambda _path, **kwargs: env[0])
+    monkeypatch.setattr(cli, "external", lambda _path, **kwargs: env[0])
     monkeypatch.setattr(
         cli.bootstrap,
         "Cluster",
@@ -3484,7 +3485,7 @@ def test_infrastructure_recovery_allows_idle_operator_image_drift(
 ):
     from types import SimpleNamespace
 
-    monkeypatch.setattr(cli.wf, "ROOT", ROOT)
+    monkeypatch.setattr(repository, "ROOT", ROOT)
     owner = env[2]["lock_owner"] | {"kind": kind}
     _, generation = env[1].read(rt.ENVIRONMENT)
     env[1].write(rt.ENVIRONMENT, owner, generation)
@@ -3577,7 +3578,7 @@ def test_plans_share_one_budget_across_all_six_commands(
     from types import SimpleNamespace
 
     cli.wf.save(tmp_path / "owner.json", env[2]["lock_owner"])
-    monkeypatch.setattr(cli.wf.time, "monotonic", env[3])
+    monkeypatch.setattr(cli.time, "monotonic", env[3])
     durations = [110, 140, 20, 40, 20, 240 if exhaust else 40]
     calls = []
 
@@ -3614,10 +3615,10 @@ def test_plans_share_one_budget_across_all_six_commands(
     args = SimpleNamespace(directory=tmp_path, kubeconfig=tmp_path / "kubeconfig")
     if exhaust:
         with pytest.raises(rt.Failure, match="tier3-operator plan exhausted"):
-            cli.wf.plans(args, env[1])
+            cli.plans(args, env[1])
         assert not (tmp_path / "plans.json").exists()
     else:
-        cli.wf.plans(args, env[1])
+        cli.plans(args, env[1])
         assert json.loads((tmp_path / "plans.json").read_text())["empty"]
     assert len(calls) == 6
     assert env[1].read(rt.ENVIRONMENT)[0] == env[2]["lock_owner"]
@@ -3637,8 +3638,7 @@ def test_plans_keep_the_authenticated_kubeconfig_after_tofu_chdir(
         directory.mkdir(parents=True)
         (directory / "config").write_text("wrong root-local config")
     monkeypatch.chdir(caller)
-    monkeypatch.setattr(cli.wf, "ROOT", checkout)
-    monkeypatch.setattr(cli.bootstrap, "ROOT", checkout)
+    monkeypatch.setattr(repository, "ROOT", checkout)
     authenticated = []
     monkeypatch.setattr(
         cli.bootstrap.Cluster,
@@ -3656,12 +3656,10 @@ def test_plans_keep_the_authenticated_kubeconfig_after_tofu_chdir(
         commands.append(arguments)
         return subprocess.CompletedProcess(arguments, 0, "empty", "")
 
-    monkeypatch.setattr(cli.wf.subprocess, "run", tofu)
+    monkeypatch.setattr(cli.subprocess, "run", tofu)
     directory = tmp_path / "evidence"
     cli.wf.save(directory / "owner.json", env[2]["lock_owner"])
-    cli.wf.plans(
-        SimpleNamespace(kubeconfig=Path("config"), directory=directory), env[1]
-    )
+    cli.plans(SimpleNamespace(kubeconfig=Path("config"), directory=directory), env[1])
     assert authenticated == [caller / "config", caller / "config"]
     assert len(commands) == 6
     assert json.loads((directory / "plans.json").read_text())["empty"]
@@ -3827,3 +3825,24 @@ def test_pubsub_retry_refuses_success_receipt_invalidated_by_evidence_failure(en
         runner.finalize(plans)
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     assert runner.env.refresh().evidence_failed
+
+
+@pytest.mark.parametrize(
+    "argv,handler",
+    [
+        (["--kubeconfig", "k", "recover", "--source-id", "1"], "recover"),
+        (["--kubeconfig", "k", "plans"], "plans"),
+        (["--kubeconfig", "k", "finish"], "finish"),
+        (["lock", "--file", "f", "--kind", "plan", "acquire"], "lock"),
+    ],
+)
+def test_every_command_dispatches_to_its_handler(monkeypatch, argv, handler):
+    """The table is built on every call, so a dangling entry breaks every command."""
+    called = []
+    monkeypatch.setattr(cli.rt, "Storage", lambda: "store")
+    for name in ("start", "recover", "plans", "finish", "lock"):
+        monkeypatch.setattr(
+            cli, name, lambda args, store, name=name: called.append((name, store))
+        )
+    cli.main(argv)
+    assert called == [(handler, "store")]

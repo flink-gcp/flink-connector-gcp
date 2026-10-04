@@ -29,6 +29,7 @@ Because the set is closed under imports, the runner computes that delivery pin f
 Adding a module the entrypoint reaches includes it in both the delivery and its pin automatically; a module nothing delivered imports is in neither, and enters both as soon as a delivered module imports it.
 The rendered-payload test runs the projected directory, which catches a module missing at import time; a module reached only by a deferred import inside a function is delivered by the walk but not exercised there.
 The Pod's command is fixed by this manifest, and `bundle.POD_COMMANDS` names it, because the CLI resolves a command to its module through a computed import that no walk can follow.
+Every command but `supervisor` and the offline analyses reads the repository from `repository.ROOT`, which the CLI sets from `--repository`; the CLI no longer imports the modules those commands use, and the cluster client and root plans live in `lifecycle`, their only caller, so nothing delivered reaches `bootstrap`, `lifecycle` or `schemas`.
 The 32-cell fixture keeps UTF-8 ConfigMap data below 768 KiB, reserving 256 KiB below the [Kubernetes data ceiling](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/apis/core/validation/validation.go); it also keeps the serialized JSON below 1 MiB.
 The data budget counts values as Kubernetes does, excluding the extra quoting and escaping in JSON.
 Adding the Pub/Sub handoff module exceeded the former 768 KiB serialized-JSON guard: the fixture measured 737,522 data bytes and 789,286 JSON bytes.

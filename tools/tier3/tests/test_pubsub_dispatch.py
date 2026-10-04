@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3 import approval_bundle
+from flink_tier3 import approval_bundle, repository
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import pubsub_bundle as bundles
 from flink_tier3.common import Failure, digest
@@ -44,7 +44,7 @@ PHRASE = (
 @pytest.fixture
 def reviewed(monkeypatch):
     """Resolve trial names against the tests' fixture directory."""
-    monkeypatch.setattr(cli, "ROOT", FIXTURE_TRIALS.parent)
+    monkeypatch.setattr(repository, "ROOT", FIXTURE_TRIALS.parent)
     monkeypatch.setattr(cli, "PUBSUB_TRIALS", Path(FIXTURE_TRIALS.name))
 
 
@@ -61,7 +61,7 @@ def dispatching(monkeypatch):
         touched.append(("external", kubeconfig, idle))
         raise AssertionError("dispatch reached the cluster")
 
-    monkeypatch.setattr(cli.wf, "external", external)
+    monkeypatch.setattr(cli, "external", external)
     return touched
 
 
@@ -202,7 +202,7 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
         connected.append(idle)
         return kube
 
-    monkeypatch.setattr(cli.wf, "external", external)
+    monkeypatch.setattr(cli, "external", external)
     checked = []
     monkeypatch.setattr(
         cli.bootstrap,

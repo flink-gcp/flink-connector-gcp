@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from flink_tier3 import repository
 from flink_tier3 import schemas as SCHEMAS
 
 
@@ -179,7 +180,7 @@ def cli(tmp_path, monkeypatch):
         "[operator]\n"
         + "\n".join(f"{key} = {json.dumps(value)}" for key, value in pin(data).items())
     )
-    monkeypatch.setattr(SCHEMAS, "ROOT", tmp_path)
+    monkeypatch.setattr(repository, "ROOT", tmp_path)
     expected = {
         Path("v1beta1/resource.cue"): b"package v1beta1\n#Resource: {}\n",
     }
@@ -237,7 +238,7 @@ def test_refresh_replaces_generated_files_and_preserves_other_sources(cli):
     (actual / "stale.cue").write_text("package stale\n")
     note = actual / "README.md"
     note.write_text("Keep this note.\n")
-    handwritten = SCHEMAS.ROOT / "kubernetes/common.cue"
+    handwritten = repository.ROOT / "kubernetes/common.cue"
     handwritten.write_text("package tier3\n")
     invoke("refresh")
     assert SCHEMAS.generated_files(actual) == expected
@@ -283,7 +284,7 @@ def test_each_cue_failure_is_propagated(tmp_path, monkeypatch, stage):
 @pytest.mark.parametrize("change", ["changed", "missing", "stale"])
 def test_crd_payload_changes_are_detected_and_refreshable(cli, change):
     invoke, _, _ = cli
-    directory = SCHEMAS.ROOT / SCHEMAS.CRD_GENERATED
+    directory = repository.ROOT / SCHEMAS.CRD_GENERATED
     original = {p.name: p.read_bytes() for p in directory.glob("*.yaml")}
     file = directory / next(iter(original))
     if change == "changed":
