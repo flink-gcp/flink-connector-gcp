@@ -19,12 +19,6 @@ package io.github.flink.gcp.connector.spanner.table;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.FallbackKey;
 import org.apache.flink.configuration.description.HtmlFormatter;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema;
-import org.apache.flink.table.catalog.CatalogTable;
-import org.apache.flink.table.catalog.Column;
-import org.apache.flink.table.catalog.ResolvedCatalogTable;
-import org.apache.flink.table.catalog.ResolvedSchema;
 
 import org.junit.jupiter.api.Test;
 
@@ -34,6 +28,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.roundTripOptions;
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -96,16 +92,6 @@ class SpannerConnectorOptionsTest {
     }
 
     @Test
-    void noOptionKeyStartsWithSchema() {
-        // Flink's CatalogPropertiesUtil drops every option whose key starts with "schema" (2.2.1)
-        // or "schema." (1.20.4) when it rebuilds a table from a catalog's stored properties, so
-        // such an option would vanish from a persisted table without an error (issue #1617).
-        assertThat(declaredOptions())
-                .extracting(ConfigOption::key)
-                .noneMatch(key -> key.startsWith("schema"));
-    }
-
-    @Test
     void theDeprecatedKeysAreTheSpellingsReleasesPublished() {
         // 1.0.0 and 1.1.0 published these five spellings; generated-columns had none released.
         Map<String, List<String>> deprecated = new HashMap<>();
@@ -131,22 +117,8 @@ class SpannerConnectorOptionsTest {
 
     @Test
     void everyOptionSurvivesACatalogThatPersistsTheTable() {
-        // The round trip HiveCatalog and every catalog storing a table as properties performs,
-        // through the public API. It runs against whichever Flink version the build selects, over
-        // the connector's own options and the Flink-owned ones the factory registers.
         SpannerDynamicTableFactory factory = new SpannerDynamicTableFactory();
-        Map<String, String> options = new HashMap<>();
-        for (ConfigOption<?> option : declaredOptions()) {
-            options.put(option.key(), "value");
-        }
-        for (ConfigOption<?> option : factory.requiredOptions()) {
-            options.put(option.key(), "value");
-        }
-        for (ConfigOption<?> option : factory.optionalOptions()) {
-            options.put(option.key(), "value");
-        }
-
-        assertThat(roundTrip(options)).containsAllEntriesOf(options);
+        assertOptionsSurviveCatalogRoundTrip(factory.requiredOptions(), factory.optionalOptions());
     }
 
     @Test
@@ -161,18 +133,6 @@ class SpannerConnectorOptionsTest {
                         "schema.proto-type-names", "c:example.Event",
                         "schema.enum-type-names", "d:example.Status");
 
-        assertThat(roundTrip(options)).containsOnlyKeys("connector");
-    }
-
-    private static Map<String, String> roundTrip(Map<String, String> options) {
-        CatalogTable table =
-                CatalogTable.newBuilder()
-                        .schema(Schema.newBuilder().column("id", DataTypes.BIGINT()).build())
-                        .options(options)
-                        .build();
-        ResolvedCatalogTable resolved =
-                new ResolvedCatalogTable(
-                        table, ResolvedSchema.of(Column.physical("id", DataTypes.BIGINT())));
-        return CatalogTable.fromProperties(resolved.toProperties()).getOptions();
+        assertThat(roundTripOptions(options)).containsOnlyKeys("connector");
     }
 }

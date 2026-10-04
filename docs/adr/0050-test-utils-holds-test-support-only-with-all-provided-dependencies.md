@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290]); the source-reader outputs
   2026-08-09 and the pull-assignment context fakes 2026-08-10 ([#437]); the Cloud Tasks
-  emulator fixture 2026-08-17 ([#776]); revised by [#1057] and [#1073] (2026-08-23)
-- Issues: [#27], [#290], [#26], [#181], [#437], [#776], [#1057], [#1073]
+  emulator fixture 2026-08-17 ([#776]); revised by [#1057] and [#1073] (2026-08-23),
+  [#1637] (2026-10-04)
+- Issues: [#27], [#290], [#26], [#181], [#437], [#776], [#1057], [#1073], [#1637]
 - Modules: test-utils
 - Current behavior: (Claude-facing module; nothing user-rendered)
 
@@ -42,6 +43,12 @@ limitations under the License.
   `HtmlFormatter` out of this module's API-tier-audited main sources.
   Its direct test clears this module's narrow bar because every clean consumer exercises only the
   passing path and therefore cannot prove that each recorded phrase still fires.
+- **The persisting-catalog option guard is shared by all six Table connectors** ([#1637]).
+  `CatalogOptionAssertions` takes the factory's required and optional options, including borrowed Flink options, and checks their current keys and placeholder values through `ResolvedCatalogTable.toProperties()` and `CatalogTable.fromProperties(...)`.
+  It rejects an empty combined option set rather than passing vacuously.
+  The round trip uses the public catalog API on the Flink version under test, without duplicating its reserved-key rules.
+  `flink-table-common` stays `provided`, and the catalog API types it uses are `@PublicEvolving` on 2.2.1 and 1.20.4.
+  Direct tests hold reserved-key rejection and non-vacuity because the clean consumer option sets cannot reach those failures; Spanner retains its deprecated-marker loss test using the same round-trip helper.
 - **No forced unification of emulator container fixtures.** The goccy BigQuery and aertje Cloud
   Tasks fixtures were hand-rolled and single-consumer when this was decided, structurally unlike
   the testcontainers `PubSubEmulatorContainer`; a fixture stays in its module until a second
@@ -148,3 +155,4 @@ limitations under the License.
 [#1044]: https://github.com/flink-gcp/flink-connector-gcp/issues/1044
 [#1057]: https://github.com/flink-gcp/flink-connector-gcp/issues/1057
 [#1073]: https://github.com/flink-gcp/flink-connector-gcp/issues/1073
+[#1637]: https://github.com/flink-gcp/flink-connector-gcp/issues/1637

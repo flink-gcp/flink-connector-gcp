@@ -29,11 +29,18 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Guards on the Cloud Tasks table option inventory. */
 class CloudTasksConnectorOptionsTest {
+
+    @Test
+    void everyOptionSurvivesACatalogThatPersistsTheTable() {
+        CloudTasksDynamicTableFactory factory = new CloudTasksDynamicTableFactory();
+        assertOptionsSurviveCatalogRoundTrip(factory.requiredOptions(), factory.optionalOptions());
+    }
 
     private static List<ConfigOption<?>> declaredOptions() {
         List<ConfigOption<?>> options = new ArrayList<>();

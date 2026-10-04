@@ -327,8 +327,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   written. "Unset fails the source" on `scan.resume-fallback.mode` is a contract, not a
   default, and stays.
 - No option key starts with `schema` (`docs/adr/0096`): Flink drops such a key when it rebuilds a
-  table from a persisting catalog's properties. `SpannerConnectorOptionsTest` holds it, and the
-  persisting round trip for every declared option. The five 1.0.0/1.1.0 `schema`-prefixed keys
+  table from a persisting catalog's properties. `SpannerConnectorOptionsTest` uses the shared
+  catalog round-trip assertion for every option the factory registers. The five 1.0.0/1.1.0
+  `schema`-prefixed keys
   stay `withDeprecatedKeys` spellings; the factory refuses an option set under both spellings by
   reading `fallbackKeys()` of every registered option, so a future deprecated key is covered
   without a list to update, and names a malformed schema by the key the DDL wrote.
