@@ -28,10 +28,11 @@ import org.apache.flink.connector.datagen.source.DataGeneratorSource;
 import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -153,7 +154,7 @@ class BigQueryBufferedStreamExactlyOnceITCase {
                                         (element, context) -> {
                                             long value =
                                                     Long.parseLong(element.split("\\|", -1)[1]);
-                                            return RealBigQuery.destination(
+                                            return RealTables.destination(
                                                     value % 2 == 0
                                                             ? TABLE_DYNAMIC_EVEN
                                                             : TABLE_DYNAMIC_ODD);
@@ -231,14 +232,14 @@ class BigQueryBufferedStreamExactlyOnceITCase {
     private static org.apache.flink.api.connector.sink2.Sink<String> sink(String table) {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                .table(RealBigQuery.destination(table))
+                .table(RealTables.destination(table))
                 .serializer(new NameValueRowSerializer())
                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                 .build();
     }
 
     private static void createTable(String table) {
-        RealBigQuery.createTable(table, NameValueRowSerializer.SCHEMA);
+        RealTables.createTable(table, NameValueRowSerializer.SCHEMA);
     }
 
     private static void assertDynamicPartition(String table, long count, long sum, long parity)

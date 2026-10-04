@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery;
+package io.github.flink.gcp.connector.testutils.bigquery;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.ExceptionUtils;
 
 import com.google.cloud.storage.Blob;
@@ -32,9 +33,10 @@ import com.google.cloud.storage.StorageOptions;
  * the BigQuery helper knows nothing about a bucket. It sits beside it all the same, because both
  * are plumbing over a gate variable and the three gates are worth finding in one place.
  *
- * <p>Named for the product and not {@code RealStorage}: {@code sink.storage} in this module means
- * the Storage <em>Write</em> API, which this is not.
+ * <p>Named for the product and not {@code RealStorage}: {@code sink.storage} in the BigQuery
+ * connector means the Storage <em>Write</em> API, which this is not.
  */
+@Internal
 public final class RealGcs {
 
     private RealGcs() {}

@@ -37,7 +37,7 @@ import com.google.protobuf.StringValue;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.Value;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializationSchema;
@@ -52,6 +52,7 @@ import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -131,7 +132,7 @@ class BigQuerySerializerFidelityITCase {
         BigQueryDefaultStreamSink<T> sink =
                 (BigQueryDefaultStreamSink<T>)
                         BigQuerySink.<T>builder()
-                                .table(RealBigQuery.destination(table))
+                                .table(RealTables.destination(table))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<T> writer =
@@ -162,7 +163,7 @@ class BigQuerySerializerFidelityITCase {
         ProtoMessageSerializationSchema<WellKnownTypes> serializer =
                 ProtoMessageSerializationSchema.of(
                         WellKnownTypes.class, ProtoSchemaOptions.defaults());
-        RealBigQuery.createTable(PROTO_TABLE, serializer.getTableSchema(null));
+        RealTables.createTable(PROTO_TABLE, serializer.getTableSchema(null));
 
         writeRows(
                 PROTO_TABLE,
@@ -285,7 +286,7 @@ class BigQuerySerializerFidelityITCase {
                                 .jsonFieldPath("payload")
                                 .geographyFieldPath("boundary")
                                 .build());
-        RealBigQuery.createTable(AVRO_TABLE, serializer.getTableSchema(null));
+        RealTables.createTable(AVRO_TABLE, serializer.getTableSchema(null));
 
         // The derived column types, from the live table: the half the values below cannot show.
         assertThat(RealBigQuery.tableFields(AVRO_TABLE))
@@ -378,7 +379,7 @@ class BigQuerySerializerFidelityITCase {
                         .addFields(jsonField("payload", TableFieldSchema.Type.JSON))
                         .build();
         JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema);
-        RealBigQuery.createTable(JSON_TABLE, serializer.getTableSchema(null));
+        RealTables.createTable(JSON_TABLE, serializer.getTableSchema(null));
 
         writeRows(
                 JSON_TABLE,

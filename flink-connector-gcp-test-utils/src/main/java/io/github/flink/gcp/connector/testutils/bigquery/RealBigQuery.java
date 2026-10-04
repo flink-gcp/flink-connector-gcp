@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery;
+package io.github.flink.gcp.connector.testutils.bigquery;
+
+import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
@@ -28,9 +30,6 @@ import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableConstraints;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
-import com.google.cloud.bigquery.storage.v1.TableSchema;
-import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,7 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * REST plumbing shared by the ITCases gated on real-GCP credentials: the {@code BQ_IT_*} variables,
  * a REST client over application-default credentials, table creation/deletion and query read-back.
  * The gated classes reach BigQuery through this and nothing else (#292); {@link RealGcs} is the
- * sibling for the FILE_LOADS staging bucket, which only that write method needs.
+ * sibling for the FILE_LOADS staging bucket, which only that write method needs. Here rather than
+ * in the connector's test tree so the Tier-3 BigQuery application's gated test shares it; the two
+ * helpers that take connector types stay with the connector's tests.
  *
  * <p>Deliberately a static utility and <b>not</b> a base class carrying the gating annotation:
  * {@code scripts/e2e-gated-its.sh} parses test sources for the environment-variable gate and
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * --assert-ran}. Each gated ITCase declares its own {@code @EnabledIfEnvironmentVariable}
  * annotations.
  */
+@Internal
 public final class RealBigQuery {
 
     private static final Logger LOG = LoggerFactory.getLogger(RealBigQuery.class);
@@ -87,19 +89,10 @@ public final class RealBigQuery {
         return client().getDataset(dataset()).getLocation();
     }
 
-    /** The gated dataset's destination for {@code table}, as the sink builders take it. */
-    public static TableDestination destination(String table) {
-        return TableDestination.of(project(), dataset(), table);
-    }
-
-    /** Creates {@code table} in the gated dataset with the given Storage Write API schema. */
-    public static void createTable(String table, TableSchema schema) {
-        createTable(table, StorageSchemaConverter.toBigQuerySchema(schema));
-    }
-
     /**
-     * Creates {@code table} in the gated dataset with the given REST schema — the overload for
-     * columns the Storage Write API schema cannot express, such as {@code INTERVAL}.
+     * Creates {@code table} in the gated dataset with the given REST schema, which can express
+     * columns the Storage Write API schema cannot, such as {@code INTERVAL}. The connector's tests
+     * create one from a Storage Write API schema through their own {@code RealTables}.
      */
     public static void createTable(String table, Schema schema) {
         client().create(

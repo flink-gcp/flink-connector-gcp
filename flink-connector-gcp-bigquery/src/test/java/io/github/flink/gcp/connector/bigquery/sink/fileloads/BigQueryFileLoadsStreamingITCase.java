@@ -31,12 +31,13 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
-import io.github.flink.gcp.connector.bigquery.RealGcs;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.testutils.bigquery.RealGcs;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -145,7 +146,7 @@ class BigQueryFileLoadsStreamingITCase {
                                 .writeMethod(WriteMethod.FILE_LOADS)
                                 .destinationResolver(
                                         (element, context) ->
-                                                RealBigQuery.destination(
+                                                RealTables.destination(
                                                         element.substring(0, element.indexOf('|'))))
                                 .serializer(new RowSerializer())
                                 .fileLoadsOptions(

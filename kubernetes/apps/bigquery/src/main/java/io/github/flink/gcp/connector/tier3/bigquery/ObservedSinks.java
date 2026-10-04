@@ -20,18 +20,29 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BufferedStreamServiceFactory;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.RowAppenderFactory;
 
-/** Decorates runtime factories while retaining production writers, state and committers. */
+/**
+ * Decorates runtime factories while retaining production writers, state and committers.
+ *
+ * <p>A FILE_LOADS sink is returned undecorated. It has no appender to observe, and what a trial
+ * reads of it the connector already reports: one log line per writer checkpoint naming the files
+ * staged, one per submitted and completed load job, one per committed checkpoint with its row
+ * count, and the {@code filesStaged}, {@code pendingFiles} and {@code loadJobsSubmitted} metrics.
+ */
 @Internal
 final class ObservedSinks {
     private ObservedSinks() {}
 
     @SuppressWarnings("unchecked")
     static Sink<Long> observe(Sink<Long> sink, RecoveryOptions options) {
+        if (sink instanceof BigQueryFileLoadsSink) {
+            return sink;
+        }
         if (sink instanceof BigQueryBufferedStreamSink) {
             return new Buffered((BigQueryBufferedStreamSink<Long>) sink, options);
         }

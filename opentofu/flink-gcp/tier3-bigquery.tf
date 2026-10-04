@@ -149,7 +149,7 @@ resource "google_project_iam_member" "tier3_bigquery_jobs" {
 # project resources, so this grant cannot be scoped to the dataset. It is the
 # one permission that path lacks; everything else it touches is already held.
 # The application behaviour cited below is that of its FILE_LOADS mode, added
-# under #1549; until that lands no mode uses this grant.
+# under #1549.
 # - bigquery.jobs.get/update: not granted. The committer reads and polls only
 #   jobs it created, and BigQuery accepts bigquery.jobs.create from a job's
 #   creator in their place (jobs.get and jobs.cancel API contracts).

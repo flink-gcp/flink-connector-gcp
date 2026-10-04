@@ -1,7 +1,7 @@
 # BigQuery Tier-3 recovery application
 
 This internal application supplies the finite workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
-It uses the production BigQuery Storage Write sinks on Flink 2.2.1 and Java 17.
+It uses the production BigQuery sinks on Flink 2.2.1 and Java 17: the two Storage Write sinks, and the FILE_LOADS sink that [issue #1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549) added for the [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313) finalization scenario.
 The opt-in `tier3-bigquery` profile builds it separately from the published connector artifacts.
 
 ## Build and local validation
@@ -12,7 +12,7 @@ From the repository root:
 mise x -- just tier3-bigquery-verify
 ```
 
-The recipe builds `target/bigquery-recovery.jar` and copies runtime dependencies, with their original license and notice files, into `target/image-lib/`.
+The recipe builds `target/bigquery-recovery.jar` and copies runtime dependencies, including the Parquet and Hadoop runtime the FILE_LOADS `PARQUET` staging format needs, with their original license and notice files, into `target/image-lib/`.
 The Dockerfile places these JARs in `/opt/flink/usrlib/` over the reviewed Flink base image and enables its bundled GCS filesystem plugin.
 The entry point is `io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob`; the job URI is `local:///opt/flink/usrlib/bigquery-recovery.jar`.
 No dependency download is needed at Pod startup.
@@ -24,7 +24,7 @@ Unit tests cover argument bounds, destination identities, serialized row sizes, 
 Observation tests check original futures and exceptions, exact rows and offsets, failed opens/closes, reopening identities and log-output failures.
 Sink tests serialize both observed sinks, construct their job graphs, create production writers, and round-trip a buffered writer state through restore and snapshot; the committer receives no appender observer.
 Local MiniCluster tests restore the source and input identity operator from a checkpoint and a savepoint using a discard sink.
-Separate local graph tests verify both writers reach every destination for both modes and destination counts.
+Separate local graph tests verify both writers reach every destination for every mode and destination count.
 Emulator tests create the application's production default-stream writer for both destination counts, write each destination sequentially, check the open/append/close observations, then query every table.
 The application graph is tested separately: concurrent appends caused SQLite lock errors and RPC retries inside the pinned emulator in CI.
 The pinned emulator assigns buffered offsets across streams and can hang on multi-stream flush, so it cannot exercise the production EO writer for this workload.
@@ -32,20 +32,36 @@ Existing connector tests cover that writer with deterministic service doubles; t
 The ALO emulator fixtures use one append of two rows per destination because follow-up appends are not reliably bound to their stream.
 They establish local wiring and routing, not BigQuery exactly-once recovery, GCS checkpoint permissions or deployed Operator behavior.
 
+FILE_LOADS has no emulator coverage: the connector refuses emulator endpoints for that write method, because the pinned emulator runs no load jobs and serves no Cloud Storage.
+Local tests build the FILE_LOADS graph at the deployed interval, which the connector's streaming checks accept, and confirm that the Storage Write interval would be refused.
+The gated `RecoveryFileLoadsITCase` runs the application graph in a MiniCluster against real BigQuery and Cloud Storage, once with Avro and once with Parquet staging.
+It stops the job with a savepoint after a load has committed and before the input ends, restarts it as the upgrade phase, and requires every sequence in exactly one row of its destination table with no staged file left behind.
+It writes run-unique tables into `BQ_IT_DATASET` and stages under `BQ_IT_GCS_BUCKET`, with a two-second interval and a matching `minCheckpointInterval` that only this test may set; `just e2e` runs it with the connector suites.
+
 ## Trial inputs
 
 | Argument | Contract |
 | --- | --- |
 | `--run-id` | Required Tier-3 run label, at most 40 characters; reuse only when restoring the same trial |
-| `--mode` | Required `ALO` (default stream) or `EO` (buffered stream) |
+| `--mode` | Required `ALO` (default stream), `EO` (buffered stream) or `FILE_LOADS` (staged files and load jobs) |
 | `--destinations` | Required `10` or `50` |
 | `--records` | Finite count covering every destination on both writers (at least twice the destination count) and at most 2 GiB of serialized input; defaults to 30 minutes at 1 MiB/s |
 | `--bytes-per-second` | Datagen offered rate in serialized row bytes, from 1 through 1,048,576; defaults to 1,048,576 |
 | `--phase` | `initial` by default, or `upgrade` |
 | `--require-restored` | `false` by default; `upgrade` requires `true` |
+| `--staging-format` | FILE_LOADS only: `AVRO` by default, or `PARQUET` |
+| `--max-concurrent-checkpoint-finalizations` | FILE_LOADS only: the connector's default, 1 |
+| `--max-concurrent-destinations` | FILE_LOADS only: the connector's default, 8 |
+| `--max-staging-file-bytes` | FILE_LOADS only: the connector's default, 16,777,216 |
+| `--max-open-destinations` | FILE_LOADS only: the connector's default, 16 |
 
-ALO rows are exactly 65,536 serialized protobuf bytes and EO rows exactly 1,024 bytes.
+The Storage Write modes refuse the five FILE_LOADS arguments, and the connector's `FileLoadsOptions` builder checks their ranges as the arguments are parsed.
+The application leaves `maxPendingFiles` at the connector's 10,000, which the builder requires to be at least `--max-open-destinations`.
+They are part of the checkpointed input identity in FILE_LOADS mode, so an upgrade cannot change them.
+
+ALO rows are exactly 65,536 serialized protobuf bytes, and EO and FILE_LOADS rows exactly 1,024 bytes.
 The default counts are 28,800 and 1,843,200 respectively: each offers 1,887,436,800 bytes before replay and RPC framing.
+FILE_LOADS converts each protobuf row into the staged file's format, so its staged bytes differ from these serialized bytes.
 This is a logical input ceiling, not a billable-byte, retry, elapsed-time or query-cost ceiling.
 Source pacing and serialization overhead must be observed on the execution host before interpreting throughput.
 
@@ -53,13 +69,28 @@ The source emits sequence numbers from zero through `records - 1` at parallelism
 A checkpointed identity operator checks each next sequence before forwarding it.
 The sink runs at parallelism two with maximum parallelism 128; deterministic partitioning by `(sequence / destinations) % 2` sends a complete destination cycle to each writer in turn.
 Both writers reach every destination, while each row retains `sequence % destinations` as its table identity.
-The job enables checkpoints every 30 seconds with at most one concurrent checkpoint.
+The job enables checkpoints every 30 seconds in the Storage Write modes and every 120 seconds in FILE_LOADS mode, with at most one concurrent checkpoint.
+FILE_LOADS refuses an interval below its `minCheckpointInterval`, two minutes by default, because each checkpoint issues a load job per destination table against a daily per-table modification quota.
 Writer and buffered-stream options retain their production defaults; this workload does not search capacity or tune those defaults.
+The FILE_LOADS sink appends to the provisioned tables and stages under `gs://flink-gcp-tier3-bigquery/runs/<run-id>/staging`, inside the run prefix that the state IAM condition, the bucket lifecycle rule and cleanup already cover.
+Its five arguments above default to the connector's values.
+The FILE_LOADS sink also names the dataset's location, `us-central1`, so its committer never reads dataset metadata: without a location it looks each destination dataset up to place its load jobs, which would need `bigquery.datasets.get`.
+The Storage Write modes leave the location unset, as before.
+Submitting the load jobs needs project-wide `bigquery.jobs.create`, which the workload identity holds through a custom role added under [issue #1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550); as their creator it can read them without `bigquery.jobs.get`.
+The gated integration test runs under the E2E identity, so it cannot show whether the deployed identity holds that grant.
+
+The FILE_LOADS sink is not decorated for observation.
+It has no appender, and the connector already reports what a trial reads of it: an INFO line per writer checkpoint with the files staged, one per submitted and completed load job, and one per committed checkpoint with its row count, plus the writer's `filesStaged`, `pendingFiles` and `openDestinations` metrics and the committer's `loadJobsSubmitted`.
+The committer runs on a separate vertex, and only its subtask 0 commits.
+The default Avro staging holds one 4 MiB upload chunk per open destination, about 64 MiB per writer at the default 16 open destinations; Parquet staging also buffers a row group per open file.
+No trial has measured either against these TaskManagers' heap.
 
 ## Deployment definition
 
 [`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator 1.15.0 schema and Flink 2.2.1 application image.
-A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO` or `EO`) and `run.destinations` (`10` or `50`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
+A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`) and `run.destinations` (`10` or `50`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
+A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`), whose defaults and ranges are the connector's, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders all five as arguments, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
+The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults.
 Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
 The offered rate is fixed at 1 MiB/s.
 The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
@@ -75,7 +106,7 @@ Each TaskManager has one slot, job parallelism is two and autoscaling is disable
 These resource choices follow the smoke Pod shape and still need approval in the complete trial budget; they do not establish sufficient heap or a runtime Pod ceiling.
 No PVC or application volume is requested.
 
-Checkpoints run every 30 seconds with at most one concurrent checkpoint, a 120-second timeout and two retained checkpoints.
+Checkpoints run every 30 seconds in the Storage Write modes and every 120 seconds in FILE_LOADS mode, matching the interval the application enables, with at most one concurrent checkpoint, a 120-second timeout and two retained checkpoints.
 The hashmap backend uses filesystem checkpoint storage, with checkpoints, savepoints and Kubernetes HA state below `gs://flink-gcp-tier3-bigquery/runs/<run-id>/` in separate `checkpoints`, `savepoints` and `ha` prefixes.
 The fixed-delay restart strategy permits three attempts with a ten-second delay; the external supervisor must bound wall-clock runtime and repeated process incarnations.
 
@@ -86,7 +117,7 @@ These settings follow the [generic recovery exercise](../../lifecycle/README.md#
 The running application's checkpointed identity also rejects changed input parameters on restore.
 The package describes that transition; it does not wait for baseline observations, prove a completed savepoint, apply the upgrade or delete the JobManager.
 
-`just tier3-check` renders both phases for all four mode/destination combinations against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and the phase-only argument change.
+`just tier3-check` renders both phases for all six mode/destination combinations against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and the phase-only argument change.
 Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
 The [production dispatch](#production-dispatch) path must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
 
@@ -98,6 +129,7 @@ The bundle contains `approved: false` and an empty `approval.json`; rendering ne
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
 Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50` or `eo-50`, one delivery method at one destination count.
+The application and its package accept FILE_LOADS, but no trial selects it yet: the proposal, dispatch and query oracle learn that mode under [issue #1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551).
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the mode's 30-minute-equivalent input above.
 Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.

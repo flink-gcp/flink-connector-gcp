@@ -28,6 +28,7 @@ import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 
+import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.Field;
@@ -122,6 +123,16 @@ class BigQueryCatalogTest {
         assertThat(catalog.getDatabase("analytics").getProperties()).isEmpty();
         assertThatThrownBy(() -> catalog.getDatabase("absent"))
                 .isInstanceOf(DatabaseNotExistException.class);
+        // Metadata only: the default view also returns the access controls, which fine-grained
+        // dataset access control guards with bigquery.datasets.getIamPolicy.
+        assertThat(bigquery.getDatasetOptions)
+                .isNotEmpty()
+                .allSatisfy(
+                        options ->
+                                assertThat(options)
+                                        .containsExactly(
+                                                BigQuery.DatasetOption.datasetView(
+                                                        BigQuery.DatasetView.METADATA)));
     }
 
     @Test

@@ -27,8 +27,8 @@ import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 
 import com.google.cloud.bigquery.FieldValueList;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;

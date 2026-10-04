@@ -31,7 +31,7 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.cloud.bigquery.storage.v1.WriteStream;
 import com.google.cloud.bigquery.storage.v1.WriteStreamView;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -229,8 +230,8 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
                         "BQ_IT_PROJECT (and GOOGLE_CLOUD_PROJECT) must be set alongside"
                                 + " BQ_IT_SCHEMA_EVOLUTION")
                 .isNotNull();
-        RealBigQuery.createTable(TABLE, V1);
-        TableDestination destination = RealBigQuery.destination(TABLE);
+        RealTables.createTable(TABLE, V1);
+        TableDestination destination = RealTables.destination(TABLE);
         SchemaViewPoller poller = new SchemaViewPoller(destination);
         EvolvingSerializer serializer = new EvolvingSerializer(V1);
         BigQueryDefaultStreamSink<String> sink =

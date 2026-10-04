@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -63,8 +64,8 @@ class BigQueryBufferedStreamSchemaEvolutionITCase {
 
     @Test
     void externallyWidenedTableKeepsTheSameBufferedStream() throws Exception {
-        RealBigQuery.createTable(TABLE, V2);
-        TableDestination destination = RealBigQuery.destination(TABLE);
+        RealTables.createTable(TABLE, V2);
+        TableDestination destination = RealTables.destination(TABLE);
         EvolvingSerializer serializer = new EvolvingSerializer(V1);
         BufferedStreamOptions options = BufferedStreamOptions.builder().build();
         BigQuerySinkConfig<String> config =

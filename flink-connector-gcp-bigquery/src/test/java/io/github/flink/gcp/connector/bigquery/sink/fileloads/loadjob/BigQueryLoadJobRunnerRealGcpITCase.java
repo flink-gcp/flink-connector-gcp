@@ -24,10 +24,11 @@ import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.TableConstraints;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
-import io.github.flink.gcp.connector.bigquery.RealGcs;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.testutils.bigquery.RealGcs;
 import org.apache.avro.SchemaBuilder;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.generic.GenericData;
@@ -87,7 +88,7 @@ class BigQueryLoadJobRunnerRealGcpITCase {
         RealGcs.upload(path, oneRowAvroFile());
         LoadJobSpec spec =
                 new LoadJobSpec(
-                        RealBigQuery.destination(TABLE),
+                        RealTables.destination(TABLE),
                         List.of(RealGcs.uri(path)),
                         Schema.of(Field.of("f1", StandardSQLTypeName.STRING)),
                         JobInfo.CreateDisposition.CREATE_IF_NEEDED,
@@ -140,8 +141,8 @@ class BigQueryLoadJobRunnerRealGcpITCase {
         String jobId = "flink-bq-query-truncate-data-it-" + QUERY_DESTINATION;
         QueryJobSpec spec =
                 new QueryJobSpec(
-                        RealBigQuery.destination(QUERY_SOURCE),
-                        RealBigQuery.destination(QUERY_DESTINATION),
+                        RealTables.destination(QUERY_SOURCE),
+                        RealTables.destination(QUERY_DESTINATION),
                         List.of());
 
         BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(null, POLL);

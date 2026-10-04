@@ -48,7 +48,7 @@ public final class BigQueryRecoveryJob {
     static void configure(
             StreamExecutionEnvironment env, RecoveryOptions options, Sink<Long> sink) {
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-        env.enableCheckpointing(30_000);
+        env.enableCheckpointing(options.checkpointInterval.toMillis());
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         input(env, options)
                 .partitionCustom(
@@ -88,7 +88,11 @@ public final class BigQueryRecoveryJob {
                         .destinationResolver((sequence, context) -> options.table(sequence))
                         .serializer(new RecoveryRows(options))
                         .createDisposition(CreateDisposition.CREATE_NEVER);
-        if (options.mode == RecoveryOptions.Mode.EO) {
+        if (options.mode == RecoveryOptions.Mode.FILE_LOADS) {
+            builder.writeMethod(WriteMethod.FILE_LOADS)
+                    .fileLoadsOptions(options.fileLoads)
+                    .location(options.location);
+        } else if (options.mode == RecoveryOptions.Mode.EO) {
             builder.writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
                     .bufferedStreamOptions(BufferedStreamOptions.builder().build());
         } else {

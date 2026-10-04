@@ -32,7 +32,7 @@ import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import com.google.cloud.bigquery.storage.v1.DataFormat;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamO
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
@@ -548,7 +549,7 @@ class BigQueryFilterPushDownRealGcpITCase {
                                     .setReadSession(
                                             ReadSession.newBuilder()
                                                     .setTable(
-                                                            RealBigQuery.destination(TABLE)
+                                                            RealTables.destination(TABLE)
                                                                     .toTablePath())
                                                     .setDataFormat(DataFormat.AVRO)
                                                     .setReadOptions(options))
@@ -626,7 +627,7 @@ class BigQueryFilterPushDownRealGcpITCase {
                                     .setReadSession(
                                             ReadSession.newBuilder()
                                                     .setTable(
-                                                            RealBigQuery.destination(TABLE)
+                                                            RealTables.destination(TABLE)
                                                                     .toTablePath())
                                                     .setDataFormat(DataFormat.AVRO)
                                                     .setReadOptions(options))

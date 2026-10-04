@@ -52,7 +52,7 @@ class RecoveryRoutingITCase {
     private static final Map<Integer, Set<Long>> VALUES = new ConcurrentHashMap<>();
 
     @ParameterizedTest
-    @CsvSource({"ALO,10", "ALO,50", "EO,10", "EO,50"})
+    @CsvSource({"ALO,10", "ALO,50", "EO,10", "EO,50", "FILE_LOADS,10", "FILE_LOADS,50"})
     void eachWriterReceivesEveryDestination(String mode, int destinations) throws Exception {
         VALUES.clear();
         var options =
