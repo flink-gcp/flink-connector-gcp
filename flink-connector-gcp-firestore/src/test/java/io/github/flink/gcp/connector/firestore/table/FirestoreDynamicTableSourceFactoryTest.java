@@ -35,6 +35,7 @@ import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.TestDocuments;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceConfig;
@@ -92,7 +93,7 @@ class FirestoreDynamicTableSourceFactoryTest {
 
     @SuppressWarnings("unchecked")
     private static FirestoreSourceConfig<?> config(Source<?, ?, ?> source) {
-        Object delegate = ((FirestoreTableLineage.TableSource<?, ?, ?>) source).delegate;
+        Object delegate = ((TableLineageSource<?, ?, ?>) source).delegate();
         return ((FirestoreBatchSource<?>) delegate).getConfig();
     }
 
@@ -198,10 +199,8 @@ class FirestoreDynamicTableSourceFactoryTest {
                 .isEqualTo(
                         ((PhysicalResourceFacet)
                                         ((LineageVertexProvider)
-                                                        ((FirestoreTableLineage.TableSource<
-                                                                                ?, ?, ?>)
-                                                                        group)
-                                                                .delegate)
+                                                        ((TableLineageSource<?, ?, ?>) group)
+                                                                .delegate())
                                                 .getLineageVertex()
                                                 .datasets()
                                                 .get(0)

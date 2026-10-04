@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0160: Lineage reports configured resources through a shared listener contract
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27; source 2026-09-30; Datastore-mode source 2026-10-03; Table sink and scan 2026-10-04)
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541), [#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543)
+- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27; source 2026-09-30; Datastore-mode source 2026-10-03; Table sink and scan 2026-10-04); Table adapters moved to base by [#1635](https://github.com/flink-gcp/flink-connector-gcp/issues/1635) (2026-10-04)
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541), [#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543), [#1635](https://github.com/flink-gcp/flink-connector-gcp/issues/1635)
 - Modules: base, test-utils, bigquery, pubsub, cloudtasks, bigtable, spanner, firestore, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
@@ -96,6 +96,31 @@ A known logical table with unknown physical resources still has a logical datase
 The adapter changes metadata only, not runtime provider interfaces, record routing, pushdown, checkpointing or source boundedness.
 A Table CDC source may carry its table and configured stream provenance together in this list without claiming all watched tables.
 
+A connector whose runtime Source or Sink does not carry the logical name itself wraps it in `TableLineageSource` or `TableLineageSink` from `base.lineage.internal`.
+Each takes the delegate, the logical name, the namespace and the resource list, and nothing connector-specific; the connector's own table-lineage value still builds the identity through `LineageIdentifiers`.
+The source adapter forwards reader creation, enumerator creation and restoration, split and checkpoint serializers, and the delegate's boundedness.
+It reports the produced type the table layer supplies.
+On Flink 2.x it also forwards `Source.declareWatermarks()` through a package-private `CrossVersionSource` in the per-major roots.
+The previous connector wrappers inherited the empty default, so a delegate declaring generalized watermarks would lose those declarations; emitting one then fails Flink's declaration check.
+The current Spanner and Firestore sources do not declare them, but the shared adapter preserves them for any delegate that does.
+Flink 1.20 has neither this method nor its `@Experimental` return type, `WatermarkDeclaration`; the Flink 2.x seam carries that required SPI type without exposing it to 1.20 compilation.
+If the declaration API changes, adapt the per-major bridge before admitting sources that emit generalized watermarks.
+The sink adapter forwards `createWriter` only.
+It therefore refuses a delegate implementing `SupportsWriterState`, `SupportsCommitter` or `SupportsPreWriteTopology`, whose state, commits or pre-write topology it would otherwise drop from the job without an error.
+The `@Experimental` pre-write marker is used only to reject such a delegate, not to implement a topology.
+The marker has the same interface in Flink 1.20.4 and 2.2.1; if it moves, the rejection check must follow the supported Flink API before admitting delegates.
+Spanner and Firestore wrap their Table runtimes this way.
+BigQuery, Bigtable, Pub/Sub and Cloud Tasks instead thread the logical name into their own runtime objects and call `Lineage.tableSource` or `tableSink` there.
+
+The sink adapter is why base has per-major production source roots.
+Flink 1.20 declares the deprecated `createWriter(Sink.InitContext)` abstract, and Flink 2.x removed that type, so one shared-source class cannot implement `Sink` on both lines.
+Measured with the adapter implementing `Sink` directly: Flink 2.2.1 compiles it, and Flink 1.20.4 fails with "does not override abstract method createWriter(Sink.InitContext)".
+Base therefore carries its own `CrossVersionSink` in `src/main/java-flink1` and `java-flink2`, package-private beside the adapter, as ADR-0054 allows for a compat file with one caller.
+The root POM already adds those roots to every module, so the build needed no change.
+Two alternatives were declined.
+Keeping the sink adapter in each connector module and moving only the source adapter would have left a copy per module, and the Datastore-mode Table API ([#1545](https://github.com/flink-gcp/flink-connector-gcp/issues/1545)) would have added another.
+Making the base seam public for connector sinks to share is a separate consolidation that this change does not need.
+
 ### Dependencies and packaging
 
 The root manages `flink-runtime` at `${flink.version}`.
@@ -129,6 +154,9 @@ This establishes the current release's shared API, not arbitrary compatibility b
 `LineageTest` covers immutable values, equality, order, duplicates, serialization, names, empty vertices and boundedness.
 `LineageClassLoaderTest` uses Flink's actual user-code loader to verify the documented parent-first configuration and a negative control in which identical API class names cannot be cast across loaders.
 `LineageGraphITCase` serializes fake Source/Sink configurations, checks graph extraction before runtime creation, then submits an empty local job and captures Flink's real `JobCreatedEvent` through the configured listener factory.
+`TableLineageAdaptersTest` checks argument and result identity, exception propagation, boundedness, produced type, immutable resource snapshots, serialization and logical datasets with empty resources, on both Flink lines.
+It also checks the sink adapter's refusal of writer state, commits and a pre-write topology.
+The Flink 2.x `TableLineageWatermarksTest` checks nonempty declaration-set identity and forwarding after serialization.
 `TableLineageTest` checks catalog names plus the complete facet, including an unadapted multi-dataset control that loses the facet, and a lookup provider whose lineage method is not called.
 The fixture imports the public `JobCreatedEvent`; it does not manufacture an event or call the capture factory directly.
 The required clean reactor, 1.20, binary compatibility and packaging measurements are recorded against the PR's tested commits.
@@ -200,7 +228,7 @@ Explicit native reads identify the base table; queries and generic mutation seri
 The DataStream Change Streams source identifies its configured stream, regardless of its regex record filters.
 
 The Table factory captures its logical identifier, parsed table components, original option syntax, and configured stream provenance in immutable serializable metadata.
-Named internal adapters delegate the existing runtime Source/Sink operations and expose `Lineage.tableSource` or `Lineage.tableSink`.
+The base Table adapters delegate the existing runtime Source/Sink operations and expose `Lineage.tableSource` or `Lineage.tableSink`.
 This keeps deferred index/filter resolution independent of lineage extraction, and keeps the fixed sink table outside the public serializer SPI.
 No lineage setter is added to a public builder.
 Legacy native table names remain complete names; a PostgreSQL default schema is prefixed only when the Table path has an unqualified native name.
@@ -231,7 +259,7 @@ Its configuration names a database, and each `FirestoreWrite` names its own docu
 The bounded source ([#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541)) is the first configuration that names a fixed resource: a collection-group scan names the group, so `firestore-collection-group` arrives with it and the source reports it through `Lineage.source`.
 The group is every collection with that id at any depth of one database, which is why the kind is a group rather than a collection path; the Table API ([#1544](https://github.com/flink-gcp/flink-connector-gcp/issues/1544)) adds a collection kind if its sink names one.
 A source built from a query factory reports no dataset, for the sink's reason: the query's collections are the factory's, and extraction never calls it.
-The Table sink ([#1607](https://github.com/flink-gcp/flink-connector-gcp/issues/1607)) does name one: its `collection` option is a collection path, so it adds `firestore-collection`, named by that path relative to the database, and reports it through `Lineage.tableSink` under the table's catalog identifier, the Spanner Table adapter's shape. The kind names the documents directly in the collection, not those of its subcollections, which is what the sink writes. `FirestoreDynamicTableFactoryTest` reads the dataset from the runtime sink the factory builds. The Table scan ([#1608](https://github.com/flink-gcp/flink-connector-gcp/issues/1608)) reports through `Lineage.tableSource` the same `firestore-collection`, or under `scan.collection-group` a `firestore-collection-group` named by the collection id; `FirestoreDynamicTableSourceFactoryTest` reads both from the runtime source.
+The Table sink ([#1607](https://github.com/flink-gcp/flink-connector-gcp/issues/1607)) does name one: its `collection` option is a collection path, so it adds `firestore-collection`, named by that path relative to the database, and reports it through `Lineage.tableSink` under the table's catalog identifier, through the same base Table adapter as Spanner. The kind names the documents directly in the collection, not those of its subcollections, which is what the sink writes. `FirestoreDynamicTableFactoryTest` reads the dataset from the runtime sink the factory builds. The Table scan ([#1608](https://github.com/flink-gcp/flink-connector-gcp/issues/1608)) reports through `Lineage.tableSource` the same `firestore-collection`, or under `scan.collection-group` a `firestore-collection-group` named by the collection id; `FirestoreDynamicTableSourceFactoryTest` reads both from the runtime source.
 `FirestoreSourceLineageTest` covers both shapes before and after a serialization round trip, and `FirestoreLineageGraphTest` extracts the scan from a Flink 2.x graph.
 `FirestoreBulkWriterSinkTest` inspects the builder result before and after a serialization round trip with an unreadable key-file path, and `FirestoreLineageGraphTest` exercises Flink 2.x DataStream extraction.
 

@@ -16,6 +16,14 @@ record — context, evidence, declined alternatives — is the named ADR under `
   ahead of the Spanner catalog that was designed on it (ADR-0168's "Shared code", #1582).
   Keep factories and vertices internal; only the two immutable listener values stay unrelocated
   in SQL jars. No connector builder gains a manual lineage setter.
+- `TableLineageSource` and `TableLineageSink` are the shared Table wrappers for a connector whose
+  runtime Source or Sink does not carry its catalog name (Spanner, Firestore; ADR-0160). Do not
+  copy them back into a module. The sink adapter forwards `createWriter` only, so it refuses a
+  `SupportsWriterState`, `SupportsCommitter` or `SupportsPreWriteTopology` delegate; a sink with
+  state, commits or a pre-write topology threads the logical name into its own runtime object
+  instead. The source adapter also forwards Flink 2.x generalized watermark declarations through
+  its compat seam. Its public `delegate()` supports this delegation and connector factory tests;
+  the sink's public `@VisibleForTesting` `delegate()` serves those tests.
 - Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
   (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
   (BOM-managed). `flink-table-common` serves `base.catalog` and `base.table`; base has no other
@@ -25,7 +33,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
   on the justfile `binary-compat`/`e2e` install lists for the reactor-resolution reason
   test-utils is (#181).
 - The lineage graph/planner tests use `src/test/java-flink2` (ADR-0160).
-  No production compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here needs one.
+  The two production compat files are `base.lineage.internal`'s package-private `CrossVersionSink`
+  and `CrossVersionSource` in `src/main/java-flink1`/`java-flink2`, implemented only by their Table
+  adapters (ADR-0160, #1635). Do not make them public as a side effect of another change.
   `base.catalog` meets the 1.x/2.x gaps it touches (`listMaterializedTables`, `dropModel`,
   `renameModel`) by declaring them without `@Override`. Nothing else here touches a 1.x/2.x
   API gap — **not only the `Sink` one**, since the roots hold whatever differs across the majors

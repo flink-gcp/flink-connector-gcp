@@ -734,10 +734,11 @@ facts); the rules a session needs:
   weekly `lts` row verifies it, and no cross-major binary claim is made — the one-artifact
   claim spans the 2.x range only. A 1.20 patch bump is a hand edit to `FLINK_LTS` in
   `weekly.yaml` (dependabot does not see workflow env). **A cross-major API difference goes in
-  the roots** — every connector's `CrossVersionSink`, and
+  the roots** — every connector's `CrossVersionSink`, base's package-private `CrossVersionSink`
+  and `CrossVersionSource` for its Table lineage adapters (#1635), and
   BigQuery's `CrossVersionCheckpointId` (#404), which is what keeps a Flink method
-  `@Deprecated(forRemoval = true)` on the moving major out of shared source. Two things the
-  second one shows that the first did not: a compat file need not be compile-only, and need
+  `@Deprecated(forRemoval = true)` on the moving major out of shared source. Two things
+  `CrossVersionCheckpointId` shows that `CrossVersionSink` did not: a compat file need not be compile-only, and need
   not sit at a module's `sink` root. Switching `flink.compat` between local runs needs a
   `clean` for each such class, not just for `CrossVersionSink` — an incremental build reuses
   the other major's `.class`, and a *restored* source then reads green over stale bytecode.

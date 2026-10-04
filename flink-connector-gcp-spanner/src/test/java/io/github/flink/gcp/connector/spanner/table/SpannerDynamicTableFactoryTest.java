@@ -38,6 +38,8 @@ import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContex
 
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSink;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
@@ -121,7 +123,7 @@ class SpannerDynamicTableFactoryTest {
                                         .getSinkRuntimeProvider(
                                                 new SinkRuntimeProviderContext(false)))
                         .createSink();
-        return (SpannerMutationsSink<?>) ((SpannerTableLineage.TableSink<?>) sink).delegate;
+        return (SpannerMutationsSink<?>) ((TableLineageSink<?>) sink).delegate();
     }
 
     @Test
@@ -583,7 +585,7 @@ class SpannerDynamicTableFactoryTest {
     }
 
     private static Source<?, ?, ?> runtimeSource(Source<?, ?, ?> source) {
-        return ((SpannerTableLineage.TableSource<?, ?, ?>) source).delegate;
+        return ((TableLineageSource<?, ?, ?>) source).delegate();
     }
 
     private static SpannerSourceConfig<?> builtSource(

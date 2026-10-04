@@ -20,9 +20,10 @@ limitations under the License.
 - Date: 2026-08-01 ([#32], reversing the branch plan the issue was opened for — measured, not
   assumed); revised by [#404] (2026-08-09); revised by [#724] (2026-08-30, ADR-0147):
   each release also publishes the per-major LTS jar as `X.Y.Z-1.20` — support stays
-  source-level and per-major, and no cross-major binary claim is added
-- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404]
-- Modules: all connectors
+  source-level and per-major, and no cross-major binary claim is added; revised by [#1635]
+  (2026-10-04): the shared Table source forwards Flink 2.x watermark declarations
+- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404], [#1635]
+- Modules: all connectors, base
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
   § Supported versions
 
@@ -36,7 +37,7 @@ these connectors touch was measured.
 ## Decision
 
 **Flink 1.20 is supported from this same source tree, not from a branch or per-version
-modules.** The whole measured delta is two items:
+modules.** The per-major roots isolate the API differences this project uses, including:
 
 - **1.20 still declares the deprecated `createWriter(Sink.InitContext)` abstract while 2.x
   removed the type.** Absorbed by the one-interface `CrossVersionSink` seam under
@@ -47,8 +48,12 @@ modules.** The whole measured delta is two items:
 - **`CommittableMessage`'s checkpoint-id accessors swapped roles across the majors.** Absorbed
   by the same seam: `CrossVersionCheckpointId` in each compat root, one static `of` reading a
   `CommittableWithLineage`, called by BigQuery's `FileLoadsCheckpointStamper` ([#404]).
+- **Flink 2.x sources can declare generalized watermarks; 1.20 has neither the method nor
+  the declaration type.** Base's package-private `CrossVersionSource` forwards
+  `Source.declareWatermarks()` only in the Flink 2.x root, preserving declarations instead of
+  inheriting the empty default ([#1635], ADR-0160).
 
-**Both deltas live in the seam, and neither leaves a deprecated call in shared source.** The
+**All deltas live in the seam, without deprecated calls or absent types in shared source.** The
 seam is therefore not one interface per module but a small set of same-FQCN files, and not
 every one of them is compile-only — `CrossVersionCheckpointId.of` runs for every lineage-carrying
 message the FILE_LOADS pre-commit stage maps. A compat-root file also need not sit at a module's `sink`
@@ -67,6 +72,12 @@ env.
 The 1.20 bridge default is compile-only: 1.20's runtime always creates writers through
 `createWriter(WriterInitContext)`, measured by the whole suite running green on 1.20.4 with
 the bridge method throwing.
+
+The Flink 2.2.1 `Source` sources declare `declareWatermarks()`, returning
+`Set<? extends WatermarkDeclaration>`; `Source` in 1.20.4 has no such method, and its
+`flink-core-api` jar has no declaration type.
+`TableLineageWatermarksTest` checks forwarding of a nonempty declaration set, including after
+serialization, and the clean 1.20 reactor checks that the shared adapter compiles without that API.
 
 The checkpoint-id accessors, read off the shipped artifacts on 2026-08-09 — `javap -v` on
 `flink-streaming-java:1.20.4` and on `flink-runtime` 2.3.0 and 2.4-SNAPSHOT (`-v`, because the
@@ -115,7 +126,7 @@ carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1
 ## Alternatives declined
 
 - **A support branch with backports** — the plan [#32] was opened for. Reversed on the
-  measurement above: a two-item delta does not justify a second branch's standing merge cost.
+  initial measurement: a two-item delta did not justify a second branch's standing merge cost.
 - **A Dataproc-style per-version module split** — buys isolation the handful of same-FQCN
   compat files, none of them longer than an interface stub, already provides.
 
@@ -124,3 +135,4 @@ carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1
 [#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
 [#404]: https://github.com/flink-gcp/flink-connector-gcp/issues/404
 [#724]: https://github.com/flink-gcp/flink-connector-gcp/issues/724
+[#1635]: https://github.com/flink-gcp/flink-connector-gcp/issues/1635

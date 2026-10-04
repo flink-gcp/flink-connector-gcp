@@ -144,8 +144,8 @@ the @Internal subtype. Near-unavoidable while implementing the interface —
 noted as such on issue #103."""
 
 # ---------------------------------------------------------------------------
-# @Experimental — no guarantee even across patch releases. The four entries
-# are one coherent surface, not four exposures — carried by two deliberate,
+# @Experimental — no guarantee even across patch releases. The commit-topology entries
+# are one coherent surface, carried by two deliberate,
 # documented design decisions in the BigQuery sink: the FILE_LOADS pre-commit
 # topology (issue #14) and the buffered-stream exactly-once sink's identity
 # pre-commit topology used as a validation hook (issue #30). Both are
@@ -171,6 +171,25 @@ reason = "Concrete CommittableMessage the pre-commit topology emits; same exposu
 
 [experimental."org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo"]
 reason = "TypeInformation for the pre-commit topology stream; same exposure."
+
+[experimental."org.apache.flink.streaming.api.connector.sink2.SupportsPreWriteTopology"]
+reason = """
+TableLineageSink checks this marker only to refuse a delegate whose pre-write topology
+the metadata wrapper would silently drop (issue #1635, ADR-0160); it does not implement
+or call the experimental topology API. No stable Sink interface exposes this capability.
+If the marker changes, adapt the rejection check to the supported Flink API before
+admitting delegates; a sink needing a topology carries its logical name in its runtime
+object rather than using this wrapper."""
+
+[experimental."org.apache.flink.api.common.watermark.WatermarkDeclaration"]
+reason = """
+The Flink 2.x Source.declareWatermarks() signature requires this return type;
+base.lineage.internal.CrossVersionSource forwards the delegate's declarations
+instead of dropping them (issue #1635, ADR-0160). There is no stable substitute
+for the SPI's declared type, and the import stays in the java-flink2 root because
+Flink 1.20 has neither the method nor the type. If this API changes, adapt the
+per-major bridge to forward the supported declaration API before admitting
+sources that emit generalized watermarks."""
 
 # ---------------------------------------------------------------------------
 # Unannotated — no tier at all, which is weaker than @Internal, not stronger.

@@ -17,31 +17,17 @@
 package io.github.flink.gcp.connector.firestore.table;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.sink2.Sink;
-import org.apache.flink.api.connector.sink2.SinkWriter;
-import org.apache.flink.api.connector.sink2.WriterInitContext;
-import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
-import org.apache.flink.api.connector.source.SourceReader;
-import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.api.connector.source.SourceSplit;
-import org.apache.flink.api.connector.source.SplitEnumerator;
-import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
-import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.streaming.api.lineage.LineageVertex;
-import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
-import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSink;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
-import io.github.flink.gcp.connector.firestore.sink.CrossVersionSink;
 
-import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Objects;
@@ -116,7 +102,7 @@ public final class FirestoreTableLineage implements Serializable {
      */
     public <T, S extends SourceSplit, E> Source<T, S, E> source(
             Source<T, S, E> source, TypeInformation<T> type) {
-        return new TableSource<>(source, type, this);
+        return TableLineageSource.of(source, type, logicalName, namespace, resources);
     }
 
     /**
@@ -127,7 +113,7 @@ public final class FirestoreTableLineage implements Serializable {
      * @return the wrapped sink
      */
     public <T> Sink<T> sink(Sink<T> sink) {
-        return new TableSink<>(sink, this);
+        return TableLineageSink.of(sink, logicalName, namespace, resources);
     }
 
     @Override
@@ -147,84 +133,5 @@ public final class FirestoreTableLineage implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(logicalName, namespace, resources);
-    }
-
-    static final class TableSource<T, S extends SourceSplit, E>
-            implements Source<T, S, E>, ResultTypeQueryable<T>, LineageVertexProvider {
-        private static final long serialVersionUID = 1L;
-        @VisibleForTesting final Source<T, S, E> delegate;
-        private final TypeInformation<T> type;
-        private final FirestoreTableLineage metadata;
-
-        private TableSource(
-                Source<T, S, E> delegate, TypeInformation<T> type, FirestoreTableLineage metadata) {
-            this.delegate = delegate;
-            this.type = type;
-            this.metadata = metadata;
-        }
-
-        @Override
-        public SourceLineageVertex getLineageVertex() {
-            return Lineage.tableSource(
-                    metadata.logicalName, metadata.namespace, getBoundedness(), metadata.resources);
-        }
-
-        @Override
-        public Boundedness getBoundedness() {
-            return delegate.getBoundedness();
-        }
-
-        @Override
-        public TypeInformation<T> getProducedType() {
-            return type;
-        }
-
-        @Override
-        public SourceReader<T, S> createReader(SourceReaderContext context) throws Exception {
-            return delegate.createReader(context);
-        }
-
-        @Override
-        public SplitEnumerator<S, E> createEnumerator(SplitEnumeratorContext<S> context)
-                throws Exception {
-            return delegate.createEnumerator(context);
-        }
-
-        @Override
-        public SplitEnumerator<S, E> restoreEnumerator(
-                SplitEnumeratorContext<S> context, E checkpoint) throws Exception {
-            return delegate.restoreEnumerator(context, checkpoint);
-        }
-
-        @Override
-        public SimpleVersionedSerializer<S> getSplitSerializer() {
-            return delegate.getSplitSerializer();
-        }
-
-        @Override
-        public SimpleVersionedSerializer<E> getEnumeratorCheckpointSerializer() {
-            return delegate.getEnumeratorCheckpointSerializer();
-        }
-    }
-
-    static final class TableSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
-        private static final long serialVersionUID = 1L;
-        @VisibleForTesting final Sink<T> delegate;
-        private final FirestoreTableLineage metadata;
-
-        private TableSink(Sink<T> delegate, FirestoreTableLineage metadata) {
-            this.delegate = delegate;
-            this.metadata = metadata;
-        }
-
-        @Override
-        public LineageVertex getLineageVertex() {
-            return Lineage.tableSink(metadata.logicalName, metadata.namespace, metadata.resources);
-        }
-
-        @Override
-        public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-            return delegate.createWriter(context);
-        }
     }
 }
