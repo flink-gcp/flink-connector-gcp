@@ -18,9 +18,15 @@ package io.github.flink.gcp.connector.tier3.pubsub;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -37,6 +43,71 @@ class PubSubRecoveryReportTest {
                 RecoveryPayload.input(options, input, 0) + "|" + RecoveryPayload.encode(message),
                 UUID.randomUUID().toString(),
                 false);
+    }
+
+    /** One case of the file the Python port in tools/tier3 reads too. */
+    record OracleCase(String name, int records, List<String[]> accepts, String result) {
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    static List<OracleCase> sharedCases() throws IOException {
+        List<OracleCase> cases = new ArrayList<>();
+        String name = null;
+        int records = 0;
+        List<String[]> accepts = new ArrayList<>();
+        int headers = 0;
+        try (InputStream input =
+                PubSubRecoveryReportTest.class.getResourceAsStream("/oracle-cases.txt")) {
+            for (String line :
+                    new String(input.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                String[] parts = line.split(" ", 3);
+                switch (parts[0]) {
+                    case "case" -> {
+                        // Every case ends with exactly one result line.
+                        assertThat(cases).hasSize(headers++);
+                        name = parts[1];
+                        records = Integer.parseInt(parts[2].substring("records=".length()));
+                        accepts = new ArrayList<>();
+                    }
+                    case "accept" -> accepts.add(new String[] {parts[1], parts[2]});
+                    case "expect", "reject", "refuse" ->
+                            cases.add(new OracleCase(name, records, accepts, line));
+                    default -> throw new IllegalStateException("Unknown case line: " + line);
+                }
+            }
+        }
+        assertThat(cases).hasSize(headers).hasSize(24);
+        return cases;
+    }
+
+    @ParameterizedTest
+    @MethodSource("sharedCases")
+    void decidesEachSharedCaseAsThePythonPortDoes(OracleCase oracleCase) {
+        PubSubRecoveryReport report =
+                new PubSubRecoveryReport(
+                        new RecoveryOptions(
+                                "oracle", oracleCase.records(), 1, "initial", false, "datastream"));
+        Runnable decide =
+                () -> {
+                    for (String[] accept : oracleCase.accepts()) {
+                        report.accept(accept[0], accept[1]);
+                    }
+                    assertThat("expect " + report.complete()).isEqualTo(oracleCase.result());
+                };
+        if (oracleCase.result().startsWith("reject ")) {
+            assertThatThrownBy(decide::run)
+                    .hasMessage(oracleCase.result().substring("reject ".length()));
+        } else if (oracleCase.result().equals("refuse")) {
+            assertThatThrownBy(decide::run).isInstanceOf(IllegalArgumentException.class);
+        } else {
+            decide.run();
+        }
     }
 
     @Test

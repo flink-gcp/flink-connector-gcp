@@ -457,6 +457,18 @@ def test_bigquery_recovery_and_query_then_cleanup(
     assert sum(w["attempts"] for w in record.recovery["coverage"].values()) == len(
         world.measurements()
     )
+    # Every transition carries the coverage so far, so a run that stops before
+    # its verdict still records what it read.
+    transitions = [
+        value["payload"]
+        for value in world.evidence().values()
+        if isinstance(value, dict)
+        and str(value.get("event", "")).startswith("recovery-")
+        and isinstance(value.get("payload"), dict)
+        and "stage" in value["payload"]
+    ]
+    assert transitions
+    assert all("coverage" in payload for payload in transitions)
 
 
 def test_the_exported_evidence_recomputes_to_the_verdict_the_run_wrote(

@@ -25,7 +25,8 @@ from .pubsub_handoff import CohortUnstarted
 from .pubsub_lifecycle import require_pubsub_clean
 from .records import write_artifact
 
-# Scenarios whose finalization retry compares the whole receipt.
+# Scenarios whose finalization retry compares the whole receipt, and whose
+# success is the verdict their exercise decided when it completed.
 SERVICE_TRIALS = ("bigquery-recovery", "pubsub-recovery")
 
 
@@ -571,7 +572,7 @@ class Runner:
                         and (control.recovery or {}).get("stage") == "complete"
                     )
                     or (
-                        self.env.approval.scenario == "bigquery-recovery"
+                        self.env.approval.scenario in SERVICE_TRIALS
                         # The exercise decided this when it completed, from the
                         # recoveries, the oracle and the observation coverage.
                         # A completed recovery alone is not the claim here.

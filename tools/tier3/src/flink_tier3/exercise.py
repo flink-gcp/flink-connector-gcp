@@ -68,6 +68,10 @@ class RecoveryExercise:
     timing = RECOVERY
     progress_event = "smoke-progress"
     expected_pods = 2
+    # Whether each transition carries the observation coverage so far: for a
+    # run that stops before its verdict, the record is the only account of
+    # what it read.
+    records_coverage = False
 
     def __init__(self, env, upgrade):
         if (
@@ -91,6 +95,7 @@ class RecoveryExercise:
         self.retiring_pods = set()
         self.generation = None
         self.rest, self.measured_at = None, None
+        self.coverage = {}
 
     @property
     def recovering(self):
@@ -151,7 +156,12 @@ class RecoveryExercise:
         if self.env.clock() >= min(self.deadline, self.env.schedule.cleanup_at):
             raise Failure("Recovery exercise deadline expired: " + self.stage)
 
+    def _coverage(self):
+        return {name: dict(window) for name, window in self.coverage.items()}
+
     def persist(self, stage, **details):
+        if self.records_coverage:
+            details.setdefault("coverage", self._coverage())
         self.check_open()
         value = {
             "stage": stage,

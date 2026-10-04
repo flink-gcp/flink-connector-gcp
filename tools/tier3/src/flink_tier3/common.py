@@ -39,6 +39,10 @@ class TransportError(Failure):
     """A Kubernetes transport failure, distinct from an invariant violation."""
 
 
+class ReadCeilingExceeded(Failure):
+    """A Kubernetes response larger than its reader allows."""
+
+
 class Superseded(RuntimeError):
     """Another supervisor Pod holds this run, so this one must not act on it.
 

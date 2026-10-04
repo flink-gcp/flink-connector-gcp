@@ -146,7 +146,7 @@ Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 cons
 The proposal's `cost` is `unestimated`: spend is approved from an estimate before dispatch, and a runnable trial still needs one.
 A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
-The [recovery exercise](#recovery-exercise) injects the faults and orchestrates the savepoint; dispatch, the offline verdict and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict); dispatch, the verdict's recomputation from exported evidence and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Run identity and service resources
 
@@ -416,7 +416,11 @@ A write without a definite answer in a handoff call keeps its marker and the loc
 ## Recovery exercise
 
 [`PubSubExercise`](../../../tools/tier3/src/flink_tier3/pubsub_exercise.py) is the supervisor's exercise for a `pubsub-recovery` run; it runs in the supervisor's shared poll loop, which audits the namespace, reads the Pods' logs and the job's checkpoint history through its REST Service every 15 seconds, and it drives one approved trial.
-On each poll it first pulls the output subscription through the [output collector](#output-collector), at most five batches and at least one, which the proposal's traffic check budgets, and samples each job vertex's backpressure once a minute as `pubsub-measurement` evidence.
+On each poll it first pulls the output subscription through the [output collector](#output-collector), at most five batches and at least one, which the proposal's traffic check budgets, and once a minute records a `pubsub-measurement` sample.
+A sample holds each job vertex's backpressure and its Pub/Sub connector metrics, aggregated over subtasks, and a backlog derived from the supervisor's own requests and observations; the [verdict](#verdict) lists which metrics it reads.
+A connector metric's id carries its operator's name, which differs between the entry points, so each sample lists a vertex's metrics and asks for the ones it recognizes; a read that fails with an API or transport error, answers more than its read ceiling or answers no JSON, or a listing that names none of them, is recorded as unavailable, and the trial goes on.
+`pendingAcks` is what the source holds leased, received or emitted and not yet acknowledged, which is the population a fault returns to the service.
+The `backlog` counts the requested cohorts' inputs not yet seen on the output subscription, from the supervisor's request rather than the publication, so it includes the runner's publication delay, and it reads no service metric.
 Its first stage starts when the loop sees the application admitted, and it expects the JobManager and as many TaskManagers as the application's `taskManager.replicas`.
 Each stage below is recorded before its operation, as `recovery-<stage>` evidence and in the run control's `recovery` record, together with the outcomes gathered so far.
 
@@ -444,7 +448,7 @@ Each attempt is mapped to its Pod through the `pubsub-attempt` line the applicat
 A TaskManager's loss may restart only the failover region on that Pod: in the DataStream topology each subtask's source, observer and sink form one region, so the other TaskManager's attempt keeps running without restoring anything, and its part of the replay cohort is acknowledged by the next checkpoint instead of redelivered.
 The expected replay population is therefore the cohort's observations by the displaced attempts; a wider restart redelivers more, which the recovery outcome counts as `extra_replay` rather than as a failure.
 
-Recovery is proven by the job's restoration after the fault, read from its checkpoint history, and by restored attempts announcing themselves in the logs; output is not required yet, because after a savepoint nothing is redelivered and the last cohort is only requested once recovery is proven.
+Recovery is proven by the job's restoration after the fault, read from its checkpoint history, and by restored attempts announcing themselves in the logs; output is not required yet, because after a savepoint nothing is expected again and the last cohort is only requested once recovery is proven.
 A replacement must restore a checkpoint under the run's state prefix no older than the retained one, with a new JobManager or with the deleted TaskManager gone.
 A rescale must restore the savepoint its upgrade took, under the run's savepoint prefix, once the Operator reports the new generation deployed and the application matches the recovery manifest.
 When a replacement restores exactly the retained checkpoint, no checkpoint completed between the replay cohort's processing and the fault, the boundary held, and every expected observation must reappear from a new attempt within the stage's deadline; otherwise the trial stops.
@@ -455,8 +459,48 @@ The `fault` outcome records the retained checkpoint, the latest completed checkp
 The redelivery's timing is read from these marks and from the output observations; shutdown is the last output observed before the fault.
 
 An eviction, preemption, node shutdown or container restart at any stage, or a Pod replacement outside `recovering`, stops the trial as inconclusive, as in the other recovery exercises, so a Spot TaskManager reclaimed mid-trial ends it.
-The supervisor records the exercise's completion as its own success, but the final receipt still derives no success for `pubsub-recovery`: the verdict over the exported evidence is [#1432](https://github.com/flink-gcp/flink-connector-gcp/issues/1432)'s.
-Synthetic tests run each trial through the supervisor's loop over a simulated relay, Operator and service, including a lost boundary, a population that never returns, a checkpoint outside the run's state, an unplanned replacement and a wrong savepoint; they do not establish real-service redelivery, failover scope or timing.
+The supervisor records the exercise's completion as its own success; the final receipt reports success only when the exercise's [verdict](#verdict) is `usable`.
+Synthetic tests run each trial through the supervisor's loop over a simulated relay, Operator and service, including a lost boundary, a population that never returns, a replay under new input message IDs, foreign output, connector metrics that never appear, a checkpoint outside the run's state, an unplanned replacement and a wrong savepoint; they do not establish real-service redelivery, failover scope or timing.
+
+### Verdict
+
+When the last stage completes, the exercise decides the trial's verdict over the `complete` record it is about to write, so the verdict reaches the `recovery-complete` evidence as well as the run control the final receipt reads.
+The record adds the output oracle's account of every collected line, the observation coverage per window and the Pod each attempt was announced by.
+[`pubsub_verdict`](../../../tools/tier3/src/flink_tier3/pubsub_verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
+
+| Condition | Reason when it fails |
+| --- | --- |
+| The stage is `complete`, with the `checkpoint`, `fault`, `recovery` and `after` outcomes | `recovery-incomplete`, `missing-<outcome>` |
+| The [oracle](#offline-output-reconciliation) accepted every collected line | `oracle-missing`, `oracle-rejected` |
+| The oracle found every logical input of both subscriptions | `oracle-incomplete` |
+| A replacement restored the retained checkpoint and saw its whole expected replay, which is not empty, from new attempts | `replay-unobserved`, `replay-empty`, `replay-incomplete` |
+| Each replayed observation came under an input message ID the input was processed under before the fault, asked when recovery is proven and again over everything collected by the end | `replay-ids-not-preserved` |
+| A rescale's recovery outcome expects no replay | `replay-unexpected` |
+| A rescale saw no replay-cohort output from the attempts it started, by the end | `replay-after-savepoint` |
+| The fault names one of the four trials | `unknown-trial` |
+| Each family below was read in a sample before the fault and in one after recovery | `unsampled-<window>`, `unobserved-<family>-in-<window>` |
+
+A lost boundary completes the trial, and its verdict is `inconclusive` with `replay-unobserved`: the job restored a checkpoint that already covered the replay cohort, so the trial exercised no redelivery, which is the claim a replacement exists to carry.
+A replay under new input message IDs came from a duplicate publication, not from the service redelivering what the source held leased.
+The `after` outcome's `replay_by_new_attempts` counts every replay-cohort input the fault's new attempts had processed by the end, redelivered or republished alike, where recovery counted only the expected ones at its first chance.
+A rescale expects none, because its savepoint acknowledges what it covers; whether the service redelivers some of it anyway, when not every acknowledgement reached it, is unmeasured, so a rescale that saw any is `inconclusive` with `replay-after-savepoint` until the deployed campaign ([#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435)) measures it and decides how to treat it.
+That count stops at completion, which can come before the old subscriber's extended leases expire, so a rescale found `usable` saw no such output by then, not none at all.
+An input published twice may have been processed under both of its IDs before the fault, and a redelivery under either is a redelivery.
+
+The `before` window takes the samples of `baseline`, `checkpoint` and `boundary`, because the first of them can end within a poll of the job starting, before its operators register anything; the `after` window takes those of `after`, and samples taken while recovering count toward neither.
+A family counts as read only where a sample's answer returned it, a vertex's backpressure level or a finite number for a connector metric, not where it was listed or requested.
+Every earlier transition also carries the coverage so far, so a trial that stops before completing still records what it read.
+
+| Family | Read from |
+| --- | --- |
+| `backpressure` | A vertex's backpressure level |
+| `source` | The source reader's `messagesReceived`, `messagesAcked`, `messagesNacked`, `pendingAcks`, `pendingCheckpoints`, `bufferedMessages`, `fetcherBufferedMessages`, `subscriberShutdownsAbandoned` and `subscriberFailuresUnreported` |
+| `sink` | The sink writer's `inFlightMessages`, `inFlightBytes`, `activePublishers` and `publisherShutdownsAbandoned` |
+
+The oracle's duplicate counters are reported in the record beside the verdict and decide nothing.
+At-least-once delivery owes them, and neither unique Pub/Sub message IDs nor a deduplicated count can establish exactly-once output, so their absence would prove nothing either.
+A `usable` verdict says nothing about ordering across the replay: the oracle is a completeness check over a set of identities.
+Recomputing the verdict from the exported evidence is [#1625](https://github.com/flink-gcp/flink-connector-gcp/issues/1625)'s.
 
 ## Input publication and output collection
 
@@ -526,7 +570,8 @@ The start and end marks are read from the runner's clock and the request time fr
 `pull()` takes one batch of up to 100 under the next batch ID: `out-`, eight random hexadecimal digits fixed for the collector, and a counter, so that two collectors name the same create-only evidence only if those digits collide.
 `drain(max_pulls)` repeats it until a batch comes back short or the pulls are spent; a short or empty batch ends the round without proving the subscription empty.
 Each collected line whose payload is this run's relay output, with the nine fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase and whether the attempt restored state, with the output message ID, batch and collection time.
-Any other line, including another run's, is kept apart by batch and stays in the evidence for the offline oracle to reject.
+Any other line, including another run's, is kept apart by batch and stays in the evidence, and the [verdict](#verdict)'s oracle refuses it.
+Every collected line is also kept in collection order, repeats included, as the oracle's input for the [verdict](#verdict).
 The observations live in the supervisor's process for the exercise; a replacement supervisor, which never collects, does not rebuild them.
 
 ## Shared traffic reservations
@@ -720,7 +765,12 @@ It reconciles either entry point's output, since both write the same payload.
 The collector must preserve output message IDs: discarding them would conflate its own redelivery with duplicate sink publication.
 Completeness alone does not establish recovery, exactly-once processing/output, strict replay ordering or a checkpoint-confirmed fault boundary.
 The [recovery exercise](#recovery-exercise) retains a completed checkpoint, publishes a separately identified post-checkpoint cohort, proves that no later checkpoint completed before the fault, and, when the boundary held, requires the share of that cohort the fault displaced to reappear from new attempts after restore, recording whether each replay kept its input message ID; it also observes continued progress and a later completed checkpoint.
-The verdict over the exported evidence, with its negative controls for missing IDs and the replay population, is [#1432](https://github.com/flink-gcp/flink-connector-gcp/issues/1432)'s; deployed trials of either entry point remain on the parent issue.
+The exercise's [verdict](#verdict) applies these rules through a Python port, because the supervisor's image carries no JVM; the emulator integration test keeps using `PubSubRecoveryReport`.
+The port returns the same five counters, and both test suites decide the cases in [`oracle-cases.txt`](src/test/resources/oracle-cases.txt), so a rule changed on one side only fails the other's run of them.
+Those cases pin the report's own rejection messages; where the JDK writes the message instead, as for an unparseable number, UUID or Base64 field, the port words it differently, and the cases require only that both refuse.
+The Java tool's 64 MiB file bound and each side's line-reader checks are outside the shared cases.
+Instead of refusing a run with missing inputs, the port reports how many are missing, so that the verdict can tell a refused line from an incomplete set.
+Recomputing the verdict from the exported evidence is [#1625](https://github.com/flink-gcp/flink-connector-gcp/issues/1625)'s; deployed trials of either entry point remain on the parent issue.
 
 ### Internal approval contract
 
@@ -740,13 +790,13 @@ Existing scenarios retain their own policies and namespace inventories.
 For a version 5 approval, `Approval.pubsub_plan` derives service names and grants from its identity, and `Approval.pubsub_traffic_limits` derives all helper counters with the cleanup deadline.
 `PubSubLifecycle` validates that approval before construction; `PubSubTraffic` rejects a different record count, counter limit or admission deadline before initialization or network calls.
 Earlier internal helper fixtures without version 5 retain their caller-supplied contract; they are not serialized Pub/Sub approvals.
-Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, compares all receipt fields on retry except the refreshed plans' observation time (`plans.at`), and keeps success false.
+Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, compares all receipt fields on retry except the refreshed plans' observation time (`plans.at`), and derives success only from the exercise's `usable` [verdict](#verdict).
 The original receipt is retained; the current plans must still prove the same nonce, all three foundation roots and an empty result.
 Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
 
 The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
 Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, and the supervisor runs the [recovery exercise](#recovery-exercise), but dispatch still refuses before the environment lock until that accounting exists.
-Complete execution accounting, the offline verdict ([#1432](https://github.com/flink-gcp/flink-connector-gcp/issues/1432)) and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+Complete execution accounting, the verdict's offline recomputation ([#1625](https://github.com/flink-gcp/flink-connector-gcp/issues/1625)) and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Approval dispatch
 

@@ -29,7 +29,8 @@ import requests
 import urllib3
 import yaml
 from flink_tier3 import lifecycle as cli
-from flink_tier3 import repository
+from flink_tier3 import metrics, repository
+from flink_tier3.common import ReadCeilingExceeded
 from google.cloud import storage
 
 rt = cli.rt
@@ -2209,6 +2210,31 @@ def test_kubernetes_sdk_preserves_delete_and_patch_preconditions():
     assert all(
         kwargs["timeout"].read_timeout == rt.HTTP_TIMEOUT for _, kwargs in pool.calls
     )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"{" + b'"x": 1, ' * 8 + b'"y": 2}',
+        b"<html>\xe9chec</html>",
+        b"<html>proxy error</html>",
+        b"[" * 100000 + b"]" * 100000,
+    ],
+    ids=["over-ceiling", "not-utf8", "not-json", "too-deep"],
+)
+def test_a_metric_read_the_transport_cannot_answer_is_unavailable(body):
+    """Through the SDK transport the run actually uses, not a raised fixture."""
+    kube, _ = sdk_kube([(200, body)])
+    path = "/api/v1/namespaces/n/services/s:8081/proxy/jobs/j"
+    limit = 32 if len(body) > 32 and body.startswith(b"{") else len(body) + 1
+    reading = metrics.sample(lambda: kube.request("GET", path, limit=limit))
+    assert metrics.unavailable(reading), reading
+
+
+def test_the_read_ceiling_is_its_own_failure():
+    kube, _ = sdk_kube([(200, b"x" * 64)])
+    with pytest.raises(ReadCeilingExceeded):
+        kube.request("GET", "/api/v1/namespaces/n/services/s:8081/proxy/x", limit=8)
 
 
 @pytest.mark.parametrize("status", [404, 409, 403])

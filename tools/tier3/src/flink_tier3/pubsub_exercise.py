@@ -21,15 +21,31 @@ from .exercise import RecoveryExercise
 from .metrics import sample, subset, unavailable
 from .policy import PUBSUB, PUBSUB_EXERCISE, PUBSUB_STATE
 from .pubsub_messages import COHORTS, cohort_ranges
+from .pubsub_observe import connector_metrics
+from .pubsub_oracle import reconcile
 from .pubsub_output import OutputCollector
+from .pubsub_verdict import (
+    COMPLETE_STAGE,
+    MEASUREMENT_EVENT,
+    REPLACEMENTS,
+    summarize,
+    verdict,
+)
 
 FIRST, REPLAY, LAST = COHORTS
-REPLACEMENTS = ("jm-replacement", "tm-replacement")
 ATTEMPT = re.compile(
     r"event=pubsub-attempt run_id=(\S+) phase=(\S+) attempt=(\S+) "
     r"restored=(true|false)"
 )
-MEASUREMENT_EVENT = "pubsub-measurement"
+# The cohorts the supervisor has requested by each stage; the first is
+# published at admission.
+REQUESTED = {
+    "baseline": (FIRST,),
+    "checkpoint": (FIRST,),
+    "boundary": (FIRST, REPLAY),
+    "recovering": (FIRST, REPLAY),
+    "after": COHORTS,
+}
 # The fields a rescale's recovery manifest changes.
 RESCALED = (("job", "args"), ("job", "parallelism"), ("taskManager", "replicas"))
 
@@ -54,11 +70,14 @@ class PubSubExercise(RecoveryExercise):
     requested after recovery and must be processed on both inputs by the
     attempts serving after the fault, followed by another checkpoint.
 
-    The exercise records what it observed and the expected replay population;
-    the run's verdict is decided offline, from the exported evidence.
+    The exercise records what it observed and the expected replay population,
+    and decides the trial's verdict when it completes, from the record it
+    writes then: the output oracle over every collected line, the recovery
+    outcomes and the observation coverage.
     """
 
     namespace = PUBSUB
+    records_coverage = True
     state_bucket = PUBSUB_STATE
     timing = PUBSUB_EXERCISE
 
@@ -130,8 +149,30 @@ class PubSubExercise(RecoveryExercise):
     def attach_rest(self, service, job_id):
         self.track_rest(service, job_id)
 
+    def backlog(self):
+        """Requested input not yet seen on the output subscription.
+
+        Derived from the supervisor's own requests and observations, with no
+        service read: it counts from the request rather than the publication,
+        so it includes the runner's publication delay, and a message seen once
+        is not counted again however often it is redelivered.
+        """
+        names = REQUESTED.get(self.stage, ())
+        requested = 2 * sum(self.ranges[name]["count"] for name in names)
+        observed = {
+            (item["input_index"], item["sequence"])
+            for item in self.collector.observations
+            if any(self.in_cohort(name, item) for name in names)
+        }
+        return {
+            "cohorts": list(names),
+            "requested": requested,
+            "observed": len(observed),
+            "outstanding": requested - len(observed),
+        }
+
     def measure(self):
-        """Sample each vertex's backpressure, once per measurement interval."""
+        """Sample each vertex's backpressure and connector metrics, once per interval."""
         if not self.measurement_due():
             return
         plan = sample(lambda: self.rest.job(""))
@@ -149,11 +190,14 @@ class PubSubExercise(RecoveryExercise):
                         ),
                         ("status", "backpressureLevel", "subtasks", "unavailable"),
                     ),
+                    "metrics": connector_metrics(self.rest, vertex["id"]),
                 }
                 for vertex in plan.get("vertices") or []
                 if vertex.get("id")
             ]
-        self.env.emit(MEASUREMENT_EVENT, {"stage": self.stage, "vertices": readings})
+        reading = {"vertices": readings, "backlog": self.backlog()}
+        self.coverage = summarize(self.coverage, self.stage, reading)
+        self.env.emit(MEASUREMENT_EVENT, {"stage": self.stage, **reading})
 
     @staticmethod
     def known_id(rest):
@@ -437,8 +481,8 @@ class PubSubExercise(RecoveryExercise):
         if restored is None:
             return
         # Restored attempts announce themselves in their Pods' logs. Output
-        # is no proof of them yet: after a savepoint nothing is redelivered,
-        # and the last cohort is published only once recovery is proven.
+        # is no proof of them yet: after a savepoint nothing is expected
+        # again, and the last cohort is published only once recovery is proven.
         started = sorted(
             attempt
             for attempt, owner in self.attempts.items()
@@ -452,11 +496,6 @@ class PubSubExercise(RecoveryExercise):
         replays = [o for o in after if self.in_cohort(REPLAY, o)]
         if held and not expected <= _identities(replays):
             return  # still waiting for the displaced population, to the deadline
-        original_ids = {
-            (o["input_index"], o["sequence"]): o["input_message_id"]
-            for o in self.collector.observations
-            if o["attempt"] in self.fault["before"] and self.in_cohort(REPLAY, o)
-        }
         self.outcomes["recovery"] = {
             "restored": restored,
             # The boundary held when the job restored the retained checkpoint:
@@ -473,12 +512,7 @@ class PubSubExercise(RecoveryExercise):
             "expected_replay": len(expected),
             "replayed": len(_identities(replays) & expected),
             "extra_replay": len(_identities(replays) - expected),
-            "replay_ids_preserved": all(
-                original_ids.get((o["input_index"], o["sequence"]))
-                == o["input_message_id"]
-                for o in replays
-                if (o["input_index"], o["sequence"]) in expected
-            ),
+            "replay_ids_preserved": self.ids_preserved(),
             "first_output_after_fault": (
                 utc(min(o["at"] for o in after)) if after else None
             ),
@@ -487,6 +521,37 @@ class PubSubExercise(RecoveryExercise):
         self.rebaseline(pods)
         self.marker = None
         self.request(LAST, self.timing["after_seconds"], "after")
+
+    def ids_preserved(self):
+        """Whether each replay seen so far came under an input ID processed before.
+
+        An input published twice can be processed under both IDs before the
+        fault, and redelivery of either is a redelivery. Asked again at
+        completion, because a replay collected after recovery was proven counts
+        as much as one collected before.
+        """
+        expected = {tuple(identity) for identity in self.fault["expected_replay"]}
+        original_ids = {}
+        for o in self.collector.observations:
+            # Collected by the fault, so processed before it: a surviving
+            # attempt goes on processing, and a duplicate publication it takes
+            # after the fault is not an ID the fault returned for redelivery.
+            if (
+                o["attempt"] in self.fault["before"]
+                and o["at"] <= self.fault["at"]
+                and self.in_cohort(REPLAY, o)
+            ):
+                original_ids.setdefault((o["input_index"], o["sequence"]), set()).add(
+                    o["input_message_id"]
+                )
+        return all(
+            o["input_message_id"]
+            in original_ids.get((o["input_index"], o["sequence"]), ())
+            for o in self.collector.observations
+            if self.restarted(o)
+            and self.in_cohort(REPLAY, o)
+            and (o["input_index"], o["sequence"]) in expected
+        )
 
     def finished(self, rest):
         if self.marker is None:
@@ -504,6 +569,34 @@ class PubSubExercise(RecoveryExercise):
                     if self.in_cohort(LAST, o)
                 }
             ),
+            # Every replay-cohort identity the attempts the fault started had
+            # processed by the end, redelivered or republished alike; recovery
+            # counted only the expected ones, at its first chance.
+            "replay_by_new_attempts": len(
+                _identities(
+                    o
+                    for o in self.collector.observations
+                    if self.restarted(o) and self.in_cohort(REPLAY, o)
+                )
+            ),
+            "replay_ids_preserved": self.ids_preserved(),
         }
-        self.persist("complete", observed=self.summary())
+        # Decide the verdict over the record this transition writes, so it
+        # reaches the `recovery-complete` evidence and not only the receipt,
+        # and so the offline analysis can recompute it from that record.
+        details = {
+            "coverage": self._coverage(),
+            "oracle": reconcile(
+                self.collector.lines,
+                self.env.approval.run_id,
+                self.collector.records,
+            ),
+            # The Pod each attempt was announced by, which the Pod logs hold
+            # too, kept beside the outcomes that name the attempts.
+            "attempts": self.attempts,
+        }
+        decided = verdict(
+            {"stage": COMPLETE_STAGE, "outcomes": self.outcomes, **details}
+        )
+        self.persist(COMPLETE_STAGE, observed=self.summary(), **details, **decided)
         return True
