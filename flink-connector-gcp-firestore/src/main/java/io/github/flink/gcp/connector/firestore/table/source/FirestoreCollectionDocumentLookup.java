@@ -39,7 +39,7 @@ import javax.annotation.Nullable;
  * projected to the fields of the columns read.
  */
 @Internal
-final class CollectionDocumentLookup implements DocumentLookup {
+final class FirestoreCollectionDocumentLookup implements FirestoreDocumentLookup {
     private static final long serialVersionUID = 1L;
 
     private final DatabaseDestination database;
@@ -60,7 +60,7 @@ final class CollectionDocumentLookup implements DocumentLookup {
      * @param emulatorEndpoint the emulator endpoint, or {@code null} for the service
      * @param serviceAccountKeyFile the key file, or {@code null} for application default ones
      */
-    CollectionDocumentLookup(
+    FirestoreCollectionDocumentLookup(
             DatabaseDestination database,
             String collection,
             String[] fields,

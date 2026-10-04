@@ -30,11 +30,11 @@ import java.util.Deque;
 import java.util.List;
 
 /**
- * A scripted {@link DocumentLookup}: each read takes the next outcome, and records the id it was
- * asked for. An outcome is a snapshot, a failure the future fails with, a {@link Thrown} failure
- * {@code readAsync} throws itself, or a future the test completes later.
+ * A scripted {@link FirestoreDocumentLookup}: each read takes the next outcome, and records the id
+ * it was asked for. An outcome is a snapshot, a failure the future fails with, a {@link Thrown}
+ * failure {@code readAsync} throws itself, or a future the test completes later.
  */
-final class FakeDocumentLookup implements DocumentLookup {
+final class FakeDocumentLookup implements FirestoreDocumentLookup {
     private static final long serialVersionUID = 1L;
 
     private final transient Deque<Object> outcomes = new ArrayDeque<>();

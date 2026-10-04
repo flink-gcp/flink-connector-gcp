@@ -37,22 +37,24 @@ import java.util.concurrent.atomic.AtomicInteger;
  * planner refuses a function class that is not.
  */
 @Internal
-public final class RowDataAsyncLookupFunction extends AsyncLookupFunction {
+public final class FirestoreRowDataAsyncLookupFunction extends AsyncLookupFunction {
     private static final long serialVersionUID = 1L;
 
     private final RowDataDeserializationSchema deserializer;
     private final int maxRetries;
-    private final DocumentLookup lookup;
+    private final FirestoreDocumentLookup lookup;
 
-    RowDataAsyncLookupFunction(
-            RowDataDeserializationSchema deserializer, int maxRetries, DocumentLookup lookup) {
+    FirestoreRowDataAsyncLookupFunction(
+            RowDataDeserializationSchema deserializer,
+            int maxRetries,
+            FirestoreDocumentLookup lookup) {
         this.deserializer = deserializer;
         this.maxRetries = maxRetries;
         this.lookup = lookup;
     }
 
     @VisibleForTesting
-    DocumentLookup documentLookup() {
+    FirestoreDocumentLookup documentLookup() {
         return lookup;
     }
 
@@ -69,7 +71,7 @@ public final class RowDataAsyncLookupFunction extends AsyncLookupFunction {
 
     @Override
     public CompletableFuture<Collection<RowData>> asyncLookup(RowData keyRow) {
-        String id = DocumentLookups.documentId(keyRow);
+        String id = FirestoreDocumentLookups.documentId(keyRow);
         if (id == null) {
             return CompletableFuture.completedFuture(Collections.emptyList());
         }
@@ -129,7 +131,8 @@ public final class RowDataAsyncLookupFunction extends AsyncLookupFunction {
                         @Override
                         public void onSuccess(DocumentSnapshot snapshot) {
                             try {
-                                result.complete(DocumentLookups.rows(deserializer, snapshot));
+                                result.complete(
+                                        FirestoreDocumentLookups.rows(deserializer, snapshot));
                             } catch (Exception failure) {
                                 result.completeExceptionally(failure);
                             }
@@ -142,7 +145,7 @@ public final class RowDataAsyncLookupFunction extends AsyncLookupFunction {
             if (result.isDone()) {
                 return;
             }
-            if (retry < maxRetries && LookupErrorClassifier.isTransient(failure)) {
+            if (retry < maxRetries && FirestoreLookupErrorClassifier.isTransient(failure)) {
                 retry++;
                 schedule();
             } else {

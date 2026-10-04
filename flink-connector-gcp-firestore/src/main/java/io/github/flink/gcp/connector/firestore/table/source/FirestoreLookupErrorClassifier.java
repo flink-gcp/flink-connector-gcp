@@ -27,7 +27,7 @@ import java.util.Set;
 
 /** Classifies whether a lookup's read failed transiently, so reading again may succeed. */
 @Internal
-final class LookupErrorClassifier {
+final class FirestoreLookupErrorClassifier {
 
     /**
      * Statuses a lookup reads again on. They are exactly the statuses the client library retries
@@ -46,7 +46,7 @@ final class LookupErrorClassifier {
                     StatusCode.Code.INTERNAL,
                     StatusCode.Code.DEADLINE_EXCEEDED);
 
-    private LookupErrorClassifier() {}
+    private FirestoreLookupErrorClassifier() {}
 
     static boolean isTransient(Throwable failure) {
         return ExceptionUtils.findThrowable(

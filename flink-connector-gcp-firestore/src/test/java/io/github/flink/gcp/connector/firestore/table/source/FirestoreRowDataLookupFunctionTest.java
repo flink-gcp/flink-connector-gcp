@@ -49,8 +49,8 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Drives both lookup functions over a scripted {@link DocumentLookup}. */
-class RowDataLookupFunctionTest {
+/** Drives both lookup functions over a scripted {@link FirestoreDocumentLookup}. */
+class FirestoreRowDataLookupFunctionTest {
 
     private static final Timestamp READ_TIME = Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 0);
 
@@ -89,19 +89,19 @@ class RowDataLookupFunctionTest {
         return GenericRowData.of(id == null ? null : StringData.fromString(id));
     }
 
-    private static RowDataLookupFunction sync(int maxRetries, FakeDocumentLookup lookup)
+    private static FirestoreRowDataLookupFunction sync(int maxRetries, FakeDocumentLookup lookup)
             throws Exception {
-        RowDataLookupFunction function =
-                new RowDataLookupFunction(
+        FirestoreRowDataLookupFunction function =
+                new FirestoreRowDataLookupFunction(
                         deserializer(TypeMismatchPolicy.FAIL), maxRetries, lookup);
         function.open(null);
         return function;
     }
 
-    private static RowDataAsyncLookupFunction async(int maxRetries, FakeDocumentLookup lookup)
-            throws Exception {
-        RowDataAsyncLookupFunction function =
-                new RowDataAsyncLookupFunction(
+    private static FirestoreRowDataAsyncLookupFunction async(
+            int maxRetries, FakeDocumentLookup lookup) throws Exception {
+        FirestoreRowDataAsyncLookupFunction function =
+                new FirestoreRowDataAsyncLookupFunction(
                         deserializer(TypeMismatchPolicy.FAIL), maxRetries, lookup);
         function.open(null);
         return function;
@@ -120,8 +120,8 @@ class RowDataLookupFunctionTest {
     @Test
     void aKeyThatNamesNoDocumentOfTheCollectionIsNeverRead() throws Exception {
         FakeDocumentLookup lookup = new FakeDocumentLookup();
-        RowDataLookupFunction sync = sync(0, lookup);
-        RowDataAsyncLookupFunction async = async(0, lookup);
+        FirestoreRowDataLookupFunction sync = sync(0, lookup);
+        FirestoreRowDataAsyncLookupFunction async = async(0, lookup);
 
         String tooLong = "x".repeat(1501);
         for (String id :
@@ -141,7 +141,7 @@ class RowDataLookupFunctionTest {
         for (String id : new String[] {"a.b", "...", "__x", "x__", "__", "___", longest}) {
             lookup.then(document("d", 1L));
         }
-        RowDataLookupFunction sync = sync(0, lookup);
+        FirestoreRowDataLookupFunction sync = sync(0, lookup);
 
         for (String id : new String[] {"a.b", "...", "__x", "x__", "__", "___", longest}) {
             sync.lookup(key(id));
@@ -265,7 +265,7 @@ class RowDataLookupFunctionTest {
         }
         lookup.then(document("a", 1L));
 
-        RowDataAsyncLookupFunction function = async(budget, lookup);
+        FirestoreRowDataAsyncLookupFunction function = async(budget, lookup);
         // A thread with a small stack, so recursion overflows it whatever the default is.
         CompletableFuture<Collection<RowData>> result = new CompletableFuture<>();
         Thread caller =

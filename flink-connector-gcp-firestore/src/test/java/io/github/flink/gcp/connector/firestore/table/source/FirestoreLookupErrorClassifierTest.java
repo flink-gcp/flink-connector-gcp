@@ -27,16 +27,17 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class LookupErrorClassifierTest {
+class FirestoreLookupErrorClassifierTest {
 
     @ParameterizedTest
     @EnumSource(
             value = StatusCode.Code.class,
             names = {"UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED"})
     void theLibrarysRetryableStatusesAreTransient(StatusCode.Code code) {
-        assertThat(LookupErrorClassifier.isTransient(FakeDocumentLookup.failure(code))).isTrue();
+        assertThat(FirestoreLookupErrorClassifier.isTransient(FakeDocumentLookup.failure(code)))
+                .isTrue();
         assertThat(
-                        LookupErrorClassifier.isTransient(
+                        FirestoreLookupErrorClassifier.isTransient(
                                 new IllegalStateException(
                                         "wrapped", FakeDocumentLookup.failure(code))))
                 .as("found through the cause chain")
@@ -49,12 +50,15 @@ class LookupErrorClassifierTest {
             mode = EnumSource.Mode.EXCLUDE,
             names = {"UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED"})
     void everyOtherStatusIsPermanent(StatusCode.Code code) {
-        assertThat(LookupErrorClassifier.isTransient(FakeDocumentLookup.failure(code))).isFalse();
+        assertThat(FirestoreLookupErrorClassifier.isTransient(FakeDocumentLookup.failure(code)))
+                .isFalse();
     }
 
     @Test
     void aFailureWithoutAStatusIsPermanent() {
-        assertThat(LookupErrorClassifier.isTransient(new IllegalStateException("no status")))
+        assertThat(
+                        FirestoreLookupErrorClassifier.isTransient(
+                                new IllegalStateException("no status")))
                 .isFalse();
     }
 
@@ -69,7 +73,7 @@ class LookupErrorClassifierTest {
                                 .getRetryableCodes());
         Set<StatusCode.Code> classified = EnumSet.noneOf(StatusCode.Code.class);
         for (StatusCode.Code code : StatusCode.Code.values()) {
-            if (LookupErrorClassifier.isTransient(FakeDocumentLookup.failure(code))) {
+            if (FirestoreLookupErrorClassifier.isTransient(FakeDocumentLookup.failure(code))) {
                 classified.add(code);
             }
         }

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.firestore.table.source;
+package io.github.flink.gcp.connector.firestore.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
@@ -23,7 +23,6 @@ import org.apache.flink.table.api.ValidationException;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceBuilder;
-import io.github.flink.gcp.connector.firestore.table.FirestoreConnectorOptions;
 
 import javax.annotation.Nullable;
 
@@ -42,7 +41,7 @@ import java.util.Objects;
  * WITH} clause contains.
  */
 @Internal
-public final class ScanConfig implements Serializable {
+public final class FirestoreScanConfig implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -51,7 +50,7 @@ public final class ScanConfig implements Serializable {
     @Nullable private final Instant readTime;
     @Nullable private final Integer maxRowsPerFetch;
 
-    private ScanConfig(
+    private FirestoreScanConfig(
             boolean collectionGroup,
             @Nullable Integer maxPartitions,
             @Nullable Instant readTime,
@@ -69,7 +68,7 @@ public final class ScanConfig implements Serializable {
      * @return the scan options
      * @throws ValidationException if a value or a combination is refused
      */
-    public static ScanConfig from(ReadableConfig config) {
+    public static FirestoreScanConfig from(ReadableConfig config) {
         boolean collectionGroup = config.get(FirestoreConnectorOptions.SCAN_COLLECTION_GROUP);
         Integer maxPartitions =
                 config.getOptional(FirestoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS)
@@ -84,10 +83,10 @@ public final class ScanConfig implements Serializable {
         }
         Instant readTime =
                 config.getOptional(FirestoreConnectorOptions.SCAN_READ_TIME)
-                        .map(ScanConfig::parseReadTime)
+                        .map(FirestoreScanConfig::parseReadTime)
                         .orElse(null);
-        ScanConfig options =
-                new ScanConfig(
+        FirestoreScanConfig options =
+                new FirestoreScanConfig(
                         collectionGroup,
                         maxPartitions,
                         readTime,
@@ -112,7 +111,7 @@ public final class ScanConfig implements Serializable {
     }
 
     /** Applies the options to a source builder, renaming a refused value to its option key. */
-    void applyTo(FirestoreSourceBuilder<?> builder) {
+    public void applyTo(FirestoreSourceBuilder<?> builder) {
         OptionSetters.accept(
                 FirestoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS.key(),
                 maxPartitions,
@@ -138,7 +137,7 @@ public final class ScanConfig implements Serializable {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        ScanConfig that = (ScanConfig) o;
+        FirestoreScanConfig that = (FirestoreScanConfig) o;
         return collectionGroup == that.collectionGroup
                 && Objects.equals(maxPartitions, that.maxPartitions)
                 && Objects.equals(readTime, that.readTime)

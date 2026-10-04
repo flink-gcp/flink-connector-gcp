@@ -35,8 +35,6 @@ import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.table.sink.FirestoreDynamicSink;
 import io.github.flink.gcp.connector.firestore.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.firestore.table.source.FirestoreDynamicSource;
-import io.github.flink.gcp.connector.firestore.table.source.LookupConfig;
-import io.github.flink.gcp.connector.firestore.table.source.ScanConfig;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -145,7 +143,7 @@ public final class FirestoreDynamicTableFactory
         DatabaseDestination database = database(config);
         String collection = collection(config);
         FirestoreTableSchema schema = schema(context, config);
-        ScanConfig scanConfig = ScanConfig.from(config);
+        FirestoreScanConfig scanConfig = FirestoreScanConfig.from(config);
         if (scanConfig.isCollectionGroup() && schema.hasPrimaryKey()) {
             // A document id is unique only within its collection, and the planner trusts a
             // declared key to be unique: it would drop a GROUP BY or a DISTINCT over it.
@@ -162,7 +160,7 @@ public final class FirestoreDynamicTableFactory
                 database,
                 collection,
                 scanConfig,
-                LookupConfig.from(config),
+                FirestoreLookupConfig.from(config),
                 config.get(FirestoreConnectorOptions.TYPE_MISMATCH_POLICY),
                 context.getPhysicalRowDataType(),
                 config.getOptional(FirestoreConnectorOptions.EMULATOR_ENDPOINT).orElse(null),

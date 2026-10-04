@@ -25,7 +25,7 @@ import java.io.Serializable;
 
 /** Reads one document of the table's collection by id, the seam a lookup function reads through. */
 @Internal
-interface DocumentLookup extends Serializable, AutoCloseable {
+interface FirestoreDocumentLookup extends Serializable, AutoCloseable {
 
     /** Opens the client, once per lookup function instance. */
     void open() throws Exception;
@@ -35,7 +35,7 @@ interface DocumentLookup extends Serializable, AutoCloseable {
      * waits on this future.
      *
      * @param id a document id {@link
-     *     DocumentLookups#documentId(org.apache.flink.table.data.RowData)} accepted
+     *     FirestoreDocumentLookups#documentId(org.apache.flink.table.data.RowData)} accepted
      * @return the snapshot's future; the snapshot does not exist when there is no such document
      */
     ApiFuture<DocumentSnapshot> readAsync(String id);
