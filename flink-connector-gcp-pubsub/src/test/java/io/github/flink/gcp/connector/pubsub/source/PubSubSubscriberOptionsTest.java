@@ -199,10 +199,9 @@ class PubSubSubscriberOptionsTest {
                 .hasMessageContaining("shutdownTimeout must be at most")
                 .hasMessageContaining("292 years");
 
-        // A budget absurd enough to overflow toMillis() is still answered by the message that
-        // names the knob. shutdownTimeout is the one setter carrying both a ceiling and a
-        // millisecond floor, and the floor converts: run first, it would answer this with an
-        // ArithmeticException naming nothing (ADR-0068).
+        // Both checks now name the knob, so the message assertion holds the order: an oversized
+        // budget must report this knob's tighter nanosecond ceiling, rather than the shared
+        // millisecond conversion limit (ADR-0180).
         assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofSeconds(Long.MAX_VALUE)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("shutdownTimeout must be at most");

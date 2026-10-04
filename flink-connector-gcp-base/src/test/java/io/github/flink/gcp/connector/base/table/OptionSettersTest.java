@@ -21,8 +21,10 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -101,6 +103,28 @@ class OptionSettersTest {
                         "Option 'sink.buffer-flush.max-cells' is invalid:"
                                 + " maxBatchCells must be positive")
                 .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void acceptRenamesMillisecondOverflowToTheOptionKey() {
+        Duration duration = Duration.ofSeconds(Long.MAX_VALUE);
+
+        assertThatThrownBy(
+                        () ->
+                                OptionSetters.accept(
+                                        "sink.request-timeout",
+                                        duration,
+                                        value ->
+                                                OptionChecks.checkAtLeastOneMilli(
+                                                        value, "requestTimeout")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(
+                        "Option 'sink.request-timeout' is invalid:"
+                                + " requestTimeout must be convertible to milliseconds without overflow: "
+                                + duration)
+                .cause()
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasCauseInstanceOf(ArithmeticException.class);
     }
 
     @Test

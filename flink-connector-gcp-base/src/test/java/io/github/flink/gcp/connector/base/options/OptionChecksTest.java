@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.base.options;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Duration;
 
@@ -105,19 +107,70 @@ class OptionChecksTest {
                 .hasMessageContaining("PT0.0005S");
     }
 
-    /**
-     * Accidental in all five private copies this check replaced, and kept deliberately: {@link
-     * Duration#toMillis()} overflows past about 292 million years. The exception type is odd, but
-     * the landing site is the one that matters — the setter, on the client, with the value still in
-     * the user's hand — so converting it to an {@code IllegalArgumentException} would buy nothing.
-     */
+    @ParameterizedTest
+    @ValueSource(longs = {Long.MIN_VALUE, Long.MAX_VALUE})
+    void checkAtLeastOneMilliNamesTheOptionAndValueWhenMillisecondsOverflow(long seconds) {
+        Duration duration = Duration.ofSeconds(seconds);
+
+        assertThatThrownBy(() -> OptionChecks.checkAtLeastOneMilli(duration, "retryInitialBackoff"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryInitialBackoff must be convertible to milliseconds without overflow: "
+                                + duration)
+                .hasCauseInstanceOf(ArithmeticException.class);
+    }
+
     @Test
-    void anAbsurdlyLongDurationStillFailsAtTheSetter() {
+    void checkAtLeastOneMilliPreservesTheWholeMillisecondConversionBoundary() {
+        Duration boundary = Duration.ofMillis(Long.MAX_VALUE);
+        Duration fractionalBoundary = boundary.plusNanos(999_999);
+        Duration overflow = boundary.plusMillis(1);
+
+        assertThat(OptionChecks.checkAtLeastOneMilli(boundary, "retryInitialBackoff"))
+                .isSameAs(boundary);
+        assertThat(OptionChecks.checkAtLeastOneMilli(fractionalBoundary, "retryInitialBackoff"))
+                .isSameAs(fractionalBoundary);
+        assertThatThrownBy(() -> OptionChecks.checkAtLeastOneMilli(overflow, "retryInitialBackoff"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialBackoff")
+                .hasMessageContaining(overflow.toString())
+                .hasCauseInstanceOf(ArithmeticException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {Long.MIN_VALUE, Long.MAX_VALUE})
+    void checkAtLeastOneMilliOrZeroNamesTheOptionAndValueWhenMillisecondsOverflow(long seconds) {
+        Duration duration = Duration.ofSeconds(seconds);
+
         assertThatThrownBy(
                         () ->
-                                OptionChecks.checkAtLeastOneMilli(
-                                        Duration.ofSeconds(Long.MAX_VALUE), "retryInitialBackoff"))
-                .isInstanceOf(ArithmeticException.class);
+                                OptionChecks.checkAtLeastOneMilliOrZero(
+                                        duration, "retryTotalTimeout"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "retryTotalTimeout must be convertible to milliseconds without overflow: "
+                                + duration)
+                .hasCauseInstanceOf(ArithmeticException.class);
+    }
+
+    @Test
+    void checkAtLeastOneMilliOrZeroPreservesTheWholeMillisecondConversionBoundary() {
+        Duration boundary = Duration.ofMillis(Long.MAX_VALUE);
+        Duration fractionalBoundary = boundary.plusNanos(999_999);
+        Duration overflow = boundary.plusMillis(1);
+
+        assertThat(OptionChecks.checkAtLeastOneMilliOrZero(boundary, "retryTotalTimeout"))
+                .isSameAs(boundary);
+        assertThat(OptionChecks.checkAtLeastOneMilliOrZero(fractionalBoundary, "retryTotalTimeout"))
+                .isSameAs(fractionalBoundary);
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilliOrZero(
+                                        overflow, "retryTotalTimeout"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryTotalTimeout")
+                .hasMessageContaining(overflow.toString())
+                .hasCauseInstanceOf(ArithmeticException.class);
     }
 
     /**
@@ -130,7 +183,7 @@ class OptionChecksTest {
     @Test
     void checkAtLeastOneMilliOrZeroForwardsZeroAndRejectsEverythingElseBelowAMillisecond() {
         assertThat(OptionChecks.checkAtLeastOneMilliOrZero(Duration.ZERO, "retryTotalTimeout"))
-                .isEqualTo(Duration.ZERO);
+                .isSameAs(Duration.ZERO);
         assertThat(
                         OptionChecks.checkAtLeastOneMilliOrZero(
                                 Duration.ofMillis(1), "retryTotalTimeout"))

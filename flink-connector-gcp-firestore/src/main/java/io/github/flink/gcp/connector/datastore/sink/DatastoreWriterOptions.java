@@ -328,8 +328,8 @@ public final class DatastoreWriterOptions implements Serializable {
          * @return this builder
          */
         public Builder requestTimeout(Duration requestTimeout) {
-            // The nanosecond bound first: the millisecond floor reads toMillis(), which itself
-            // overflows on a duration far past it.
+            // Check the tighter nanosecond bound first so an oversized value reports this knob's
+            // own limit rather than the shared millisecond conversion limit (ADR-0180).
             this.requestTimeout =
                     OptionChecks.checkAtLeastOneMilli(
                             OptionChecks.checkExpressibleInNanos(requestTimeout, "requestTimeout"),
