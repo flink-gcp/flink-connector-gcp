@@ -23,12 +23,12 @@ limitations under the License.
 # Firestore SQL connector
 
 The `firestore` connector reads and writes Table API and SQL rows in one collection of a Firestore database in Native mode, or reads every collection with one id, one document per row, through `flink-connector-gcp-firestore`.
-It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/firestore" >}}), so snapshot, paging, recovery, throttling, batching, retry, delivery, metrics and failure behavior remain the same.
+It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/firestore" >}}), so snapshot, paging, recovery, throttling, batching, retry, delivery, metrics and failure behavior remain the same; a lookup join reads through its own client, with the retries its section describes.
 A table with a PRIMARY KEY writes its rows under their key as the document id; a table without one creates a new document for every row.
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="overview" >}}
 
-A scan reads the collection as a bounded snapshot; lookup joins arrive with [#1609]({{< param BookRepo >}}/issues/1609).
+A scan reads the collection as a bounded snapshot, and a lookup join reads one document of it by id.
 The Datastore-mode table connector is [#1545]({{< param BookRepo >}}/issues/1545).
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
@@ -43,13 +43,14 @@ The Table source and sink report their configured collection in the `gcp` facet 
 A scan under `scan.collection-group` reports the group instead, as a `firestore-collection-group` resource named by the collection id.
 The collection is a `firestore-collection` resource: namespace `firestore://{project}/{database}`, with the default database spelled `(default)`, and the collection path relative to the database as its name, such as `orders` or `users/alice/audit`.
 It names the documents directly in that collection, not those of its subcollections.
+Lookup joins are outside this extraction path and report no resource.
 See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and what Flink 1.20 and 2.x each deliver.
 
 ## Credentials
 
-`service-account-key-file` selects one service-account JSON key for the scan and the sink.
-When it and `emulator-endpoint` are absent, both use Application Default Credentials.
-The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, and each sink subtask reads it on its TaskManager, so mount the same path in every container.
+`service-account-key-file` selects one service-account JSON key for the scan, the lookup and the sink.
+When it and `emulator-endpoint` are absent, all three use Application Default Credentials.
+The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, while each lookup and sink subtask reads it on its TaskManager, so mount the same path in every container.
 The option is mutually exclusive with `emulator-endpoint`, because the emulator channel carries no credentials.
 See the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) for the `FIRESTORE_EMULATOR_HOST` variable, which the client library reads on its own.
 
@@ -123,18 +124,38 @@ Filters are not pushed down.
 A collection-group scan reads documents of many collections, whose ids repeat across them, so its table cannot declare a PRIMARY KEY: the planner trusts a declared key to be unique and removes a `GROUP BY` or a `DISTINCT` over it, so repeated ids would come back unaggregated.
 The `document-path` metadata column, which is unique, identifies a document instead.
 
-The scan can read four metadata columns:
+A scan or a lookup can read four metadata columns:
 
 | Key | Type | Meaning |
 |---|---|---|
 | `document-path` | `STRING NOT NULL` | The document's path relative to the database, which tells the parents of a collection-group scan's documents apart |
 | `create-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the document was created |
 | `update-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the document was last updated |
-| `read-time` | `TIMESTAMP_LTZ(6) NOT NULL` | The read time the scan read the document at |
+| `read-time` | `TIMESTAMP_LTZ(6) NOT NULL` | The time the document was read at |
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="collection-group" >}}
 
 The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#source) describes the snapshot's time window, paging and recovery.
+
+## Lookup
+
+A lookup join reads one document of the table's collection by its id, so its equality key is the PRIMARY KEY column and no other column.
+The planner turns a condition that fixes another column of the table to a constant, such as `c.tier = 'gold'`, into a second lookup key whether it is written in the `ON` clause or in `WHERE`, so such a join is refused too; a condition that is not an equality, such as `c.tier <> 'gold'`, stays a filter applied after the lookup. The Spanner and Bigtable lookups refuse such a key the same way; accepting it in all three is [#1643]({{< param BookRepo >}}/issues/1643).
+A table without a PRIMARY KEY, which a collection-group table always is, cannot be looked up.
+A lookup that reaches the service reads the document as it is at that moment, and under a `PARTIAL` cache a hit returns the row as it was cached until it expires; `scan.read-time` and the other `scan.*` options do not apply to it.
+
+{{< sql-snippet file="flink/FirestoreTableReference.sql" tag="lookup" >}}
+
+A document that does not exist joins no row, so a `LEFT JOIN` fills its columns with NULL.
+A key that cannot be a document id in the collection joins no row without a read: NULL, empty, `.`, `..`, a key matching `__.*__` (two underscores, anything, two underscores), one longer than 1,500 bytes, and any key holding a `/`, which would otherwise name another document (`a/` names `a`, and `a/sub/b` a document of a subcollection).
+Every other key is sent to the service as it is.
+
+A lookup reads only the fields of the columns the join uses, like a scan, and fills the metadata columns from the document it read; `read-time` is the time of that read.
+`type-mismatch-policy` applies to a looked-up value as it does to a scanned one.
+
+`lookup.async` runs the join as Flink's asynchronous lookup, with several reads in flight per subtask, instead of waiting for each read; both modes read through the same `BatchGetDocuments` call.
+Flink's `lookup.cache` modes `NONE` and `PARTIAL` are supported, and Flink owns the partial cache; `FULL` is refused, because a full cache is loaded by a scan with a snapshot and a reload contract of its own.
+`lookup.max-retries` reads again after `UNAVAILABLE`, `INTERNAL` or `DEADLINE_EXCEEDED`, the statuses the client library already retries this call on, so it adds attempts on top of the library's rather than retrying anything the library does not; it counts retries after the first read, and every other failure fails the join at once.
 
 ## Sink
 
@@ -179,7 +200,7 @@ No table write carries a precondition.
 | `database` | *unset ⇒ `(default)`* | The id of the Firestore database in Native mode |
 | `collection` | **required** | The collection path the table's documents are in, relative to the database; an odd number of `/`-separated segments, each without leading or trailing whitespace |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator; setting it also stops credential discovery. Parsed when a statement over the table is planned, not at `CREATE TABLE` |
-| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each sink subtask; rejected with `emulator-endpoint` |
+| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each lookup and sink subtask; rejected with `emulator-endpoint` |
 | `geo-point-field-paths` | empty | Semicolon-separated field paths of `ROW<latitude DOUBLE, longitude DOUBLE>` values written as geographical points |
 | `reference-field-paths` | empty | Semicolon-separated field paths of `STRING` values written as references to documents |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
@@ -188,6 +209,13 @@ No table write carries a precondition.
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the documents one request asks for |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
+| `lookup.async` | `false` | Run the join as Flink's asynchronous lookup, with several reads in flight per subtask |
+| `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
+| `lookup.max-retries` | `3` | Reads after the first one, for `UNAVAILABLE`, `INTERNAL` and `DEADLINE_EXCEEDED` only |
+| `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
+| `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
+| `lookup.partial-cache.cache-missing-key` | `true` | Whether the partial cache records a key that found no document |
+| `lookup.partial-cache.max-rows` | *unset* | Maximum rows the partial cache keeps |
 | `sink.write-mode` | `set` | `set`, `merge` or `update`, for a table with a PRIMARY KEY |
 | `sink.throttling.enabled` | `true` | Maps to `throttlingEnabled`: whether the client library ramps the write rate up |
 | `sink.throttling.initial-ops-per-second` | *unset ⇒ the client library's `500`* | Maps to `initialOpsPerSecond`, at least `20`; only with throttling enabled |
@@ -205,7 +233,7 @@ No table write carries a precondition.
 | `sink.in-flight.max-bytes` | `64 mb` | Maps to `maxInFlightBytes` |
 | `sink.parallelism` | *unset ⇒ the input's parallelism* | Flink's standard sink parallelism override |
 
-The [configuration reference]({{< relref "docs/reference/firestore" >}}#firestorewriteroptions) explains each writer option, and a refusal of a `scan.*` or `sink.*` value names the option key the `WITH` clause spells.
+The [configuration reference]({{< relref "docs/reference/firestore" >}}#firestorewriteroptions) explains each writer option, and a refusal of a `scan.*`, `lookup.*` or `sink.*` value names the option key the `WITH` clause spells.
 
 ## Delivery guarantee
 
@@ -219,4 +247,4 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 ## Design decisions and testing
 
 The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md).
-The emulator integration tests write every type through SQL and read the documents back with the client library, and read every type back through a SQL scan; the uber-jar's tests write through its relocated classes.
+The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups; the uber-jar's tests write through its relocated classes.

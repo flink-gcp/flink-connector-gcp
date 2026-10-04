@@ -727,7 +727,15 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/FirestoreTableReference.sql", "scan")),
                 scenario(
                         "Firestore table reference collection-group scan",
-                        snippet("flink/FirestoreTableReference.sql", "collection-group")));
+                        snippet("flink/FirestoreTableReference.sql", "collection-group")),
+                scenario(
+                        "Firestore table reference lookup join",
+                        setup(
+                                "CREATE TABLE order_events (order_id STRING, customer_id STRING, "
+                                        + "proc_time AS PROCTIME()) WITH ("
+                                        + "'connector' = 'datagen', "
+                                        + "'number-of-rows' = '1')"),
+                        snippet("flink/FirestoreTableReference.sql", "lookup")));
     }
 
     private static Scenario scenario(String name, ValidationStep... steps) {

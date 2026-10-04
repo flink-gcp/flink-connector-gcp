@@ -62,6 +62,17 @@ limitations under the License.
 - **Lineage**: a single-collection scan reports `firestore-collection`, and a collection-group scan `firestore-collection-group` named by the collection id, through `Lineage.tableSource`.
 - **Emulator coverage**: the client library answers `getPartitions(1)` without a `PartitionQuery` (`CollectionGroup.getPartitions`, 3.49.0), so the emulator, which does not implement that RPC, can run a collection-group scan with `scan.partition.max-partitions = 1`; real partition counts belong to the gated suite ([#1546]).
 
+### The lookup ([#1609], 2026-10-04)
+
+[#1609] added the lookup join, in the ADR-0098 shape, through the same converter, `type-mismatch-policy` and metadata columns as the scan:
+
+- **The key is the document id and nothing else**: one equality predicate on the PRIMARY KEY column. A table without a key, which every collection-group table is, cannot be looked up; the lookup reads `collection` itself. An equality between another column and a constant becomes a second lookup key in the planner (`CommonPhysicalLookupJoin.analyzeLookupKeys`), from the `ON` clause or from `WHERE` alike, and is refused, as on Spanner and Bigtable; measured on Flink 2.2.1 and 1.20.4, where a `<>` condition stays a filter after the lookup.
+- **One `DocumentReference.get(FieldMask)` per key.** The client library has no blocking read, so `lookup.async` chooses Flink's operator, not the call: the blocking lookup waits on the same `ApiFuture` the asynchronous one chains on, and both reach `BatchGetDocuments`. The mask names the produced columns' fields literally, as the scan does, and `__name__` alone when the join uses only the key and metadata; the emulator measured both (`CollectionDocumentLookupITCase`). The client library documents `__name__` for queries, not for a document mask, so the real service's answer to that mask is unmeasured until the gated suite ([#1546]) reads it. Nothing cancels a read: Flink only waits on the result, and the library's future is not wired to its stream.
+- **A key that cannot be an id in the collection joins no row without a read**: NULL, empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/`. `collection.document("a/")` reads `a` and `"a/sub/b"` a subcollection's document; the emulator test joins no row for either key while `a` and `a/sub/x` exist. The rest are ids the service never stores, so no document can match them. Unlike the sink, which leaves those ids to the service (above), a lookup decides a join, and a refused read would fail the job for one stream value where no row is the right answer.
+- **`lookup.max-retries` adds budget on top of the client library's** (ADR-0095's shape): it reads again after exactly the statuses the library retries `BatchGetDocuments` on, `UNAVAILABLE`, `INTERNAL` and `DEADLINE_EXCEEDED` (`retry_policy_1_codes`, 3.49.0), and not after `RESOURCE_EXHAUSTED`, which the library does not retry either and which an immediate re-read would only aggravate.
+- **Flink owns the cache**: `NONE` and `PARTIAL`; `FULL` is refused, as on Spanner, because a full cache is a scan with a snapshot and reload contract of its own. A negative `lookup.partial-cache.max-rows`, which Flink checks only when a subtask opens the cache, is refused when the statement is planned.
+- **A lookup reads the document as it is when it reaches the service**: `scan.read-time` names the scan's snapshot and does not apply; a `PARTIAL` cache hit returns the row as it was cached.
+
 ## Consequences
 
 - An aggregation or any input that updates one key repeatedly can leave an older value in the document until [#1556] lands; the table docs carry the warning beside the changelog section.
@@ -76,6 +87,7 @@ limitations under the License.
 - **Mapping `DECIMAL`.** Firestore has no decimal type ([#355]).
 - **Refusing edge whitespace in a document id**, or the ids the service refuses (`.`, `..`, `__…__`, over 1,500 bytes). Unlike a configured name, the key is data: ADR-0127 governs configured names, and a refused id fails its record loudly. Only the two values that would silently address another document are refused here.
 - **Accepting deletes under `update`**, documenting the restart loop. A job that fails again after every restart until an operator recreates a document is worse than a statement refused at planning, and `set` or `merge` take deletes.
+- **Sending a lookup key that holds `/` to the service**, or refusing the join for it. Sent, it reads another document (`a/` reads `a`, `a/sub/b` a subcollection's); refused, one bad key in a stream fails the job. A key that names no document of the collection finds none.
 - **Pulling the per-document order of [#1556] into this sink** (owner's decision, 2026-10-04: document the limit, keep [#1556] in v1.3.0).
 
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355

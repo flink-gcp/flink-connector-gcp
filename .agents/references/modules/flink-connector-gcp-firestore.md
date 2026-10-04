@@ -132,8 +132,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   trusts a key to be unique); `document-path` identifies a document there.
 - **The emulator can run a collection-group scan only with `scan.partition.max-partitions = 1`**:
   the library answers `getPartitions(1)` without the RPC the emulator lacks.
-- `type-mismatch-policy` and the markers carry no `scan.` prefix because #1609's lookup reads
-  through the same converter (`FirestoreToRowDataConverter`); reuse it there.
+- `type-mismatch-policy` and the markers carry no `scan.` prefix because the lookup reads
+  through the same converter (`FirestoreToRowDataConverter`).
+
+## Native-mode Table API lookup (`docs/adr/0179`, lookup section)
+
+- **The lookup key is the document id alone**; a keyless table (every collection-group table) is
+  refused in `FirestoreDynamicSource.checkLookupKey`. Rows come from the scan's
+  `RowDataDeserializationSchema`, so projection, metadata and the mismatch policy stay one path.
+- **A key that cannot be an id joins no row without a read** (`DocumentLookups.documentId`):
+  NULL, empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/` (`document("a/")` reads `a`).
+- **The client library has no blocking read**: `DocumentLookup` is `readAsync` only, and the blocking
+  function waits on it through `DocumentLookups.await`, which rethrows the library's exception.
+- **`LookupErrorClassifier` mirrors the client's `BatchGetDocuments` retry set**
+  (`retry_policy_1_codes`); `LookupErrorClassifierTest` compares the two, so a libraries-bom bump that
+  moves the library's set fails there.
+- The lookup functions are `public`: the planner refuses a function class that is not.
 
 ## Datastore-mode sink (`docs/adr/0175`)
 

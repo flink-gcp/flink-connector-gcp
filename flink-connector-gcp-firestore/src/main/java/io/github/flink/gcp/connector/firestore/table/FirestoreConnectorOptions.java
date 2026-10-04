@@ -158,6 +158,19 @@ public final class FirestoreConnectorOptions {
                     .withDescription("How many documents one request of the scan asks for.");
 
     /**
+     * Whether the lookup join runs as Flink's asynchronous lookup, keeping several reads in flight
+     * per subtask instead of waiting for each.
+     */
+    public static final ConfigOption<Boolean> LOOKUP_ASYNC =
+            ConfigOptions.key("lookup.async")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether the lookup join runs as Flink's asynchronous lookup, keeping"
+                                    + " several reads in flight per subtask instead of waiting"
+                                    + " for each.");
+
+    /**
      * How a row with a PRIMARY KEY is written: 'set' replaces the document, 'merge' merges the row
      * into it, and 'update' replaces the table's fields of a document that must exist.
      */
