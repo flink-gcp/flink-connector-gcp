@@ -102,7 +102,7 @@ resource "google_service_account_iam_member" "appengine_e2e_build_deployer" {
 # plan. A local state-changing apply after CI plans the change would invalidate
 # that saved plan and require a follow-up root-module pull request.
 #
-# Four things about this resource, all of them learned by getting them wrong.
+# Five things about this resource, all of them learned by getting them wrong.
 #
 # **Any edit to appengine-e2e/main.py redeploys the version**, because sha1_sum
 # below is that file's hash. Edits with no behavioural content count: rewriting
@@ -121,7 +121,9 @@ resource "google_service_account_iam_member" "appengine_e2e_build_deployer" {
 # with `Error code 13, message: an internal error has occurred` — a server-side
 # failure, the bucket object in the same apply having already succeeded — and
 # still wrote the new hash into state. The version went on serving the previous
-# file with every subsequent plan clean. When an apply over this resource fails,
+# file with every subsequent plan clean. (The operation's debug detail, read
+# later, was the build's missing actAs grant on the default App Engine
+# identity, which the #1654 recovery added.) When an apply over this resource fails,
 # read the deployment back from the Admin API rather than trusting the next plan.
 #
 # **Repair is an in-place update, not a replacement.** `-replace` cannot work:
@@ -131,12 +133,17 @@ resource "google_service_account_iam_member" "appengine_e2e_build_deployer" {
 # main.py — it serves that same hash, so `curl` against a started version
 # compared with `sha1sum` of the file is the check that does notice.
 #
-# A client timeout can expire while the deployment continues server-side.
-# The #1658 update exceeded the provider's default twenty-minute wait; its
-# operation returned a server-side error after thirty-six minutes. Poll updates
-# for forty-five minutes within the GCP apply job's ninety-minute budget,
-# allowing for its twenty-minute lock wait plus setup and fixture cleanup.
-# Server-side errors still fail the apply.
+# **Update the version only while it is serving.** Into the stopped version,
+# Cloud Build succeeds and the version is replaced, but the operation's state
+# check never passes: it ends after about thirty-six minutes with code 13, "max
+# retries were exceeded but version was created. Please redeploy". Redeploying
+# while stopped repeats it, and so does a longer client wait. Every update the
+# audit log shows reaching the stopped version ended this way (August 2026
+# twice, then #1658 and #1661); the one quick success was the version's first
+# creation, which starts serving. The same update into the serving version
+# completed in twenty-nine seconds (2026-10-04). So tofu-apply.yaml starts the
+# fixture through `appengine-e2e-fixture.sh start-for-plan` when the plan
+# updates this version, and stops it after the apply.
 resource "google_app_engine_standard_app_version" "e2e" {
   project         = local.project_id
   service         = local.cloudtasks_appengine_e2e_service
@@ -170,10 +177,6 @@ resource "google_app_engine_standard_app_version" "e2e" {
     # The provider explicitly requires this exclusion when the Admin API owns
     # the live manual-scaling count, otherwise every E2E run creates drift.
     ignore_changes = [manual_scaling[0].instances]
-  }
-
-  timeouts {
-    update = "45m"
   }
 
   depends_on = [

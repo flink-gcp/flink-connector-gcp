@@ -33,7 +33,9 @@
 # newest run on the pull request's head branch with no event filter, so any
 # other trigger there could hand the apply a run that never planned; and the
 # run it finds must carry the pull request's head SHA, which tfaction checks
-# before downloading.
+# before downloading. tofu-apply.yaml's App Engine start step repeats the same
+# lookup with the same literal to read the plan JSON; a rename here must change
+# it too, or that step falls back to a best-effort start.
 plan_workflow_name: ci.yaml
 
 # Not configured because the defaults are what this repository wants, and

@@ -128,7 +128,9 @@ The bucket has no monthly base fee; charges follow stored bytes and operations, 
 
 The migration changes the deployment's `source_url` and can incur one-time App Engine deployment and Cloud Build costs; a recovery redeployment can incur them too.
 Review the plan for an in-place update of the existing version, with the new source object and reading grant available before deployment.
-Apply through the normal merge workflow, which stops the fixture even after a partially successful apply.
+Apply through the normal merge workflow.
+When the reviewed plan updates the version in place, it starts the fixture before the apply with `scripts/appengine-e2e-fixture.sh start-for-plan`, and it stops the fixture afterwards even after a partially successful apply.
+App Engine cannot complete an update of the stopped version, so a manual redeployment must also start the fixture first ([ADR-0063](../docs/adr/0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#deployment-into-the-serving-version)).
 Manual-scaling instance hours continue to accrue for 15 minutes after shutdown ([App Engine pricing](https://cloud.google.com/appengine/pricing)).
 After a successful apply, verify that the source object exists in the bucket, the bucket has no deletion rule, the fixture is `STOPPED` with zero instances, and a refreshed `tofu plan -detailed-exitcode` exits with code 0.
 A plan alone does not verify the running source revision; the failed-deployment readback procedure is recorded in `flink-gcp/appengine-e2e.tf`.
@@ -137,9 +139,8 @@ Google provider 7.42.0 does not refresh these fields from the API; a failed appl
 The recovery for [PR #1654](https://github.com/flink-gcp/flink-connector-gcp/pull/1654) adds the missing default-identity grant and changes the handler's docstring to produce a new hash, scheduling an in-place redeployment without changing request handling.
 Check the API readback again after the recovery apply, as well as fixture shutdown and the exit-0 refreshed plan.
 Also require the deployment operation to finish without an error: the [PR #1658 apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/37192557175) had matching API source fields but its operation later failed and requested redeployment.
-The version's update timeout is 45 minutes, to keep polling past the provider's default 20-minute wait.
-The GCP apply job has a 90-minute timeout to accommodate the environment lock's maximum 20-minute wait, update polling, setup and fixture cleanup; other roots retain their 60-minute timeout.
-This changes the client waiting budget; a server-side deployment error still fails the apply.
+If the start step could not read the plan, or its best-effort start failed, an update of the stopped version fails at the provider's 20-minute client timeout, and App Engine's operation still ends later with code 13; read the deployment back as above and recover through the follow-up pull request.
+A failed start before an update fails the step instead, and nothing is applied; re-running the job retries it.
 
 ## Tier-3 Kubernetes environment
 
@@ -419,6 +420,13 @@ The generated commit touches `<root>/.tfaction/failed-prs` inside the affected r
 | `opentofu/tier3-operator` | `opentofu__tier3-operator` | `opentofu/tier3-operator/.tfaction/failed-prs` |
 
 The generated record can be removed when other changes in the recovery pull request still select the affected root.
+
+Before writing a recovery for a service-side error, establish its cause rather than its symptom:
+
+1. Read the failed operation's full error, not only the message OpenTofu prints. For App Engine that is `gcloud app operations list --format=json` and its `error.details[].detail`; the #1658 apply printed a 20-minute client timeout and the #1661 apply only "an internal error has occurred", while the operation's detail said the version was created and asked for a redeployment.
+2. Read the resource's history in the Admin Activity audit log (`gcloud logging read` with `operation.last=true` for the operation's method). If the same failure has happened before, the recovery must explain what differs this time.
+3. If the recovery retries the failed operation, state in the pull request which condition of the failed attempt it changes. When the retry can be tried cheaply and outside state, for example by sending the same request by hand, try it before merging; [#1661](https://github.com/flink-gcp/flink-connector-gcp/pull/1661) changed only the source hash and the client wait, neither of which was the cause, and failed the same way.
+4. A second follow-up for the same resource means the first recovery did not address the cause. Stop retrying and go back to step 1.
 
 The follow-up pull request was written by hand until
 [#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177) (ADR-0121),

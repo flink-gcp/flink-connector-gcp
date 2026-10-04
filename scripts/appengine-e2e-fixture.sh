@@ -19,16 +19,57 @@
 # serving status: a stopped manually scaled version has zero running instances,
 # which is the repository's non-E2E steady state.
 #
+# `start-for-plan PLAN_JSON` starts the version before an OpenTofu apply whose
+# plan (`tofu show -json`) updates it in place. App Engine cannot complete an
+# update of the stopped version: the operation ends after about thirty-six
+# minutes with code 13 and asks for a redeployment (opentofu/flink-gcp/
+# appengine-e2e.tf). A created version starts serving by itself, so only an
+# update needs the start. An unreadable plan gets a best-effort start whose
+# failure is only a warning, so the apply it precedes is not blocked by it.
+#
 # Exit codes: 0 reached the requested state; 1 an operation failed or timed
 # out; 2 local configuration, source parsing, or observation failed.
 
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 start | stop [--dry-run] | run -- command [args...]" >&2
+    echo "usage: $0 start | start-for-plan PLAN_JSON | stop [--dry-run] |" \
+        "run -- command [args...]" >&2
 }
 
 command_name=${1:-}
+if [ "$command_name" = start-for-plan ]; then
+    [ "$#" -eq 2 ] || {
+        usage
+        exit 2
+    }
+    # jq -e exits 0 for true and 1 for false; any other status means the plan
+    # could not be read, which must not be mistaken for "no update".
+    decision=0
+    jq -e '[(.resource_changes // [])[]
+        | select(.type == "google_app_engine_standard_app_version"
+            and .change.actions == ["update"])] | length > 0' \
+        "$2" >/dev/null 2>&1 || decision=$?
+    case "$decision" in
+        0)
+            exec "${BASH_SOURCE[0]}" start
+            ;;
+        1)
+            echo "The plan does not update the App Engine fixture version in place."
+            exit 0
+            ;;
+        *)
+            echo "Could not read the plan '$2' (jq exit ${decision});" \
+                "starting the App Engine fixture on a best-effort basis." >&2
+            "${BASH_SOURCE[0]}" start ||
+                echo "warning: the best-effort App Engine fixture start failed" \
+                    "with exit code $?; continuing." >&2
+            exit 0
+            ;;
+    esac
+fi
+
+
 dry_run=false
 run_command=()
 case "$command_name" in

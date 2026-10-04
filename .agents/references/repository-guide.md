@@ -632,7 +632,11 @@ facts); the rules a session needs:
   recovered by a follow-up pull request**, never by re-running the apply job (the failure makes
   the saved plan stale) — and assume nothing from the failed apply exists until measured.
   tfaction now opens that pull request itself as a draft (ADR-0121); review its plan against the
-  apply error and merge it, or close it if the plan reports no change
+  apply error and merge it, or close it if the plan reports no change. **Before writing a
+  recovery for a service-side error, follow the cause-first checklist in `opentofu/README.md`**:
+  read the operation's full error detail and the resource's audit-log history, and state which
+  condition of the failed attempt a retry changes; a second follow-up for the same resource
+  means stop retrying (#1658, #1661)
 - **A pull request touching `opentofu/**` may come back with a `tofu fmt` or tflint fix commit**
   from the App and a red plan job — the fix is pushed, the step then fails, and the push starts
   the next run. Pull before committing again, and expect **two** rounds when tflint and `fmt`

@@ -54,9 +54,7 @@ jobs:
   apply:
     name: tofu apply (${{ matrix.target.target }})
     runs-on: ubuntu-latest
-    # GCP can wait twenty minutes for the environment lock before polling an
-    # App Engine update for forty-five minutes. Allow setup and cleanup too.
-    timeout-minutes: ${{ matrix.target.working_directory == 'opentofu/flink-gcp' && 90 || 60 }}
+    timeout-minutes: 60
     needs: [list]
     if: join(fromJSON(needs.list.outputs.targets), '') != ''
     strategy:
@@ -138,6 +136,58 @@ jobs:
           tier3_root="${TFACTION_WORKING_DIR##*/tier3-}"
           uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" ci apply
 
+      - name: Set up gcloud for the App Engine fixture
+        if: always() && steps.setup.outcome == 'success' && matrix.target.working_directory == 'opentofu/flink-gcp'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # App Engine cannot complete an in-place update of the stopped fixture
+      # version: the operation fails after about thirty-six minutes and asks
+      # for a redeployment, while the same update of the serving version takes
+      # seconds (opentofu/flink-gcp/appengine-e2e.tf). The wrapper reads the
+      # reviewed plan and starts the fixture only before such an update; the
+      # stop step after the apply returns it to idle.
+      #
+      # The plan JSON comes from the run tfaction downloads the plan file from:
+      # tfaction-root.yaml's plan_workflow_name, this branch and the pull
+      # request's head SHA, retried as tfaction retries an empty run list. An
+      # empty path makes the wrapper's start best-effort, so a lookup failure
+      # cannot block an apply that does not touch App Engine.
+      #
+      # TODO: sweep-e2e.yaml (every three hours) and the E2E run's cleanup stop
+      # the fixture without taking the Tier-3 environment lock this job holds.
+      # One landing between this start and the version update sends the update
+      # into a stopped version again (ADR-0063, "Deployment into the serving
+      # version"); conversely, this job's stop can end a running E2E's fixture.
+      # Closing both windows needs the E2E run to hold the lock from its
+      # fixture start through its tests and cleanup, and the sweep's stop to
+      # take it; locking only the stops would leave a running E2E exposed.
+      - name: Start the App Engine fixture if the plan updates its version
+        if: matrix.target.working_directory == 'opentofu/flink-gcp'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CLOUDTASKS_IT_PROJECT: flink-gcp
+        run: |
+          plan_dir="$RUNNER_TEMP/tfplan-json"
+          plan_json=""
+          run_id=""
+          head_sha="$(jq -r '.head.sha // empty' "$CI_INFO_TEMP_DIR/pr.json" || true)"
+          for attempt in 1 2 3 4 5; do
+            [ -n "$head_sha" ] || break
+            run_id="$(gh run list --workflow ci.yaml --branch "$CI_INFO_HEAD_REF" \
+              --commit "$head_sha" --limit 1 --json databaseId \
+              --jq '.[0].databaseId // empty' || true)"
+            [ -z "$run_id" ] || break
+            [ "$attempt" -eq 5 ] || sleep 5
+          done
+          if [ -n "$run_id" ] && gh run download "$run_id" \
+            --name "terraform_plan_json_${TFACTION_TARGET//\//__}" --dir "$plan_dir"; then
+            plan_json="$plan_dir/tfplan.json"
+          else
+            echo "::warning::Could not download the reviewed plan JSON."
+          fi
+          scripts/appengine-e2e-fixture.sh start-for-plan "$plan_json"
+
       - name: tofu init
         uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
@@ -182,12 +232,9 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
 
       # A new manually scaled App Engine version starts with one billed
-      # instance. Stop it immediately after the apply, including after a
+      # instance, and the start step before the apply may have started the
+      # existing one. Stop it immediately after the apply, including after a
       # partially successful apply, rather than relying on the scheduled sweep.
-      - name: Set up gcloud for App Engine cleanup
-        if: always() && steps.setup.outcome == 'success' && matrix.target.working_directory == 'opentofu/flink-gcp'
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-
       - name: Stop the App Engine E2E fixture
         if: always() && steps.setup.outcome == 'success' && matrix.target.working_directory == 'opentofu/flink-gcp'
         env:
