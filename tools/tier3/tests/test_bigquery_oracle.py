@@ -59,7 +59,7 @@ def tables():
     value.db.close()
 
 
-@pytest.mark.parametrize("mode", ["ALO", "EO"])
+@pytest.mark.parametrize("mode", ["ALO", "EO", "FILE_LOADS"])
 @pytest.mark.parametrize("destinations", [10, 50])
 def test_complete_nondivisible_input_and_string_encoded_counts(mode, destinations):
     trial = bq.Trial("oracle-1312", mode, destinations, 2 * destinations + 3)
@@ -92,7 +92,11 @@ def test_complete_nondivisible_input_and_string_encoded_counts(mode, destination
         tables.db.close()
 
 
-@pytest.mark.parametrize("mode,verdict", [("ALO", "pass"), ("EO", "fail")])
+# FILE_LOADS derives each load job's id from its staged files, so a retried
+# commit re-attaches: a duplicate is a failure there, as it is for EO.
+@pytest.mark.parametrize(
+    "mode,verdict", [("ALO", "pass"), ("EO", "fail"), ("FILE_LOADS", "fail")]
+)
 def test_duplicates_have_mode_specific_verdict(mode, verdict):
     tables = Tables(bq.Trial("oracle-1312", mode, 10, 20))
     try:
@@ -158,7 +162,7 @@ def test_empty_tables_still_produce_aggregates(tables):
         ("run_id", "-bad"),
         ("run_id", "a" * 41),
         ("run_id", None),
-        ("mode", "FILE_LOADS"),
+        ("mode", "STORAGE_WRITE"),
         ("mode", []),
         ("destinations", True),
         ("destinations", 9),
@@ -174,7 +178,9 @@ def test_invalid_trial_never_produces_sql(field, value):
         bq.Trial(**values)
 
 
-@pytest.mark.parametrize("mode,maximum", [("ALO", 32768), ("EO", 2097152)])
+@pytest.mark.parametrize(
+    "mode,maximum", [("ALO", 32768), ("EO", 2097152), ("FILE_LOADS", 2097152)]
+)
 def test_application_byte_boundary_and_table_contract(mode, maximum):
     trial = bq.Trial("a-b", mode, 50, maximum)
     assert trial.table(49) == "flink-gcp.flink_gcp_tier3_bigquery.bq_a_b_d49"

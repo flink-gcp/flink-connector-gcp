@@ -27,6 +27,7 @@ from flink_tier3.bigquery_analyze import SCENARIO, counts, render
 from flink_tier3.bigquery_verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
+    FILE_LOADS_OBSERVED,
     MEASUREMENT_EVENT,
     OBSERVED,
     SAMPLED_STAGES,
@@ -159,6 +160,48 @@ def test_an_incomplete_observation_is_inconclusive_with_its_reasons(tmp_path):
     assert item["status"] == INCONCLUSIVE
     assert item["problems"] == []
     assert item["reasons"] == reasons
+
+
+def test_a_file_loads_run_is_held_to_the_families_its_trial_requires(tmp_path):
+    """The receipt's trial decides the families, as the exercise's mode did."""
+    trial = {"mode": "FILE_LOADS", "destinations": 10}
+    # Read with the Storage Write families only, the run is short of two.
+    value = record()
+    write_run(tmp_path, value, receipt_for(value, bigquery_trial=trial))
+    _, item = assessed(tmp_path)
+    assert item["verdict"] == INCONCLUSIVE
+    assert item["reasons"] == [
+        f"unobserved-{name}-in-{stage}"
+        for stage in SAMPLED_STAGES
+        for name in FILE_LOADS_OBSERVED
+    ]
+    # Its stored usable verdict is the claim the readings deny.
+    assert item["status"] == TAMPERED
+    subtask = {
+        "index": 0,
+        "end_to_end_duration": 3,
+        "checkpoint": {"sync": 1, "async": 2},
+    }
+    reading = {
+        **FULL,
+        "committer": [{"id": "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted"}],
+        "checkpoints": {"vertices": {"sink": [subtask], "committer": [subtask]}},
+    }
+    window = {
+        "attempts": ATTEMPTS,
+        "observed": sorted(OBSERVED + FILE_LOADS_OBSERVED),
+    }
+    value = record(coverage={stage: dict(window) for stage in SAMPLED_STAGES})
+    write_run(
+        tmp_path,
+        value,
+        receipt_for(value, bigquery_trial=trial),
+        events=samples_of(value, reading),
+        run_id=RUN + "-fl",
+    )
+    report = analyze.analyze(tmp_path)
+    (item,) = [run for run in report["bigquery"] if run["run_id"] == RUN + "-fl"]
+    assert (item["status"], item["reasons"]) == (USABLE, [])
 
 
 def test_a_completed_record_without_its_completion_evidence_is_unexported(tmp_path):

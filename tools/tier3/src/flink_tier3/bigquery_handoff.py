@@ -102,6 +102,14 @@ class BigQueryHandoff:
         if self.env.actor != role:
             raise Failure("BigQuery handoff requires the " + role + " actor")
 
+    def _check_deadline(self, deadline):
+        if (
+            type(deadline) not in (int, float)
+            or not math.isfinite(deadline)
+            or not self.env.clock() < deadline <= self.binding["query_until"]
+        ):
+            raise ValueError("Observation deadline is outside the query window")
+
     def _state(self, state):
         value = state.get("handoff")
         binding = value.get("binding") if isinstance(value, dict) else None
@@ -225,12 +233,7 @@ class BigQueryHandoff:
             r"[a-z0-9][a-z0-9-]{0,39}", name
         ):
             raise ValueError("Observation name must be a short lowercase label")
-        if (
-            type(deadline) not in (int, float)
-            or not math.isfinite(deadline)
-            or not self.env.clock() < deadline <= self.binding["query_until"]
-        ):
-            raise ValueError("Observation deadline is outside the query window")
+        self._check_deadline(deadline)
         self.env.require_running("BigQuery observation admission has stopped")
 
         def request(state):
@@ -328,6 +331,17 @@ class BigQueryHandoff:
                 "BigQuery observation evidence is missing, replaced or oversized"
             )
         return artifact["result"]
+
+    def connector_jobs(self, *, deadline):
+        """The supervisor's own read of connector-issued jobs that are not DONE.
+
+        A listing, not a call the runner serializes: it creates nothing, and
+        the supervisor holds `bigquery.jobs.list` for it.
+        """
+        self._role("supervisor")
+        self._check_deadline(deadline)
+        self._read()
+        return self.controller.with_deadline(deadline).unfinished_connector_jobs()
 
     def stop(self):
         """Close new requests and calls; this does not acknowledge runner exit."""

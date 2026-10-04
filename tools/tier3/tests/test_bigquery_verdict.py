@@ -24,8 +24,11 @@ from flink_tier3.bigquery_observe import (
     TASK_METRICS,
 )
 from flink_tier3.bigquery_verdict import (
+    CHECKPOINT,
+    COMMITTER,
     COMPLETE_EVENT,
     COMPLETE_STAGE,
+    FILE_LOADS_OBSERVED,
     MEASUREMENT_EVENT,
     MEMORY,
     OBSERVED,
@@ -266,3 +269,94 @@ def test_the_family_inventory_is_the_one_the_collector_reads():
 def test_the_event_names_are_spelled_once_for_both_sides():
     assert COMPLETE_EVENT == "recovery-" + COMPLETE_STAGE
     assert MEASUREMENT_EVENT == "bigquery-measurement"
+
+
+# What a FILE_LOADS poll adds: the committer vertex's own metrics, and each
+# sink vertex's subtasks in the latest completed checkpoint.
+SUBTASK = {
+    "index": 0,
+    "status": "completed",
+    "end_to_end_duration": 40,
+    "checkpoint": {"sync": 4, "async": 9},
+}
+FILE_LOADS_READING = {
+    **FULL,
+    "committer": [{"id": "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted"}],
+    "checkpoints": {"id": 7, "vertices": {"sink": [SUBTASK], "committer": [SUBTASK]}},
+}
+
+
+def file_loads_covered(reading=FILE_LOADS_READING):
+    coverage = {}
+    for stage in SAMPLED_STAGES:
+        coverage = summarize(coverage, stage, reading)
+    return coverage
+
+
+def test_a_file_loads_run_must_also_read_its_committer_and_checkpoints():
+    """Finalization runs on a separate vertex; the base families miss it."""
+    decided = verdict(complete(), "FILE_LOADS")
+    assert decided["verdict"] == INCONCLUSIVE
+    assert decided["reasons"] == [
+        f"unobserved-{name}-in-{stage}"
+        for stage in SAMPLED_STAGES
+        for name in FILE_LOADS_OBSERVED
+    ]
+    decided = verdict(complete(coverage=file_loads_covered()), "FILE_LOADS")
+    assert decided == {"verdict": USABLE, "reasons": []}
+
+
+@pytest.mark.parametrize("mode", ["ALO", "EO", None, ["FILE_LOADS"]])
+def test_a_storage_write_run_is_not_held_to_the_committer_families(mode):
+    assert verdict(complete(), mode) == {"verdict": USABLE, "reasons": []}
+
+
+@pytest.mark.parametrize(
+    "checkpoints",
+    [
+        {"unavailable": "503"},
+        {"id": 7, "vertices": {"sink": [SUBTASK]}},
+        {"id": 7, "vertices": {"sink": [SUBTASK], "committer": {"unavailable": "x"}}},
+        {
+            "id": 7,
+            "vertices": {
+                "sink": [SUBTASK],
+                "committer": [{**SUBTASK, "checkpoint": {"sync": 4}}],
+            },
+        },
+        {
+            "id": 7,
+            "vertices": {
+                "sink": [SUBTASK],
+                "committer": [{**SUBTASK, "checkpoint": {"sync": "4", "async": 9}}],
+            },
+        },
+        # The end-to-end duration is where a writer's finalization shows.
+        {
+            "id": 7,
+            "vertices": {
+                "sink": [
+                    {k: v for k, v in SUBTASK.items() if k != "end_to_end_duration"}
+                ],
+                "committer": [SUBTASK],
+            },
+        },
+    ],
+)
+def test_checkpoint_durations_count_only_when_both_vertices_returned_both(
+    checkpoints,
+):
+    observed = summarize(
+        {}, "baseline", {**FILE_LOADS_READING, "checkpoints": checkpoints}
+    )
+    assert CHECKPOINT not in observed["baseline"]["observed"]
+    assert COMMITTER in observed["baseline"]["observed"]
+
+
+def test_the_committer_family_is_credited_by_the_committer_reading_only():
+    """The EO committer's gauges come back on the sink vertex; that is not this."""
+    reading = {
+        **FULL,
+        "sink": [*FULL["sink"], {"id": "Sink__Writer.activeCommitDestinations"}],
+    }
+    assert COMMITTER not in summarize({}, "baseline", reading)["baseline"]["observed"]

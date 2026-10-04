@@ -394,7 +394,7 @@ Grant nothing else on that path, each omission for a measured or documented reas
 Staging under `runs/<run-id>/staging/` falls inside the existing conditioned Object User grant and the one-day lifecycle rule.
 The predefined `roles/bigquery.jobUser` was declined, because it adds Dataform repository creation and project listing to the same permission.
 `bigquery.jobs.create` cannot be narrowed to load jobs: the workload can also submit queries, which read no Tier-3 table without `bigquery.tables.getData` but run and bill in the project.
-This grant does not fence load jobs: one keeps writing after the workload's Pods are gone, which the rig's load-job barrier must cover ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)).
+This grant does not fence load jobs: one keeps writing after the workload's Pods are gone, which the rig's load-job barrier covers, through the supervisor's `bigquery.jobs.list` ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), below).
 
 ### BigQuery recovery application
 
@@ -470,9 +470,18 @@ Do not decorate the FILE_LOADS sink: it has no appender, and the connector's per
 The CUE package renders the knobs from a flag table and re-unifies them with their schema where they are read, because a struct a delivery passed by reference rendered an out-of-range value through the plain path on cue v0.17.1; an out-of-range or unknown knob, or any knob in a Storage Write mode, fails the render, and `maxOpenDestinations` is capped at the connector's default `maxPendingFiles`, which the application does not expose.
 The emulator cannot cover this mode: the connector refuses emulator endpoints for FILE_LOADS, because the pinned emulator runs no load jobs and serves no Cloud Storage.
 A gated real-GCP ITCase therefore takes the savepoint-restore coverage, and the gated discovery and the `just e2e` runner now include Tier-3 applications under `kubernetes/apps`, each built behind its `tier3-<name>` profile after its connector is installed from the same tree.
-Trial selection, the proposal, dispatch and the oracle still refuse the mode until [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551); this change grants no permission and runs nothing on the deployed rig.
+Trial selection, the proposal, dispatch and the oracle refused the mode until [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), below; this change granted no permission and ran nothing on the deployed rig.
 Name the dataset's location on the FILE_LOADS sink, so the committer never reads dataset metadata to place its jobs and the workload needs no `bigquery.datasets.get`; the Storage Write modes keep no location.
 The workload then needs only project-wide `bigquery.jobs.create` for this mode, granted under [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550); the gated test runs under the E2E identity and cannot show whether the deployed identity holds it.
+
+Refined under [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551): the rig admits one FILE_LOADS trial, `fl-10`, at 10 destinations with the sink inputs at their defaults, under a version 5 approval; its oracle refuses duplicates as EO's does.
+Find the committer's jobs by listing, not by label: the connector labels none, and their ids hash the staged files they load, so the issue's premise that they carry the run's labels measured false.
+The supervisor alone receives project-wide `bigquery.jobs.list` through its own custom role, which lists other principals' jobs redacted, and reads each candidate through the `bigquery.jobs.get` it already held; `bigquery.jobs.listAll` was declined because nothing needs an unredacted listing, and the runner lists no job.
+A load is the run's when every source is under its staging prefix, and a copy or query when it writes one of its tables; `_verify_job` still refuses every job but the run's own query slots.
+Cleanup waits for every such job to be `DONE` after the Pod barrier and before deleting a table, deletes any temporary table created in the dataset since the run started, and, with the write that records cleanup, the objects left under the staging prefix before state cleanup deletes them; a failed listing is recorded rather than raised, so it cannot keep the tables alive.
+The oracle does not wait: the committer commits synchronously, so a job still running after `FINISHED` contradicts the connector's own account, and waiting would let its rows land and pass; it records the job and fails the run instead.
+The FILE_LOADS committer is a separate vertex, so observation accepts a writer and a committer for that mode, samples the committer's metrics and each sink subtask's checkpoint statistics, and the verdict requires both families in both windows for that mode.
+The issue placed finalization in the subtasks' sync and async durations, which measured false against Flink 2.2.1: the writer closes its staged files in the pre-barrier step, before the synchronous timer starts, so that time shows in the writer's end-to-end duration and the committer's start delay, and the commit's own time is the committer's `lastCommitDurationMillis`.
 
 ### Pub/Sub GCP preparation
 

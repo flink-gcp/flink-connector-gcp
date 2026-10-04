@@ -2177,8 +2177,10 @@ def test_bigquery_proposal_delivery_binds_both_phases(
     } in projection
 
 
-@pytest.mark.parametrize("mode", ["ALO", "EO"])
-@pytest.mark.parametrize("destinations", [10, 50])
+@pytest.mark.parametrize(
+    "mode,destinations",
+    [("ALO", 10), ("ALO", 50), ("EO", 10), ("EO", 50), ("FILE_LOADS", 10)],
+)
 def test_bigquery_prepare_accepts_real_cue_delivery(
     module, monkeypatch, mode, destinations
 ):
@@ -2211,7 +2213,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
     assert json.loads(bundle["delivery"]["config"]["data"]["proposal.json"]) == proposal
 
     approval = {
-        "version": 4,
+        "version": 5,
         "scenario": "bigquery-recovery",
         "run_id": "proposal-1312",
         "nonce": "a" * 32,

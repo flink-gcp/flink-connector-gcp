@@ -24,6 +24,7 @@ from flink_tier3.bigquery_lifecycle import BigQueryLifecycle
 from flink_tier3.bigquery_resources import ResourcePlan
 from flink_tier3.common import Failure, TransportError, digest
 from flink_tier3.model import Phase, RunRecord
+from flink_tier3.policy import BIGQUERY_STATE
 from flink_tier3.records import Records
 from test_bigquery_resources import NOW, Response, client, job, page, table
 from test_tier3_lifecycle import Store
@@ -86,6 +87,10 @@ class Resources:
         self.after_delete = None
         self.on_results = None
         self.deadlines = []
+        # What a FILE_LOADS cleanup lists: connector jobs not yet DONE, and
+        # temporary tables in the dataset.
+        self.unfinished = []
+        self.temporary = []
 
     def with_deadline(self, deadline):
         # This fake has no transport; composed REST tests enforce the deadline.
@@ -121,6 +126,18 @@ class Resources:
     def cancel_query(self, slot):
         self.calls.append(("cancel", slot))
         return copy.deepcopy(self.jobs.get(slot))
+
+    def unfinished_connector_jobs(self, since):
+        self.calls.append(("connector-jobs", since))
+        return copy.deepcopy(self.unfinished)
+
+    def temporary_tables(self, since):
+        self.calls.append(("temporary-tables", since))
+        return [{"table": name, "creationTime": "1"} for name in self.temporary]
+
+    def delete_temporary_table(self, name):
+        self.calls.append(("delete-temporary", name))
+        self.temporary.remove(name)
 
     def delete_table(self, destination, receipt):
         self.calls.append(("delete", destination))
@@ -682,3 +699,176 @@ def test_a_conflicting_collection_does_not_bill_the_same_query_twice(setup):
     assert env.store.conflicts == 1
     queries = env.refresh().bigquery["queries"]
     assert env.refresh().bigquery["billed_bytes"] == queries["final"]["billed"]
+
+
+@pytest.fixture
+def file_loads():
+    plan = ResourcePlan(
+        Trial("lifecycle-1312", "FILE_LOADS", 10, 23),
+        "a" * 32,
+        (NOW + 3600) * 1000,
+        3,
+        1024**3,
+        60000,
+    )
+    app = {
+        "metadata": {"name": plan.trial.run_id, "namespace": "tier3-bigquery"},
+        "spec": {"job": {"args": plan.trial.arguments("initial")}},
+    }
+    env = Environment(plan, app)
+    api = Resources(plan)
+    controller = BigQueryLifecycle(env, api, app)
+    controller.initialize()
+    controller.provision()
+    env.actor = "supervisor"
+    api.calls.clear()
+    return controller, env, api, app
+
+
+LOAD = {
+    "id": "flink-bq-load-" + "f" * 32 + "-c3-" + "0" * 16,
+    "kind": "load",
+    "table": "bq_lifecycle_1312_d0",
+    "state": "RUNNING",
+    "failed": False,
+}
+
+
+def test_a_file_loads_application_renders_its_sink_inputs():
+    args = Trial("lifecycle-1312", "FILE_LOADS", 10, 23).arguments("initial")
+    assert args[13:] == [
+        "false",
+        "--staging-format",
+        "AVRO",
+        "--max-concurrent-checkpoint-finalizations",
+        "1",
+        "--max-concurrent-destinations",
+        "8",
+        "--max-staging-file-bytes",
+        "16777216",
+        "--max-open-destinations",
+        "16",
+    ]
+
+
+def test_cleanup_waits_for_a_load_job_still_running_at_the_barrier(file_loads):
+    """The Pods are gone; a load they submitted is still the service's to run."""
+    controller, env, api, _ = file_loads
+    api.unfinished = [LOAD]
+    assert not controller.cleanup(lambda: True)
+    assert ("connector-jobs", NOW) in api.calls
+    # Neither a temporary table nor a run table is touched while it runs.
+    assert not [c for c in api.calls if c[0] in ("delete", "temporary-tables")]
+    assert len(api.tables) == 10
+    state = env.refresh().bigquery
+    # Recorded, because one outliving the workload is a finding.
+    assert state["file_loads"] == {
+        "unfinished_jobs": [LOAD["id"]],
+        "temporary_tables": [],
+    }
+    assert not state["cleaned"]
+    api.unfinished = []
+    assert controller.cleanup(lambda: True)
+    assert not api.tables
+    state = env.refresh().bigquery
+    assert state["cleaned"]
+    assert state["file_loads"] == {
+        "unfinished_jobs": [LOAD["id"]],
+        "temporary_tables": [],
+        "staging": {"objects": 0, "bytes": 0, "names": []},
+    }
+
+
+def test_a_leftover_staged_object_is_counted_before_state_cleanup_deletes_it(
+    file_loads,
+):
+    controller, env, _, _ = file_loads
+    prefix = "runs/lifecycle-1312/staging/" + "f" * 32 + "/"
+    for index in range(25):
+        env.store.write_bytes(f"{prefix}d0/{index:02d}.avro", b"x" * 10, BIGQUERY_STATE)
+    # Outside the staging prefix: a checkpoint is not a staged file.
+    env.store.write_bytes("runs/lifecycle-1312/checkpoints/x", b"y", BIGQUERY_STATE)
+    assert controller.cleanup(lambda: True)
+    staging = env.refresh().bigquery["file_loads"]["staging"]
+    assert staging["objects"] == 25 and staging["bytes"] == 250
+    assert staging["names"] == [f"{prefix}d0/{index:02d}.avro" for index in range(20)]
+    # The objects stay for state cleanup, which deletes the whole run prefix,
+    # and a later pass keeps the count rather than reading the emptied prefix.
+    assert len(env.store.objects(prefix, BIGQUERY_STATE)) == 25
+    for index in range(25):
+        env.store.delete(
+            f"{prefix}d0/{index:02d}.avro",
+            env.store._generation(f"{prefix}d0/{index:02d}.avro", BIGQUERY_STATE),
+            BIGQUERY_STATE,
+        )
+    assert controller.cleanup(lambda: True)
+    assert env.refresh().bigquery["file_loads"]["staging"]["objects"] == 25
+
+
+def test_an_unreadable_staging_prefix_does_not_keep_the_tables(file_loads):
+    """Storage failures must not keep paid resources alive."""
+    controller, env, api, _ = file_loads
+
+    def objects(prefix, bucket, maximum):
+        raise Failure("Object inventory exceeds its count ceiling")
+
+    env.store.objects = objects
+    assert controller.cleanup(lambda: True)
+    assert not api.tables
+    assert env.refresh().bigquery["file_loads"]["staging"] == {
+        "unreadable": "Object inventory exceeds its count ceiling"
+    }
+
+
+def test_temporary_tables_are_recorded_before_they_are_deleted(file_loads):
+    controller, env, api, _ = file_loads
+    temporary = "tmp_" + "f" * 32 + "_0123456789ab_c3_p0"
+    api.temporary = [temporary]
+    recorded = []
+    api_delete = api.delete_temporary_table
+
+    def delete(name):
+        recorded.append(env.refresh().bigquery["file_loads"]["temporary_tables"])
+        api_delete(name)
+
+    api.delete_temporary_table = delete
+    # The pass that deletes cannot also say nothing is left; the next one can.
+    assert not controller.cleanup(lambda: True)
+    assert recorded == [[temporary]]
+    assert len(api.tables) == 10
+    assert controller.cleanup(lambda: True)
+    assert env.refresh().bigquery["file_loads"]["temporary_tables"] == [temporary]
+    assert not api.tables
+
+
+def test_a_file_loads_cleanup_adds_no_write_to_the_pass_that_settles(file_loads):
+    """Cloud Storage refuses about one mutation a second on the control record."""
+    controller, _, _, _ = file_loads
+    writes = []
+    change = controller._change
+    controller._change = lambda edit, **kwargs: (
+        writes.append(edit),
+        change(edit, **kwargs),
+    )[1]
+    assert controller.cleanup(lambda: True)
+    # The stop request and the pass's result, which carries the FILE_LOADS
+    # account, as a Storage Write cleanup writes.
+    assert len(writes) == 2
+
+
+def test_a_storage_write_cleanup_lists_no_connector_job(setup):
+    running(setup)
+    _, env, api, _ = setup
+    env.actor = "supervisor"
+    assert restart(setup).cleanup(lambda: True)
+    assert not [c for c in api.calls if c[0] in ("connector-jobs", "temporary-tables")]
+    assert "file_loads" not in env.refresh().bigquery
+
+
+def test_only_the_supervisor_observes_connector_jobs(file_loads):
+    controller, env, api, _ = file_loads
+    api.unfinished = [LOAD]
+    assert controller.unfinished_connector_jobs() == [LOAD]
+    env.actor = "runner"
+    with pytest.raises(Failure, match="Only the supervisor"):
+        controller.unfinished_connector_jobs()

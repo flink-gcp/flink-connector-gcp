@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 
-from .bigquery import assess
+from .bigquery import EXACTLY_ONCE, assess
 from .bigquery_observe import observation, vertices
 from .bigquery_verdict import (
     COMPLETE_STAGE,
@@ -159,7 +159,7 @@ class BigQueryExercise(RecoveryExercise):
         """
         if not self.measurement_due():
             return
-        self.vertices = vertices(self.rest, self.vertices)
+        self.vertices = vertices(self.rest, self.vertices, self.trial.mode)
         reading = observation(self.rest, self.vertices)
         self.coverage = summarize(self.coverage, self.stage, reading)
         self.env.emit(MEASUREMENT_EVENT, {"stage": self.stage, **reading})
@@ -177,6 +177,23 @@ class BigQueryExercise(RecoveryExercise):
                 raise Failure("BigQuery input finished before the post-recovery window")
         return super().observe(app, rest, pods)
 
+    def require_settled_loads(self, supervisor):
+        """Refuse to read while a job the committer issued is still running.
+
+        The committer commits synchronously, so a FINISHED application has no
+        job left by the connector's own account. The oracle checks that
+        rather than waiting it out: rows still arriving after FINISHED are the
+        defect, and waiting would let them land and pass.
+        """
+        jobs = supervisor.connector_jobs(deadline=self.deadline)
+        if jobs:
+            self.env.records.evidence(
+                "bigquery-unfinished-connector-jobs", {"jobs": jobs}
+            )
+            raise Failure(
+                "A connector-issued BigQuery job outlived the finished application"
+            )
+
     def verify_rows(self, supervisor):
         """Use new slots for visibility retries, without moving the final deadline."""
         if self.stage != "visibility":
@@ -189,6 +206,8 @@ class BigQueryExercise(RecoveryExercise):
         )
         for slot in range(self.env.approval.bigquery_plan.query_slots):
             self.check_open()
+            if self.trial.mode == "FILE_LOADS":
+                self.require_settled_loads(supervisor)
             name = f"final-{slot}"
             result = supervisor.query(name, deadline=self.deadline)
             self.check_open()
@@ -198,7 +217,7 @@ class BigQueryExercise(RecoveryExercise):
             if result.get("report") != report:
                 raise Failure("BigQuery archived oracle differs from its rows")
             if report["invalid_rows"] or (
-                self.trial.mode == "EO" and report["duplicate_rows"]
+                self.trial.mode in EXACTLY_ONCE and report["duplicate_rows"]
             ):
                 raise Failure("BigQuery final rows violate routing or uniqueness")
             if report["verdict"] == "pass":
@@ -215,7 +234,8 @@ class BigQueryExercise(RecoveryExercise):
                         "stage": COMPLETE_STAGE,
                         "outcomes": self.outcomes,
                         "coverage": coverage,
-                    }
+                    },
+                    self.trial.mode,
                 )
                 # Bypass the FINISHED-to-visibility transition only after the oracle passes.
                 super().persist(

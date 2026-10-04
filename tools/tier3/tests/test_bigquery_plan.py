@@ -82,6 +82,24 @@ def renderer(monkeypatch):
                         "1048576",
                         "--require-restored",
                         "false",
+                        # `pkg/bigquery.#Application` renders the five sink
+                        # inputs at their defaults, in this order.
+                        *(
+                            [
+                                "--staging-format",
+                                "AVRO",
+                                "--max-concurrent-checkpoint-finalizations",
+                                "1",
+                                "--max-concurrent-destinations",
+                                "8",
+                                "--max-staging-file-bytes",
+                                "16777216",
+                                "--max-open-destinations",
+                                "16",
+                            ]
+                            if mode == "FILE_LOADS"
+                            else []
+                        ),
                     ]
                 },
             },
@@ -100,8 +118,9 @@ def renderer(monkeypatch):
                 }
             }
         upgrade = copy.deepcopy(initial)
-        upgrade["spec"]["job"]["args"][3] = "upgrade"
-        upgrade["spec"]["job"]["args"][-1] = "true"
+        args = upgrade["spec"]["job"]["args"]
+        args[3] = "upgrade"
+        args[args.index("--require-restored") + 1] = "true"
         delivery = {
             "config": {
                 "data": {
@@ -137,8 +156,16 @@ def renderer(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("mode,records", [("ALO", 28800), ("EO", 1843200)])
-@pytest.mark.parametrize("destinations", [10, 50])
+@pytest.mark.parametrize(
+    "mode,records,destinations",
+    [
+        ("ALO", 28800, 10),
+        ("ALO", 28800, 50),
+        ("EO", 1843200, 10),
+        ("EO", 1843200, 50),
+        ("FILE_LOADS", 1843200, 10),
+    ],
+)
 def test_complete_identity_and_budget_bindings(
     inputs, renderer, mode, records, destinations
 ):
@@ -249,14 +276,37 @@ def test_the_estimate_charges_the_whole_query_budget():
     assert plan.estimate().quantize(Decimal("0.01")) == Decimal("2.35")
 
 
-def test_the_four_trials_are_each_mode_at_each_destination_count():
+def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
     assert {name: plan.trial(name) for name in plan.TRIALS} == {
-        f"{mode.lower()}-{count}": {"mode": mode, "destinations": count}
-        for mode in ("ALO", "EO")
-        for count in (10, 50)
+        **{
+            f"{mode.lower()}-{count}": {"mode": mode, "destinations": count}
+            for mode in ("ALO", "EO")
+            for count in (10, 50)
+        },
+        "fl-10": {"mode": "FILE_LOADS", "destinations": 10},
     }
-    with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50"):
+    with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50, fl-10"):
         plan.trial("none")
+
+
+def test_file_loads_is_a_trial_at_ten_destinations_only():
+    """One FILE_LOADS trial asks about recovery, not about scale."""
+    with pytest.raises(ValueError, match="FILE_LOADS and 10"):
+        plan.validate_trial({"mode": "FILE_LOADS", "destinations": 50})
+
+
+def test_a_file_loads_upgrade_changes_only_phase_and_restoration(inputs, renderer):
+    """The sink inputs follow the restoration flag, so it is not the last one."""
+    inputs["trial"] = plan.trial("fl-10")
+    bundle = plan.prepare(**inputs)
+    initial = bundle["application"]["spec"]["job"]["args"]
+    upgrade = bundle["upgrade_application"]["spec"]["job"]["args"]
+    assert initial[-2:] == ["--max-open-destinations", "16"] == upgrade[-2:]
+    assert [i for i, (a, b) in enumerate(zip(initial, upgrade)) if a != b] == [
+        3,
+        initial.index("--require-restored") + 1,
+    ]
+    assert bundle["proposal"]["limits"]["input_bytes"] == 1800 * 1024**2
 
 
 @pytest.mark.parametrize(

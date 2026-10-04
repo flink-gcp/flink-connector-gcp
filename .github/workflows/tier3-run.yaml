@@ -66,6 +66,7 @@ on:
           - 'eo-10'
           - 'alo-50'
           - 'eo-50'
+          - 'fl-10'
       pubsub_trial:
         description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml (none until #1434)'
         required: false

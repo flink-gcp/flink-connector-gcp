@@ -329,7 +329,7 @@ def validate_approval(approval, now=None):
         "smoke": 1,
         "generic-recovery": 2,
         "cloudtasks": 3,
-        "bigquery-recovery": 4,
+        "bigquery-recovery": 5,
         "pubsub-recovery": 5,
     }
     if approval.get("version") != versions[scenario] or not RUN_ID.fullmatch(
