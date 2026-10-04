@@ -16,7 +16,9 @@ the client library's query splitter and write one in non-transactional commits.
 | Datastore-mode at-least-once sink over non-transactional commits; `DatastoreMutation` serialization SPI; ramp-up throttling | Implemented ([#1542](https://github.com/flink-gcp/flink-connector-gcp/issues/1542)) |
 | Datastore-mode per-write failure policy, confirming a refused commit one write at a time | Implemented ([#1542](https://github.com/flink-gcp/flink-connector-gcp/issues/1542)) |
 | Datastore-mode bounded source (a kind, a query or a GQL query; `QuerySplitter` key ranges at one read time; resume by cursor) | Implemented ([#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543)) |
-| Table API / SQL and the relocated SQL uber-jar | Planned ([#1544](https://github.com/flink-gcp/flink-connector-gcp/issues/1544), [#1545](https://github.com/flink-gcp/flink-connector-gcp/issues/1545)) |
+| Table API / SQL sink for Native mode (one collection keyed by document id; `set`, `merge` and `update` write modes; geo-point and reference markers) and the relocated SQL uber-jar | Implemented ([#1607](https://github.com/flink-gcp/flink-connector-gcp/issues/1607)) |
+| Table API / SQL scan and lookup for Native mode | Planned ([#1608](https://github.com/flink-gcp/flink-connector-gcp/issues/1608), [#1609](https://github.com/flink-gcp/flink-connector-gcp/issues/1609)) |
+| Table API / SQL for Datastore mode | Planned ([#1545](https://github.com/flink-gcp/flink-connector-gcp/issues/1545)) |
 | Gated real-GCP integration tests | Planned ([#1546](https://github.com/flink-gcp/flink-connector-gcp/issues/1546)) |
 | Opt-in per-document submission order | Planned ([#1556](https://github.com/flink-gcp/flink-connector-gcp/issues/1556)) |
 | Change-stream source (the Firestore APIs have no change-stream read; reopen conditions recorded on the issue) | Declined ([#355](https://github.com/flink-gcp/flink-connector-gcp/issues/355)) |
