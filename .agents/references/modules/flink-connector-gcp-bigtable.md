@@ -758,6 +758,9 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   the whole surface this layer needs, up to `DefaultLookupCache`, is in it, so `flink-table-runtime`
   stays test scope and nothing here needs a `flink-api-tiers.toml` entry.
 
+- Asynchronous lookup retries use `base.table.AsyncLookupRetries` (ADR-0039); keep the read,
+  row conversion and failure classifier here, and the stack-safety and late-callback tests in base.
+
 ## Catalog (`docs/adr/0178`; shared shape `docs/adr/0168`)
 
 - **One instance is the one database, named by its id**; no `default-database`, and

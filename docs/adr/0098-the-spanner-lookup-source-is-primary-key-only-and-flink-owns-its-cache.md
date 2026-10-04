@@ -44,6 +44,8 @@ When the planner also pushes an exact primary-key predicate, both lookup modes r
 Predicates that are not exact primary-key constraints remain Flink residuals.
 The bounded-scan `scan.index` option does not change lookup access paths.
 
+The asynchronous retry loop is shared through `base.table.AsyncLookupRetries` ([ADR-0039](0039-retry-schedules-are-shared-retry-loops-are-not-and-every-schedule-jitters.md)); the read, conversion and failure classifier stay in this connector.
+
 ## Alternatives declined
 
 - Retrying `RESOURCE_EXHAUSTED`, which the sink's `SpannerErrorClassifier` does treat as transient. What separates the two is backoff rather than polarity: the sink retries on a `RetrySchedule` and sleeps between attempts (ADR-0075), so it can serve out the wait this status asks for, and the client honours that wait too, retrying the status on this read path precisely when the server attached a retry delay. The lookup loop has no backoff at all, so including it would re-issue at once and spend the whole budget against the wait the server asked for. That is the shape ADR-0084 records on the BigQuery read path.

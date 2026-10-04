@@ -14,18 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0039: Retry schedules are shared, retry loops are not, and every schedule jitters at one ratio
+# ADR-0039: Retry schedules and asynchronous lookup loops are shared; service-specific loops stay local, and every schedule jitters at one ratio
 
 - Status: Accepted
-- Date: 2026-08-01 ([#61], [#197])
-- Issues: [#61], [#197], [#235]
-- Modules: base (`base.retry`, `base.rpc`)
+- Date: 2026-08-01 ([#61], [#197]), revised 2026-10-04 ([#1642])
+- Issues: [#61], [#197], [#235], [#1642]
+- Modules: base (`base.retry`, `base.rpc`, `base.table`)
 - Current behavior: the reference pages' retry/recovery option tables
 
 ## Decision
 
-- **Retry loops stay in the connectors; only the schedule, the backoff sleep and status-code
-  extraction are shared.** [#61]'s plan sketched a `Retries.run(schedule, isRetryable, action)`
+- **Service-specific retry loops stay in the connectors.** The schedule, the backoff sleep and
+  status-code extraction are shared. [#61]'s plan sketched a `Retries.run(schedule, isRetryable, action)`
   executor, and it was evaluated against every loop and adopted nowhere (recorded on [#61]): all
   seven measured loops are not plain predicate-retry — success-via-exception in
   `BufferedStreamCommitter.flush`, repair side effects in `createStream`, a mid-loop schedule
@@ -34,6 +34,21 @@ limitations under the License.
   `TopicRepairer.repair`, and no loop at all in Cloud Tasks' park-and-redispatch
   writer — and each carries site-specific messages and logging that tests pin. Do not add an
   unused executor; a future consumer with a genuinely plain loop is what would justify one.
+- **The asynchronous Table API lookup loop is shared in `base.table.AsyncLookupRetries`** ([#1642]).
+  Spanner, Bigtable and Firestore had the same work-counter trampoline and retry-or-complete decision.
+  Each now supplies the read as a `Supplier<ApiFuture<T>>`, a row converter that can throw a checked exception, its own transient-failure classifier, and the retry budget.
+  Keys, conversion rules, error classification and client lifecycle stay per connector.
+  The helper makes one initial read plus at most the configured number of retries, uses direct callbacks, and turns immediate failures into a loop without an executor or backoff.
+  Read failures, including a synchronous throw, may be retried; conversion failures are terminal.
+  Blocking lookup loops remain per connector.
+
+  The shared helper does not cancel an active client future when its result is cancelled.
+  Flink 1.20.4 and 2.2.1 chain `AsyncLookupFunction.eval` and `CachingAsyncLookupFunction` through `whenComplete`, without propagating cancellation back to the lookup result.
+  With libraries-bom 26.90.0, Bigtable 2.85.0 classic point reads support upstream cancellation in `BigtableUnaryOperationCallable.UnaryFuture`; Spanner 6.124.0 returns a detached `SettableApiFuture` from `AbstractReadContext.consumeSingleRowAsync`; Firestore 3.49.0 returns a transform of `FirestoreImpl.getAll`'s `SettableApiFuture`, which is not wired to its stream.
+  Those are client-source observations, not a common RPC cancellation guarantee.
+  Cancelling the helper's result prevents later callbacks from scheduling retries or converting a value; an in-flight read retains the client's own lifetime.
+  `AsyncLookupRetriesTest` holds the small-stack immediate-failure case, retries after a delayed failure, checked conversion failures, independent lookup state and the cancellation boundary through Flink's `eval`.
+
 - **Every schedule jitters, at one shared ratio, and the ratio is never a knob** ([#197]).
   `RetrySchedule.DEFAULT_JITTER_RATIO` is the only ratio in the repository — a connector passing
   a literal is a review finding, and passing `0` needs a recorded reason (nothing in main
@@ -86,3 +101,4 @@ limitations under the License.
 [#197]: https://github.com/flink-gcp/flink-connector-gcp/issues/197
 [#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
 [#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895
+[#1642]: https://github.com/flink-gcp/flink-connector-gcp/issues/1642

@@ -132,7 +132,7 @@ class BigtableRowDataLookupFunctionTest {
     }
 
     @Test
-    void asynchronousLookupWaitsForALaterCallbackAndPropagatesCancellation() throws Exception {
+    void asynchronousLookupWaitsForALaterCallback() throws Exception {
         SettableApiFuture<Row> pending = SettableApiFuture.create();
         FakeRowLookup lookup = new FakeRowLookup().answer(pending);
         BigtableRowDataAsyncLookupFunction function = async(lookup, 3);
@@ -142,14 +142,6 @@ class BigtableRowDataLookupFunctionTest {
         assertThat(result).isNotDone();
         pending.set(row("k1", "value"));
         assertThat(result.join()).hasSize(1);
-
-        SettableApiFuture<Row> cancelledCall = SettableApiFuture.create();
-        FakeRowLookup cancelledLookup = new FakeRowLookup().answer(cancelledCall);
-        CompletableFuture<Collection<RowData>> cancelled =
-                async(cancelledLookup, 3).asyncLookup(key("k2"));
-        cancelled.cancel(true);
-        assertThat(cancelledCall.isCancelled()).isTrue();
-        assertThat(cancelledLookup.keys).hasSize(1);
     }
 
     @Test
@@ -230,20 +222,6 @@ class BigtableRowDataLookupFunctionTest {
                 .isInstanceOf(CompletionException.class)
                 .hasCause(permanentFailure);
         assertThat(asyncLookup.keys).hasSize(1);
-    }
-
-    @Test
-    void immediateAsyncFailuresDoNotGrowTheTaskThreadStack() throws Exception {
-        int retries = 5_000;
-        RuntimeException transientFailure = failure(StatusCode.Code.UNAVAILABLE);
-        FakeRowLookup lookup = new FakeRowLookup();
-        for (int i = 0; i < retries; i++) {
-            lookup.answer(transientFailure);
-        }
-        lookup.answer(row("k", "v"));
-
-        assertThat(async(lookup, retries).asyncLookup(key("k")).join()).hasSize(1);
-        assertThat(lookup.keys).hasSize(retries + 1);
     }
 
     @Test

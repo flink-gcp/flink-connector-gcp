@@ -52,13 +52,18 @@ limitations under the License.
         <dependency>
             <!-- Catalog and CatalogDatabase, the interfaces base.catalog's read-only skeleton
                  implements for every connector catalog (docs/adr/0168), and the
-                 ValidationException base.table's OptionSetters throws (docs/adr/0133). -->
+                 ValidationException and RowData base.table uses (docs/adr/0133 and 0039). -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-common</artifactId>
             <scope>provided</scope>
         </dependency>
 
         <!-- Google Cloud (versions managed by the libraries BOM) -->
+        <dependency>
+            <!-- ApiFuture callbacks and conversion in base.table.AsyncLookupRetries (#1642). -->
+            <groupId>com.google.api</groupId>
+            <artifactId>api-common</artifactId>
+        </dependency>
         <dependency>
             <!-- ApiException/StatusCode on the status-code extraction path. -->
             <groupId>com.google.api</groupId>
