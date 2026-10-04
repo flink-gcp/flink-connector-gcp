@@ -34,15 +34,19 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static io.github.flink.gcp.connector.spanner.table.UnboundedQueryRows.firstRows;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** End-to-end bounded SQL scan coverage against both emulator dialects. */
 class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
+
+    private static final Duration ROW_DEADLINE = Duration.ofSeconds(90);
 
     @ParameterizedTest
     @MethodSource("changeStreamMetadataCases")
@@ -91,7 +95,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
         java.time.Instant commitAtWatermarkPrecision =
                 java.time.Instant.ofEpochMilli(commit.toSqlTimestamp().toInstant().toEpochMilli());
 
-        List<Row> rows = firstRows(table, "SELECT * FROM metadata_cdc", 2);
+        List<Row> rows = firstRows(table, "SELECT * FROM metadata_cdc", 2, ROW_DEADLINE);
 
         assertThat(rows).extracting(Row::getKind).containsOnly(RowKind.INSERT);
         assertThat(rows).extracting(row -> row.getFieldAs(0)).containsExactlyInAnyOrder(1L, 2L);
@@ -190,7 +194,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         tableName,
                         firstCommit.toSqlTimestamp().toInstant().toEpochMilli()));
 
-        assertThat(firstRows(table, "SELECT id, name FROM cdc", 4))
+        assertThat(firstRows(table, "SELECT id, name FROM cdc", 4, ROW_DEADLINE))
                 .containsExactly(
                         Row.ofKind(RowKind.INSERT, 1L, "Ada"),
                         Row.ofKind(RowKind.UPDATE_BEFORE, 1L, "Ada"),
@@ -425,17 +429,6 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
         List<Row> rows = new ArrayList<>();
         try (CloseableIterator<Row> iterator = table.executeSql(sql).collect()) {
             iterator.forEachRemaining(rows::add);
-        }
-        return rows;
-    }
-
-    private static List<Row> firstRows(TableEnvironment table, String sql, int count)
-            throws Exception {
-        List<Row> rows = new ArrayList<>();
-        try (CloseableIterator<Row> iterator = table.executeSql(sql).collect()) {
-            while (rows.size() < count && iterator.hasNext()) {
-                rows.add(iterator.next());
-            }
         }
         return rows;
     }

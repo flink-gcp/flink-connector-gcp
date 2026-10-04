@@ -94,6 +94,7 @@ import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
+import static io.github.flink.gcp.connector.spanner.table.UnboundedQueryRows.firstRows;
 import static io.github.flink.gcp.connector.testutils.Awaits.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -435,14 +436,15 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         target, dialect, changelogMode, startupTimestampMillis));
 
         List<Row> rows =
-                firstTableRows(
+                firstRows(
                         table,
                         "SELECT * FROM metadata_cdc WHERE id IN ("
                                 + firstId
                                 + ", "
                                 + (firstId + 1)
                                 + ")",
-                        2);
+                        2,
+                        CHANGE_STREAM_WAIT);
         Instant commitAtWatermarkPrecision =
                 Instant.ofEpochMilli(commit.toSqlTimestamp().toInstant().toEpochMilli());
 
@@ -1052,17 +1054,6 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         List<Row> rows = new ArrayList<>();
         try (CloseableIterator<Row> collected = table.executeSql(sql).collect()) {
             collected.forEachRemaining(rows::add);
-        }
-        return rows;
-    }
-
-    private static List<Row> firstTableRows(TableEnvironment table, String sql, int count)
-            throws Exception {
-        List<Row> rows = new ArrayList<>();
-        try (CloseableIterator<Row> collected = table.executeSql(sql).collect()) {
-            while (rows.size() < count && collected.hasNext()) {
-                rows.add(collected.next());
-            }
         }
         return rows;
     }
