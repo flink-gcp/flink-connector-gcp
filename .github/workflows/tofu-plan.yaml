@@ -68,7 +68,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
+      - uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: hide-comment
           github_token: ${{ github.token }}
@@ -122,7 +122,7 @@ jobs:
 
       - name: Set up tfaction
         id: setup
-        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
+        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: setup
           github_token: ${{ github.token }}
@@ -173,7 +173,7 @@ jobs:
           uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" ci plan
 
       - name: tofu init
-        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
+        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: terraform-init
           github_token: ${{ github.token }}
@@ -210,7 +210,7 @@ jobs:
       # Without the App token, the next step checks without fixing files.
       - name: tofu test
         if: steps.app-token.outcome == 'success'
-        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
+        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: test
           github_token: ${{ steps.app-token.outputs.token }}
@@ -232,7 +232,7 @@ jobs:
           if-no-files-found: error
 
       - name: tofu plan
-        uses: suzuki-shunsuke/tfaction@935e0d2db39178f46045c678519a05eefb5c4f52 # v2.3.0
+        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: plan
           github_token: ${{ github.token }}
