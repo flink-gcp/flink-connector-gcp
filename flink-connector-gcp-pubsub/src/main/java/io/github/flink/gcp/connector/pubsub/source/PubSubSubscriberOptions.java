@@ -592,10 +592,8 @@ public final class PubSubSubscriberOptions implements Serializable {
             // (ADR-0068) rather than a crash: one answer for one knob name, whose "effectively
             // unbounded" reading is the same on both sides.
             //
-            // It runs before the floor, and the order is load-bearing: the floor converts with
-            // toMillis(), which past about 292 million years throws an ArithmeticException naming
-            // no knob at all — so checking the ceiling first is what keeps an absurd budget
-            // answered by the message that names it.
+            // Keep the tighter nanosecond ceiling first so an oversized budget names this knob's
+            // own limit rather than the whole-millisecond conversion limit (ADR-0180).
             OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
             // The floor, unlike that ceiling, is not shared with the sink's knob of this name: this
             // budget is spent as await(toMillis()), where a sub-millisecond value waits for nothing

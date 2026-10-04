@@ -215,7 +215,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   three caller-owned `openPlaintextChannel`/`fixedProvider` sites do not. An internal call,
   tier-irrelevant under `docs/adr/0141`; reread the annotation on a gax bump.
 
-## `base.options` (`docs/adr/0068`)
+## `base.options` (`docs/adr/0068`, `0180`)
 
 - `OptionChecks` holds `checkPositive`, `checkAtLeastOneMilli`, `checkAtLeastOneMilliOrZero` and
   `checkExpressibleInNanos`; each clears the multiple-consumer bar on its own — `docs/adr/0068`
@@ -224,6 +224,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **Every `Duration` positivity message carries the offending value**, which is what settled the
   three shapes the tree had grown for one check. A rejection that names only the knob leaves a
   builder chain setting several durations ambiguous.
+- Preserve `toMillis()`'s acceptance boundary in the millisecond checks. Wrap its overflow in an
+  `IllegalArgumentException` naming the option and value, with the arithmetic exception as its
+  cause (ADR-0180); do not turn the floor into a comparison that admits unconvertible durations.
 - `checkExpressibleInNanos` deliberately does **not** check positivity: `BoundedShutdown` accepts
   a spent budget and the first-checkpoint watchdog accepts `Duration.ZERO`, so a caller wanting
   both calls both. Its message names the ceiling **and the year count**, because

@@ -22,6 +22,10 @@ limitations under the License.
 - Modules: base (`base.options`, `BoundedShutdown`), pubsub, cloudtasks, bigtable, bigquery
 - Current behavior: each knob's row in `docs/content/docs/reference/{pubsub,bigquery}.md`
 
+Partially superseded by [ADR-0180](0180-shared-millisecond-checks-name-conversion-overflow.md):
+the shared one-millisecond checks now wrap their conversion overflow in an option-named `IllegalArgumentException` instead of the raw `ArithmeticException` preserved below.
+The nanosecond ceiling, millisecond floor and zero-sentinel decisions remain in force.
+
 ## Context
 
 A `Duration` is unbounded for practical purposes (±292 billion years); a `long` of nanoseconds is

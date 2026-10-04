@@ -88,9 +88,11 @@ public final class OptionChecks {
      * truncates its own delays the same way. Two knobs of one name, on a sink and on a source, can
      * therefore have different floors (ADR-0068).
      *
-     * <p>A duration longer than about 292 million years throws {@link ArithmeticException} out of
-     * {@link Duration#toMillis()} instead of being rejected here. It still lands at the setter,
-     * which is where a failure belongs, so the conversion is left as it is and a test pins it.
+     * <p>A duration whose conversion to whole milliseconds overflows is rejected with an {@link
+     * IllegalArgumentException} naming the option and the value. The conversion's {@link
+     * ArithmeticException} is retained as its cause. Fractional milliseconds are truncated by
+     * {@link Duration#toMillis()}, so the check accepts any positive duration whose converted value
+     * is at least one and fits in a {@code long} (ADR-0180).
      *
      * @param duration the duration to check
      * @param name the option name, for the failure message
@@ -98,8 +100,16 @@ public final class OptionChecks {
      */
     public static Duration checkAtLeastOneMilli(Duration duration, String name) {
         Preconditions.checkNotNull(duration, "%s must not be null", name);
+        final long millis;
+        try {
+            millis = duration.toMillis();
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    name + " must be convertible to milliseconds without overflow: " + duration,
+                    overflow);
+        }
         Preconditions.checkArgument(
-                duration.toMillis() >= 1,
+                millis >= 1,
                 "%s must be at least 1 millisecond (it is applied at millisecond granularity): %s",
                 name,
                 duration);

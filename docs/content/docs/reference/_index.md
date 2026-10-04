@@ -51,6 +51,15 @@ the thing worth reading, and the table-owned selectors with no builder counterpa
 SPIs an option takes — is in the [Java API reference]({{< api-docs-url >}}), generated from the
 source.
 
+## Duration validation
+
+Duration settings with a one-millisecond minimum reject positive values below it.
+Settings whose SDK gives zero a separate meaning may also accept `Duration.ZERO`.
+An option may have a tighter limit, such as the nanosecond budget bound documented on its setter, and that check may reject the value first with its own diagnostic.
+If validation reaches the one-millisecond check, a millisecond conversion overflow is rejected with an `IllegalArgumentException` naming the option and the input value.
+The conversion's `ArithmeticException` remains its cause.
+Through a Table API option mapper, a setter's `IllegalArgumentException` becomes a `ValidationException` naming the SQL option key.
+
 ## What a default means
 
 Three kinds of entry appear in the Default column, and the difference matters:
