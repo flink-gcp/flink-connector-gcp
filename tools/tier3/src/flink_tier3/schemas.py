@@ -32,7 +32,8 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path.cwd()
+from . import repository
+
 GENERATED = Path("kubernetes/gen/flink")
 CRD_GENERATED = Path("opentofu/tier3-bootstrap/crds")
 CRDS = {
@@ -146,7 +147,9 @@ def main(argv=None):
     )
     parser.add_argument("--cue", default="cue")
     args = parser.parse_args(argv)
-    pin = tomllib.loads((ROOT / "kubernetes/upstream.toml").read_text())["operator"]
+    pin = tomllib.loads((repository.ROOT / "kubernetes/upstream.toml").read_text())[
+        "operator"
+    ]
     if args.chart:
         data = args.chart.read_bytes()
     else:
@@ -168,12 +171,12 @@ def main(argv=None):
         )
         actual = {
             GENERATED / path: data
-            for path, data in generated_files(ROOT / GENERATED).items()
+            for path, data in generated_files(repository.ROOT / GENERATED).items()
         }
         actual.update(
             {
-                path.relative_to(ROOT): path.read_bytes()
-                for path in (ROOT / CRD_GENERATED).glob("*.yaml")
+                path.relative_to(repository.ROOT): path.read_bytes()
+                for path in (repository.ROOT / CRD_GENERATED).glob("*.yaml")
             }
         )
         if args.mode == "check":
@@ -192,9 +195,9 @@ def main(argv=None):
             print("Operator CRD data and validation packages match the pinned chart.")
         else:
             for path in actual.keys() - expected.keys():
-                (ROOT / path).unlink()
+                (repository.ROOT / path).unlink()
             for path, content in expected.items():
-                destination = ROOT / path
+                destination = repository.ROOT / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(content)
             print(

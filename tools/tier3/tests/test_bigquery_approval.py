@@ -1084,7 +1084,7 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
     monkeypatch.setenv("GITHUB_RUN_ID", "456")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
-    monkeypatch.setattr(cli.wf, "external", lambda _path, **kwargs: environment.kube)
+    monkeypatch.setattr(cli, "external", lambda _path, **kwargs: environment.kube)
     monkeypatch.setattr(
         cli.wf,
         "github_run",

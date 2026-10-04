@@ -33,7 +33,7 @@ from flink_tier3 import (
     bigquery_plan,
     pubsub_bundle,
     pubsub_plan,
-    workflow,
+    repository,
 )
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.common import Failure, digest, timestamp, verify_pod
@@ -2184,7 +2184,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
 ):
     root = module.parent
     module.rename(root / "kubernetes")
-    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     bundle = bigquery_plan.prepare(
         run_id="proposal-1312",
@@ -2281,7 +2281,7 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
 
     root = module.parent
     module.rename(root / "kubernetes")
-    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     bundle = pubsub_plan.prepare(
         run_id="proposal-1581",
@@ -2349,7 +2349,7 @@ def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_
 
     root = module.parent
     module.rename(root / "kubernetes")
-    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     pubsub_trial = {
         "version": 3,
@@ -2444,7 +2444,7 @@ def test_pubsub_proposal_from_real_cue(
 ):
     root = module.parent
     module.rename(root / "kubernetes")
-    monkeypatch.setattr(workflow, "ROOT", root)
+    monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     inputs = {
         "run_id": "proposal-1361",

@@ -16,18 +16,14 @@
 import json
 import os
 import subprocess
-import sys
-import time
-from pathlib import Path
 
 import yaml
 
 import flink_tier3 as rt
 
-from . import bootstrap
+from . import repository
 from .bundle import delivered_sources
 
-ROOT = Path.cwd()
 ROOTS = ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
 
 
@@ -87,18 +83,6 @@ def execution(kind, nonce):
     return owner
 
 
-def external(kubeconfig, idle=False):
-    cluster = bootstrap.Cluster(kubeconfig)
-    cluster.authenticate()
-    if idle:
-        cluster.preflight()
-    else:
-        cluster.validate_target()
-    return rt.Kubernetes(
-        cluster.endpoint(), rt.KubernetesTransport(cluster.endpoint(), rt.GoogleToken())
-    )
-
-
 def render(
     run_id,
     nonce,
@@ -136,7 +120,7 @@ def render(
         args.extend(["-t", f"{key}={value}"])
     result = subprocess.run(
         args,
-        cwd=ROOT / "kubernetes",
+        cwd=repository.ROOT / "kubernetes",
         input=json.dumps({"packageSources": delivered_sources()}),
         capture_output=True,
         text=True,
@@ -193,9 +177,9 @@ def snapshot(kube, application=rt.SMOKE):
         raise rt.Failure("Operator must be installed at zero replicas")
     template = operator["spec"]["template"]
     image = template["spec"]["containers"][0]["image"]
-    pinned = yaml.safe_load((ROOT / "opentofu/tier3-operator/values.yaml").read_text())[
-        "image"
-    ]
+    pinned = yaml.safe_load(
+        (repository.ROOT / "opentofu/tier3-operator/values.yaml").read_text()
+    )["image"]
     expected_image = pinned["repository"] + "@" + pinned["digest"]
     if image != expected_image:
         raise rt.Failure("Installed Operator image differs from the reviewed pin")
@@ -228,77 +212,3 @@ def snapshot(kube, application=rt.SMOKE):
 def save(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(rt.json_bytes(data))
-
-
-def plans(args, store):
-    owner = json.loads((args.directory / "owner.json").read_text())
-    rt.EnvironmentLock(store).assert_owner(owner)
-    # This command runs only after re-authentication as opentofu-plan. Its
-    # authority may borrow this exact run lock, never a different holder's.
-    empty = True
-    deadline = time.monotonic() + rt.Schedule.plan_budget_seconds
-    for root in ROOTS:
-        rt.EnvironmentLock(store).assert_owner(owner)
-        if root != "flink-gcp":
-            cluster = bootstrap.Cluster(args.kubeconfig, root.removeprefix("tier3-"))
-            cluster.authenticate()
-            cluster.preflight()
-            if root == "tier3-operator":
-                bootstrap.prepare_operator_chart(cluster.root_path)
-        path = ROOT / "opentofu" / root
-        for arguments in (
-            ["init", "-input=false"],
-            ["plan", "-input=false", "-detailed-exitcode", "-no-color"],
-        ):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise rt.Failure("Shared plan budget exhausted; lock retained")
-            try:
-                result = subprocess.run(
-                    ["tofu", "-chdir=" + str(path), *arguments],
-                    env=bootstrap.provider_environment(args.kubeconfig),
-                    capture_output=True,
-                    text=True,
-                    timeout=remaining,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as error:
-                output = "".join(
-                    value.decode(errors="replace")
-                    if isinstance(value, bytes)
-                    else value
-                    for value in (error.stdout or "", error.stderr or "")
-                )
-                (args.directory / (root + "-" + arguments[0] + ".log")).write_text(
-                    output
-                )
-                print(
-                    output.encode()[-65536:].decode(errors="ignore"),
-                    file=sys.stderr,
-                    flush=True,
-                )
-                raise rt.Failure(
-                    f"{root} {arguments[0]} exhausted the {rt.Schedule.plan_budget_seconds}-second plan budget; lock retained, inspect the output above and retry recovery"
-                ) from None
-            (args.directory / (root + "-" + arguments[0] + ".log")).write_text(
-                result.stdout + result.stderr
-            )
-            if (
-                result.returncode == 2
-                and arguments[0] == "plan"
-                and owner["kind"] in ("plan", "apply")
-            ):
-                empty = False
-            elif result.returncode:
-                raise rt.Failure(
-                    f"{root} {arguments[0]} did not prove an empty plan (exit {result.returncode})"
-                )
-    save(
-        args.directory / "plans.json",
-        {
-            "nonce": owner["nonce"],
-            "roots": ROOTS,
-            "empty": empty,
-            "at": rt.utc(time.time()),
-        },
-    )

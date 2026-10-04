@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from flink_tier3 import cloudtasks as ct
 from flink_tier3 import lifecycle as cli
+from flink_tier3 import repository
 from test_tier3_lifecycle import (
     claim_as_supervisor,
     obj,
@@ -1558,9 +1559,9 @@ def cli_session(env, monkeypatch, tmp_path, expires_in, complete_job=True):
     uuids = iter([cli.uuid.UUID(env[2]["nonce"])])
     monkeypatch.setattr(cli.uuid, "uuid4", lambda: next(uuids, None) or new_uuid())
     monkeypatch.setattr(cli.time, "time", env[3])
-    monkeypatch.setattr(cli, "ROOT", ROOT)
+    monkeypatch.setattr(repository, "ROOT", ROOT)
     monkeypatch.setattr(cli.wf, "execution", lambda _kind, _nonce: owner)
-    monkeypatch.setattr(cli.wf, "external", lambda _path, **kwargs: env[0])
+    monkeypatch.setattr(cli, "external", lambda _path, **kwargs: env[0])
     monkeypatch.setattr(
         cli.bootstrap,
         "Cluster",

@@ -14,6 +14,7 @@
 # limitations under the License.
 """Exercise the built artifact and installed command outside the checkout."""
 
+import ast
 import json
 import os
 import subprocess
@@ -112,17 +113,78 @@ print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
     assert payload["pods"] == 5
 
 
+def rooted_modules():
+    """The package modules that bind the name `ROOT`, or a working directory at import.
+
+    Every binding counts, however nested: a tuple or walrus target, a `global`
+    declaration, or one under a module-level `try`. Importing `ROOT` by name,
+    or everything from `repository`, is refused, because it binds the value at
+    import time, before the CLI points `repository.ROOT` at a checkout; and so
+    is a module-level `Path.cwd()` anywhere but `repository`, the same hazard
+    under another name.
+    """
+
+    def names(target):
+        if isinstance(target, ast.Name):
+            yield target.id
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                yield from names(element)
+
+    def at_import(tree):
+        """Nodes evaluated when the module is imported, not inside a function."""
+        pending = list(tree.body)
+        while pending:
+            node = pending.pop()
+            yield node
+            if not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+            ):
+                pending.extend(ast.iter_child_nodes(node))
+
+    rooted = []
+    for name, source in package_sources().items():
+        if not name.endswith(".py"):
+            continue
+        module = name.removesuffix(".py")
+        tree = ast.parse(source)
+        bound = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                bound |= any("ROOT" in names(t) for t in node.targets)
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+                bound |= "ROOT" in names(node.target)
+            elif isinstance(node, ast.Global):
+                bound |= "ROOT" in node.names
+            elif isinstance(node, ast.ImportFrom):
+                assert all(alias.name not in ("ROOT", "*") for alias in node.names), (
+                    name
+                )
+        if module != "repository":
+            for node in at_import(tree):
+                assert not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "cwd"
+                ), f"{name} reads the working directory at import"
+        if bound:
+            rooted.append(module)
+    return sorted(rooted)
+
+
 def test_repository_argument_routes_bootstrap_without_changing_relative_paths(
     monkeypatch, tmp_path
 ):
-    from flink_tier3 import bootstrap, cli, lifecycle, schemas, workflow
+    from flink_tier3 import bootstrap, cli, repository
 
     checkout = tmp_path / "checkout"
     (checkout / "kubernetes/cue.mod").mkdir(parents=True)
     (checkout / "kubernetes/cue.mod/module.cue").touch()
     (checkout / "opentofu").mkdir()
-    for module in (bootstrap, lifecycle, schemas, workflow):
-        monkeypatch.setattr(module, "ROOT", module.ROOT)
+    # One module keeps the repository root, found in the source: a second
+    # copy elsewhere would resolve its paths from the working directory.
+    assert rooted_modules() == ["repository"]
+    monkeypatch.setattr(repository, "ROOT", Path("/nowhere"))
     monkeypatch.chdir(tmp_path)
     seen = []
 
@@ -144,6 +206,7 @@ def test_repository_argument_routes_bootstrap_without_changing_relative_paths(
         == 0
     )
     assert seen == [(checkout / "opentofu/tier3-bootstrap", tmp_path / "config")]
+    assert repository.ROOT == checkout
 
 
 def test_repository_rejected_before_cloud_access(monkeypatch, tmp_path, capsys):
@@ -245,3 +308,20 @@ def test_delivery_follows_the_declared_command_dispatch(tmp_path):
     manifest = (ROOT / "kubernetes/lifecycle/delivery.cue").read_text()
     for command in bundle.POD_COMMANDS:
         assert f'"flink_tier3", "{command}"' in manifest
+
+
+# Modules only the checkout commands use: cluster authentication and root
+# plans, the lifecycle commands and the schema generator.
+CHECKOUT_ONLY = {"bootstrap", "lifecycle", "schemas"}
+
+
+def test_modules_only_the_checkout_commands_use_stay_out_of_the_delivery():
+    """The Pod runs none of the checkout commands."""
+    delivered = delivered_sources()
+    importers = {
+        name: sorted(CHECKOUT_ONLY & set(bundle._imported(source)))
+        for name, source in delivered.items()
+        if name.endswith(".py")
+    }
+    assert {name: found for name, found in importers.items() if found} == {}
+    assert {name + ".py" for name in CHECKOUT_ONLY}.isdisjoint(delivered)

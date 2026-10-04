@@ -24,6 +24,8 @@ import json
 import math
 import os
 import signal
+import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -37,6 +39,7 @@ from . import (
     bootstrap,
     pubsub_bundle,
     pubsub_plan,
+    repository,
 )
 from . import runner as runner_api
 from . import workflow as wf
@@ -54,7 +57,6 @@ from .policy import (
     RECOVERY,
 )
 
-ROOT = Path.cwd()
 APPROVAL = "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES"
 CLOUDTASKS_APPROVAL = (
     "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES"
@@ -169,7 +171,7 @@ def pubsub_inputs(args):
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure("Pub/Sub trials need a sha256 --application-digest")
     trial = pubsub_plan.load_reviewed_trial(
-        ROOT / PUBSUB_TRIALS / (args.pubsub_trial + ".toml")
+        repository.ROOT / PUBSUB_TRIALS / (args.pubsub_trial + ".toml")
     )
     return trial, rt.GAR + "pubsub-recovery@" + args.application_digest
 
@@ -234,7 +236,7 @@ def start_pubsub(args, store):
     )
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args)
-    kube = wf.external(args.kubeconfig, idle=True)
+    kube = external(args.kubeconfig, idle=True)
     cluster = bootstrap.Cluster(args.kubeconfig)
     cluster.can_i(True, "create", "flink.apache.org", "flinkdeployments", PUBSUB)
     # Admission creates the workload access probe Pod in the namespace.
@@ -301,7 +303,7 @@ def session_inputs(args):
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure("Cloud Tasks sessions need a sha256 --application-digest")
     session = load_session(
-        ROOT / "kubernetes/lifecycle/sessions" / (args.session + ".toml")
+        repository.ROOT / "kubernetes/lifecycle/sessions" / (args.session + ".toml")
     )
     image = rt.GAR + FLINK_LINES[args.flink_version][0] + "@" + args.application_digest
     return session, args.flink_version, image
@@ -353,7 +355,7 @@ def start_bigquery(args, store):
     )
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args)
-    kube = wf.external(args.kubeconfig, idle=True)
+    kube = external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", BIGQUERY
     )
@@ -486,7 +488,7 @@ def start(args, store):
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args)
     namespace = rt.CLOUDTASKS if cloudtasks else rt.SMOKE
-    kube = wf.external(args.kubeconfig, idle=True)
+    kube = external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", namespace
     )
@@ -707,7 +709,7 @@ def recover(args, store):
     approval = None
     if owner["kind"] == "run":
         approval, _ = store.read(f"runs/{owner['run_id']}/approval.json")
-    kube = wf.external(args.kubeconfig, idle=approval is None)
+    kube = external(args.kubeconfig, idle=approval is None)
     if approval:
         if approval["lock_owner"] != owner:
             raise rt.Failure("Immutable approval does not match lock holder")
@@ -743,7 +745,7 @@ def finish(args, store):
     success = True
     if approval_path.exists():
         approval = json.loads(approval_path.read_text())
-        runner = runner_for(approval, wf.external(args.kubeconfig), store)
+        runner = runner_for(approval, external(args.kubeconfig), store)
         runner.env.records.evidence(
             "empty-plans",
             {
@@ -763,7 +765,7 @@ def finish(args, store):
             or (owner["kind"] == "run" and not plans_receipt.get("empty"))
         ):
             raise rt.Failure("Missing idle infrastructure proof")
-        wf.external(args.kubeconfig, idle=True)
+        external(args.kubeconfig, idle=True)
         if owner["kind"] in ("plan", "apply"):
             store.write(
                 f"runs/infrastructure-{owner['github_run_id']}-{os.environ['GITHUB_RUN_ID']}/recovery.json",
@@ -800,6 +802,94 @@ def lock(args, store):
         actual, _ = store.read(rt.ENVIRONMENT)
         if actual == owner:
             rt.EnvironmentLock(store).release(owner)
+
+
+# Only the checkout commands authenticate to the cluster or plan the roots, so
+# these stay out of every module the supervisor's delivery reaches.
+def external(kubeconfig, idle=False):
+    cluster = bootstrap.Cluster(kubeconfig)
+    cluster.authenticate()
+    if idle:
+        cluster.preflight()
+    else:
+        cluster.validate_target()
+    return rt.Kubernetes(
+        cluster.endpoint(), rt.KubernetesTransport(cluster.endpoint(), rt.GoogleToken())
+    )
+
+
+def plans(args, store):
+    owner = json.loads((args.directory / "owner.json").read_text())
+    rt.EnvironmentLock(store).assert_owner(owner)
+    # This command runs only after re-authentication as opentofu-plan. Its
+    # authority may borrow this exact run lock, never a different holder's.
+    empty = True
+    deadline = time.monotonic() + rt.Schedule.plan_budget_seconds
+    for root in wf.ROOTS:
+        rt.EnvironmentLock(store).assert_owner(owner)
+        if root != "flink-gcp":
+            cluster = bootstrap.Cluster(args.kubeconfig, root.removeprefix("tier3-"))
+            cluster.authenticate()
+            cluster.preflight()
+            if root == "tier3-operator":
+                bootstrap.prepare_operator_chart(cluster.root_path)
+        path = repository.ROOT / "opentofu" / root
+        for arguments in (
+            ["init", "-input=false"],
+            ["plan", "-input=false", "-detailed-exitcode", "-no-color"],
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise rt.Failure("Shared plan budget exhausted; lock retained")
+            try:
+                result = subprocess.run(
+                    ["tofu", "-chdir=" + str(path), *arguments],
+                    env=bootstrap.provider_environment(args.kubeconfig),
+                    capture_output=True,
+                    text=True,
+                    timeout=remaining,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                output = "".join(
+                    value.decode(errors="replace")
+                    if isinstance(value, bytes)
+                    else value
+                    for value in (error.stdout or "", error.stderr or "")
+                )
+                (args.directory / (root + "-" + arguments[0] + ".log")).write_text(
+                    output
+                )
+                print(
+                    output.encode()[-65536:].decode(errors="ignore"),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise rt.Failure(
+                    f"{root} {arguments[0]} exhausted the {rt.Schedule.plan_budget_seconds}-second plan budget; lock retained, inspect the output above and retry recovery"
+                ) from None
+            (args.directory / (root + "-" + arguments[0] + ".log")).write_text(
+                result.stdout + result.stderr
+            )
+            if (
+                result.returncode == 2
+                and arguments[0] == "plan"
+                and owner["kind"] in ("plan", "apply")
+            ):
+                empty = False
+            elif result.returncode:
+                raise rt.Failure(
+                    f"{root} {arguments[0]} did not prove an empty plan (exit {result.returncode})"
+                )
+    wf.save(
+        args.directory / "plans.json",
+        {
+            "nonce": owner["nonce"],
+            "roots": wf.ROOTS,
+            "empty": empty,
+            "at": rt.utc(time.time()),
+        },
+    )
 
 
 def main(argv=None):
@@ -876,7 +966,7 @@ def main(argv=None):
     {
         "start": start,
         "recover": recover,
-        "plans": wf.plans,
+        "plans": plans,
         "finish": finish,
         "lock": lock,
     }[args.command](args, store)

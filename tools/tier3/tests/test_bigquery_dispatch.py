@@ -65,7 +65,7 @@ def dispatching(monkeypatch):
         touched.append(("external", kubeconfig, idle))
         raise AssertionError("dispatch reached the cluster")
 
-    monkeypatch.setattr(cli.wf, "external", external)
+    monkeypatch.setattr(cli, "external", external)
     return touched
 
 
@@ -193,7 +193,7 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch):
     kube, store, reference, _ = env
     monkeypatch.setattr(plan, "source_digest", source_digest)
     monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
-    monkeypatch.setattr(cli.wf, "external", lambda kubeconfig, idle=False: kube)
+    monkeypatch.setattr(cli, "external", lambda kubeconfig, idle=False: kube)
     monkeypatch.setattr(
         cli.bootstrap,
         "Cluster",

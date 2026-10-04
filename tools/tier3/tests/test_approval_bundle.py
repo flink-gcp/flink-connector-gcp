@@ -17,7 +17,7 @@
 import subprocess
 
 import pytest
-from flink_tier3 import approval_bundle
+from flink_tier3 import approval_bundle, repository
 from flink_tier3.common import Failure
 
 
@@ -66,12 +66,12 @@ def test_approved_checkout_and_cue_inputs_are_required(tmp_path, monkeypatch, ch
         "Fixture",
     )
     revision = git("rev-parse", "HEAD")
-    monkeypatch.setattr(approval_bundle.workflow, "ROOT", tmp_path)
+    monkeypatch.setattr(repository, "ROOT", tmp_path)
     if change == "environment":
         monkeypatch.setenv("GIT_DIR", str(tmp_path / ".git"))
         monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
         monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / ".git/index"))
-        monkeypatch.setattr(approval_bundle.workflow, "ROOT", tmp_path.parent)
+        monkeypatch.setattr(repository, "ROOT", tmp_path.parent)
     if change == "revision":
         revision = "0" * 40
     elif change == "tracked":

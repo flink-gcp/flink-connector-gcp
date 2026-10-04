@@ -50,6 +50,7 @@ limitations under the License.
 - Updated: 2026-10-03 (Pub/Sub runner admission, effective-access probes and supervisor participation)
 - Updated: 2026-10-03 (Pub/Sub cohorts the supervisor requests and the runner publishes, and output collection)
 - Updated: 2026-10-04 (supervised Pub/Sub recovery exercise and 120-second application checkpoints)
+- Updated: 2026-10-04 (checkout-only modules kept out of the delivered package)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -922,6 +923,11 @@ Because the delivered set is closed under imports, the runner computes the deliv
 A module nothing delivered imports is neither delivered nor pinned by the delivery digest, and becomes both as soon as a delivered module imports it; `runtime_sha256` covers it either way.
 Follow a delivered module to the package data it names by literal: a delivery whose data stayed behind is the one incompleteness both sides would compute the same delivery digest over, so no comparison would catch it.
 Declined: per-scenario delivery sets, which the measurement showed are not needed to clear the ceiling and would make the delivered set vary by scenario.
+Refined under [#1628](https://github.com/flink-gcp/flink-connector-gcp/issues/1628): two imports carried modules only the checkout commands use into every delivery, and the 32-cell Cloud Tasks ConfigMap data measured 774,052 bytes against its 786,432-byte bound.
+The CLI, a walk entrypoint, imported the four modules whose repository roots it set from `--repository`, which delivered `lifecycle` and `schemas`; and `workflow`, which `bigquery_plan` and `pubsub_plan` import for rendering, imported `bootstrap` for the cluster client and the root plans, which only the lifecycle commands call.
+The repository root now lives once, in `repository`, which the CLI sets and every reader consults when it uses it, and the cluster client and the root plans moved to `lifecycle`, their only caller, so `bootstrap` again imports no other module of the package but `repository`.
+The delivered source falls from 666,817 to 594,782 bytes and the same ConfigMap data to 702,017 bytes.
+Tests require that no delivered module imports `bootstrap`, `lifecycle` or `schemas`, that `repository` is the only module binding the name `ROOT` or reading the working directory at import and nothing imports the name, which would bind the working directory before the CLI sets it, and that every lifecycle command still reaches its handler.
 
 ### BigQuery authenticated actor construction
 
