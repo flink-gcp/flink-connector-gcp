@@ -17,7 +17,9 @@
 package io.github.flink.gcp.connector.cloudtasks.table;
 
 import org.apache.flink.api.common.serialization.SerializationSchema;
+import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
@@ -44,6 +46,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -126,6 +129,12 @@ class CloudTasksStagedTableTest {
         assertThat(table.copy()).isEqualTo(table);
         var sink = runtime(table.copy());
         var restored = InstantiationUtil.clone(sink);
+        for (var candidate : List.of(sink, restored)) {
+            assertThat(candidate)
+                    .isInstanceOf(SupportsCommitter.class)
+                    .isInstanceOf(SupportsPreCommitTopology.class);
+            assertThat(candidate.getCommittableSerializer()).isNotNull();
+        }
         var expected =
                 CloudTasksStagedOptions.builder()
                         .nameRetention(Duration.ofHours(2))

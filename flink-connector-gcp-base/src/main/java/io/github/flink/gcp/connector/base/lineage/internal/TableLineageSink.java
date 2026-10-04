@@ -49,7 +49,7 @@ public final class TableLineageSink<T> implements CrossVersionSink<T>, LineageVe
     private static final long serialVersionUID = 1L;
 
     private final Sink<T> delegate;
-    private final String logicalName;
+    private final LineageMetadata lineage;
     private final String namespace;
     private final List<ResourceIdentifier> resources;
 
@@ -66,7 +66,7 @@ public final class TableLineageSink<T> implements CrossVersionSink<T>, LineageVe
                 "%s keeps writer state, commits or changes the pre-write topology, which %s would not forward",
                 delegate.getClass().getName(),
                 TableLineageSink.class.getSimpleName());
-        this.logicalName = logicalName;
+        this.lineage = LineageMetadata.of(logicalName);
         this.namespace = namespace;
         this.resources = List.copyOf(resources);
     }
@@ -103,7 +103,7 @@ public final class TableLineageSink<T> implements CrossVersionSink<T>, LineageVe
 
     @Override
     public LineageVertex getLineageVertex() {
-        return Lineage.tableSink(logicalName, namespace, resources);
+        return lineage.sink(namespace, resources);
     }
 
     @Override

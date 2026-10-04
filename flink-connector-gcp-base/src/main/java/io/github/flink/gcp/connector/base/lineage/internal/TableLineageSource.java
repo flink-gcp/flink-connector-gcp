@@ -54,7 +54,7 @@ public final class TableLineageSource<T, S extends SourceSplit, E>
 
     private final Source<T, S, E> delegate;
     private final TypeInformation<T> type;
-    private final String logicalName;
+    private final LineageMetadata lineage;
     private final String namespace;
     private final List<ResourceIdentifier> resources;
 
@@ -66,7 +66,7 @@ public final class TableLineageSource<T, S extends SourceSplit, E>
             List<ResourceIdentifier> resources) {
         this.delegate = delegate;
         this.type = type;
-        this.logicalName = logicalName;
+        this.lineage = LineageMetadata.of(logicalName);
         this.namespace = namespace;
         this.resources = List.copyOf(resources);
     }
@@ -105,7 +105,7 @@ public final class TableLineageSource<T, S extends SourceSplit, E>
 
     @Override
     public SourceLineageVertex getLineageVertex() {
-        return Lineage.tableSource(logicalName, namespace, getBoundedness(), resources);
+        return lineage.source(getBoundedness(), namespace, resources);
     }
 
     @Override

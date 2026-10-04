@@ -29,6 +29,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -55,7 +56,7 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
     private static final long serialVersionUID = 1L;
 
     private final BigtableSinkConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
     @Nullable private final TableDestination initialDestination;
     @Nullable private final TableCreateOptions expectedFamilies;
 
@@ -90,7 +91,7 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
         this.config = config;
         this.initialDestination = initialDestination;
         this.expectedFamilies = expectedFamilies;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /** Returns a copy retaining the writer configuration and startup family validation. */
@@ -104,7 +105,7 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
 
     @Override
     public LineageVertex getLineageVertex() {
-        return BigtableLineage.sink(config.getDestinationResolver(), lineageTableName);
+        return BigtableLineage.sink(config.getDestinationResolver(), lineage);
     }
 
     /** Returns the sink configuration. */

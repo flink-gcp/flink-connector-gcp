@@ -34,6 +34,7 @@ import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
@@ -70,7 +71,7 @@ public final class BigtableScanSource<T>
     private static final long serialVersionUID = 1L;
 
     private final BigtableSourceConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
 
     /**
      * Creates the source.
@@ -83,7 +84,7 @@ public final class BigtableScanSource<T>
 
     private BigtableScanSource(BigtableSourceConfig<T> config, @Nullable String lineageTableName) {
         this.config = Objects.requireNonNull(config, "config");
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /** Returns a copy carrying the logical Table identity with the same source configuration. */
@@ -94,7 +95,7 @@ public final class BigtableScanSource<T>
 
     @Override
     public SourceLineageVertex getLineageVertex() {
-        return BigtableLineage.source(config.getTable(), getBoundedness(), lineageTableName);
+        return BigtableLineage.source(config.getTable(), getBoundedness(), lineage);
     }
 
     /** Returns the configuration, for the source's own tests. */

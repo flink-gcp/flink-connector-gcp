@@ -39,8 +39,8 @@ import org.apache.flink.util.UserCodeClassLoader;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
@@ -90,7 +90,7 @@ public class PubSubStreamingPullSource<T>
     private static final Logger LOG = LoggerFactory.getLogger(PubSubStreamingPullSource.class);
 
     private final PubSubSourceConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
 
     /**
      * Creates the source; called by {@link
@@ -105,7 +105,7 @@ public class PubSubStreamingPullSource<T>
     private PubSubStreamingPullSource(
             PubSubSourceConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /**
@@ -126,9 +126,7 @@ public class PubSubStreamingPullSource<T>
                                                 subscription.getProject(),
                                                 subscription.getSubscription()))
                         .collect(Collectors.toList());
-        return lineageTableName == null
-                ? Lineage.source(getBoundedness(), resources)
-                : Lineage.tableSource(lineageTableName, "pubsub", getBoundedness(), resources);
+        return lineage.source(getBoundedness(), "pubsub", resources);
     }
 
     /** Returns the source configuration. */

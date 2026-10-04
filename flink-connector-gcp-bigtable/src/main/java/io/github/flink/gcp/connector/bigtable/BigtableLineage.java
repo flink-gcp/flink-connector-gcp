@@ -22,12 +22,10 @@ import org.apache.flink.streaming.api.lineage.LineageVertex;
 import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
-
-import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -38,27 +36,19 @@ public final class BigtableLineage {
 
     /** Reports the configured table with the source's actual boundedness. */
     public static SourceLineageVertex source(
-            TableDestination table, Boundedness boundedness, @Nullable String logicalName) {
+            TableDestination table, Boundedness boundedness, LineageMetadata lineage) {
         ResourceIdentifier resource = resource(table);
-        return logicalName == null
-                ? Lineage.source(boundedness, List.of(resource))
-                : Lineage.tableSource(
-                        logicalName, resource.namespace(), boundedness, List.of(resource));
+        return lineage.source(boundedness, resource.namespace(), List.of(resource));
     }
 
     /** Inspects a fixed resolver without evaluating a destination against a record. */
-    public static LineageVertex sink(
-            DestinationResolver<?> resolver, @Nullable String logicalName) {
+    public static LineageVertex sink(DestinationResolver<?> resolver, LineageMetadata lineage) {
         List<ResourceIdentifier> resources =
                 resolver instanceof FixedDestinationResolver
                         ? List.of(resource(((FixedDestinationResolver) resolver).getDestination()))
                         : List.of();
-        return logicalName == null
-                ? Lineage.sink(resources)
-                : Lineage.tableSink(
-                        logicalName,
-                        resources.isEmpty() ? "bigtable" : resources.get(0).namespace(),
-                        resources);
+        return lineage.sink(
+                resources.isEmpty() ? "bigtable" : resources.get(0).namespace(), resources);
     }
 
     private static ResourceIdentifier resource(TableDestination table) {

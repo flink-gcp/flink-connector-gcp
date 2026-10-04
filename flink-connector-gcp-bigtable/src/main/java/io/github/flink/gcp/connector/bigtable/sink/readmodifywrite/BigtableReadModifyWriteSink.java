@@ -24,6 +24,7 @@ import org.apache.flink.streaming.api.lineage.LineageVertex;
 import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
@@ -53,7 +54,7 @@ public final class BigtableReadModifyWriteSink<T>
         implements CrossVersionSink<T>, LineageVertexProvider {
     private static final long serialVersionUID = 1L;
     private final SingleRowRequestConfig<T> config;
-    @Nullable private final String lineageTableName;
+    private final LineageMetadata lineage;
 
     BigtableReadModifyWriteSink(
             ReadModifyWriteConfig<T> config, FailureHandler<? super FailedRequest> handler) {
@@ -72,7 +73,7 @@ public final class BigtableReadModifyWriteSink<T>
     private BigtableReadModifyWriteSink(
             SingleRowRequestConfig<T> config, @Nullable String lineageTableName) {
         this.config = config;
-        this.lineageTableName = lineageTableName;
+        this.lineage = LineageMetadata.of(lineageTableName);
     }
 
     /** Returns a copy carrying the logical Table identity with the same request configuration. */
@@ -84,7 +85,7 @@ public final class BigtableReadModifyWriteSink<T>
 
     @Override
     public LineageVertex getLineageVertex() {
-        return BigtableLineage.sink(config.getDestinationResolver(), lineageTableName);
+        return BigtableLineage.sink(config.getDestinationResolver(), lineage);
     }
 
     /**

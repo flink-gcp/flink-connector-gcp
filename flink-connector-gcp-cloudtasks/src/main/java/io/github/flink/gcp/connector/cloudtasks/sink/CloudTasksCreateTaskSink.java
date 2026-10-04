@@ -28,8 +28,8 @@ import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
-import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
@@ -52,7 +52,7 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T>, Lineage
     private static final long serialVersionUID = 1L;
 
     private final CloudTasksSinkConfig<T> config;
-    @Nullable private final String logicalTableName;
+    private final LineageMetadata lineage;
 
     /**
      * Creates the sink; called by {@link CloudTasksSinkBuilder}.
@@ -72,7 +72,7 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T>, Lineage
     public CloudTasksCreateTaskSink(
             CloudTasksSinkConfig<T> config, @Nullable String logicalTableName) {
         this.config = config;
-        this.logicalTableName = logicalTableName;
+        this.lineage = LineageMetadata.of(logicalTableName);
     }
 
     @Override
@@ -86,12 +86,8 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T>, Lineage
                             LineageIdentifiers.cloudTasksQueue(
                                     queue.getProject(), queue.getLocation(), queue.getQueue()));
         }
-        return logicalTableName == null
-                ? Lineage.sink(resources)
-                : Lineage.tableSink(
-                        logicalTableName,
-                        resources.isEmpty() ? "cloudtasks" : resources.get(0).namespace(),
-                        resources);
+        return lineage.sink(
+                resources.isEmpty() ? "cloudtasks" : resources.get(0).namespace(), resources);
     }
 
     /** Returns the sink configuration. */

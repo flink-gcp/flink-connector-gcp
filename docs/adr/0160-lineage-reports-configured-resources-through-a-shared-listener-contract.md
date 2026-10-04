@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0160: Lineage reports configured resources through a shared listener contract
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27; source 2026-09-30; Datastore-mode source 2026-10-03; Table sink and scan 2026-10-04); Table adapters moved to base by [#1635](https://github.com/flink-gcp/flink-connector-gcp/issues/1635) (2026-10-04)
-- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541), [#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543), [#1635](https://github.com/flink-gcp/flink-connector-gcp/issues/1635)
+- Date: 2026-09-06; revised by [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271) (2026-09-06); Spanner adoption (2026-09-06); BigQuery, Cloud Tasks and Bigtable adoptions (2026-09-07); Firestore adoption (2026-09-27; source 2026-09-30; Datastore-mode source 2026-10-03; Table sink and scan 2026-10-04); Table adapters moved to base by [#1635](https://github.com/flink-gcp/flink-connector-gcp/issues/1635) (2026-10-04); runtime metadata shared by [#1660](https://github.com/flink-gcp/flink-connector-gcp/issues/1660) (2026-10-04)
+- Issues: [#1269](https://github.com/flink-gcp/flink-connector-gcp/issues/1269), [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274), [#354](https://github.com/flink-gcp/flink-connector-gcp/issues/354), [#1270](https://github.com/flink-gcp/flink-connector-gcp/issues/1270), [#1271](https://github.com/flink-gcp/flink-connector-gcp/issues/1271), [#1272](https://github.com/flink-gcp/flink-connector-gcp/issues/1272), [#1273](https://github.com/flink-gcp/flink-connector-gcp/issues/1273), [#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541), [#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543), [#1635](https://github.com/flink-gcp/flink-connector-gcp/issues/1635), [#1660](https://github.com/flink-gcp/flink-connector-gcp/issues/1660)
 - Modules: base, test-utils, bigquery, pubsub, cloudtasks, bigtable, spanner, firestore, all SQL connector artifacts
 - Partially supersedes: ADR-0015's relocation rule for two listener-facing classes; ADR-0050's absence of compatibility source roots in test-utils
 - Current behavior: [Lineage](../content/docs/connectors/lineage.md)
@@ -110,7 +110,7 @@ It therefore refuses a delegate implementing `SupportsWriterState`, `SupportsCom
 The `@Experimental` pre-write marker is used only to reject such a delegate, not to implement a topology.
 The marker has the same interface in Flink 1.20.4 and 2.2.1; if it moves, the rejection check must follow the supported Flink API before admitting delegates.
 Spanner and Firestore wrap their Table runtimes this way.
-BigQuery, Bigtable, Pub/Sub and Cloud Tasks instead thread the logical name into their own runtime objects and call `Lineage.tableSource` or `tableSink` there.
+BigQuery, Bigtable, Pub/Sub and Cloud Tasks instead keep `LineageMetadata` in their own runtime objects, retaining their existing Source/Sink interfaces and execution capabilities.
 
 The sink adapter is why base has per-major production source roots.
 Flink 1.20 declares the deprecated `createWriter(Sink.InitContext)` abstract, and Flink 2.x removed that type, so one shared-source class cannot implement `Sink` on both lines.
@@ -120,6 +120,40 @@ The root POM already adds those roots to every module, so the build needed no ch
 Two alternatives were declined.
 Keeping the sink adapter in each connector module and moving only the source adapter would have left a copy per module, and the Datastore-mode Table API ([#1545](https://github.com/flink-gcp/flink-connector-gcp/issues/1545)) would have added another.
 Making the base seam public for connector sinks to share is a separate consolidation that this change does not need.
+
+### Runtime metadata selection
+
+The follow-up [#1660](https://github.com/flink-gcp/flink-connector-gcp/issues/1660) shares the logical-name storage and DataStream/Table selection left in the concrete runtimes after the Table adapters moved to base.
+The inventory before this refinement was:
+
+| Consumer | Runtime objects storing a nullable logical name | Selection sites |
+| --- | --- | --- |
+| Pub/Sub | StreamingPull source and publisher sink (2) | Each runtime (2) |
+| Cloud Tasks | Eager and staged CreateTask sinks (2) | Each runtime (2) |
+| Bigtable | Scan and Change Streams sources; MutateRows, conditional, read-modify-write and staged sinks (6) | `BigtableLineage.source` and `sink` (2) |
+| BigQuery | Storage Read source; default-stream, buffered-stream and FILE_LOADS sinks (4) | Each runtime (4) |
+| Base Table adapters | Source and sink adapters (2, always logical) | Table assembly only |
+
+`base.lineage.internal.LineageMetadata` is one immutable, serializable, `@Internal` value holding the optional logical name.
+Its `source` and `sink` methods select the corresponding existing `Lineage` helper, replacing the ten selection sites with two methods.
+The fourteen connector runtimes and both Table adapters retain this value, sharing the logical-name representation across both integration styles.
+The existing constructors and Table-copy entry points still accept their current arguments; public builders gain no option.
+
+Each inspection supplies the connector's namespace and resource identifiers, and a source supplies its actual boundedness.
+`BigtableLineage` still constructs Bigtable identities and inspects fixed resolvers; the other connectors retain their existing identity construction too.
+Unknown Bigtable and Cloud Tasks destinations retain their existing Table namespace fallback, while unknown DataStream resources still produce no dataset.
+The shared value stores no resource list, vertex, resolver or client, so identity discovery, deferred resolution and record routing remain in their current layers.
+Vertices continue to be assembled on inspection by `Lineage`, with its ordering and immutable physical-resource facets.
+
+The concrete runtimes continue to expose their existing writer state, committers and topology interfaces directly to Flink.
+The base adapters retain their delegation contracts, including produced types, boundedness and Flink 2.x generalized watermark declarations.
+`LineageMetadataTest` checks both selections and boundedness before and after serialization, unknown resources, ordering, duplicate removal, per-inspection namespaces and resource snapshots.
+Connector lineage tests retain factory, graph and serialization coverage; capability assertions cover BigQuery buffered-stream and FILE_LOADS sinks and staged Cloud Tasks and Bigtable sinks.
+
+A static selection helper was declined because it would leave the nullable logical-name representation in each runtime and outside the shared Table adapters.
+A Source/Sink hierarchy would couple metadata to unrelated execution capabilities, while the two-method value requires no runtime inheritance or delegation.
+Wrapping all sinks in the writer-only Table adapter was declined because it refuses stateful, committing and pre-write-topology delegates.
+Moving resource construction or namespaces into the value was declined because those identities and unknown-resource fallbacks belong to each connector.
 
 ### Dependencies and packaging
 
@@ -165,7 +199,7 @@ The required clean reactor, 1.20, binary compatibility and packaging measurement
 
 [#1274](https://github.com/flink-gcp/flink-connector-gcp/issues/1274) adopts the shared contract in `CloudTasksCreateTaskSink`.
 The effective `FixedDestinationResolver` supplies the queue through its accessor; extraction never evaluates a user resolver.
-The Table factory carries its catalog identifier through `CloudTasksDynamicSink` into the runtime sink, which uses `Lineage.tableSink` with the queue's namespace and complete physical-resource facet.
+The Table factory carries its catalog identifier through `CloudTasksDynamicSink` into the runtime sink's `LineageMetadata`, which selects `Lineage.tableSink` with the queue's namespace and complete physical-resource facet.
 The internal sink stores only the optional logical name alongside its existing serializable configuration and constructs the vertex on demand.
 No builder option or manual dataset declaration API is added.
 
@@ -183,7 +217,7 @@ The same identity covers default-stream CDC, buffered streams and FILE_LOADS.
 BigQuery resource components retain their configured syntax, including project qualification and table decorators; no metadata lookup or new identifier parser is introduced.
 
 The SQL factory carries its catalog identifier through the Dynamic Source/Sink's copy and identity methods.
-The runtime Source/Sink has an optional immutable logical name and constructs its vertex on demand using `Lineage.tableSource` or `tableSink`.
+The runtime Source/Sink holds its optional logical name in `LineageMetadata`, which selects `Lineage.tableSource` or `tableSink` on inspection.
 The internal `BigQueryLineageSink` handoff returns the same concrete sink class, preserving writer-state, committer and pre-commit topology interfaces.
 It is not a public builder setting or a manual physical-dataset declaration API.
 SQL query sources retain a logical dataset with an empty physical-resource list.
@@ -213,7 +247,7 @@ The source reports subscriptions without consulting creation settings or discove
 The source builder continues to reject repeated subscriptions: metadata deduplication does not relax that assignment contract.
 
 The Table factory supplies its catalog identifier, and internal Source/Sink copies keep that logical name alongside the same runtime configuration.
-Their `Lineage.tableSource` and `tableSink` calls retain all physical identifiers in one facet.
+Their shared `LineageMetadata` selects `Lineage.tableSource` and `tableSink`, retaining all physical identifiers in one facet.
 The ordering-key runtime provider implements both `DataStreamSinkProvider` and `SinkV2Provider`.
 On Flink 2.2.1 and 2.3.0, the planner obtains metadata through `createSink()` and prioritizes `consumeDataStream(...)` when building the routed topology.
 The same sink object serves both paths; parallelism one still omits the keyed exchange.
