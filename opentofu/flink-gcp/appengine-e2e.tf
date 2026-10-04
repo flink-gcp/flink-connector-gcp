@@ -88,6 +88,16 @@ resource "google_service_account_iam_member" "appengine_e2e_deployer" {
   member             = google_service_account.opentofu.member
 }
 
+# App Engine's build also requires actAs on the project default identity,
+# even though this version runs as appengine_e2e_runtime (#1654).
+resource "google_service_account_iam_member" "appengine_e2e_build_deployer" {
+  service_account_id = "projects/${local.project_id}/serviceAccounts/${local.project_id}@appspot.gserviceaccount.com"
+  role               = "roles/iam.serviceAccountUser"
+  member             = google_service_account.opentofu.member
+
+  depends_on = [google_app_engine_application.e2e]
+}
+
 # Apply persistent version changes through the merge workflow from the reviewed
 # plan. A local state-changing apply after CI plans the change would invalidate
 # that saved plan and require a follow-up root-module pull request.
@@ -99,8 +109,9 @@ resource "google_service_account_iam_member" "appengine_e2e_deployer" {
 # the licence header across the repository (#754) produced a plan updating this
 # version and nothing else.
 #
-# **sha1_sum is write-only.** The provider never reads it back from the Admin
-# API, so state is whatever the last apply *recorded*, not what is running.
+# **deployment.files is write-only.** The provider never reads source_url or
+# sha1_sum back from the Admin API, so state is whatever the last apply
+# *recorded*, not what is running.
 # Measured: with the version serving one file and state naming another, both
 # `plan` and `plan -refresh-only` answer "No changes". Nothing in OpenTofu will
 # ever report this divergence.
@@ -168,6 +179,7 @@ resource "google_app_engine_standard_app_version" "e2e" {
     google_project_service.this["artifactregistry.googleapis.com"],
     google_project_service.this["cloudbuild.googleapis.com"],
     google_service_account_iam_member.appengine_e2e_deployer,
+    google_service_account_iam_member.appengine_e2e_build_deployer,
     google_storage_bucket_iam_member.appengine_e2e_source,
   ]
 }

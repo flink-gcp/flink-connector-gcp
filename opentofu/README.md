@@ -122,6 +122,8 @@ The fixture's deployment source is `cloudtasks-appengine-e2e/main.py` in the ded
 The bucket has no lifecycle deletion rule: this is a persistent input, while App Engine's code bucket deletes staged objects after 15 days and the shared IT bucket deletes temporary objects after one day ([#1604](https://github.com/flink-gcp/flink-connector-gcp/issues/1604)).
 Only the current source is retained; object versioning is not enabled and soft delete is explicitly disabled.
 The runtime identity has bucket-scoped `roles/storage.objectViewer` access.
+The OpenTofu deployer holds `roles/iam.serviceAccountUser` separately on the runtime identity and on the project default App Engine identity (`PROJECT_ID@appspot.gserviceaccount.com`) required by the deployment build.
+Both grants are scoped to their service accounts, and version deployment waits for them.
 The bucket has no monthly base fee; charges follow stored bytes and operations, with free-tier eligibility depending on other usage ([Cloud Storage pricing](https://cloud.google.com/storage/pricing)).
 
 The migration changes the deployment's `source_url` and can incur one-time App Engine deployment and Cloud Build costs.
@@ -130,6 +132,10 @@ Apply through the normal merge workflow, which stops the fixture even after a pa
 Manual-scaling instance hours continue to accrue for 15 minutes after shutdown ([App Engine pricing](https://cloud.google.com/appengine/pricing)).
 After a successful apply, verify that the source object exists in the bucket, the bucket has no deletion rule, the fixture is `STOPPED` with zero instances, and a refreshed `tofu plan -detailed-exitcode` exits with code 0.
 A plan alone does not verify the running source revision; the failed-deployment readback procedure is recorded in `flink-gcp/appengine-e2e.tf`.
+After a failed deployment, compare the Admin API's `deployment.files.main.py.sourceUrl` and `sha1Sum` with the configured URL and the source file's SHA-1, even if the follow-up plan proposes no version update.
+Google provider 7.42.0 does not refresh these fields from the API; a failed apply can retain the attempted deployment in state while App Engine still reports the old one.
+The recovery for [PR #1654](https://github.com/flink-gcp/flink-connector-gcp/pull/1654) adds the missing default-identity grant and changes the handler's docstring to produce a new hash, scheduling an in-place redeployment without changing request handling.
+Check the API readback again after the recovery apply, as well as fixture shutdown and the exit-0 refreshed plan.
 
 ## Tier-3 Kubernetes environment
 
