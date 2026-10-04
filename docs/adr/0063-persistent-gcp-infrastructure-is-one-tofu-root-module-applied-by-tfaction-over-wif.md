@@ -154,6 +154,27 @@ Request handling, runtime identity, source retention and scaling remain unchange
 Post-apply acceptance requires an operation that finishes without error, matching API source URL and SHA-1, a stopped zero-instance fixture and an exit-0 refreshed plan.
 The recovery adds no persistent resource; the one-time redeployment can incur costs and no paid acceptance run is included.
 
+### Deployment into the serving version
+
+The [#1661 apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/37204609885) failed exactly as #1658 did.
+Cloud Build succeeded, and the version was replaced with the expected source URL and SHA-1.
+The operation then ended after about thirty-six minutes with code 13 and the same request to redeploy; the longer poll only let the client see that error.
+The cause was the version's serving status, not the source or a transient fault.
+The Admin API audit log records the same outcome for every update of this version that reached the stopped version: two in August 2026, then #1658 and #1661; the only other failures were the three-second actAs denials of the build, before anything was deployed.
+The only fast success was the version's first creation, which starts serving.
+The ten-second code 13 of the #754 apply, recorded in [PR #757](https://github.com/flink-gcp/flink-connector-gcp/pull/757), was the build's missing actAs grant on the default identity, the cause the #1654 recovery fixed.
+The manual repair that PR #757 describes as a successful update of about ten minutes also ended, after thirty-five minutes, with the same code 13; no measured successful update of the stopped version exists.
+With approval, the fixture was started and served the expected revision; the same deployment sent to the serving version completed without error in twenty-nine seconds, and the fixture was then stopped with zero instances.
+
+The apply workflow therefore downloads the reviewed plan's JSON artifact and runs `appengine-e2e-fixture.sh start-for-plan` before the apply; its existing cleanup stops the fixture afterwards.
+The wrapper starts the fixture only when a `google_app_engine_standard_app_version` change has exactly the `update` action.
+A created version starts serving by itself, and starting a version that does not exist yet would fail and block its creation.
+When the plan cannot be downloaded or parsed, the wrapper starts the fixture anyway: a missed start before an update costs a failed apply, while a needless start bills one B1 instance for its few minutes of runtime plus the 15 minutes App Engine charges after shutdown.
+That start is best-effort and its failure is only a warning, so it cannot block an apply that does not touch App Engine.
+Starting the fixture before every GCP-root apply was declined, because unrelated IAM or bucket changes would then wait for, and depend on, an App Engine start.
+The 45-minute update poll and 90-minute job timeout from #1661 are reverted to the provider default and 60 minutes: they only let the client observe the failure, and a serving-version update fits the original budget.
+The three-hourly E2E sweep and the weekly E2E run stop the fixture without taking the environment lock, so one of them can still stop it between the start and the update; that window is a few minutes per apply, and its failure is the recoverable one above.
+
 ## Tier-3 deployment infrastructure (2026-09-11)
 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) extends the existing GCP root with a shared regional GKE Autopilot cluster, private network, node identity and Artifact Registry repository.

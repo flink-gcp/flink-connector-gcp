@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests for the fixed App Engine E2E fixture lifecycle wrapper."""
 
+import json
 import shutil
 import signal
 import subprocess
@@ -94,6 +95,11 @@ def fixture_lifecycle(tmp_path):
     gcloud = stub_dir / "gcloud"
     gcloud.write_text(GCLOUD_STUB)
     gcloud.chmod(0o755)
+    # PATH below is otherwise only the stub directory and /usr/bin:/bin, and
+    # start-for-plan needs the real jq wherever this workstation installed it.
+    jq = shutil.which("jq")
+    if jq is not None:
+        (stub_dir / "jq").symlink_to(jq)
     log = tmp_path / "gcloud.log"
 
     def prepare(
@@ -499,3 +505,141 @@ def test_the_real_fixture_identifiers_still_parse(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "stopped with zero instances" in result.stdout
+
+
+def _plan(*changes):
+    """Return `tofu show -json` output with the given (type, actions)."""
+    return json.dumps(
+        {
+            "resource_changes": [
+                {
+                    "address": f"{kind}.example{index}",
+                    "mode": "managed",
+                    "type": kind,
+                    "change": {"actions": list(actions)},
+                }
+                for index, (kind, actions) in enumerate(changes)
+            ]
+        }
+    )
+
+
+APP_VERSION = "google_app_engine_standard_app_version"
+START = "app versions start flink-e2e --service=default --project=flink-gcp --quiet"
+
+
+def test_start_for_plan_starts_before_an_in_place_update(fixture_lifecycle):
+    plan = fixture_lifecycle.tmp_path / "tfplan.json"
+    plan.write_text(
+        _plan(
+            ("google_storage_bucket_object", ["update"]),
+            (APP_VERSION, ["update"]),
+        )
+    )
+
+    result = fixture_lifecycle(
+        "start-for-plan",
+        str(plan),
+        statuses=("STOPPED", "SERVING"),
+        instance_observations=((), ("instance-1",)),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "instance-1\n"
+    assert result.gcloud == [START]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param([(APP_VERSION, ["no-op"])], id="no-op"),
+        # A created version starts serving by itself, and the version a create
+        # or a replacement names does not exist yet to be started.
+        pytest.param([(APP_VERSION, ["create"])], id="create"),
+        pytest.param([(APP_VERSION, ["delete", "create"])], id="delete-create"),
+        pytest.param([(APP_VERSION, ["delete"])], id="delete"),
+        pytest.param(
+            [("google_storage_bucket_iam_member", ["update"])],
+            id="other-resource",
+        ),
+        pytest.param([], id="no-resource-changes"),
+    ],
+)
+def test_start_for_plan_leaves_the_fixture_alone_without_an_update(
+    fixture_lifecycle, changes
+):
+    plan = fixture_lifecycle.tmp_path / "tfplan.json"
+    plan.write_text(_plan(*changes))
+
+    result = fixture_lifecycle("start-for-plan", str(plan))
+
+    assert result.returncode == 0, result.stderr
+    assert result.gcloud == []
+    assert "does not update" in result.stdout
+
+
+def test_start_for_plan_fails_when_the_needed_start_fails(fixture_lifecycle):
+    plan = fixture_lifecycle.tmp_path / "tfplan.json"
+    plan.write_text(_plan((APP_VERSION, ["update"])))
+
+    result = fixture_lifecycle("start-for-plan", str(plan), start_fails=True)
+
+    assert result.returncode == 1
+    assert result.gcloud == [START]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param("", id="empty"),
+        pytest.param("not json", id="garbage"),
+        pytest.param('{"resource_changes": 7}', id="wrong-shape"),
+    ],
+)
+def test_start_for_plan_starts_best_effort_when_the_plan_is_unreadable(
+    fixture_lifecycle, content
+):
+    plan = fixture_lifecycle.tmp_path / "tfplan.json"
+    if content is not None:
+        plan.write_text(content)
+
+    result = fixture_lifecycle(
+        "start-for-plan",
+        str(plan),
+        statuses=("STOPPED", "SERVING"),
+        instance_observations=((), ("instance-1",)),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.gcloud == [START]
+    assert "best-effort" in result.stderr
+
+
+def test_start_for_plan_treats_an_empty_path_as_unreadable(fixture_lifecycle):
+    result = fixture_lifecycle(
+        "start-for-plan",
+        "",
+        statuses=("STOPPED", "SERVING"),
+        instance_observations=((), ("instance-1",)),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.gcloud == [START]
+
+
+def test_start_for_plan_does_not_fail_on_a_best_effort_start_failure(
+    fixture_lifecycle,
+):
+    result = fixture_lifecycle("start-for-plan", "", start_fails=True)
+
+    assert result.returncode == 0
+    assert result.gcloud == [START]
+    assert "best-effort App Engine fixture start failed" in result.stderr
+
+
+def test_start_for_plan_requires_exactly_one_plan_argument(fixture_lifecycle):
+    result = fixture_lifecycle("start-for-plan")
+
+    assert result.returncode == 2
+    assert result.gcloud == []
