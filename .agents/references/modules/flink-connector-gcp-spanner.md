@@ -339,6 +339,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - Asynchronous lookup retries use `base.table.AsyncLookupRetries` (ADR-0039); keep the read,
   row conversion and failure classifier here, and the stack-safety and late-callback tests in base.
+- Require every primary-key equality and preserve declaration order for the point read. Additional
+  top-level physical scalar keys go through `base.table.LookupKeyFilter`, comparing converted values
+  before caching by the full tuple. Keep nested key paths, metadata and extra ARRAY/MAP/ROW keys
+  unsupported (ADR-0098).
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 

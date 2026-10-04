@@ -235,6 +235,13 @@ LEFT JOIN profiles FOR SYSTEM_TIME AS OF e.proc_time AS p
   ON e.user_id = p.rowkey;
 -- end::lookup-join[]
 
+-- tag::lookup-row-equality[]
+SELECT e.event_id, p.profile.name
+FROM events AS e
+LEFT JOIN profiles FOR SYSTEM_TIME AS OF e.proc_time AS p
+  ON e.user_id = p.rowkey AND e.expected_profile = p.profile;
+-- end::lookup-row-equality[]
+
 -- tag::cell-timestamps[]
 CREATE TABLE profiles_with_event_time (
   rowkey STRING,

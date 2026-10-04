@@ -124,5 +124,5 @@ CREATE TABLE customers (
 SELECT e.order_id, c.name, c.tier
 FROM order_events AS e
 LEFT JOIN customers FOR SYSTEM_TIME AS OF e.proc_time AS c
-  ON e.customer_id = c.customer_id;
+  ON e.customer_id = c.customer_id AND c.tier = 'gold';
 -- end::lookup[]

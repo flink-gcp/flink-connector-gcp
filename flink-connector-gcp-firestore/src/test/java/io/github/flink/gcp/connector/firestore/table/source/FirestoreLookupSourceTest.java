@@ -263,18 +263,45 @@ class FirestoreLookupSourceTest {
     }
 
     @Test
-    void aLookupOnAnythingButTheDocumentIdAloneIsRefused() {
-        for (int[][] keys : new int[][][] {{{1}}, {{0}, {1}}, {{0, 0}}, {}, {{3}}, {{-1}}}) {
+    void acceptsAdditionalPhysicalKeysInEitherOrder() {
+        assertThat(source(KEYED).getLookupRuntimeProvider(context(new int[] {0}, new int[] {1})))
+                .isInstanceOf(LookupFunctionProvider.class);
+        assertThat(source(KEYED).getLookupRuntimeProvider(context(new int[] {1}, new int[] {0})))
+                .isInstanceOf(LookupFunctionProvider.class);
+    }
+
+    @Test
+    void aLookupWithoutTheDocumentIdOrWithMalformedKeysIsRefused() {
+        for (int[][] keys : new int[][][] {{{1}}, {{0}, {0}}, {{0, 0}}, {}, {{3}}, {{-1}}}) {
             assertThatThrownBy(() -> source(KEYED).getLookupRuntimeProvider(context(keys)))
                     .as("%s", (Object) keys)
                     .isInstanceOf(ValidationException.class)
                     .hasMessageContaining(
-                            "requires an equality predicate on the PRIMARY KEY column 'id'")
-                    .hasMessageContaining("in ON or in WHERE, also becomes a lookup key");
+                            "requires an equality predicate on the PRIMARY KEY column");
         }
         assertThatThrownBy(() -> source(UNKEYED).getLookupRuntimeProvider(context(new int[] {0})))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("A table without a PRIMARY KEY");
+    }
+
+    @Test
+    void anAdditionalMetadataKeyExplainsTheUnsupportedKeyEvenWhenTheIdIsPresent() {
+        FirestoreDynamicSource source = source(KEYED);
+        source.applyReadableMetadata(
+                List.of("update-time"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("name", DataTypes.STRING()),
+                        DataTypes.FIELD("a.b", DataTypes.STRING()),
+                        DataTypes.FIELD("update_time", DataTypes.TIMESTAMP_LTZ(9).notNull())));
+
+        assertThatThrownBy(
+                        () ->
+                                source.getLookupRuntimeProvider(
+                                        context(new int[] {0}, new int[] {3})))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("PRIMARY KEY column 'id'")
+                .hasMessageContaining("metadata and nested key paths are unsupported");
     }
 
     @Test

@@ -35,12 +35,16 @@ import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupP
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.functions.AsyncLookupFunction;
+import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -235,10 +239,14 @@ public final class BigtableDynamicSource
 
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
-        checkLookupKey(context);
+        LookupKeyFilter equalityKeys = lookupKeys(context);
         List<ByteStringRange> ranges = readRanges();
         Filters.Filter filter = readFilter(ranges.isEmpty());
         if (lookupOptions.getCacheType() == LookupCacheType.FULL) {
+            if (equalityKeys.hasAdditionalKeys()) {
+                throw new ValidationException(
+                        "Bigtable ROW lookup keys support NONE and PARTIAL caches; FULL requires only the row-key column.");
+            }
             return FullCachingLookupProvider.of(
                     InputFormatProvider.of(
                             new BigtableFullCacheInputFormat(
@@ -257,59 +265,53 @@ public final class BigtableDynamicSource
                     lookupOptions.createFullReloadTrigger());
         }
         if (lookupOptions.isAsync()) {
-            BigtableRowDataAsyncLookupFunction function =
-                    new BigtableRowDataAsyncLookupFunction(
-                            destination,
-                            schema,
-                            projectedFields,
-                            nullStringLiteral,
-                            trailingBytes,
-                            filter,
-                            ranges,
-                            appProfileId,
-                            serviceAccountKeyFile,
-                            emulatorEndpoint,
-                            lookupOptions.getMaxRetries());
+            AsyncLookupFunction function =
+                    equalityKeys.wrap(
+                            new BigtableRowDataAsyncLookupFunction(
+                                    destination,
+                                    schema,
+                                    projectedFields,
+                                    nullStringLiteral,
+                                    trailingBytes,
+                                    filter,
+                                    ranges,
+                                    appProfileId,
+                                    serviceAccountKeyFile,
+                                    emulatorEndpoint,
+                                    lookupOptions.getMaxRetries()));
             return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
                     ? PartialCachingAsyncLookupProvider.of(
-                            function, lookupOptions.createPartialCache())
+                            function, equalityKeys.wrap(lookupOptions.createPartialCache()))
                     : AsyncLookupFunctionProvider.of(function);
         }
-        BigtableRowDataLookupFunction function =
-                new BigtableRowDataLookupFunction(
-                        destination,
-                        schema,
-                        projectedFields,
-                        nullStringLiteral,
-                        trailingBytes,
-                        filter,
-                        ranges,
-                        appProfileId,
-                        serviceAccountKeyFile,
-                        emulatorEndpoint,
-                        lookupOptions.getMaxRetries());
+        LookupFunction function =
+                equalityKeys.wrap(
+                        new BigtableRowDataLookupFunction(
+                                destination,
+                                schema,
+                                projectedFields,
+                                nullStringLiteral,
+                                trailingBytes,
+                                filter,
+                                ranges,
+                                appProfileId,
+                                serviceAccountKeyFile,
+                                emulatorEndpoint,
+                                lookupOptions.getMaxRetries()));
         return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
-                ? PartialCachingLookupProvider.of(function, lookupOptions.createPartialCache())
+                ? PartialCachingLookupProvider.of(
+                        function, equalityKeys.wrap(lookupOptions.createPartialCache()))
                 : LookupFunctionProvider.of(function);
     }
 
-    private void checkLookupKey(LookupContext context) {
-        int[][] keys = context.getKeys();
-        if (keys.length != 1 || keys[0].length != 1) {
-            throw lookupKeyException();
-        }
-        int lookupIndex = keys[0][0];
-        int producedArity =
-                projectedFields == null
-                        ? producedDataType.getChildren().size()
-                        : projectedFields.length;
-        if (lookupIndex < 0 || lookupIndex >= producedArity) {
-            throw lookupKeyException();
-        }
-        int physicalIndex = projectedFields == null ? lookupIndex : projectedFields[lookupIndex];
-        if (physicalIndex != schema.getRowKeyIndex()) {
-            throw lookupKeyException();
-        }
+    private LookupKeyFilter lookupKeys(LookupContext context) {
+        return LookupKeyFilter.of(
+                (RowType) producedDataType.getLogicalType(),
+                context.getKeys(),
+                projectedFields,
+                new int[] {schema.getRowKeyIndex()},
+                true,
+                lookupKeyException().getMessage());
     }
 
     private List<ByteStringRange> configuredRanges() {

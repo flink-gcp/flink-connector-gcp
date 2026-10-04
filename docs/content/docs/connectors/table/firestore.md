@@ -139,8 +139,12 @@ The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#so
 
 ## Lookup
 
-A lookup join reads one document of the table's collection by its id, so its equality key is the PRIMARY KEY column and no other column.
-The planner turns a condition that fixes another column of the table to a constant, such as `c.tier = 'gold'`, into a second lookup key whether it is written in the `ON` clause or in `WHERE`, so such a join is refused too; a condition that is not an equality, such as `c.tier <> 'gold'`, stays a filter applied after the lookup. The Spanner and Bigtable lookups refuse such a key the same way; accepting it in all three is [#1643]({{< param BookRepo >}}/issues/1643).
+A lookup join reads one document of the table's collection by the PRIMARY KEY column, its document id.
+It also accepts equality keys on other top-level physical scalar columns, whether a constant such as `c.tier = 'gold'` appears in `ON` or `WHERE`, or an input column supplies the comparison value.
+Only the document id addresses the read; the additional keys compare against the converted Flink row before it is returned, with binary values compared by content.
+Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
+A NULL lookup key or a failed additional equality joins no row.
+A condition that is not an equality, such as `c.tier <> 'gold'`, stays a filter applied after the lookup.
 A table without a PRIMARY KEY, which a collection-group table always is, cannot be looked up.
 A lookup that reaches the service reads the document as it is at that moment, and under a `PARTIAL` cache a hit returns the row as it was cached until it expires; `scan.read-time` and the other `scan.*` options do not apply to it.
 
@@ -155,6 +159,8 @@ A lookup reads only the fields of the columns the join uses, like a scan, and fi
 
 `lookup.async` runs the join as Flink's asynchronous lookup, with several reads in flight per subtask, instead of waiting for each read; both modes read through the same `BatchGetDocuments` call.
 Flink's `lookup.cache` modes `NONE` and `PARTIAL` are supported, and Flink owns the partial cache; `FULL` is refused, because a full cache is loaded by a scan with a snapshot and a reload contract of its own.
+The cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same document id have separate entries.
+An additional equality that fails follows the configured missing-key cache policy; expiry and size options keep their standard Flink meaning.
 `lookup.max-retries` reads again after `UNAVAILABLE`, `INTERNAL` or `DEADLINE_EXCEEDED`, the statuses the client library already retries this call on, so it adds attempts on top of the library's rather than retrying anything the library does not; it counts retries after the first read, and every other failure fails the join at once.
 
 ## Sink

@@ -120,6 +120,13 @@ record — context, evidence, declined alternatives — is the named ADR under `
   executor. Do not add RPC cancellation: Flink does not propagate cancellation to the lookup result,
   and the three client libraries do not share a cancellation contract.
 
+- `LookupKeyFilter` separates the service addressing key from additional physical equality keys
+  for Spanner, Bigtable and Firestore (ADRs 0095, 0098, 0179). Compare converted Flink values before
+  returning a result to the partial cache, and cache by the complete tuple. Preserve the delegate's
+  cache policy and lifecycle; snapshot async values and normalize nested ROW key representations.
+  Spanner and Firestore allow only scalar extra keys; Bigtable also allows family ROWs with scalar
+  children in NONE/PARTIAL. Keep service reads, retries and conversion in each connector.
+
 ## `base.source` (`docs/adr/0083`, `0108`)
 
 - The one `AutoCloseable` `PullAssignmentSplitEnumerator` takes is the enumerator's for its

@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.firestore.table.source;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
-import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.LookupTableSource;
@@ -33,10 +32,14 @@ import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheT
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.functions.AsyncLookupFunction;
+import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.firestore.FieldPath;
+import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceBuilder;
@@ -171,7 +174,7 @@ public final class FirestoreDynamicSource
 
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
-        checkLookupKey(context.getKeys());
+        LookupKeyFilter equalityKeys = lookupKeys(context.getKeys());
         RowDataDeserializationSchema deserializer =
                 new RowDataDeserializationSchema(
                         schema,
@@ -190,46 +193,38 @@ public final class FirestoreDynamicSource
         int maxRetries = lookupConfig.getMaxRetries();
         boolean partial = lookupConfig.getCacheType() == LookupCacheType.PARTIAL;
         if (lookupConfig.isAsync()) {
-            FirestoreRowDataAsyncLookupFunction function =
-                    new FirestoreRowDataAsyncLookupFunction(deserializer, maxRetries, lookup);
+            AsyncLookupFunction function =
+                    equalityKeys.wrap(
+                            new FirestoreRowDataAsyncLookupFunction(
+                                    deserializer, maxRetries, lookup));
             return partial
                     ? PartialCachingAsyncLookupProvider.of(
-                            function, lookupConfig.createPartialCache())
+                            function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                     : AsyncLookupFunctionProvider.of(function);
         }
-        FirestoreRowDataLookupFunction function =
-                new FirestoreRowDataLookupFunction(deserializer, maxRetries, lookup);
+        LookupFunction function =
+                equalityKeys.wrap(
+                        new FirestoreRowDataLookupFunction(deserializer, maxRetries, lookup));
         return partial
-                ? PartialCachingLookupProvider.of(function, lookupConfig.createPartialCache())
+                ? PartialCachingLookupProvider.of(
+                        function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                 : LookupFunctionProvider.of(function);
     }
 
-    /**
-     * Accepts a lookup only on the document id: exactly one equality key, the PRIMARY KEY column.
-     */
-    private void checkLookupKey(int[][] keys) {
-        if (!schema.hasPrimaryKey()
-                || keys.length != 1
-                || keys[0].length != 1
-                || keys[0][0] < 0
-                || keys[0][0] >= columns.length
-                || columns[keys[0][0]] != schema.getKeyIndex()) {
-            if (!schema.hasPrimaryKey()) {
-                throw new ValidationException(
-                        "A Firestore lookup reads one document by its id, so it requires an"
-                                + " equality predicate on the PRIMARY KEY column. A table without a"
-                                + " PRIMARY KEY, as a collection-group table is, cannot be looked"
-                                + " up.");
-            }
-            throw new ValidationException(
-                    "A Firestore lookup reads one document by its id, so it requires an equality"
-                            + " predicate on the PRIMARY KEY column '"
-                            + schema.getRowType().getFieldNames().get(schema.getKeyIndex())
-                            + "', the document id, and on no other column. An equality between"
-                            + " another column of the table and a constant, in ON or in WHERE,"
-                            + " also becomes a lookup key, so write such a condition another"
-                            + " way.");
-        }
+    private LookupKeyFilter lookupKeys(int[][] keys) {
+        String requirement =
+                schema.hasPrimaryKey()
+                        ? "A Firestore lookup requires an equality predicate on the PRIMARY KEY column '"
+                                + schema.getRowType().getFieldNames().get(schema.getKeyIndex())
+                                + "', the document id. Additional lookup keys must name top-level physical scalar columns; metadata and nested key paths are unsupported."
+                        : "A Firestore lookup requires an equality predicate on the PRIMARY KEY column, the document id. A table without a PRIMARY KEY, as a collection-group table is, cannot be looked up.";
+        return LookupKeyFilter.of(
+                (RowType) producedDataType.getLogicalType(),
+                keys,
+                columns,
+                schema.hasPrimaryKey() ? new int[] {schema.getKeyIndex()} : new int[0],
+                false,
+                requirement);
     }
 
     /**
