@@ -122,6 +122,20 @@ The deployment URL changes, so the migration plan must be reviewed for an in-pla
 The [OpenTofu runbook](../../opentofu/README.md#local-use) records deployment costs, fixture shutdown and the post-apply drift check.
 This change does not establish a measured post-apply result before the migration has been applied.
 
+### Recovery of the source migration
+
+The [#1654 apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/37190116961) created the bucket, source and new reading grant, but the version update failed with code 13.
+The App Engine operation's debug details identified an `iam.serviceAccounts.actAs` denial on the project default App Engine service account, resolved by its unique ID to `flink-gcp@appspot.gserviceaccount.com`.
+The deployer already had a Service Account User grant on the version's separate runtime identity; the deployment build also requires a grant on the default identity.
+The recovery grants that role on the default service account alone and makes the version depend on it, preserving the runtime identity and bucket-scoped reading grant.
+
+Google provider 7.42.0 does not read `deployment.files` back from the Admin API.
+After this failure, state retained the attempted source URL while the API still returned the old staging URL; a refreshed plan proposed only deletion of the old, deposed reading grant.
+An IAM-only follow-up would therefore leave the deployment unrepaired.
+[PR #1658](https://github.com/flink-gcp/flink-connector-gcp/pull/1658) changes the handler's docstring to produce a new source hash and request an in-place version update through a fresh reviewed plan, without changing request handling or replacing the service's final version.
+Post-apply acceptance compares the API's source URL and SHA-1 with the tracked deployment, in addition to retained-source, stopped-fixture and exit-0-plan checks.
+The existing apply workflow stops the fixture even after a failed deployment; no paid acceptance run is part of this recovery.
+
 ## Tier-3 deployment infrastructure (2026-09-11)
 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) extends the existing GCP root with a shared regional GKE Autopilot cluster, private network, node identity and Artifact Registry repository.
