@@ -901,8 +901,7 @@ option, so its sink always fails the job on a routed failure.
 
 The table supports processing-time temporal joins by equality on its row-key column. The lookup
 key is interpreted after projection, so the row key may appear anywhere in the DDL and the query
-may reorder the lookup table's output. Composite keys, nested family fields and predicates that do
-not include row-key equality are rejected when the join is planned.
+may reorder the lookup table's output. A join without row-key equality is rejected during planning.
 
 {{< sql-snippet file="flink/BigtableTableReference.sql" tag="lookup-join" >}}
 
@@ -911,16 +910,30 @@ for asynchronous point reads. A missing Bigtable row produces no lookup result, 
 keeps the input row with null lookup columns and an inner join drops it. Both forms apply the same
 family projection filter as a scan and use `scan.app-profile-id`; a Data Boost application profile
 cannot serve the point-read modes.
-Flink does not currently pass an additional right-side temporal-join predicate through
-`SupportsFilterPushDown`.
-It keeps that expression in the lookup operator, where NONE, PARTIAL and FULL modes evaluate the
-same residual predicate.
+An additional equality key may name a whole physical family `ROW` whose children are scalar.
+Only the row key addresses the point read; the connector compares every field of the converted
+family row before returning it, independently of Flink's internal row representation.
+Binary children compare by content, and two NULL children compare equal; a NULL whole-family key
+or result joins no row.
+`MAP` families, nested lookup key paths, and metadata keys are rejected during planning.
+Whole-family equality keys support NONE and PARTIAL, in sync and async mode; FULL rejects them
+because its standard row-key index does not normalize nested row representations.
+In this example, `events.expected_profile` is `ROW<name STRING, email STRING>`, matching the
+`profiles.profile` family.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="lookup-row-equality" >}}
+
+Scalar qualifier conditions such as `p.profile.name = 'Alice'` remain Flink residual predicates.
+Flink does not pass them through `SupportsFilterPushDown` for a temporal join, and NONE, PARTIAL and
+row-key-only FULL evaluate the same residual.
 Configured `scan.row-prefix`, `scan.row-range.*` and `scan.row-ranges` bounds still apply to point
 reads and FULL-cache contents.
 
 `lookup.cache = PARTIAL` uses Flink's standard on-demand lookup cache around either the synchronous
 or asynchronous function. Configure at least one of `lookup.partial-cache.max-rows`,
 `lookup.partial-cache.expire-after-access` or `lookup.partial-cache.expire-after-write` with it.
+The cache stores the filtered result under the complete tuple of row-key and family equality
+values; a failed equality follows the configured missing-key cache policy.
 `lookup.cache = FULL` loads the projected table through a bounded scan into each lookup task; choose
 `PERIODIC` with `lookup.full-cache.periodic-reload.interval`, or `TIMED` with
 `lookup.full-cache.timed-reload.iso-time`. FULL is synchronous by definition, so combining it with

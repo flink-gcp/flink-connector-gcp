@@ -17,11 +17,12 @@ limitations under the License.
 # ADR-0095: The Bigtable lookup source is row-key-only, and Flink owns its caches
 
 - Status: Accepted
-- Date: 2026-08-11
+- Date: 2026-08-11, revised 2026-10-04
 - Issues: [#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460),
   [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
-  [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217))
-- Modules: bigtable
+  [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217)),
+  [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643)
+- Modules: bigtable, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
 ## Context
@@ -34,11 +35,26 @@ the same SQL mean different things between connectors.
 
 ## Decision
 
-`BigtableDynamicSource` implements `LookupTableSource`. It accepts exactly one lookup key, and that
-post-projection index must map to the DDL's physical row-key column. Sync and async functions encode
+`BigtableDynamicSource` implements `LookupTableSource`. The lookup keys must include the DDL's
+physical row-key column, interpreted after projection. Sync and async functions encode
 the key with the same HBase-compatible `CellValueCodec` as scans and writes, apply the projected
 family filter, convert with the scan's `RowToRowDataConverter`, and return an empty collection for
 a missing row or null key.
+
+Issue #1643 adds whole-family `ROW` equality keys with scalar children, supplied by constants or
+input fields, while retaining the row key as the only addressing key.
+The shared `base.table.LookupKeyFilter` projects the addressing tuple before the point read and
+compares additional values against the converted row before Flink caches the result.
+Binary children compare by content; nested NULL children compare equal, while a NULL whole-family
+key or result produces no match.
+`MAP` families, nested key paths and metadata keys remain unsupported.
+The helper snapshots asynchronous comparison values and normalizes the entire PARTIAL cache key
+into generic rows, so generated binary rows and converted generic rows compare consistently.
+Flink still owns expiry, size limits, missing-key policy, metrics and lifecycle.
+FULL accepts only the row-key equality key: its standard index uses the nested row objects'
+`equals` and `hashCode`, which differ between `BinaryRowData` and `GenericRowData`.
+Supporting whole-family equality there would require a normalized full-cache index and its scan
+and reload contract, beyond this point-read refinement.
 
 `lookup.async`, default false, selects the provider shape. The async function bridges the client's
 `ApiFuture` with `ApiFutures.addCallback(..., Runnable::run)`: the callback completes the Flink
@@ -68,7 +84,7 @@ ownership of their metrics.
 
 Issue #518 makes a pushed source plan available to the FULL-cache loader without rebuilding or
 dropping its range intersection, projection or best-effort cell-existence predicate.
-Flink 2.2 keeps an additional right-side temporal-join predicate in `LookupJoin.where`; it does not
+Flink 2.2 keeps a scalar qualifier temporal-join predicate in `LookupJoin.where`; it does not
 invoke `SupportsFilterPushDown` for that expression.
 NONE, PARTIAL and FULL evaluate that same lookup residual and therefore expose the same rows, while
 configured scan ranges continue to constrain both point reads and FULL-cache contents.
@@ -79,14 +95,16 @@ operation, correcting the prior rejection of a closed-start key.
 
 ## Consequences
 
-- Only row-key equality can plan as a Bigtable lookup join; family-field and composite lookups fail
-  during planning with the row-key column named.
+- Row-key equality is required; whole-family ROW equality adds a post-read condition in NONE and
+  PARTIAL. It is refused with FULL. Nested qualifier conditions remain Flink residuals.
 - A Data Boost application profile can load FULL through a scan, but cannot serve NONE or PARTIAL
   point reads. All lookup forms reuse `scan.app-profile-id` rather than adding a second profile key.
 - The emulator suite executes hits and misses through sync, async, PARTIAL and FULL providers; the
   planner suite pins lookup selection after a reordered projection.
 - One parameterized emulator case carries the same lookup residual and configured closed-start
   range through sync, async, PARTIAL and FULL providers.
+- A second emulator case exercises whole-family ROW keys with NONE and PARTIAL in both provider
+  modes, FULL's planning rejection, and scalar qualifier constants in ON and WHERE across all modes.
 - A source-unit test inspects the FULL loader directly and pins that an already accepted scan
   filter keeps its range intersection and condition/projection composition.
 

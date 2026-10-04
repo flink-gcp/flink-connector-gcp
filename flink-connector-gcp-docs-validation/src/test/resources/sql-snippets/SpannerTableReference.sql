@@ -32,6 +32,13 @@ INSERT INTO orders SELECT order_id, customer, total, updated_at FROM staged_orde
 SELECT customer, total FROM orders;
 -- end::overview[]
 
+-- tag::lookup-equality[]
+SELECT e.event_id, o.customer
+FROM order_events AS e
+LEFT JOIN orders FOR SYSTEM_TIME AS OF e.proc_time AS o
+  ON e.order_id = o.order_id AND o.customer = 'Alice';
+-- end::lookup-equality[]
+
 -- tag::add-jar[]
 ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.1.0.jar';
 -- end::add-jar[]

@@ -267,13 +267,22 @@ As with other Flink connectors, `PRIMARY KEY ... NOT ENFORCED` describes the con
 
 The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
 Composite keys are encoded in the DDL declaration order even when the planner supplies the predicates in another order.
-A null key or an absent Spanner row produces no joined row.
+Additional equality keys on top-level physical scalar columns are supported, including constants in `ON` or `WHERE` and comparisons with an input column.
+The complete primary key alone addresses the point read; the connector compares the additional keys against the converted Flink row before returning it.
+Binary values compare by content, and schema-marked values compare in their Flink carrier type: UUID and JSON strings, PROTO bytes, and ENUM integers.
+Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
+A null lookup key, an absent Spanner row, or a failed additional equality produces no joined row.
 Exact pushed primary-key predicates also gate synchronous and asynchronous lookups before an RPC, while Flink evaluates any residual predicate normally.
 `scan.index` does not change lookup keys or lookup access paths.
+The following example uses an `order_events` input with `event_id`, `order_id`, and processing-time `proc_time` columns, and the `orders` table declared above.
+
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="lookup-equality" >}}
 
 `lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
 Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
 The standard partial-cache expiry, size, and missing-key options apply unchanged.
+The cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same primary key have separate entries.
+An additional equality that fails follows the configured missing-key cache policy.
 `lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
 Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this option is what buys a second attempt at the other two.
 `RESOURCE_EXHAUSTED` is not retried here because the client already retries it whenever the server asks for a delay, and waits that delay; re-issuing the read at once would spend the budget against the wait rather than observe it.

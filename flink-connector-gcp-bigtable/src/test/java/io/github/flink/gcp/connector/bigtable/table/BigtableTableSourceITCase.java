@@ -108,6 +108,60 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("pointLookupModes")
+    void rowEqualityKeysAndQualifierFiltersUseTheAddressedRow(String mode, String[] lookupOptions)
+            throws Exception {
+        String tableId = "sql-lookup-equality-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, "a", "cf1", "name", "gold");
+        writeCell(destination, "b", "cf1", "name", "silver");
+        TableEnvironment table =
+                org.apache.flink.table.api.TableEnvironment.create(
+                        org.apache.flink.table.api.EnvironmentSettings.newInstance()
+                                .inBatchMode()
+                                .build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                "CREATE TABLE bt (cf1 ROW<name STRING>, rowkey STRING, PRIMARY KEY (rowkey) NOT ENFORCED) "
+                        + withOptions(tableId, lookupOptions));
+        table.executeSql(
+                "CREATE TEMPORARY VIEW facts AS SELECT k, CAST(ROW(tier) AS ROW<name STRING>) AS expected, PROCTIME() AS t FROM (VALUES ('a','gold'), ('a','silver'), ('b','gold'), ('missing','gold')) AS v(k,tier)");
+        String rowJoin =
+                "SELECT f.k, b.cf1.name FROM facts AS f LEFT JOIN bt FOR SYSTEM_TIME AS OF f.t AS b ON f.k = b.rowkey AND f.expected = b.cf1";
+        if (mode.equals("full")) {
+            assertThatThrownBy(() -> table.explainSql(rowJoin))
+                    .hasStackTraceContaining("FULL requires only the row-key column");
+        } else {
+            assertThat(table.explainSql(rowJoin)).contains("LookupJoin").contains("cf1=");
+            assertThat(collect(table, rowJoin))
+                    .containsExactlyInAnyOrder(
+                            Row.of("a", "gold"),
+                            Row.of("a", null),
+                            Row.of("b", null),
+                            Row.of("missing", null));
+            assertThat(
+                            collect(
+                                    table,
+                                    "SELECT f.k, b.cf1.name FROM facts AS f JOIN bt FOR SYSTEM_TIME AS OF f.t AS b ON f.k = b.rowkey WHERE f.expected = b.cf1"))
+                    .containsExactly(Row.of("a", "gold"));
+        }
+        assertThat(
+                        collect(
+                                table,
+                                "SELECT f.k, b.cf1.name FROM facts AS f LEFT JOIN bt FOR SYSTEM_TIME AS OF f.t AS b ON f.k = b.rowkey AND b.cf1.name = 'gold'"))
+                .containsExactlyInAnyOrder(
+                        Row.of("a", "gold"),
+                        Row.of("a", "gold"),
+                        Row.of("b", null),
+                        Row.of("missing", null));
+        assertThat(
+                        collect(
+                                table,
+                                "SELECT f.k, b.cf1.name FROM facts AS f JOIN bt FOR SYSTEM_TIME AS OF f.t AS b ON f.k = b.rowkey WHERE b.cf1.name = 'gold'"))
+                .containsExactlyInAnyOrder(Row.of("a", "gold"), Row.of("a", "gold"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
     void aTemporalJoinReadsHitsAndMissesInEveryLookupMode(String mode, String[] lookupOptions)
             throws Exception {
         String tableId = "sql-lookup-" + mode;

@@ -214,4 +214,49 @@ class FirestoreTableLookupITCase extends AbstractFirestoreEmulatorITCase {
                 .containsExactlyInAnyOrder(
                         Row.of("a", "Ada"), Row.of("a", "Ada"), Row.of("missing", null));
     }
+
+    @ParameterizedTest(name = "async={0}")
+    @ValueSource(booleans = {false, true})
+    void additionalEqualityKeysFilterOnAndWhereWithBothCaches(boolean async) throws Exception {
+        String collection = uniqueCollection();
+        client().document(collection + "/a").set(Map.of("name", "Ada", "tier", "gold")).get();
+        client().document(collection + "/b").set(Map.of("name", "Bob", "tier", "silver")).get();
+        for (boolean partial : new boolean[] {false, true}) {
+            TableEnvironment table = batch();
+            String[] cache =
+                    partial
+                            ? new String[] {
+                                "'lookup.cache' = 'PARTIAL'",
+                                "'lookup.partial-cache.max-rows' = '10'"
+                            }
+                            : new String[0];
+            // The id follows the attribute so a constant key precedes the addressing key.
+            table.executeSql(
+                    "CREATE TABLE dim (tier STRING, name STRING, id STRING NOT NULL, PRIMARY KEY (id) NOT ENFORCED) "
+                            + with(collection, async, cache));
+            probe(table, "a", "b", "missing", "a");
+            assertThat(
+                            collect(
+                                    table,
+                                    "SELECT p.k, d.name FROM probe AS p LEFT JOIN dim FOR SYSTEM_TIME AS OF p.t AS d ON p.k = d.id AND d.tier = 'gold'"))
+                    .containsExactlyInAnyOrder(
+                            Row.of("a", "Ada"),
+                            Row.of("a", "Ada"),
+                            Row.of("b", null),
+                            Row.of("missing", null));
+            assertThat(
+                            collect(
+                                    table,
+                                    "SELECT p.k, d.name FROM probe AS p JOIN dim FOR SYSTEM_TIME AS OF p.t AS d ON p.k = d.id WHERE d.tier = 'gold'"))
+                    .containsExactlyInAnyOrder(Row.of("a", "Ada"), Row.of("a", "Ada"));
+            table.executeSql(
+                    "CREATE TEMPORARY VIEW expected AS SELECT k, tier, PROCTIME() AS t FROM (VALUES ('a', 'gold'), ('a', 'silver'), ('a', 'gold')) AS v(k,tier)");
+            assertThat(
+                            collect(
+                                    table,
+                                    "SELECT p.tier, d.name FROM expected AS p LEFT JOIN dim FOR SYSTEM_TIME AS OF p.t AS d ON p.k = d.id AND p.tier = d.tier"))
+                    .containsExactlyInAnyOrder(
+                            Row.of("gold", "Ada"), Row.of("silver", null), Row.of("gold", "Ada"));
+        }
+    }
 }

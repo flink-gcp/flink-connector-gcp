@@ -125,6 +125,14 @@ class SpannerLookupSourceTest {
                     Collections.emptyMap());
 
     @Test
+    void acceptsAdditionalScalarEqualityKeysInEitherOrder() {
+        assertThat(provider(config(), new int[][] {{2}, {1}, {0}}))
+                .isInstanceOf(LookupFunctionProvider.class);
+        assertThat(provider(config("lookup.async", "true"), new int[][] {{0}, {1}, {2}}))
+                .isInstanceOf(AsyncLookupFunctionProvider.class);
+    }
+
+    @Test
     void selectsSyncAsyncAndPartialCacheProviders() {
         assertThat(provider(config(), new int[][] {{0}, {1}}))
                 .isInstanceOf(LookupFunctionProvider.class);

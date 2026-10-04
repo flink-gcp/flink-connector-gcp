@@ -325,6 +325,66 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 .containsExactly("Ada", null);
     }
 
+    @ParameterizedTest
+    @MethodSource("lookupCases")
+    void additionalEqualityKeysFilterOnAndWhereWithBothCaches(Dialect dialect, boolean async)
+            throws Exception {
+        DatabaseDestination database = lookupDatabase(dialect);
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newInsertBuilder("lookup_records")
+                                        .set("id")
+                                        .to(1L)
+                                        .set("tenant")
+                                        .to(7L)
+                                        .set("name")
+                                        .to("Ada")
+                                        .build(),
+                                Mutation.newInsertBuilder("lookup_records")
+                                        .set("id")
+                                        .to(2L)
+                                        .set("tenant")
+                                        .to(8L)
+                                        .set("name")
+                                        .to("Bob")
+                                        .build()));
+        for (boolean partial : new boolean[] {false, true}) {
+            TableEnvironment table =
+                    TableEnvironment.create(
+                            EnvironmentSettings.newInstance().inBatchMode().build());
+            table.getConfig().set("parallelism.default", "1");
+            String ddl = lookupTableDdl(database, dialect, async);
+            if (partial) {
+                ddl =
+                        ddl.replace(
+                                "'connector' = 'spanner',",
+                                "'connector' = 'spanner', 'lookup.cache' = 'PARTIAL', 'lookup.partial-cache.max-rows' = '10',");
+            }
+            table.executeSql(ddl);
+            table.executeSql(
+                    "CREATE TEMPORARY VIEW facts AS SELECT id, tenant, PROCTIME() AS t FROM (VALUES (CAST(1 AS BIGINT), CAST(7 AS BIGINT)), (CAST(2 AS BIGINT), CAST(8 AS BIGINT)), (CAST(3 AS BIGINT), CAST(9 AS BIGINT))) AS v(id,tenant)");
+            assertThat(
+                            rows(
+                                    table,
+                                    "SELECT f.id, s.name FROM facts AS f LEFT JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id AND s.name = 'Ada'"))
+                    .containsExactlyInAnyOrder(
+                            Row.of(1L, "Ada"), Row.of(2L, null), Row.of(3L, null));
+            assertThat(
+                            rows(
+                                    table,
+                                    "SELECT f.id, s.name FROM facts AS f JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id WHERE s.name = 'Ada'"))
+                    .containsExactly(Row.of(1L, "Ada"));
+            table.executeSql(
+                    "CREATE TEMPORARY VIEW expected_names AS SELECT id, tenant, expected, PROCTIME() AS t FROM (VALUES (CAST(1 AS BIGINT), CAST(7 AS BIGINT), 'Ada'), (CAST(1 AS BIGINT), CAST(7 AS BIGINT), 'Grace'), (CAST(1 AS BIGINT), CAST(7 AS BIGINT), 'Ada')) AS v(id,tenant,expected)");
+            assertThat(
+                            rows(
+                                    table,
+                                    "SELECT f.id, s.name FROM expected_names AS f JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id AND f.expected = s.name"))
+                    .containsExactlyInAnyOrder(Row.of(1L, "Ada"), Row.of(1L, "Ada"));
+        }
+    }
+
     private static Stream<Arguments> lookupCases() {
         return Stream.of(Dialect.values())
                 .flatMap(

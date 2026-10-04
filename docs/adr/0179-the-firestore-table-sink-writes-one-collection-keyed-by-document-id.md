@@ -19,9 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-10-04 (client library facts read in google-cloud-firestore 3.49.0 through
   libraries-bom 26.90.0; emulator behavior measured 2026-10-04 against the pinned
-  `google-cloud-cli` emulators image, one run); revised 2026-10-04 by [#1608] (the scan)
-- Issues: [#1607], [#1608], [#1544], [#355], [#1556]
-- Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`, `table.source`); base (`lineage.internal`); flink-sql-connector-gcp-firestore
+  `google-cloud-cli` emulators image, one run); revised 2026-10-04 by [#1608] (the scan) and [#1643] (lookup equality keys)
+- Issues: [#1607], [#1608], [#1544], [#355], [#1556], [#1643]
+- Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`, `table.source`); base (`lineage.internal`, `table`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/firestore.md`
 
 ## Context
@@ -66,11 +66,11 @@ limitations under the License.
 
 [#1609] added the lookup join, in the ADR-0098 shape, through the same converter, `type-mismatch-policy` and metadata columns as the scan:
 
-- **The key is the document id and nothing else**: one equality predicate on the PRIMARY KEY column. A table without a key, which every collection-group table is, cannot be looked up; the lookup reads `collection` itself. An equality between another column and a constant becomes a second lookup key in the planner (`CommonPhysicalLookupJoin.analyzeLookupKeys`), from the `ON` clause or from `WHERE` alike, and is refused, as on Spanner and Bigtable; measured on Flink 2.2.1 and 1.20.4, where a `<>` condition stays a filter after the lookup.
+- **The addressing key is the document id**: an equality predicate on the PRIMARY KEY column is required. A table without a key, which every collection-group table is, cannot be looked up; the lookup reads `collection` itself. Issue [#1643] also accepts top-level physical scalar equality keys supplied by constants in ON or WHERE or by input fields. `base.table.LookupKeyFilter` passes only the id to the reader and compares additional keys against the converted row before caching. Binary values compare by content; NULL keys and NULL additional result values produce no match. Nested key paths, metadata and additional ARRAY, MAP or ROW keys remain unsupported. The planner turns constant equality into a lookup key (`CommonPhysicalLookupJoin.analyzeLookupKeys`), whereas a `<>` condition stays a filter after the lookup; measured on Flink 2.2.1 and 1.20.4.
 - **One `DocumentReference.get(FieldMask)` per key.** The client library has no blocking read, so `lookup.async` chooses Flink's operator, not the call: the blocking lookup waits on the same `ApiFuture` the asynchronous one chains on, and both reach `BatchGetDocuments`. The mask names the produced columns' fields literally, as the scan does, and `__name__` alone when the join uses only the key and metadata; the emulator measured both (`FirestoreCollectionDocumentLookupITCase`). The client library documents `__name__` for queries, not for a document mask, so the real service's answer to that mask is unmeasured until the gated suite ([#1546]) reads it. Nothing cancels a read: Flink only waits on the result, and the library's future is not wired to its stream.
 - **A key that cannot be an id in the collection joins no row without a read**: NULL, empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/`. `collection.document("a/")` reads `a` and `"a/sub/b"` a subcollection's document; the emulator test joins no row for either key while `a` and `a/sub/x` exist. The rest are ids the service never stores, so no document can match them. Unlike the sink, which leaves those ids to the service (above), a lookup decides a join, and a refused read would fail the job for one stream value where no row is the right answer.
 - **`lookup.max-retries` adds budget on top of the client library's** (ADR-0095's shape): it reads again after exactly the statuses the library retries `BatchGetDocuments` on, `UNAVAILABLE`, `INTERNAL` and `DEADLINE_EXCEEDED` (`retry_policy_1_codes`, 3.49.0), and not after `RESOURCE_EXHAUSTED`, which the library does not retry either and which an immediate re-read would only aggravate.
-- **Flink owns the cache**: `NONE` and `PARTIAL`; `FULL` is refused, as on Spanner, because a full cache is a scan with a snapshot and reload contract of its own. A negative `lookup.partial-cache.max-rows`, which Flink checks only when a subtask opens the cache, is refused when the statement is planned.
+- **Flink owns the cache**: `NONE` and `PARTIAL`; `FULL` is refused, as on Spanner, because a full cache is a scan with a snapshot and reload contract of its own. The shared helper normalizes the complete equality tuple, snapshots async values per invocation, and caches only filtered hits and misses. Different additional values for one document id have separate entries; expiry, size, missing-key policy, metrics and lifecycle stay with Flink. A negative `lookup.partial-cache.max-rows`, which Flink checks only when a subtask opens the cache, is refused when the statement is planned.
 - **A lookup reads the document as it is when it reaches the service**: `scan.read-time` names the scan's snapshot and does not apply; a `PARTIAL` cache hit returns the row as it was cached.
 
 ## Consequences
@@ -99,3 +99,4 @@ limitations under the License.
 [#1607]: https://github.com/flink-gcp/flink-connector-gcp/issues/1607
 [#1608]: https://github.com/flink-gcp/flink-connector-gcp/issues/1608
 [#1609]: https://github.com/flink-gcp/flink-connector-gcp/issues/1609
+[#1643]: https://github.com/flink-gcp/flink-connector-gcp/issues/1643

@@ -36,12 +36,16 @@ import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvid
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.factories.FactoryUtil;
+import org.apache.flink.table.functions.AsyncLookupFunction;
+import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
@@ -339,77 +343,59 @@ public final class SpannerDynamicSource
 
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
-        int[] keyPositions = lookupKeyPositions(context);
+        LookupKeyFilter equalityKeys = lookupKeys(context);
+        int[] keyPositions = equalityKeys.addressingPositions();
+        if (equalityKeys.hasAdditionalKeys()) {
+            for (int i = 0; i < keyPositions.length; i++) {
+                keyPositions[i] = i;
+            }
+        }
         if (lookupConfig.isAsync()) {
-            SpannerRowDataAsyncLookupFunction function =
-                    new SpannerRowDataAsyncLookupFunction(
-                            database,
-                            table.apiName(),
-                            retainedColumns(),
-                            schema,
-                            projectedFields,
-                            keyPositions,
-                            emulatorEndpoint,
-                            serviceAccountKeyFile,
-                            lookupConfig.getMaxRetries(),
-                            filterState.runtime());
+            AsyncLookupFunction function =
+                    equalityKeys.wrap(
+                            new SpannerRowDataAsyncLookupFunction(
+                                    database,
+                                    table.apiName(),
+                                    retainedColumns(),
+                                    schema,
+                                    projectedFields,
+                                    keyPositions,
+                                    emulatorEndpoint,
+                                    serviceAccountKeyFile,
+                                    lookupConfig.getMaxRetries(),
+                                    filterState.runtime()));
             return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
                     ? PartialCachingAsyncLookupProvider.of(
-                            function, lookupConfig.createPartialCache())
+                            function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                     : AsyncLookupFunctionProvider.of(function);
         }
-        SpannerRowDataLookupFunction function =
-                new SpannerRowDataLookupFunction(
-                        database,
-                        table.apiName(),
-                        retainedColumns(),
-                        schema,
-                        projectedFields,
-                        keyPositions,
-                        emulatorEndpoint,
-                        serviceAccountKeyFile,
-                        lookupConfig.getMaxRetries(),
-                        filterState.runtime());
+        LookupFunction function =
+                equalityKeys.wrap(
+                        new SpannerRowDataLookupFunction(
+                                database,
+                                table.apiName(),
+                                retainedColumns(),
+                                schema,
+                                projectedFields,
+                                keyPositions,
+                                emulatorEndpoint,
+                                serviceAccountKeyFile,
+                                lookupConfig.getMaxRetries(),
+                                filterState.runtime()));
         return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
-                ? PartialCachingLookupProvider.of(function, lookupConfig.createPartialCache())
+                ? PartialCachingLookupProvider.of(
+                        function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                 : LookupFunctionProvider.of(function);
     }
 
-    private int[] lookupKeyPositions(LookupContext context) {
-        int[][] keys = context.getKeys();
-        int[] primaryKeyIndexes = schema.getPrimaryKeyIndexes();
-        if (primaryKeyIndexes.length == 0 || keys.length != primaryKeyIndexes.length) {
-            throw lookupKeyException();
-        }
-        int[] positions = new int[primaryKeyIndexes.length];
-        Arrays.fill(positions, -1);
-        for (int keyPosition = 0; keyPosition < keys.length; keyPosition++) {
-            if (keys[keyPosition].length != 1) {
-                throw lookupKeyException();
-            }
-            int producedIndex = keys[keyPosition][0];
-            int producedArity = producedDataType.getChildren().size();
-            if (producedIndex < 0 || producedIndex >= producedArity) {
-                throw lookupKeyException();
-            }
-            int physicalIndex =
-                    projectedFields == null ? producedIndex : projectedFields[producedIndex];
-            int primaryPosition = indexOf(primaryKeyIndexes, physicalIndex);
-            if (primaryPosition < 0 || positions[primaryPosition] >= 0) {
-                throw lookupKeyException();
-            }
-            positions[primaryPosition] = keyPosition;
-        }
-        return positions;
-    }
-
-    private static int indexOf(int[] values, int wanted) {
-        for (int i = 0; i < values.length; i++) {
-            if (values[i] == wanted) {
-                return i;
-            }
-        }
-        return -1;
+    private LookupKeyFilter lookupKeys(LookupContext context) {
+        return LookupKeyFilter.of(
+                (RowType) producedDataType.getLogicalType(),
+                context.getKeys(),
+                projectedFields,
+                schema.getPrimaryKeyIndexes(),
+                false,
+                lookupKeyException().getMessage());
     }
 
     private static ValidationException lookupKeyException() {

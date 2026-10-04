@@ -804,13 +804,33 @@ class BigtableDynamicSourceTest {
     }
 
     @Test
-    void rejectsACompositeOrNestedLookupKey() {
+    void acceptsRowEqualityKeysButRefusesThemWithFullCache() {
+        BigtableDynamicSource source = minimal().build();
+        assertThat(source.getLookupRuntimeProvider(lookupContext(new int[][] {{1}, {0}})))
+                .isInstanceOf(LookupFunctionProvider.class);
+        BigtableDynamicSource full =
+                minimal()
+                        .lookupOptions(
+                                lookupOptions(
+                                        "lookup.cache",
+                                        "FULL",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "1 min"))
+                        .build();
+        assertThatThrownBy(
+                        () -> full.getLookupRuntimeProvider(lookupContext(new int[][] {{0}, {1}})))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("FULL requires only the row-key column");
+    }
+
+    @Test
+    void rejectsAKeyWithoutTheRowKeyOrANestedLookupKey() {
         BigtableDynamicSource source = minimal().build();
 
         assertThatThrownBy(
                         () ->
                                 source.getLookupRuntimeProvider(
-                                        lookupContext(new int[][] {{0}, {1}})))
+                                        lookupContext(new int[][] {{1}, {2}})))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("row-key column 'rowkey'");
         assertThatThrownBy(

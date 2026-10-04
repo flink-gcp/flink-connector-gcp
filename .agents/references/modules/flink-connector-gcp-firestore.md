@@ -137,8 +137,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Native-mode Table API lookup (`docs/adr/0179`, lookup section)
 
-- **The lookup key is the document id alone**; a keyless table (every collection-group table) is
-  refused in `FirestoreDynamicSource.checkLookupKey`. Rows come from the scan's
+- **Only the document id addresses a lookup**; a keyless table (every collection-group table) is
+  refused in `FirestoreDynamicSource.lookupKeys`. Additional top-level physical scalar keys are
+  post-read equalities through `base.table.LookupKeyFilter`, before caching by the complete tuple.
+  Rows come from the scan's
   `RowDataDeserializationSchema`, so projection, metadata and the mismatch policy stay one path.
 - **A key that cannot be an id joins no row without a read**
   (`FirestoreDocumentLookups.documentId`): NULL, empty, `.`, `..`, `__…__`, over 1,500 bytes, or

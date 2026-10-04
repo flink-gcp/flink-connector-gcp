@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0098: The Spanner lookup source is primary-key-only and Flink owns its cache
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-12
+- Date: 2026-08-11, revised 2026-08-12 and 2026-10-04
 - Issues: [#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529) (under
-  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573)
-- Modules: spanner
+  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643)
+- Modules: spanner, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
 ## Context
@@ -36,12 +36,21 @@ It restores the declared composite-key order before calling Spanner.
 Synchronous mode uses `readRow`; asynchronous mode uses `readRowAsync`.
 Both modes qualify the table with the optional dialect-specific `named-schema` value used by the sink and bounded source.
 
+Issue #1643 permits additional top-level physical scalar equality keys, including constants from ON or WHERE and comparisons with input fields.
+The complete primary key alone addresses the read.
+The shared `base.table.LookupKeyFilter` compares each additional key against the converted Flink row before returning it to Flink's cache.
+Binary values compare by content; schema-marked values compare in their Flink carrier types rather than native Spanner semantics.
+NULL keys and NULL additional result values produce no match.
+Nested key paths, metadata and additional ARRAY, MAP or ROW keys are rejected during planning.
+The helper snapshots comparison values per async invocation and normalizes complete PARTIAL key tuples without taking over Flink's cache lifecycle or policy.
+
 The connector exposes Flink's `NONE` and `PARTIAL` cache modes and delegates partial-cache storage, expiry, and missing-key behavior to Flink.
 It rejects `FULL` because a full cache would require a scan and a separately defined snapshot and reload contract.
 The connector retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point reads within the configured retry budget.
 Those three are the connector's own choice rather than a mirror of the client's, because `readRow` reaches `StreamingRead` rather than the unary `Read` and `SpannerStubSettings` gives that RPC an empty retryable set (google-cloud-spanner 6.120.0); of the three, only `UNAVAILABLE` is retried underneath, so `ABORTED` and `DEADLINE_EXCEEDED` would be retried by nobody without this loop.
 When the planner also pushes an exact primary-key predicate, both lookup modes reject a non-matching lookup key before opening a point-read RPC.
-Predicates that are not exact primary-key constraints remain Flink residuals.
+Predicates pushed through the scan filter ability that are not exact primary-key constraints remain Flink residuals.
+Additional lookup equality keys are a separate planner channel and are evaluated by the lookup helper.
 The bounded-scan `scan.index` option does not change lookup access paths.
 
 The asynchronous retry loop is shared through `base.table.AsyncLookupRetries` ([ADR-0039](0039-retry-schedules-are-shared-retry-loops-are-not-and-every-schedule-jitters.md)); the read, conversion and failure classifier stay in this connector.
@@ -53,5 +62,7 @@ The asynchronous retry loop is shared through `base.table.AsyncLookupRetries` ([
 ## Consequences
 
 Lookup cost is one native point read on a cache miss when no retryable failure occurs, and absent rows naturally produce an empty result.
-Prefix, range, and non-key lookups remain unsupported.
+Prefix, range, and lookups without the complete primary key remain unsupported.
+PARTIAL stores filtered hits and misses under the whole key tuple; different additional comparison values do not share entries.
+Emulator tests exercise constant predicates in ON and WHERE and input-field keys with NONE and PARTIAL, sync and async, in both dialects.
 The lookup function owns and closes its Spanner service handle.

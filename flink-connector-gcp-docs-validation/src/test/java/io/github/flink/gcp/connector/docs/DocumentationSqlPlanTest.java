@@ -489,11 +489,13 @@ public class DocumentationSqlPlanTest {
                                                 + "AS TIMESTAMP_LTZ(3)) AS last_seen"),
                                 setup(
                                         "CREATE TABLE events (event_id STRING, user_id STRING, "
+                                                + "expected_profile ROW<name STRING, email STRING>, "
                                                 + "proc_time AS PROCTIME()) WITH ("
                                                 + "'connector' = 'datagen', "
                                                 + "'number-of-rows' = '1')")),
                         snippet("flink/BigtableTableReference.sql", "overview"),
-                        snippet("flink/BigtableTableReference.sql", "lookup-join")),
+                        snippet("flink/BigtableTableReference.sql", "lookup-join"),
+                        snippet("flink/BigtableTableReference.sql", "lookup-row-equality")),
                 scenario(
                         "Bigtable table reference map families",
                         snippet("flink/BigtableTableReference.sql", "map-families")),
@@ -651,14 +653,20 @@ public class DocumentationSqlPlanTest {
                                 DocumentationSqlPlanTest::packedPubSubMapScenario)),
                 scenario(
                         "Spanner table reference overview",
-                        setup(
-                                "CREATE TEMPORARY VIEW staged_orders AS "
-                                        + "SELECT CAST(1 AS BIGINT) AS order_id, "
-                                        + "'Alice' AS customer, "
-                                        + "CAST(12.34 AS DECIMAL(38, 9)) AS total, "
-                                        + "CAST('2026-01-01 00:00:00.000000000' "
-                                        + "AS TIMESTAMP_LTZ(9)) AS updated_at"),
-                        snippet("flink/SpannerTableReference.sql", "overview")),
+                        List.of(
+                                setup(
+                                        "CREATE TEMPORARY VIEW staged_orders AS "
+                                                + "SELECT CAST(1 AS BIGINT) AS order_id, "
+                                                + "'Alice' AS customer, "
+                                                + "CAST(12.34 AS DECIMAL(38, 9)) AS total, "
+                                                + "CAST('2026-01-01 00:00:00.000000000' "
+                                                + "AS TIMESTAMP_LTZ(9)) AS updated_at"),
+                                setup(
+                                        "CREATE TABLE order_events (event_id STRING, order_id BIGINT, "
+                                                + "proc_time AS PROCTIME()) WITH ('connector' = 'datagen', "
+                                                + "'number-of-rows' = '1')")),
+                        snippet("flink/SpannerTableReference.sql", "overview"),
+                        snippet("flink/SpannerTableReference.sql", "lookup-equality")),
                 scenario(
                         "Spanner table reference ADD JAR",
                         command(
