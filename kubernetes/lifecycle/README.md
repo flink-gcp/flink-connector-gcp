@@ -16,6 +16,19 @@ limitations under the License.
 
 # Bounded Tier-3 lifecycle
 
+```text
+lifecycle/
+  delivery.cue       # Shared inputs, ConfigMap and supervisor Job
+  smoke.cue          # Smoke and generic recovery applications
+  cloudtasks.cue     # Cloud Tasks session inputs and applications
+  bigquery.cue       # BigQuery trial inputs and applications
+  pubsub.cue         # Pub/Sub trial inputs, applications and access probe
+  sessions/          # Reviewed Cloud Tasks session files
+```
+
+The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
+The runner selects the scenario through its existing input.
+
 The `Tier-3 run` workflow admits one generic smoke application and returns the environment to its tracked idle state.
 Its `scenario` input selects ordinary completion (`smoke`, the default) or the fixed `generic-recovery` exercise below.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
@@ -501,4 +514,14 @@ The offline `bigquery-recovery` proposal is described in the [BigQuery proposal 
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub dispatch still refuses before the environment lock.
 The version 5 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
-A Pub/Sub trial is dispatched the same way from a reviewed file under [pubsub-trials/](pubsub-trials/), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's numbers; dispatch builds and verifies its version 5 approval and bundle, then refuses before the lock until execution accounting exists, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes; the runner's [admission](../apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](../apps/pubsub/README.md#recovery-exercise) are implemented.
+A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's numbers; dispatch builds and verifies its version 5 approval and bundle, then refuses before the lock until execution accounting exists, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes; the runner's [admission](../apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](../apps/pubsub/README.md#recovery-exercise) are implemented.
+
+## Reviewed Pub/Sub trials
+
+A `pubsub-recovery` dispatch names one file under `kubernetes/lifecycle/pubsub-trials/`, without `.toml`, through the run workflow's `pubsub_trial` input.
+Each file holds the [offline trial schema](../apps/pubsub/README.md#offline-trial-proposal) as TOML beside the Apache licence header that apache-rat requires.
+The approved commit must contain the file: dispatch refuses an untracked TOML file under `kubernetes/`.
+
+No trial is committed yet; [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's trials, their numbers and their stop conditions.
+Create the directory when adding its first reviewed trial file.
+A file under that path is a runnable trial once admission opens, so the example the tests use lives in `tools/tier3/tests/fixtures/pubsub-trials/` instead, where no dispatch can name it.

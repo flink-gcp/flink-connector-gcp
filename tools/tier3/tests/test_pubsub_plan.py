@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 import pytest
+from flink_tier3 import lifecycle
 from flink_tier3 import pubsub_plan as plan
 from flink_tier3 import render as command
 from flink_tier3.common import Failure
@@ -499,7 +500,7 @@ def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, 
     assert len(calls) == 1
 
 
-REVIEWED = Path(__file__).parents[3] / "kubernetes/lifecycle/pubsub-trials"
+REVIEWED = Path(__file__).parents[3] / lifecycle.PUBSUB_TRIALS
 # The tests' example trial, kept where no dispatch can name it.
 FIXTURE_TRIALS = Path(__file__).parent / "fixtures/pubsub-trials"
 
@@ -508,9 +509,9 @@ def test_every_reviewed_trial_file_is_a_valid_trial():
     """A dispatch names one of these; a broken one would refuse only on the day."""
     from flink_tier3.policy import RUN_ID
 
+    if not REVIEWED.exists():
+        return
     for path in sorted(REVIEWED.iterdir()):
-        if path.name == "README.md":
-            continue
         assert path.suffix == ".toml", path
         assert RUN_ID.fullmatch(path.stem), path
         # The one-pass feasibility check dispatch reaches only after the cluster.

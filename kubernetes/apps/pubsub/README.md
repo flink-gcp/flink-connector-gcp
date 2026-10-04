@@ -805,7 +805,7 @@ The scenario takes four inputs beyond the common ones.
 
 | Input | Contract |
 | --- | --- |
-| `pubsub_trial` | A reviewed trial file under [`kubernetes/lifecycle/pubsub-trials/`](../../lifecycle/pubsub-trials/), named without `.toml`; an empty name is refused |
+| `pubsub_trial` | A reviewed trial file under [`kubernetes/lifecycle/pubsub-trials/`](../../lifecycle/README.md#reviewed-pubsub-trials), named without `.toml`; an empty name is refused |
 | `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
 | `expires_at` | 60 to 70 minutes after admission; the latest the run may end |
 | `approval` | `APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION, N REQUESTS`, where `R` and `N` are the trial file's `records_per_subscription` and `total_request_limit` |
@@ -814,7 +814,7 @@ A reviewed trial file holds the [offline proposal schema](#offline-trial-proposa
 The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
 The phrase carries the trial's own numbers because they differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one trial therefore does not approve another trial with different numbers.
 The request number is the proposed total ceiling, which is not yet an aggregate meter.
-The directory holds no trial until [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's, so every dispatch is refused at the trial file for now; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
+The trial directory is created when [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's first reviewed input, so every dispatch is refused at the trial file for now; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, as the version 5 approval requires.
 The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
