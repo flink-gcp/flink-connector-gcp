@@ -66,7 +66,7 @@ resource "google_project_iam_member" "pubsub_lifecycle" {
 }
 
 # Defined here, but granted only on exact run-owned subscriptions by the runner.
-# Keep role_id aligned with ResourcePlan.grants in flink_tier3/pubsub.py.
+# Keep role_id aligned with ResourcePlan.grants in flink_tier3/pubsub/resources.py.
 resource "google_project_iam_custom_role" "pubsub_consumer" {
   project     = local.project_id
   role_id     = "tier3PubSubConsumer"

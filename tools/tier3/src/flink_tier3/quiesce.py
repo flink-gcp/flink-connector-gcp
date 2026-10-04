@@ -14,7 +14,7 @@
 # limitations under the License.
 """Writer listings and the retrying quiescence poll the service barriers share."""
 
-from .cloudtasks import transient
+from .cloudtasks.session import transient
 from .common import Failure
 from .policy import POLL
 

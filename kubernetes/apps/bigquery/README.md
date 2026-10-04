@@ -313,7 +313,7 @@ That coverage does not establish BigQuery query acceptance or streaming visibili
 
 ### Resource adapter
 
-[`flink_tier3.bigquery_resources`](../../../tools/tier3/src/flink_tier3/bigquery_resources.py) provides internal REST v2 table and query operations for the BigQuery actors.
+[`flink_tier3.bigquery.resources`](../../../tools/tier3/src/flink_tier3/bigquery/resources.py) provides internal REST v2 table and query operations for the BigQuery actors.
 It has no CLI route and does not extend lifecycle admission.
 Its synthetic HTTP tests cover request construction, lost responses, ownership conflicts, cleanup and result pagination; real-service acceptance remains pending.
 
@@ -357,7 +357,7 @@ Expiry rejects late responses, including a 404 or an empty successful body; a fa
 
 ### Durable resource controller
 
-[`flink_tier3.bigquery_lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery_lifecycle.py) composes the adapter with generation-checked lifecycle records.
+[`flink_tier3.bigquery.lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery/lifecycle.py) composes the adapter with generation-checked lifecycle records.
 The internal runner and supervisor use this controller only with explicitly supplied handoffs.
 Neither production CLI entrypoint admits a BigQuery scenario yet.
 The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
@@ -397,7 +397,7 @@ They do not establish authenticated handoff, a functioning external barrier or r
 
 ### Query requests and runner release
 
-[`flink_tier3.bigquery_handoff`](../../../tools/tier3/src/flink_tier3/bigquery_handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
+[`flink_tier3.bigquery.handoff`](../../../tools/tier3/src/flink_tier3/bigquery/handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
 The common runner settlement and supervisor cleanup paths accept this protocol through explicit constructor arguments.
 The common model validates BigQuery approval inputs, and the [production dispatch](#production-dispatch) constructs these actor bindings through the authenticated actor factories.
 The caller must authenticate both actors, allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
@@ -462,7 +462,7 @@ Observed Pod disappearance is not a substitute for that callback's creator/write
 
 ## Quiescence barrier
 
-[`flink_tier3.bigquery_quiesce`](../../../tools/tier3/src/flink_tier3/bigquery_quiesce.py) builds that callback from the run's own identity, inside the authenticated supervisor factory, so no caller supplies one: a `callable` check cannot tell a proof from a constant, and `lambda: True` satisfied every check the factory previously made.
+[`flink_tier3.bigquery.quiesce`](../../../tools/tier3/src/flink_tier3/bigquery/quiesce.py) builds that callback from the run's own identity, inside the authenticated supervisor factory, so no caller supplies one: a `callable` check cannot tell a proof from a constant, and `lambda: True` satisfied every check the factory previously made.
 
 On every call it lists the nine kinds that can run or restore a writer, in the application namespace alone rather than through the four-namespace inventory, and refuses while any object owned by this run's application roots is still among them.
 It is scoped on both axes: the supervisor asking the question is itself a Pod under a root in `tier3-system`, so seeding the ownership closure from every root would make it wait for itself, and `observed` is not namespace-scoped, so the namespace filter is load-bearing on its own.
@@ -686,7 +686,7 @@ They establish the internal sequencing and refusal behavior, not actual Operator
 
 ## Authenticated internal actors
 
-[`flink_tier3.bigquery_actors`](../../../tools/tier3/src/flink_tier3/bigquery_actors.py) constructs internal actors with a role-specific BigQuery HTTP session.
+[`flink_tier3.bigquery.actors`](../../../tools/tier3/src/flink_tier3/bigquery/actors.py) constructs internal actors with a role-specific BigQuery HTTP session.
 Its `runner` context manager compares the complete bundle with the independently supplied environment approval, including local source, Git revision and CUE rendering checks.
 Its `supervisor` context manager instead binds the initial and upgrade manifests and installed source to that environment approval; it does not run Git or CUE inside the runtime image.
 Both validate the approval, current environment lock and actor role before Google authentication, then recheck ownership before returning the actor.
@@ -699,7 +699,7 @@ Because both factories validate the approval against the current clock, neither 
 Replacing a supervisor inside that window is therefore not a recovery path, and the production entrypoints do not make it one.
 Exiting closes the HTTP session; it does not acknowledge runner release or initiate cleanup automatically.
 
-[`BigQuerySession`](../../../tools/tier3/src/flink_tier3/bigquery_auth.py) uses `google-auth` application default credentials, requesting `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials with suitable scopes.
+[`BigQuerySession`](../../../tools/tier3/src/flink_tier3/bigquery/auth.py) uses `google-auth` application default credentials, requesting `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials with suitable scopes.
 Before the first BigQuery request with each distinct bearer header, it calls Google's [OAuth2 userinfo endpoint](https://developers.google.com/resources/api-libraries/documentation/oauth2/v2/python/latest/oauth2_v2.userinfo.html) using that same header.
 It requires a verified email equal to `tier3-runner@flink-gcp.iam.gserviceaccount.com` or `tier3-supervisor@flink-gcp.iam.gserviceaccount.com`, according to the actor role.
 It does not infer the authenticated principal from credential configuration or email metadata.

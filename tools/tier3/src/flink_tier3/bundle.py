@@ -18,6 +18,7 @@ import ast
 import hashlib
 import json
 from importlib.resources import files
+from importlib.util import resolve_name
 
 from .common import Failure
 
@@ -30,8 +31,9 @@ ENTRYPOINTS = ("__main__", "__init__", "cli")
 # follow, so `cli` reads this table rather than keeping its own copy.
 DISPATCHED = {
     "supervisor": "runtime",
-    "bigquery-bundle": "bigquery_bundle",
-    "vm-analyze": "vmanalyze",
+    "bigquery": "bigquery.oracle",
+    "bigquery-bundle": "bigquery.bundle",
+    "vm-analyze": "cloudtasks.vmanalyze",
 }
 # The Pod's command is fixed by the manifest. Only its module seeds the walk;
 # naming a command the Pod never runs would carry that command's modules into
@@ -42,29 +44,47 @@ DATA_FILES = ("policy.toml",)
 
 def package_sources(directory=None):
     directory = files("flink_tier3") if directory is None else directory
-    return {
-        path.name: path.read_bytes().decode("utf-8")
-        for path in sorted(directory.iterdir(), key=lambda path: path.name)
-        if path.is_file() and path.name.endswith((".py", ".toml"))
-    }
+
+    def walk(directory, prefix=""):
+        for path in sorted(directory.iterdir(), key=lambda path: path.name):
+            name = prefix + path.name
+            if path.is_dir():
+                yield from walk(path, name + "/")
+            elif path.is_file() and path.name.endswith((".py", ".toml")):
+                yield name, path.read_bytes().decode("utf-8")
+
+    return dict(walk(directory))
 
 
-def _imported(source):
+def _imported(source, module="__init__", modules=None):
+    parent = module.rpartition(".")[0]
+    package = "flink_tier3" + ("." + parent if parent else "")
+
+    def local(name):
+        return name == "flink_tier3" or name.startswith("flink_tier3.")
+
+    def suffix(name):
+        return (
+            name.removeprefix("flink_tier3.") if name != "flink_tier3" else "__init__"
+        )
+
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom):
-            if node.level == 1 and node.module:
-                yield node.module
-            elif node.level == 1:
-                # `from . import module` names its modules as the imported items.
-                yield from (alias.name for alias in node.names)
-            elif node.level == 0 and node.module == "flink_tier3":
-                yield from (alias.name for alias in node.names)
-            elif node.level == 0 and (node.module or "").startswith("flink_tier3."):
-                yield node.module.split(".", 1)[1]
+            name = "." * node.level + (node.module or "")
+            name = resolve_name(name, package) if node.level else name
+            if local(name):
+                yield suffix(name)
+                # Bare relative imports name modules in this package. Keep
+                # their edges even when a truncated delivery lacks the file.
+                # Items from an explicit module may instead be exported symbols.
+                for alias in node.names:
+                    child = suffix(name + "." + alias.name)
+                    if node.module is None or modules is None or child in modules:
+                        yield child
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("flink_tier3."):
-                    yield alias.name.split(".", 1)[1]
+                if local(alias.name):
+                    yield suffix(alias.name)
         # Package data is opened by name, so a literal naming a file beside the
         # modules is the only edge to it. A delivery whose data stayed behind is
         # the one incompleteness both actors would compute the same digest over.
@@ -73,7 +93,7 @@ def _imported(source):
             and isinstance(node.value, str)
             and node.value.endswith(".toml")
         ):
-            yield node.value
+            yield (parent.replace(".", "/") + "/" if parent else "") + node.value
 
 
 def delivered_sources(directory=None):
@@ -83,6 +103,18 @@ def delivered_sources(directory=None):
     exactly the set the runner computed from a complete installation.
     """
     available = package_sources(directory)
+    modules = {
+        name.removesuffix(".py").replace("/", "."): name
+        for name in available
+        if name.endswith(".py")
+    }
+    modules.update(
+        {
+            name.removesuffix("/__init__.py").replace("/", "."): name
+            for name in available
+            if name.endswith("/__init__.py")
+        }
+    )
     reachable, data = set(), set(DATA_FILES)
     pending = [*ENTRYPOINTS, *(DISPATCHED.get(c, c) for c in POD_COMMANDS)]
     while pending:
@@ -91,11 +123,24 @@ def delivered_sources(directory=None):
             if name in available:
                 data.add(name)
             continue
-        if name in reachable or name + ".py" not in available:
+        if name in reachable:
             continue
+        if name not in modules:
+            raise Failure(
+                "Delivered package is missing " + name.replace(".", "/") + ".py"
+            )
         reachable.add(name)
-        pending.extend(_imported(available[name + ".py"]))
-    names = {name + ".py" for name in reachable} | data
+        path = modules[name]
+        # Importing a submodule executes every package initializer above it.
+        parts = path.split("/")[:-1]
+        for index in range(1, len(parts) + 1):
+            initializer = "/".join(parts[:index]) + "/__init__.py"
+            if initializer not in available:
+                raise Failure("Delivered package is missing " + initializer)
+            pending.append(".".join(parts[:index]) + ".__init__")
+        module = path.removesuffix(".py").replace("/", ".")
+        pending.extend(_imported(available[path], module, modules))
+    names = {modules[name] for name in reachable} | data
     missing = sorted(names - set(available))
     if missing:
         raise Failure("Delivered package is missing " + ", ".join(missing))

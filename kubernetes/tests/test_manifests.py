@@ -27,18 +27,15 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from flink_tier3 import (
-    approval_bundle,
-    bigquery_bundle,
-    bigquery_plan,
-    pubsub_bundle,
-    pubsub_plan,
-    repository,
-)
+from flink_tier3 import approval_bundle, repository
+from flink_tier3.bigquery import bundle as bigquery_bundle
+from flink_tier3.bigquery import plan as bigquery_plan
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.common import Failure, digest, timestamp, verify_pod
 from flink_tier3.model import validate_approval
 from flink_tier3.policy import BIGQUERY_CEILINGS, GAR, POD_RESOURCES
+from flink_tier3.pubsub import bundle as pubsub_bundle
+from flink_tier3.pubsub import plan as pubsub_plan
 
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
@@ -745,7 +742,7 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     # The delivery is a subset, and nothing else at this layer would notice if
     # it stopped being one: every other assertion compares it against itself.
     assert "flink_tier3_analyze.py" not in config["data"]
-    assert "flink_tier3_protocol_1246.toml" not in config["data"]
+    assert "flink_tier3_cloudtasks.protocol_1246.toml" not in config["data"]
     assert job["metadata"]["namespace"] == "tier3-system"
     # Only a disrupted Pod is replaced, and only once it is terminal, so a
     # replacement never runs beside the Pod it replaces; every other failure
@@ -776,6 +773,10 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     pod = job["spec"]["template"]["spec"]
     mounted = {}
     for item in pod["volumes"][0]["configMap"]["items"]:
+        assert "/" not in item["key"]
+        if item["path"].startswith("flink_tier3/"):
+            relative = item["path"].removeprefix("flink_tier3/")
+            assert item["key"] == "flink_tier3_" + relative.replace("/", ".")
         path = tmp_path / item["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(config["data"][item["key"]])
@@ -1496,7 +1497,7 @@ BIGQUERY_MODE_INTERVALS = {"ALO": "30 s", "EO": "30 s", "FILE_LOADS": "120 s"}
 def test_bigquery_initial_and_upgrade_preserve_the_trial(
     module, mode, records, destinations
 ):
-    from flink_tier3.bigquery import Trial
+    from flink_tier3.bigquery.oracle import Trial
 
     applications = []
     for phase in ("initial", "upgrade"):
@@ -2271,15 +2272,16 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         == approval["bigquery_trial"]
     )
     assert {
-        name: data["flink_tier3_" + name] for name in delivered_sources()
+        name: data["flink_tier3_" + name.replace("/", ".")]
+        for name in delivered_sources()
     } == delivered_sources()
 
 
 def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
     """The probe runs the packaged program, as the workload, outside Spot."""
     from flink_tier3.bundle import package_sources
-    from flink_tier3.pubsub import ResourcePlan
-    from flink_tier3.pubsub_access import probe_spec
+    from flink_tier3.pubsub.access import probe_spec
+    from flink_tier3.pubsub.resources import ResourcePlan
 
     root = module.parent
     module.rename(root / "kubernetes")
@@ -2319,7 +2321,7 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
         "python3",
         "-I",
         "-c",
-        package_sources()["pubsub_probe.py"],
+        package_sources()["pubsub/probe.py"],
     ]
     plan = ResourcePlan("proposal-1581", "a" * 32)
     window = SimpleNamespace(
@@ -2419,7 +2421,8 @@ def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_
     assert json.loads(data["approval.json"])["pubsub_trial"] == pubsub_trial
     assert json.loads(data["proposal.json"]) == bundle["proposal"]
     assert {
-        name: data["flink_tier3_" + name] for name in delivered_sources()
+        name: data["flink_tier3_" + name.replace("/", ".")]
+        for name in delivered_sources()
     } == delivered_sources()
 
 

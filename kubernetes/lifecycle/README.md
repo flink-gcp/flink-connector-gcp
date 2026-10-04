@@ -33,6 +33,10 @@ The `Tier-3 run` workflow admits one generic smoke application and returns the e
 Its `scenario` input selects ordinary completion (`smoke`, the default) or the fixed `generic-recovery` exercise below.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
+BigQuery, Pub/Sub, and Cloud Tasks each have a service subpackage; shared lifecycle and infrastructure modules remain at the package root.
+The delivered source inventory uses relative paths, including subdirectories.
+ConfigMap keys replace `/` with `.`, and volume projection restores the directories before the supervisor imports them.
+Source relocation changes the approval's source pins; existing approvals and measurement records keep their historical hashes, and a new-layout run requires a new approval.
 The installed `flink-tier3` CLI is the entry point; [workspace instructions](../../tools/README.md) cover building a wheel and selecting a repository checkout.
 [delivery.cue](delivery.cue) receives Python modules and `policy.toml` as JSON on standard input and projects them through one immutable ConfigMap.
 The Pod runs `python3 -m flink_tier3 supervisor` from that projected directory.
@@ -60,28 +64,28 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
 | `flink_tier3/exercise.py` | One savepoint upgrade, one JM Pod deletion and phase-specific recovery evidence |
-| `flink_tier3/cloudtasks.py` | Cloud Tasks queue ownership, campaign ledger, session files and cell manifest checks |
-| `flink_tier3/protocol.py`, `protocol_1246.toml` | The pinned #1246 measurement protocol and the quantities sessions derive from it |
-| `flink_tier3/observe.py` | Per-poll Flink REST, TaskManager, queue and Pod observations of a running cell, and the interrupt control |
-| `flink_tier3/evidence.py` | Row and receipt reconciliation, verified export to durable evidence and benchmark prefix release |
+| `flink_tier3/cloudtasks/session.py` | Cloud Tasks queue ownership, campaign ledger, session files and cell manifest checks |
+| `flink_tier3/cloudtasks/protocol.py`, `cloudtasks/protocol_1246.toml` | The pinned #1246 measurement protocol and the quantities sessions derive from it |
+| `flink_tier3/cloudtasks/observe.py` | Per-poll Flink REST, TaskManager, queue and Pod observations of a running cell, and the interrupt control |
+| `flink_tier3/cloudtasks/evidence.py` | Row and receipt reconciliation, verified export to durable evidence and benchmark prefix release |
 | `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
-| `flink_tier3/bigquery.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
-| `flink_tier3/bigquery_plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
-| `flink_tier3/bigquery_lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier |
-| `flink_tier3/bigquery_handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
-| `flink_tier3/bigquery_exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
+| `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
+| `flink_tier3/bigquery/plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
+| `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier |
+| `flink_tier3/bigquery/handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
+| `flink_tier3/bigquery/exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
 | `flink_tier3/approval_bundle.py` | The approved-checkout check, approval embedding and ConfigMap size limit that every approval-bound service delivery shares |
-| `flink_tier3/bigquery_bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
-| `flink_tier3/bigquery_resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
-| `flink_tier3/pubsub.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
-| `flink_tier3/pubsub_plan.py` | Offline, unapproved Pub/Sub trial, reviewed trial files, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
-| `flink_tier3/pubsub_bundle.py` | Approval-bound Pub/Sub delivery and complete re-render verification; no authentication or admission |
-| `flink_tier3/pubsub_lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
-| `flink_tier3/pubsub_messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
-| `flink_tier3/pubsub_traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
-| `flink_tier3/pubsub_handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
-| `flink_tier3/pubsub_actors.py`, `pubsub_auth.py`, `pubsub_guard.py`, `pubsub_quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier |
-| `flink_tier3/pubsub_admission.py`, `pubsub_access.py`, `pubsub_probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program; dispatch still refuses before the lock |
+| `flink_tier3/bigquery/bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
+| `flink_tier3/bigquery/resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
+| `flink_tier3/pubsub/resources.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
+| `flink_tier3/pubsub/plan.py` | Offline, unapproved Pub/Sub trial, reviewed trial files, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
+| `flink_tier3/pubsub/bundle.py` | Approval-bound Pub/Sub delivery and complete re-render verification; no authentication or admission |
+| `flink_tier3/pubsub/lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
+| `flink_tier3/pubsub/messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
+| `flink_tier3/pubsub/traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
+| `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
+| `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier |
+| `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program; dispatch still refuses before the lock |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.

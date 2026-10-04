@@ -44,6 +44,17 @@ The package uses a `src/` layout and ordinary imports; its CLI, bootstrap helper
 The wheel includes all Python modules and the reviewed `policy.toml`.
 It is a local build artifact; this change adds no package-registry publication.
 
+Service tooling lives in the `flink_tier3.bigquery`, `flink_tier3.pubsub`, and `flink_tier3.cloudtasks` subpackages.
+Shared approval, lifecycle, transport, source delivery, and report entry points remain in `flink_tier3`.
+Cloud Tasks owns its observation/evidence collectors, campaign tooling, and `protocol_1246.toml`.
+Tests follow the same service directories, with shared lifecycle and package tests at their parent.
+Internal imports use the new paths; the CLI command names and arguments remain unchanged.
+
+Source collection includes nested Python modules and TOML data.
+The supervisor delivery follows imports, package initializers, deferred actors, and referenced package data.
+ConfigMap keys replace path separators with dots, while volume projection restores the original package directories.
+Moving source changes both source pins; historical approvals retain their recorded hashes, and execution from this layout needs a new approval.
+
 Commands that read CUE or OpenTofu inputs require a repository checkout.
 The current directory is the default root; an installed CLI can select another checkout with `flink-tier3 --repository /path/to/checkout COMMAND ...`.
 Other relative arguments, including kubeconfig and evidence paths, remain relative to the caller's current directory.

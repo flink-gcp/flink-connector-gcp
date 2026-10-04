@@ -435,8 +435,8 @@ def validate_approval(approval, now=None):
 def _validate_pubsub(approval, start, end):
     # This internal schema binds proposed caps; it does not estimate cost or
     # authorize execution. Runner and Supervisor still refuse this scenario.
-    from .pubsub import ResourcePlan
-    from .pubsub_plan import WINDOW_SECONDS, input_plan
+    from .pubsub.plan import WINDOW_SECONDS, input_plan
+    from .pubsub.resources import ResourcePlan
 
     if type(approval["version"]) is not int:
         raise Failure("Pub/Sub approval version must be an integer")
@@ -457,7 +457,7 @@ def _validate_pubsub(approval, start, end):
 def _validate_bigquery(approval, start, end):
     # Import at validation time: the offline proposal uses this module's
     # resource cost calculation, and both paths must keep the same trial schema.
-    from .bigquery_plan import WINDOW_SECONDS, validate_trial
+    from .bigquery.plan import WINDOW_SECONDS, validate_trial
 
     trial = approval.get("bigquery_trial")
     if type(approval["version"]) is not int:
@@ -637,7 +637,7 @@ class Approval:
     @property
     def bigquery_plan(self):
         """Derive the exact service plan from validated trial inputs and expiry."""
-        from .bigquery_plan import resource_plan
+        from .bigquery.plan import resource_plan
 
         if self.scenario != "bigquery-recovery":
             raise Failure("Approval does not describe a BigQuery trial")
@@ -649,7 +649,7 @@ class Approval:
     @property
     def pubsub_plan(self):
         """Derive service identities from a validated internal Pub/Sub approval."""
-        from .pubsub import ResourcePlan
+        from .pubsub.resources import ResourcePlan
 
         self._validate_pubsub()
         return ResourcePlan(self.run_id, self.nonce)
@@ -657,7 +657,7 @@ class Approval:
     @property
     def pubsub_traffic_limits(self):
         """Bind helper counters and their deadline to the serialized trial."""
-        from .pubsub_traffic import TrafficLimits
+        from .pubsub.traffic import TrafficLimits
 
         self._validate_pubsub()
         return TrafficLimits(

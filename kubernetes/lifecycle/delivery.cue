@@ -16,6 +16,7 @@ package tier3
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 )
@@ -31,12 +32,12 @@ applicationImage: *"" | string                                                  
 proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
 packageSources: {
-	"__init__.py"!:                 string
-	"__main__.py"!:                 string
-	"cli.py"!:                      string
-	"runtime.py"!:                  string
-	"policy.toml"!:                 string
-	[=~"^[a-z0-9_]+[.](py|toml)$"]: string
+	"__init__.py"!:                               string
+	"__main__.py"!:                               string
+	"cli.py"!:                                    string
+	"runtime.py"!:                                string
+	"policy.toml"!:                               string
+	[=~"^[a-z0-9_]+(/[a-z0-9_]+)*[.](py|toml)$"]: string
 }
 
 // A smoke run is bounded by one 60-minute approval; a measurement session by
@@ -65,7 +66,7 @@ delivery: resources: {
 		immutable: true
 		data: {
 			for name, content in packageSources {
-				"flink_tier3_\(name)": content
+				"flink_tier3_\(strings.Replace(name, "/", ".", -1))": content
 			}
 			"approval.json": approval
 			// application.json is declared by the selected scenario file.
@@ -128,7 +129,7 @@ delivery: resources: {
 					}]
 					volumes: [{name: "source", configMap: {name: "lifecycle-\(runID)", items: [
 						for name, _ in packageSources {
-							key:  "flink_tier3_\(name)"
+							key:  "flink_tier3_\(strings.Replace(name, "/", ".", -1))"
 							path: "flink_tier3/\(name)"
 						},
 						{key: "approval.json", path: "approval.json"},

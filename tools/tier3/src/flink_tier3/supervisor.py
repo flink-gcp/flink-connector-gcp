@@ -20,9 +20,9 @@ import math
 import re
 import uuid
 
-from .bigquery_exercise import BigQueryExercise, require_handoff
+from .bigquery.exercise import BigQueryExercise, require_handoff
 from .cleanup import Cleanup
-from .cloudtasks import transient, verify_queue
+from .cloudtasks.session import transient, verify_queue
 from .common import (
     ApiError,
     Failure,
@@ -35,9 +35,9 @@ from .common import (
 from .exercise import RecoveryExercise
 from .model import Phase, cell_budget_seconds, open_for_replacement
 from .policy import CLOUDTASKS, CLOUDTASKS_POLICY, MIB, NONCE, POLL, SMOKE
-from .pubsub_exercise import PubSubExercise
-from .pubsub_guard import PubSubGuard, admission_deadline
-from .pubsub_handoff import runner_released
+from .pubsub.exercise import PubSubExercise
+from .pubsub.guard import PubSubGuard, admission_deadline
+from .pubsub.handoff import runner_released
 
 
 class SessionHooks:

@@ -590,7 +590,7 @@ see `kubernetes/lifecycle/README.md` for the complete offline command. The `clou
 renders one FlinkDeployment per cell of a reviewed session file under
 `kubernetes/lifecycle/sessions/`; before changing the cell vocabulary, the queue lifecycle or the
 session ceilings, read that runbook's session section, `kubernetes/apps/cloudtasks/README.md` and
-ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks.py` and
+ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks/session.py` and
 `policy.toml` in agreement. The `pubsub-recovery` dispatch names a reviewed trial file under
 `kubernetes/lifecycle/pubsub-trials/`; read the [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials)
 and `kubernetes/apps/pubsub/README.md` before adding one. Create the directory with its first
@@ -599,7 +599,7 @@ header apache-rat requires. A file there is runnable
 once admission opens, so test trials belong under `tools/tier3/tests/fixtures/`. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
 offline; it never contacts a cluster or a bucket.
 `just tier3-vm-analyze <out> <campaign>...` does the same for single-host campaign directories
-(`flink_tier3.vmanalyze`, ADR-0162).
+(`flink_tier3.cloudtasks.vmanalyze`, ADR-0162).
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
 dedicated kubeconfig; GKE API discovery verifies that endpoint.

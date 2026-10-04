@@ -53,6 +53,7 @@ limitations under the License.
 - Updated: 2026-10-04 (checkout-only modules kept out of the delivered package)
 - Updated: 2026-10-04 (Pub/Sub recovery verdict decided by the supervisor)
 - Updated: 2026-10-04 (uniform lifecycle scenario files and reviewed-trial instructions)
+- Updated: 2026-10-04 (service subpackages and nested source delivery)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -203,10 +204,15 @@ This stage does not implement or validate workload admission, supervision, share
 The foundation was merged and applied before the dependent runtime implementation, with idle inventory and empty refreshed plans across the three roots.
 The [lifecycle runbook](../../kubernetes/lifecycle/README.md) defines the fixed resource/cost approval, explicit main dispatch, ownership checks and recovery procedure.
 Keep shared approval, records, transport and cleanup in the `flink_tier3` package under `tools/tier3/src/`, with fixed environment/resource/cost values in its reviewed `policy.toml`.
+Organize service tooling beneath `bigquery/`, `pubsub/`, and `cloudtasks/`, with service tests in corresponding directories.
+Keep shared modules at the parent and use explicit imports from service modules rather than compatibility files at the old paths.
 Read all package modules and policy through Python package resources and pass them to CUE as JSON input.
+Collect nested source recursively and close the supervisor delivery under imports, package initializers, deferred actor imports, and referenced package data.
+Encode source path separators as dots in ConfigMap keys and retain the original relative paths in volume projection.
 Project them through one immutable system-namespace ConfigMap; the Pod runs the package CLI without startup installation.
 This removes CUE's manually maintained source-file inventory and the script loader's file-path/import-order dependency.
 The approval's `runtime_sha256` now hashes the complete bundle's relative paths and file hashes, preserving source/configuration identity after the requested module split.
+The layout change alters source hashes; retain historical approvals and measurement records without rewriting their pins, and require a new approval for execution from the new layout.
 Use the official Kubernetes, Cloud Storage and Google Auth Python clients for API transport and authentication, with dependencies installed in the digest-pinned lifecycle image before publication.
 This replaces the initial standard-library-only transport choice at the owner's request; policy-only source changes still do not require rebuilding the image.
 Manage Tier-3 as a buildable uv workspace member with its own runtime dependencies and `flink-tier3` console entry point, sharing the root `uv.lock`.

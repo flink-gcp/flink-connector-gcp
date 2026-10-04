@@ -45,10 +45,9 @@ from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
 
-from .bigquery_analyze import assess_runs, render
-from .bigquery_analyze import counts as bigquery_counts
-from .common import EXCLUDED, INCONCLUSIVE, USABLE, Failure
-from .evidence import (
+from .bigquery.analyze import assess_runs, render
+from .bigquery.analyze import counts as bigquery_counts
+from .cloudtasks.evidence import (
     MARKER,
     RECEIPT,
     RECEIPTS,
@@ -61,7 +60,8 @@ from .evidence import (
     iter_rows,
     manifest_sha256,
 )
-from .protocol import SHAPES, load, next_probe, protocol_sha256, window
+from .cloudtasks.protocol import SHAPES, load, next_probe, protocol_sha256, window
+from .common import EXCLUDED, INCONCLUSIVE, USABLE, Failure
 
 SUFFIX = re.compile(r"-(x2|q[0-9]+)\Z")
 PROBE = re.compile(r"-q([0-9]+)\Z")
