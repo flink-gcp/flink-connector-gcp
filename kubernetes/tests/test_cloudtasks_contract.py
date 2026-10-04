@@ -19,6 +19,7 @@ from pathlib import Path
 
 import flink_tier3 as rt
 from flink_tier3.bundle import delivered_sources
+from flink_tier3.cloudtasks import session as cloudtasks
 
 ROOT = Path(__file__).resolve().parents[2]
 RUN_ID = "contract-probe"
@@ -30,7 +31,7 @@ SESSIONS = sorted((ROOT / "kubernetes/lifecycle/sessions").glob("*.toml"))
 
 
 def render(line, session_file=None):
-    session = rt.load_session(
+    session = cloudtasks.load_session(
         session_file or ROOT / "kubernetes/lifecycle/sessions/example-wiring.toml"
     )
     image = rt.GAR + rt.FLINK_LINES[line][0] + "@" + DIGEST
@@ -113,7 +114,7 @@ def test_rendered_cells_pass_the_runtime_manifest_contract_on_both_lines():
         assert len(manifests) == len(session["cells"])
         for manifest, cell in zip(manifests, approved.cells, strict=True):
             assert (
-                rt.validate_cell_manifest(manifest, cell, approved)
+                cloudtasks.validate_cell_manifest(manifest, cell, approved)
                 == (rt.FLINK_LINES[line][0])
             )
 
@@ -129,4 +130,4 @@ def test_every_reviewed_session_renders_and_passes_the_contract():
         session, image, manifests = render(line, path)
         approved = approval(session, line, image, manifests)
         for manifest, cell in zip(manifests, approved.cells, strict=True):
-            rt.validate_cell_manifest(manifest, cell, approved)
+            cloudtasks.validate_cell_manifest(manifest, cell, approved)

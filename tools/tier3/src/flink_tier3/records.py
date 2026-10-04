@@ -20,11 +20,11 @@ import copy
 import time
 import uuid
 
-from .bigquery_handoff import require_bigquery_clean
+from .bigquery.handoff import require_bigquery_clean
 from .common import ApiError, Failure, Superseded, json_bytes, utc
 from .model import Phase, RunRecord, open_for_replacement
 from .policy import BIGQUERY_CEILINGS, CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
-from .pubsub_lifecycle import require_pubsub_clean
+from .pubsub.lifecycle import require_pubsub_clean
 
 
 def conditional_update(store, path, read, edit, serialize=lambda value: value):

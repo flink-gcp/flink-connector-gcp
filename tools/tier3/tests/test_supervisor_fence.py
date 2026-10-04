@@ -18,7 +18,8 @@ import copy
 
 import pytest
 from flink_tier3 import lifecycle as cli
-from test_cloudtasks_session import (
+
+from .cloudtasks.test_session import (
     CELL_A,
     CELL_B,
     CellWorld,
@@ -27,7 +28,7 @@ from test_cloudtasks_session import (
     session_approval,
     session_environment,
 )
-from test_tier3_lifecycle import (
+from .test_lifecycle import (
     app,
     claim_as_supervisor,
     lifecycle,
@@ -37,7 +38,7 @@ from test_tier3_lifecycle import (
     rt,
     seed_record,
 )
-from test_tier3_lifecycle import env as env  # noqa: PLC0414 - re-export pytest fixture
+from .test_lifecycle import env as env  # noqa: PLC0414 - re-export pytest fixture
 
 HOLDER, REPLACEMENT = "supervisor-pod-uid", "replacement-pod-uid"
 

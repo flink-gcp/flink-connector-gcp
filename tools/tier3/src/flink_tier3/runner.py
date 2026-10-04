@@ -15,14 +15,14 @@
 
 import flink_tier3 as rt
 
-from .bigquery_exercise import require_handoff
-from .bigquery_handoff import require_bigquery_clean
-from .cloudtasks import admission_budget_open, admit_queue
+from .bigquery.exercise import require_handoff
+from .bigquery.handoff import require_bigquery_clean
+from .cloudtasks.session import admission_budget_open, admit_queue
 from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
-from .pubsub_admission import admit, require_admission
-from .pubsub_guard import admission_deadline
-from .pubsub_handoff import CohortUnstarted
-from .pubsub_lifecycle import require_pubsub_clean
+from .pubsub.admission import admit, require_admission
+from .pubsub.guard import admission_deadline
+from .pubsub.handoff import CohortUnstarted
+from .pubsub.lifecycle import require_pubsub_clean
 from .records import write_artifact
 
 # Scenarios whose finalization retry compares the whole receipt, and whose

@@ -24,19 +24,21 @@ import signal
 import time
 from pathlib import Path
 
-from flink_tier3 import bigquery_actors, pubsub_actors
-from flink_tier3.bundle import delivery_digest
-from flink_tier3.cloudtasks import Ledger, Queues, load_cells
-from flink_tier3.common import Failure, digest
-from flink_tier3.environment import Environment
-from flink_tier3.evidence import Collector
-from flink_tier3.exercise import validate_manifests
-from flink_tier3.google import GoogleToken, Storage, authorized_session
-from flink_tier3.kubernetes import Kubernetes, KubernetesTransport
-from flink_tier3.model import Approval
-from flink_tier3.observe import CellObserver
-from flink_tier3.policy import SYSTEM
-from flink_tier3.supervisor import HookChain, Supervisor
+import flink_tier3.bigquery.actors as bigquery_actors
+import flink_tier3.pubsub.actors as pubsub_actors
+
+from .bundle import delivery_digest
+from .cloudtasks.evidence import Collector
+from .cloudtasks.observe import CellObserver
+from .cloudtasks.session import Ledger, Queues, load_cells
+from .common import Failure, digest
+from .environment import Environment
+from .exercise import validate_manifests
+from .google import GoogleToken, Storage, authorized_session
+from .kubernetes import Kubernetes, KubernetesTransport
+from .model import Approval
+from .policy import SYSTEM
+from .supervisor import HookChain, Supervisor
 
 
 def mounted(directory, name):

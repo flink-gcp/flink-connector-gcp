@@ -18,12 +18,12 @@ import argparse
 import json
 from pathlib import Path
 
-from . import pubsub_plan
-from .bigquery_plan import TRIALS, prepare
-from .bigquery_plan import trial as bigquery_trial
-from .cloudtasks import load_session
+from .bigquery.plan import TRIALS, prepare
+from .bigquery.plan import trial as bigquery_trial
+from .cloudtasks.session import load_session
 from .common import Failure
 from .policy import CLOUDTASKS_POLICY, FLINK_LINES
+from .pubsub import plan as pubsub_plan
 from .workflow import render
 
 

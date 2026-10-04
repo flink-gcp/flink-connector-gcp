@@ -18,8 +18,14 @@ from __future__ import annotations
 
 import copy
 
-from .bigquery_handoff import require_bigquery_clean
-from .cloudtasks import QUEUE_POLL_MASK, release_queue, transient
+from .bigquery.handoff import require_bigquery_clean
+from .cloudtasks.evidence import (
+    MARKER,
+    authorized_release,
+    cell_prefix,
+    release_exported,
+)
+from .cloudtasks.session import QUEUE_POLL_MASK, release_queue, transient
 from .common import (
     ApiError,
     Failure,
@@ -35,7 +41,6 @@ from .common import (
     verify_pod,
 )
 from .environment import retry_conflicts
-from .evidence import MARKER, authorized_release, cell_prefix, release_exported
 from .model import Phase, session_shapes, taskmanager_class
 from .policy import (
     BENCHMARK,
@@ -54,8 +59,8 @@ from .policy import (
     STATE,
     SYSTEM,
 )
-from .pubsub_handoff import runner_released
-from .pubsub_lifecycle import require_pubsub_clean
+from .pubsub.handoff import runner_released
+from .pubsub.lifecycle import require_pubsub_clean
 
 
 def sum_resources(shapes):

@@ -98,10 +98,11 @@ import json
 from pathlib import Path
 import flink_tier3
 from flink_tier3.bundle import package_sources, source_digest
+from flink_tier3.cloudtasks.protocol import load
 from flink_tier3.policy import CEILINGS
 print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
                   "sources": package_sources(), "digest": source_digest(),
-                  "pods": CEILINGS["pods"]}))
+                  "pods": CEILINGS["pods"], "protocol_cells": len(load()["cells"])}))
 """,
         cwd=tmp_path,
         env=environment,
@@ -111,6 +112,7 @@ print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
     assert payload["sources"] == package_sources()
     assert payload["digest"] == source_digest()
     assert payload["pods"] == 5
+    assert payload["protocol_cells"] == 420
 
 
 def rooted_modules():
@@ -272,6 +274,7 @@ def test_delivery_is_closed_under_imports_and_refuses_a_truncated_package(tmp_pa
     delivery = tmp_path / "delivered"
     delivery.mkdir()
     for name, content in delivered_sources(tmp_path).items():
+        (delivery / name).parent.mkdir(parents=True, exist_ok=True)
         (delivery / name).write_text(content)
     assert delivered_sources(delivery) == delivered_sources(tmp_path)
     assert delivery_digest(delivery) == delivery_digest(tmp_path)
@@ -319,9 +322,118 @@ def test_modules_only_the_checkout_commands_use_stay_out_of_the_delivery():
     """The Pod runs none of the checkout commands."""
     delivered = delivered_sources()
     importers = {
-        name: sorted(CHECKOUT_ONLY & set(bundle._imported(source)))
+        name: sorted(
+            CHECKOUT_ONLY
+            & set(bundle._imported(source, name.removesuffix(".py").replace("/", ".")))
+        )
         for name, source in delivered.items()
         if name.endswith(".py")
     }
     assert {name: found for name, found in importers.items() if found} == {}
     assert {name + ".py" for name in CHECKOUT_ONLY}.isdisjoint(delivered)
+
+
+def nested_package(directory):
+    runtime = minimal_package(directory)
+    sources = {
+        "bigquery/__init__.py": "from . import settings\n",
+        "bigquery/settings.py": "LIMIT = 1\n",
+        "bigquery/actors.py": (
+            "from ..common import Failure\n"
+            "from .helpers import used\n"
+            "from flink_tier3.pubsub import access\n"
+            "RULES = 'rules.toml'\n"
+            "def factory():\n"
+            "    from . import dynamic\n"
+        ),
+        "bigquery/helpers.py": "from .. import helper\n",
+        "bigquery/dynamic.py": "# Deferred actor.\n",
+        "bigquery/rules.toml": "# Actor policy.\n",
+        "pubsub/__init__.py": "from .state import LIMIT\n",
+        "pubsub/state.py": "LIMIT = 1\n",
+        "pubsub/access.py": "# Access actor.\n",
+        "unused/__init__.py": "# Offline package.\n",
+        "unused/analyze.py": "# Offline analysis.\n",
+    }
+    for name, content in sources.items():
+        path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    runtime.write_text(
+        "from .bigquery.actors import factory\nimport flink_tier3.pubsub.access\n"
+    )
+    return sources
+
+
+def test_nested_delivery_follows_packages_imports_deferred_actors_and_data(tmp_path):
+    sources = nested_package(tmp_path)
+    delivered = delivered_sources(tmp_path)
+    assert set(sources) - set(delivered) == {
+        "unused/__init__.py",
+        "unused/analyze.py",
+    }
+    assert (
+        package_sources(tmp_path)["bigquery/rules.toml"]
+        == sources["bigquery/rules.toml"]
+    )
+    mount = tmp_path / "mount"
+    for name, content in delivered.items():
+        path = mount / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    assert delivered_sources(mount) == delivered
+    assert delivery_digest(mount) == delivery_digest(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bigquery/__init__.py",
+        "bigquery/actors.py",
+        "bigquery/settings.py",
+        "bigquery/helpers.py",
+        "bigquery/dynamic.py",
+        "bigquery/rules.toml",
+        "pubsub/__init__.py",
+        "pubsub/state.py",
+        "pubsub/access.py",
+    ],
+)
+def test_nested_actor_and_policy_changes_change_both_source_pins(tmp_path, name):
+    nested_package(tmp_path)
+    original = source_digest(tmp_path), delivery_digest(tmp_path)
+    path = tmp_path / name
+    path.write_bytes(path.read_bytes() + b"# Changed source.\n")
+    assert source_digest(tmp_path) != original[0]
+    assert delivery_digest(tmp_path) != original[1]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bigquery/__init__.py",
+        "bigquery/helpers.py",
+        "bigquery/settings.py",
+        "bigquery/dynamic.py",
+        "pubsub/__init__.py",
+        "pubsub/state.py",
+        "pubsub/access.py",
+    ],
+)
+def test_nested_delivery_refuses_missing_required_modules(tmp_path, name):
+    nested_package(tmp_path)
+    (tmp_path / name).unlink()
+    with pytest.raises(Failure, match="missing " + name.replace(".", "[.]")):
+        delivered_sources(tmp_path)
+
+
+@pytest.mark.parametrize("service", ["bigquery", "pubsub"])
+def test_supervisor_delivery_refuses_a_missing_service_actor(tmp_path, service):
+    for name, content in delivered_sources().items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    actor = service + "/actors.py"
+    (tmp_path / actor).unlink()
+    with pytest.raises(Failure, match="missing " + actor.replace(".", "[.]")):
+        delivered_sources(tmp_path)

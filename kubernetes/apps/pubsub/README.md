@@ -169,7 +169,7 @@ The emulator endpoint is a package-private test seam, absent from the deployed C
 
 ### Owned resource operations
 
-[`flink_tier3.pubsub`](../../../tools/tier3/src/flink_tier3/pubsub.py) supplies internal `ResourcePlan` and `Resources` helpers for the internal durable lifecycle controller.
+[`flink_tier3.pubsub.resources`](../../../tools/tier3/src/flink_tier3/pubsub/resources.py) supplies internal `ResourcePlan` and `Resources` helpers for the internal durable lifecycle controller.
 These helpers are not a CLI scenario and do not admit a workload.
 A plan requires a fresh run ID and a caller-generated ownership nonce of 32 lowercase hexadecimal digits.
 The caller supplies the shared authorized HTTP session, GCS `Storage` adapter and a mandatory `before_operation(phase, method, name)` guard; construction performs no authentication or I/O.
@@ -284,7 +284,7 @@ The durable controller below uses this entry point; the original `cleanup()` sti
 
 ### Durable preparation and cleanup
 
-[`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub_lifecycle.py) connects the resource helper to the existing generation-checked active run record.
+[`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub/lifecycle.py) connects the resource helper to the existing generation-checked active run record.
 It is an internal caller contract for `pubsub-recovery`; the version 5 schema below binds trial inputs, and [dispatch](#approval-dispatch) builds that approval but does not admit execution.
 The caller validates the full application contract, authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and budget/deadline guard.
 The controller additionally binds the exact approved application digest, namespace, application name and run-ID argument to the resource plan.
@@ -333,17 +333,17 @@ Synthetic tests compose production record and resource adapters with fake transp
 
 ### Actor construction and operation bounds
 
-[`pubsub_actors`](../../../tools/tier3/src/flink_tier3/pubsub_actors.py) is the only production path that binds a Pub/Sub handoff to a runner or supervisor.
+[`pubsub_actors`](../../../tools/tier3/src/flink_tier3/pubsub/actors.py) is the only production path that binds a Pub/Sub handoff to a runner or supervisor.
 Both check the actor's source pin, as the BigQuery actors do, and both require each pinned manifest's digest and that its `spec.job` runs exactly what the approval's trial derives through `pubsub_plan.manifest_jobs()`: its parallelism and the `--run-id`, `--phase`, `--records-per-subscription`, `--parallelism`, `--require-restored` and `--entry-point` arguments, in order.
 A digest pins a manifest, and only this check says the manifest runs the approved trial.
 `runner(env, bundle, runner_token=…)` gets both from re-rendering the bundle against the caller's approval, which `pubsub_plan.prepare()` checks through `require_trial_jobs()`; `supervisor(env, application, upgrade)` checks the manifests its delivery mounted explicitly, because nothing re-renders them.
-Each actor authenticates its own service account through [`PubSubSession`](../../../tools/tier3/src/flink_tier3/pubsub_auth.py) before it is returned, and a supervisor takes a fresh process token each time it is constructed.
-The supervisor's cleanup barrier, [`pubsub_quiesce.barrier`](../../../tools/tier3/src/flink_tier3/pubsub_quiesce.py), is built from the run rather than supplied, and waits until no object of any writer kind remains in `tier3-pubsub`, whoever owns it: the namespace's `pubsub` service account can create Pods and Deployments, and any Pod running as it holds the workload's data grants.
+Each actor authenticates its own service account through [`PubSubSession`](../../../tools/tier3/src/flink_tier3/pubsub/auth.py) before it is returned, and a supervisor takes a fresh process token each time it is constructed.
+The supervisor's cleanup barrier, [`pubsub_quiesce.barrier`](../../../tools/tier3/src/flink_tier3/pubsub/quiesce.py), is built from the run rather than supplied, and waits until no object of any writer kind remains in `tier3-pubsub`, whoever owns it: the namespace's `pubsub` service account can create Pods and Deployments, and any Pod running as it holds the workload's data grants.
 It proves only that no such object remains after graceful deletion, not that a request a terminated Pod sent has finished at the service; the actors' unsettled-call markers cover only their own requests.
 Outside a run the namespace is expected to hold no such object; dispatch does not refuse one, and one left there keeps the barrier from passing, so cleanup keeps the lock until it is removed.
 `Runner.start` and `Supervisor.supervise` refuse `pubsub-recovery` without these actors, and the supervisor entrypoint builds its own through this factory.
 
-Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub_guard.py) is its `before_operation`.
+Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub/guard.py) is its `before_operation`.
 The handoff reserves, through the controller's `reserve()`, a method's whole bound before the method starts, and a method called inside another counts against the outer reservation.
 The guard refuses an operation outside a reservation, in a phase the method does not use, or past its bound, before the request is sent.
 Each bound is the helper count measured above plus one control re-read per resource callback and the worst case of the controller's conditional updates: up to six callbacks each, for the outer guard and five write attempts, and for a process-owned call, its begin update and at worst a stop plus three attempts to clear its marker.
@@ -369,7 +369,7 @@ These are per-method bounds held in the actor's process, not the aggregate reque
 
 `Runner.start(config, job, application, probe)` admits a version 5 `pubsub-recovery` run only with a handoff that carries its `PubSubGuard` and settled-write check, as `pubsub_actors.runner()` builds.
 Before its first write it refuses any input that is not the approved one: both job manifests by digest and by the trial's job, and the probe Pod by the plan it tests and the program it runs.
-After the supervisor Job and the Operator are ready, and while the run is `READY`, [`pubsub_admission`](../../../tools/tier3/src/flink_tier3/pubsub_admission.py) runs these steps in order:
+After the supervisor Job and the Operator are ready, and while the run is `READY`, [`pubsub_admission`](../../../tools/tier3/src/flink_tier3/pubsub/admission.py) runs these steps in order:
 
 1. Bind the runner and the resource intent in one control update.
 2. Create the six resources, then install their grants: installing a policy reads the resource it belongs to, so creation comes first.
@@ -385,7 +385,7 @@ A grant is not taken as proof of access.
 Each identity is tested on all six resources for the one permission the run's bindings decide there, publish on a topic and consume on a subscription, so every resource is a positive or a negative control for each identity.
 A permission test answers only for the identity that sends it, so the runner and the supervisor each probe themselves.
 The workload's service account is reachable only through the `pubsub` Kubernetes service account, so the runner creates a Pod named `<run>-access-probe` that runs as it, through a runner-only Role in `tier3-pubsub`.
-The Pod runs the lifecycle tools image with [`pubsub_probe.py`](../../../tools/tier3/src/flink_tier3/pubsub_probe.py) passed inline, because a Pod cannot mount the control ConfigMap from another namespace; CUE renders it, and the bundle's re-render pins it.
+The Pod runs the lifecycle tools image with [`pubsub/probe.py`](../../../tools/tier3/src/flink_tier3/pubsub/probe.py) passed inline, because a Pod cannot mount the control ConfigMap from another namespace; CUE renders it, and the bundle's re-render pins it.
 The runner keeps the Pod's log, at most 64 KiB, as `pubsub-workload-probe` evidence, requires the Pod to succeed, and re-derives the verdict from the log rather than trusting the exit status alone: the log must name the workload identity, show a last attempt that meets every expectation, and end in a pass.
 The program refreshes its own token before each request and then starts the request only while its 20-second timeout still fits before the deadline; it uses a plain HTTP session, so nothing replays a request answered 401 after that check.
 When a request no longer fits, the program logs a refusal and fails.
@@ -415,7 +415,7 @@ A write without a definite answer in a handoff call keeps its marker and the loc
 
 ## Recovery exercise
 
-[`PubSubExercise`](../../../tools/tier3/src/flink_tier3/pubsub_exercise.py) is the supervisor's exercise for a `pubsub-recovery` run; it runs in the supervisor's shared poll loop, which audits the namespace, reads the Pods' logs and the job's checkpoint history through its REST Service every 15 seconds, and it drives one approved trial.
+[`PubSubExercise`](../../../tools/tier3/src/flink_tier3/pubsub/exercise.py) is the supervisor's exercise for a `pubsub-recovery` run; it runs in the supervisor's shared poll loop, which audits the namespace, reads the Pods' logs and the job's checkpoint history through its REST Service every 15 seconds, and it drives one approved trial.
 On each poll it first pulls the output subscription through the [output collector](#output-collector), at most five batches and at least one, which the proposal's traffic check budgets, and once a minute records a `pubsub-measurement` sample.
 A sample holds each job vertex's backpressure and its Pub/Sub connector metrics, aggregated over subtasks, and a backlog derived from the supervisor's own requests and observations; the [verdict](#verdict) lists which metrics it reads.
 A connector metric's id carries its operator's name, which differs between the entry points, so each sample lists a vertex's metrics and asks for the ones it recognizes; a read that fails with an API or transport error, answers more than its read ceiling or answers no JSON, or a listing that names none of them, is recorded as unavailable, and the trial goes on.
@@ -466,7 +466,7 @@ Synthetic tests run each trial through the supervisor's loop over a simulated re
 
 When the last stage completes, the exercise decides the trial's verdict over the `complete` record it is about to write, so the verdict reaches the `recovery-complete` evidence as well as the run control the final receipt reads.
 The record adds the output oracle's account of every collected line, the observation coverage per window and the Pod each attempt was announced by.
-[`pubsub_verdict`](../../../tools/tier3/src/flink_tier3/pubsub_verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
+[`pubsub_verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
 
 | Condition | Reason when it fails |
 | --- | --- |
@@ -504,7 +504,7 @@ Recomputing the verdict from the exported evidence is [#1625](https://github.com
 
 ## Input publication and output collection
 
-[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub_messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) and the runner's [cohort requests](#cohort-requests) publish through them, and the supervisor's [output collector](#output-collector) pulls through them.
+[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub/messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) and the runner's [cohort requests](#cohort-requests) publish through them, and the supervisor's [output collector](#output-collector) pulls through them.
 Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the authenticated actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
 The role parameter checks routing only; the caller must authenticate the runner or supervisor and bind that identity, the plan and input domain to current approval.
 The guard must verify prepared resources and effective access, the active run and exclusive actor authority, stop/deadline conditions and the complete traffic, evidence and operation budget before every call.
@@ -551,7 +551,7 @@ Synthetic tests establish request/evidence ordering and refusal behavior; they d
 
 ### Cohort requests
 
-Only the runner holds the publisher grant on the input topics, so the [cohorts](#offline-trial-proposal) after the first are published by the runner at the supervisor's request, through [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub_handoff.py).
+Only the runner holds the publisher grant on the input topics, so the [cohorts](#offline-trial-proposal) after the first are published by the runner at the supervisor's request, through [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub/handoff.py).
 The run control's Pub/Sub portion keeps one entry per cohort under `cohorts`, with its deadline and the times it was requested, started and published.
 
 - **`request_cohort(name, deadline=…)`**: the supervisor asks for `after_checkpoint` or `after_recovery`, only once the cohort before it is published, while the run is `RUNNING` and its message traffic is admitted, which lasts until `cleanup_at` rather than the 900-second admission window, and with a deadline after now and no later than `cleanup_at`. Repeating a recorded request with the same deadline changes nothing, even after that deadline or a stop, so a retry after a lost response confirms it; another deadline is refused.
@@ -566,7 +566,7 @@ The start and end marks are read from the runner's clock and the request time fr
 
 ### Output collector
 
-[`OutputCollector`](../../../tools/tier3/src/flink_tier3/pubsub_output.py) pulls the output subscription through the supervisor's handoff, so every pull uses the shared reservations and leaves the evidence `collect` writes.
+[`OutputCollector`](../../../tools/tier3/src/flink_tier3/pubsub/output.py) pulls the output subscription through the supervisor's handoff, so every pull uses the shared reservations and leaves the evidence `collect` writes.
 `pull()` takes one batch of up to 100 under the next batch ID: `out-`, eight random hexadecimal digits fixed for the collector, and a counter, so that two collectors name the same create-only evidence only if those digits collide.
 `drain(max_pulls)` repeats it until a batch comes back short or the pulls are spent; a short or empty batch ends the round without proving the subscription empty.
 Each collected line whose payload is this run's relay output, with the nine fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase and whether the attempt restored state, with the output message ID, batch and collection time.
@@ -576,7 +576,7 @@ The observations live in the supervisor's process for the exercise; a replacemen
 
 ## Shared traffic reservations
 
-[`PubSubTraffic`](../../../tools/tier3/src/flink_tier3/pubsub_traffic.py) composes `Messages` with the prepared `PubSubLifecycle` control record.
+[`PubSubTraffic`](../../../tools/tier3/src/flink_tier3/pubsub/traffic.py) composes `Messages` with the prepared `PubSubLifecycle` control record.
 The submitting runner supplies explicit `TrafficLimits` and calls `initialize()` while the run is still `APPROVED` or `READY`, before any data helper call.
 Initialization binds the immutable limits and the application's exact `--records-per-subscription=N` domain to the existing application digest and resource intent.
 Both actors must use this wrapper from their first data operation; it cannot account for earlier evidence or direct calls to `Messages`.
@@ -620,7 +620,7 @@ CLI admission and runnable fault/recovery orchestration remain disabled pending 
 
 ## Actor ownership and cleanup handoff
 
-[`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub_handoff.py) wraps the resource controller and shared traffic reservations in a durable actor protocol.
+[`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub/handoff.py) wraps the resource controller and shared traffic reservations in a durable actor protocol.
 The original runner constructs it from its `PubSubTraffic` and a fresh 32-character lowercase hexadecimal process token, then calls `initialize()` before resource preparation.
 Initialize through `PubSubHandoff.initialize()` without first calling the underlying resource controller's initializer.
 This handoff entry point writes resource intent and runner authority together in one generation-checked control update; a crash cannot commit resource intent without its actor binding.
