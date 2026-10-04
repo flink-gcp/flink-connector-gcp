@@ -198,7 +198,10 @@ class Messages:
             raise Failure("Invalid Pub/Sub collection batch ID")
         _integer(max_messages, 1, MAX_BATCH, "pull count")
         subscription = self.plan.subscriptions()[2]["name"]
-        request = {"maxMessages": max_messages}
+        # An idle subscription answers at once, rather than holding the
+        # request past the transport timeout, whose unsettled outcome would
+        # keep the call's marker and the lock.
+        request = {"maxMessages": max_messages, "returnImmediately": True}
         path = f"{self.prefix}/output/{batch_id}"
         self._save(
             "collect",

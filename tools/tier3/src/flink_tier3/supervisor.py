@@ -35,6 +35,7 @@ from .common import (
 from .exercise import RecoveryExercise
 from .model import Phase, cell_budget_seconds, open_for_replacement
 from .policy import CLOUDTASKS, CLOUDTASKS_POLICY, MIB, NONCE, POLL, SMOKE
+from .pubsub_exercise import PubSubExercise
 from .pubsub_guard import PubSubGuard, admission_deadline
 from .pubsub_handoff import runner_released
 
@@ -97,6 +98,10 @@ class Supervisor:
             if env.approval.scenario == "generic-recovery"
             else BigQueryExercise(env, upgrade)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
+            else PubSubExercise(env, upgrade, pubsub)
+            if env.approval.scenario == "pubsub-recovery"
+            and upgrade is not None
+            and pubsub is not None
             else None
         )
         self.session = (
@@ -233,8 +238,8 @@ class Supervisor:
                 if self.exercise:
                     self.exercise.progress(pod, decoded)
             if (
-                self.env.approval.scenario == "bigquery-recovery"
-                and self.exercise
+                self.exercise
+                and self.exercise.namespace != SMOKE
                 and pod["metadata"]["namespace"] == self.exercise.namespace
             ):
                 self.exercise.progress(pod, decoded)
@@ -319,12 +324,14 @@ class Supervisor:
     def supervise(self, pod_uid):
         if self.env.approval.scenario == "pubsub-recovery" and (
             self.pubsub is None
+            or self.exercise is None
             or self.cleanup.quiesce is None
             or not isinstance(self.pubsub.controller.before_operation, PubSubGuard)
             or self.pubsub.settled is None
         ):
             raise Failure(
-                "Pub/Sub recovery supervision requires its authenticated handoff"
+                "Pub/Sub recovery supervision requires its authenticated handoff "
+                "and its approved recovery manifest"
             )
         if self.env.approval.scenario == "bigquery-recovery":
             if self.exercise is None or self.bigquery is None:
@@ -362,18 +369,13 @@ class Supervisor:
 
             if self.exercise:
                 admitted_by = self.exercise.deadline
-            elif self.pubsub is not None:
-                # One poll past admission's deadline, so that a RUNNING the
-                # runner set in its last moment is still seen.
-                admitted_by = admission_deadline(self.env) + POLL
             elif self.session:
                 admitted_by = self.env.schedule.readiness_until(self.env.clock())
             else:
                 admitted_by = self.env.schedule.cleanup_at
             self.env.wait(admitted, admitted_by)
-            if self.pubsub is not None:
-                # The supervised exercise is #1431's; this run stops here.
-                raise Failure("Pub/Sub recovery exercise is not implemented (#1431)")
+            if self.exercise:
+                self.exercise.admitted()
             if self.session:
                 success, reason = self.session.run()
             else:

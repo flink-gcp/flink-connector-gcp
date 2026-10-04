@@ -30,7 +30,7 @@ from .common import (
     verify_pod,
 )
 from .model import Schedule
-from .policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
+from .policy import GAR, POD_RESOURCES, POLL, PUBSUB_CEILINGS, SHA
 from .pubsub import ResourcePlan
 from .pubsub_access import probe_spec
 from .pubsub_messages import MAX_BATCH, cohort_ranges
@@ -41,6 +41,9 @@ TRIALS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
 ENTRY_POINTS = ("datastream", "table")
 WINDOW_SECONDS = PUBSUB_CEILINGS["seconds"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
+# The supervisor's exercise pulls the output subscription at least once per
+# poll, empty or not, from admission until cleanup: at most this many polls.
+EXERCISE_PULLS = (WINDOW_SECONDS - PUBSUB_CEILINGS["cleanup_seconds"]) // POLL
 FIELDS = {
     "version",
     "trial",
@@ -173,14 +176,16 @@ def input_plan(run_id, trial):
         (2 * c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
     )
     limits = TrafficLimits(**trial["traffic_limits"], admit_until=1)
+    pulls = minimum_pulls + EXERCISE_PULLS
     if (
         limits.input_messages < 2 * records
         or limits.input_bytes < input_bytes
         or limits.publish_calls < publish_calls
         # Every pull reserves its whole batch, even when fewer arrive.
-        or limits.output_messages < minimum_pulls * MAX_BATCH
-        or limits.pull_calls < minimum_pulls
-        or limits.pubsub_requests < publish_calls + 2 * minimum_pulls
+        or limits.output_messages < pulls * MAX_BATCH
+        or limits.pull_calls < pulls
+        # A nonempty pull also acknowledges; an empty one does not.
+        or limits.pubsub_requests < publish_calls + 2 * minimum_pulls + EXERCISE_PULLS
     ):
         raise Failure(
             "Traffic proposal cannot cover even one complete input/output pass"

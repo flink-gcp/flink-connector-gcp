@@ -514,16 +514,28 @@ def runner_releases_while_supervisor_waits(a, monkeypatch, *, settle_first=True)
     return released
 
 
-def test_a_supervised_run_stops_at_the_exercise_boundary_and_cleans(
+def test_a_supervised_run_whose_application_never_runs_stops_and_cleans(
     admitting, monkeypatch
 ):
+    """The exercise starts after admission and its first stage bounds the wait."""
     a = admitting
     a.runner.start(*a.args)
-    runner_releases_while_supervisor_waits(a, monkeypatch)
+    released = []
+    original = a.observer.sleep
+
+    def sleep(seconds):
+        original(seconds)
+        if a.environment.refresh().stop_requested and not released:
+            released.append(True)
+            a.sender.release()
+
+    monkeypatch.setattr(a.observer, "sleep", sleep)
     a.supervisor.supervise(supervisor_uid(a))
     control = a.environment.refresh()
     assert control.pubsub["stage"] == "cleaned"
-    assert "exercise is not implemented (#1431)" in control.reason
+    assert "deadline expired: baseline" in control.reason
+    # Its access probe pulled once; the exercise's collection pulled again.
+    assert a.events.count(("peek", "supervisor")) > 1
     assert not a.service.resources.resources
     actors = control.pubsub["handoff"]["actors"]
     assert actors["runner"]["released"] and actors["supervisor"]["released"]
@@ -1053,6 +1065,16 @@ def test_a_supervisor_with_an_unguarded_handoff_refuses_to_supervise(admitting):
     a.receiver.controller.before_operation = lambda *args: None
     with pytest.raises(Failure, match="requires its authenticated handoff"):
         a.supervisor.supervise("unused-pod")
+
+
+def test_a_supervisor_without_its_recovery_manifest_refuses_to_supervise(admitting):
+    a = admitting
+    unarmed = Supervisor(
+        a.observer, None, pubsub=a.receiver, quiesce=barrier(a.observer)
+    )
+    assert unarmed.exercise is None
+    with pytest.raises(Failure, match="requires its authenticated handoff"):
+        unarmed.supervise("unused-pod")
 
 
 def test_a_stopped_supervisor_leaves_the_application_until_the_runner_released(
