@@ -194,7 +194,7 @@ Dataset-scoped custom roles separate the three actors:
 The workload receives no table-creation, table-deletion or IAM-administration grant, and no grant to read table data.
 The runtime must use `CREATE_NEVER` with an explicit location and pre-created matching schemas.
 [Issue #1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550) adds one project-wide grant for the [FILE_LOADS mode](../kubernetes/apps/bigquery/README.md#trial-inputs): a custom role holding `bigquery.jobs.create` alone, so the workload can submit its load jobs.
-The application behaviour this section cites is that of the application's FILE_LOADS mode, added under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549); until that mode lands, no mode uses this grant.
+The application behaviour this section cites is that of the application's FILE_LOADS mode, added under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549).
 The same permission lets it submit any job type, queries included; without `bigquery.tables.getData` they cannot read the Tier-3 tables, but they run and bill in this project.
 As their creator it can read and cancel those jobs without `bigquery.jobs.get` or `bigquery.jobs.update`, which BigQuery requires only for other principals' jobs.
 It holds no `bigquery.datasets.get`, so a FILE_LOADS runtime must set the sink's location, as the application's FILE_LOADS mode ([#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549)) does; without one, the committer looks up each destination dataset's location and fails.

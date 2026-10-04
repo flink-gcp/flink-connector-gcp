@@ -160,9 +160,17 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <!-- The stock REST client the emulator harnesses drive the service with. -->
+            <!-- The stock REST client the emulator harnesses drive the service with, and the
+                 gated real-GCP helpers (RealBigQuery) read back through. -->
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-bigquery</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- The FILE_LOADS staging bucket the gated real-GCP helpers (RealGcs) list and
+                 clean. Version managed by the libraries BOM. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-storage</artifactId>
             <scope>provided</scope>
         </dependency>
         <dependency>

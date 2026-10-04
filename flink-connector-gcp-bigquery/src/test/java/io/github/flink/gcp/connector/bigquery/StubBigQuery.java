@@ -73,8 +73,8 @@ import java.util.Map;
  * invokes itself — {@link Job}'s constructor does, so a stub throwing there fails on the first
  * submitted job. The other methods throw.
  *
- * <p>It lives here, beside {@link RealBigQuery}, rather than in one caller's package, because it
- * has two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
+ * <p>It lives here, beside {@link RealTables}, rather than in one caller's package, because it has
+ * two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
  * BigQueryTableAdmin}'s, which need a failing {@code create(TableInfo)} to pin how a REST failure
  * is typed. The catalog's tests earned the two listing methods the same way.
  *
@@ -131,6 +131,9 @@ public final class StubBigQuery implements BigQuery {
 
     /** Every {@link DatasetId} {@code getDataset} was called with, in order. */
     public final List<DatasetId> getDatasetCalls = new ArrayList<>();
+
+    /** The {@link DatasetOption}s of every {@code getDataset} call, in the same order. */
+    public final List<List<DatasetOption>> getDatasetOptions = new ArrayList<>();
 
     /**
      * What {@code getDataset} answers, by id; an unscripted id answers {@code null} (no dataset).
@@ -496,13 +499,8 @@ public final class StubBigQuery implements BigQuery {
     @Override
     @Nullable
     public Dataset getDataset(DatasetId datasetId, DatasetOption... options) {
-        if (options.length > 0) {
-            throw new UnsupportedOperationException(
-                    "BigQueryLoadJobRunner passes no DatasetOptions; got "
-                            + List.of(options)
-                            + ".");
-        }
         getDatasetCalls.add(datasetId);
+        getDatasetOptions.add(List.of(options));
         if (getDatasetFailure != null) {
             throw getDatasetFailure;
         }

@@ -26,20 +26,34 @@ FRAME = re.compile(r"\s*at ([\w.$/]+\([\w.$]+\.java:[0-9]+\))\s*")
 IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 
 
+def module_depth(parts):
+    """How many leading parts name the module: a connector, or a Tier-3 application."""
+    return 3 if parts[:2] == ("kubernetes", "apps") else 1
+
+
+def module(source):
+    parts = Path(source).parts
+    return "/".join(parts[: module_depth(parts)])
+
+
 def report_path(root, source):
     parts = Path(source).parts
+    depth = module_depth(parts)
     if (
-        len(parts) < 6
-        or parts[1:3] != ("src", "test")
-        or not parts[3].startswith("java")
+        len(parts) < depth + 5
+        or parts[depth : depth + 2] != ("src", "test")
+        or not parts[depth + 2].startswith("java")
         or ".." in parts
         or not parts[-1].endswith(".java")
     ):
         raise ValueError("invalid gated source path")
-    fqcn = ".".join((*parts[4:-1], parts[-1][:-5]))
+    fqcn = ".".join((*parts[depth + 3 : -1], parts[-1][:-5]))
     if not all(IDENTIFIER.fullmatch(part) for part in fqcn.split(".")):
         raise ValueError("invalid gated class name")
-    return root / parts[0] / "target/surefire-reports" / f"TEST-{fqcn}.xml", fqcn
+    return (
+        root.joinpath(*parts[:depth]) / "target/surefire-reports" / f"TEST-{fqcn}.xml",
+        fqcn,
+    )
 
 
 def prepare(root, sources):
@@ -59,7 +73,7 @@ def prepare(root, sources):
         root,
         [
             {
-                "module": source.split("/")[0],
+                "module": module(source),
                 "class": report_path(root, source)[1],
                 "status": "NOT_RUN",
                 "problems": ["no result yet"],
@@ -143,7 +157,7 @@ def collect(root, sources):
     for source in sources:
         path, fqcn = report_path(root, source)
         result = {
-            "module": source.split("/")[0],
+            "module": module(source),
             "class": fqcn,
             "status": "INVALID",
             "problems": [],

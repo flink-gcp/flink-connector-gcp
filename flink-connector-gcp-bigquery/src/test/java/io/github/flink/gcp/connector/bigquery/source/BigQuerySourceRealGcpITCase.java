@@ -27,7 +27,7 @@ import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import com.google.cloud.bigquery.storage.v1.DataFormat;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.BinaryDecoder;
@@ -113,7 +114,7 @@ class BigQuerySourceRealGcpITCase {
         try (CloseableIterator<GenericRecord> records =
                 env.fromSource(
                                 BigQuerySource.<GenericRecord>builder()
-                                        .table(RealBigQuery.destination(TABLE))
+                                        .table(RealTables.destination(TABLE))
                                         .deserializer(
                                                 BigQueryRowDeserializationSchema.genericRecord(
                                                         READER_SCHEMA))
@@ -173,7 +174,7 @@ class BigQuerySourceRealGcpITCase {
                             .setMaxStreamCount(1)
                             .setReadSession(
                                     ReadSession.newBuilder()
-                                            .setTable(RealBigQuery.destination(TABLE).toTablePath())
+                                            .setTable(RealTables.destination(TABLE).toTablePath())
                                             .setDataFormat(DataFormat.AVRO)
                                             .build())
                             .build());

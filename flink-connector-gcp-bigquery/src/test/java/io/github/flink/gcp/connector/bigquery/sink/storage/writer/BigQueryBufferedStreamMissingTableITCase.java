@@ -30,7 +30,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import io.grpc.Status;
 import io.grpc.protobuf.StatusProto;
 import org.junit.jupiter.api.AfterAll;
@@ -139,7 +140,7 @@ class BigQueryBufferedStreamMissingTableITCase {
 
     @Test
     void createWriteStreamOnAMissingTableAnswersAMaskedPermissionDenied() throws Exception {
-        TableDestination destination = RealBigQuery.destination(ABSENT_TABLE);
+        TableDestination destination = RealTables.destination(ABSENT_TABLE);
 
         Throwable failure;
         try (BufferedStreamService service = service()) {
@@ -147,9 +148,8 @@ class BigQueryBufferedStreamMissingTableITCase {
             // bigquery.tables.* — where the masked code would be a plain denial and would prove
             // nothing about existence-masking. A stream opening on a table that *is* there
             // establishes the permission is held; only then does the absent table mean anything.
-            RealBigQuery.createTable(
-                    CONTROL_TABLE, new NameColumnSerializer().getTableSchema(null));
-            assertThat(service.createBufferedStream(RealBigQuery.destination(CONTROL_TABLE)))
+            RealTables.createTable(CONTROL_TABLE, new NameColumnSerializer().getTableSchema(null));
+            assertThat(service.createBufferedStream(RealTables.destination(CONTROL_TABLE)))
                     .isNotBlank();
 
             failure = catchThrowable(() -> service.createBufferedStream(destination));
@@ -167,9 +167,8 @@ class BigQueryBufferedStreamMissingTableITCase {
 
     @Test
     void aStreamOpensOnAJustCreatedTableWithinTheRecoveryBudget() throws Exception {
-        RealBigQuery.createTable(
-                PROPAGATION_TABLE, new NameColumnSerializer().getTableSchema(null));
-        TableDestination destination = RealBigQuery.destination(PROPAGATION_TABLE);
+        RealTables.createTable(PROPAGATION_TABLE, new NameColumnSerializer().getTableSchema(null));
+        TableDestination destination = RealTables.destination(PROPAGATION_TABLE);
         RetrySchedule schedule = BufferedStreamOptions.builder().build().toRecoverySchedule();
 
         String stream = null;
@@ -259,7 +258,7 @@ class BigQueryBufferedStreamMissingTableITCase {
         try (BufferedStreamService writerService = service();
                 BufferedStreamService commitService = service()) {
             for (int trial = 1; trial <= APPEND_TRIALS; trial++) {
-                TableDestination destination = RealBigQuery.destination(appendTable(trial));
+                TableDestination destination = RealTables.destination(appendTable(trial));
 
                 // The writer's own first RPC, against a table that is not there. Asserted rather
                 // than assumed: a trial whose table somehow existed would measure nothing.
@@ -440,7 +439,7 @@ class BigQueryBufferedStreamMissingTableITCase {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .table(RealBigQuery.destination(AUTO_CREATED_TABLE))
+                                .table(RealTables.destination(AUTO_CREATED_TABLE))
                                 .serializer(new NameColumnSerializer())
                                 // No createDisposition(...) call: CREATE_IF_NEEDED is the default,
                                 // and this is the path a user takes without knowing the knob.

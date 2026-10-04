@@ -382,7 +382,7 @@ Existing lifecycle scenarios still admit only their own applications; the BigQue
 Application publication and bounded execution follow separately; these persistent grants provide no deployed BigQuery result and authorize no paid trial.
 
 Refined under [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550) for the [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313) FILE_LOADS scenario: the writer also receives a project-wide custom role holding `bigquery.jobs.create` alone, because its committer submits load jobs and jobs are project resources.
-Grant nothing else on that path, each omission for a measured or documented reason; the application behaviour cited is that of its FILE_LOADS mode, added under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), and until that mode lands no mode uses this grant:
+Grant nothing else on that path, each omission for a measured or documented reason; the application behaviour cited is that of its FILE_LOADS mode, added under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549):
 
 - No `bigquery.jobs.get` or `bigquery.jobs.update`: BigQuery accepts `bigquery.jobs.create` from a job's creator for reading and cancelling it.
 - No `bigquery.datasets.get`: the application sets the sink's location, and the committer reads a dataset only to find that location.
@@ -457,6 +457,20 @@ The offline renderer accepts this scenario, while lifecycle execution entrypoint
 A declared revision and digest-shaped image are inputs to later provenance checks, not publication or execution evidence.
 Keep the cost calculation a planning estimate with an explicit reserve; it cannot bound service bills or replace final resource and cost approval.
 Updated image publication, digest adoption, bounded admission/query execution and complete cleanup remain separate preparation and acceptance steps for [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
+
+Refined under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), the first step of the [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313) FILE_LOADS finalization scenario: the application and its CUE package gain a third mode, `FILE_LOADS`, that builds the production FILE_LOADS sink with `WRITE_APPEND` and 1 KiB rows.
+Stage under `runs/<run-id>/staging` in the run's state bucket, inside the existing run-state IAM condition, bucket lifecycle rule and cleanup prefix.
+Checkpoint every 120 seconds in this mode, in both the Java graph and the rendered configuration: the connector refuses an interval below its two-minute `minCheckpointInterval` default at graph construction, and the Java interval overrides the rendered one.
+The Storage Write modes keep their 30-second interval, and their rendered manifests are unchanged byte for byte.
+Take the five sink inputs a trial varies (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`) as an explicit argument allowlist at the connector's defaults, refused in the Storage Write modes and bound into the checkpointed input identity.
+Bundle the Parquet and Hadoop runtime the connector leaves to a deployment, so `PARQUET` staging is selectable rather than refused at graph construction.
+Do not decorate the FILE_LOADS sink: it has no appender, and the connector's per-checkpoint staging, per-job submission and per-commit row-count log lines with its writer and committer metrics already report what a trial reads, beside the query oracle.
+The CUE package renders the knobs from a flag table and re-unifies them with their schema where they are read, because a struct a delivery passed by reference rendered an out-of-range value through the plain path on cue v0.17.1; an out-of-range or unknown knob, or any knob in a Storage Write mode, fails the render, and `maxOpenDestinations` is capped at the connector's default `maxPendingFiles`, which the application does not expose.
+The emulator cannot cover this mode: the connector refuses emulator endpoints for FILE_LOADS, because the pinned emulator runs no load jobs and serves no Cloud Storage.
+A gated real-GCP ITCase therefore takes the savepoint-restore coverage, and the gated discovery and the `just e2e` runner now include Tier-3 applications under `kubernetes/apps`, each built behind its `tier3-<name>` profile after its connector is installed from the same tree.
+Trial selection, the proposal, dispatch and the oracle still refuse the mode until [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551); this change grants no permission and runs nothing on the deployed rig.
+Name the dataset's location on the FILE_LOADS sink, so the committer never reads dataset metadata to place its jobs and the workload needs no `bigquery.datasets.get`; the Storage Write modes keep no location.
+The workload then needs only project-wide `bigquery.jobs.create` for this mode, granted under [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550); the gated test runs under the E2E identity and cannot show whether the deployed identity holds it.
 
 ### Pub/Sub GCP preparation
 

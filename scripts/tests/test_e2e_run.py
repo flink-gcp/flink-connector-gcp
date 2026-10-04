@@ -56,9 +56,18 @@ def suite(tmp_path):
         f"#!{sys.executable}\n"
         + r"""
 import os, pathlib, signal, sys, time
+import json
 args = sys.argv[1:]
 module = args[args.index("-pl") + 1]
-phase = "install" if "install" in args else "compile" if "test-compile" in args else module.removeprefix("flink-connector-gcp-")
+with open(os.environ["ARGV"], "a") as out:
+    out.write(json.dumps(args) + "\n")
+application = module.startswith("kubernetes/apps/")
+phase = (
+    "install" if "install" in args
+    else "app-" + module.rsplit("/", 1)[1] if application
+    else "compile" if "test-compile" in args
+    else module.removeprefix("flink-connector-gcp-")
+)
 with open(os.environ["CALLS"], "a") as out:
     out.write(phase + "\n")
 if os.environ.get("BLOCK") == phase:
@@ -72,12 +81,14 @@ if os.environ.get("BLOCK") == phase:
 status = 9 if os.environ.get("FAIL") == phase else 0
 if phase not in ("install", "compile"):
     assert "-Dsurefire.rerunFailingTestsCount=0" in args
-    name = phase.title() + "ITCase"
-    assert "-Dtest=" + name in args
-    report = pathlib.Path(module) / "target/surefire-reports" / ("TEST-p." + name + ".xml")
-    report.parent.mkdir(parents=True, exist_ok=True)
-    failure = '<failure message="synthetic"/>' if status else ''
-    report.write_text(f'<testsuite name="p.{name}" tests="1" failures="{int(bool(status))}" errors="0" skipped="0"><testcase classname="p.{name}" name="test">{failure}</testcase></testsuite>')
+    names = next(a for a in args if a.startswith("-Dtest=")).removeprefix("-Dtest=").split(",")
+    if not application:
+        assert names[0] == phase.title() + "ITCase"
+    for name in names:
+        report = pathlib.Path(module) / "target/surefire-reports" / ("TEST-p." + name + ".xml")
+        report.parent.mkdir(parents=True, exist_ok=True)
+        failure = '<failure message="synthetic"/>' if status else ''
+        report.write_text(f'<testsuite name="p.{name}" tests="1" failures="{int(bool(status))}" errors="0" skipped="0"><testcase classname="p.{name}" name="test">{failure}</testcase></testsuite>')
 sys.exit(status)
 """
     )
@@ -87,6 +98,7 @@ sys.exit(status)
         "VIRTUAL_ENV": str(tmp_path / ".venv"),
         "UV_RUN_RECURSION_DEPTH": "1",
         "CALLS": str(tmp_path / "calls"),
+        "ARGV": str(tmp_path / "argv.jsonl"),
         **dict.fromkeys(
             (
                 "BQ_IT_PROJECT",
@@ -113,6 +125,18 @@ sys.exit(status)
             check=False,
         )
 
+    def add(module, name, gate):
+        source = tmp_path / module / "src/test/java/p" / f"{name}.java"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(
+            f'package p;\n@Tag("gated")\n@EnabledIfEnvironmentVariable(named="{gate}", matches=".+")\n'
+            f"class {name} {{}}\n"
+        )
+
+    run.add = add
+    run.argv = lambda: [
+        json.loads(line) for line in (tmp_path / "argv.jsonl").read_text().splitlines()
+    ]
     run.root = tmp_path
     run.env = env
     run.command = command
@@ -203,3 +227,64 @@ def test_termination_reaches_active_child_and_finalizes_reports(suite):
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=5)
+
+
+def surefire_calls(argv):
+    """Every module's test invocation as a (module, -Dtest) pair, repeats kept."""
+    return sorted(
+        (call[call.index("-pl") + 1], next(a for a in call if a.startswith("-Dtest=")))
+        for call in argv
+        if "surefire:test@integration-tests" in call
+    )
+
+
+def option(call, name):
+    return call[call.index(name) + 1]
+
+
+def test_each_module_receives_only_its_own_classes(suite):
+    suite.add("kubernetes/apps/bigquery", "AppITCase", "BQ_IT_PROJECT")
+
+    result = suite()
+
+    assert result.returncode == 0, result.stderr
+    assert surefire_calls(suite.argv()) == [
+        ("flink-connector-gcp-bigquery", "-Dtest=BigqueryITCase"),
+        ("flink-connector-gcp-bigtable", "-Dtest=BigtableITCase"),
+        ("flink-connector-gcp-cloudtasks", "-Dtest=CloudtasksITCase"),
+        ("flink-connector-gcp-pubsub", "-Dtest=PubsubITCase"),
+        ("flink-connector-gcp-spanner", "-Dtest=SpannerITCase"),
+        ("kubernetes/apps/bigquery", "-Dtest=AppITCase"),
+    ]
+
+
+def test_an_application_runs_behind_its_profile_after_its_connector_installs(suite):
+    suite.add("kubernetes/apps/bigquery", "AppITCase", "BQ_IT_PROJECT")
+
+    assert suite().returncode == 0
+    argv = suite.argv()
+
+    [app] = [i for i, call in enumerate(argv) if "kubernetes/apps/bigquery" in call]
+    assert option(argv[app], "-P") == "tier3-bigquery"
+    assert "test-compile" in argv[app]
+    # The application resolves its connector from the local repository, so this tree's
+    # connector must be installed after the shared build and before the application runs.
+    compiled = next(i for i, call in enumerate(argv) if "test-compile" in call)
+    assert any(
+        "install" in call and option(call, "-pl") == "flink-connector-gcp-bigquery"
+        for call in argv[compiled + 1 : app]
+    )
+
+
+def test_a_cloud_tasks_class_outside_its_fixture_module_is_refused(suite):
+    suite.add("flink-connector-gcp-pubsub", "StrayITCase", "CLOUDTASKS_IT_PROJECT")
+
+    result = suite()
+
+    assert result.returncode != 0
+    assert "CLOUDTASKS_IT_PROJECT gates classes outside" in result.stderr
+    assert "fixture-run" not in suite.calls()
+    assert all(
+        module != "flink-connector-gcp-cloudtasks"
+        for module, _ in surefire_calls(suite.argv())
+    )

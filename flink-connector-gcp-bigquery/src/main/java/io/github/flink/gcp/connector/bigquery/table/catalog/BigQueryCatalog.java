@@ -195,7 +195,15 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
             return null;
         }
         try {
-            return withClient(client -> client.getDataset(DatasetId.of(project, databaseName)));
+            // The metadata view: a database is its existence and description, and the default view
+            // also returns the access controls, which fine-grained dataset access control guards
+            // with bigquery.datasets.getIamPolicy on top of bigquery.datasets.get.
+            return withClient(
+                    client ->
+                            client.getDataset(
+                                    DatasetId.of(project, databaseName),
+                                    BigQuery.DatasetOption.datasetView(
+                                            BigQuery.DatasetView.METADATA)));
         } catch (BigQueryException e) {
             throw new CatalogException(
                     "Failed to read BigQuery dataset '" + project + "." + databaseName + "'.", e);

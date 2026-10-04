@@ -319,6 +319,7 @@ Table statistics are unknown to the planner: BigQuery's row count omits rows sti
 
 `CREATE CATALOG` and `USE CATALOG` make no request and need no credentials.
 A statement that names a catalog table asks BigQuery whether its dataset exists and fetches the table's metadata, and the planner may look one table up more than once.
+The dataset is read through its metadata view, which needs `bigquery.datasets.get` and, unlike the default view, no `bigquery.datasets.getIamPolicy` where the project enforces fine-grained dataset access controls.
 
 ### Catalog options
 

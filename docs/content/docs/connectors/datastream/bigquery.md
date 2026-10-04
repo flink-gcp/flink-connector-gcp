@@ -2026,7 +2026,13 @@ whatever the partition count; the credentials therefore need `bigquery.tables.ge
 `bigquery.tables.create` / `bigquery.tables.update` for what the final-table configuration
 enables).
 Every FILE_LOADS execution also needs `bigquery.jobs.create` on the job project to submit its load,
-copy and terminal query jobs.
+copy and terminal query jobs; as their creator it reads and polls those jobs without
+`bigquery.jobs.get`.
+Unless the sink sets `location(...)`, the committer also reads each destination dataset's metadata
+to find the location its jobs run in, which needs `bigquery.datasets.get` on that dataset.
+The read asks for the metadata view alone, so fine-grained dataset access controls add no
+`bigquery.datasets.getIamPolicy` to it.
+Setting the location removes the read.
 Overflow also introduces temporary tables as copy sources.
 In addition to the final-destination permissions, their dataset must allow table creation and
 writes (`bigquery.tables.create`, `bigquery.tables.updateData`) and copy or query reads

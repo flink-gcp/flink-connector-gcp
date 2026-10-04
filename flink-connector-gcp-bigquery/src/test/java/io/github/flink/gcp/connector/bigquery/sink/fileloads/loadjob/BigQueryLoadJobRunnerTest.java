@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
+import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.CopyJobConfiguration;
@@ -741,6 +742,11 @@ class BigQueryLoadJobRunnerTest {
         new BigQueryLoadJobRunner(client, null, FAST).submitLoad(JOB_ID, loadSpec(List.of()));
 
         assertThat(client.getDatasetCalls).containsExactly(DATASET);
+        // Metadata only: the default view also returns the access controls, which fine-grained
+        // dataset access control guards with bigquery.datasets.getIamPolicy.
+        assertThat(client.getDatasetOptions)
+                .containsExactly(
+                        List.of(BigQuery.DatasetOption.datasetView(BigQuery.DatasetView.METADATA)));
         assertThat(client.getJobCalls)
                 .singleElement()
                 .returns("europe-west1", id -> id.getLocation());

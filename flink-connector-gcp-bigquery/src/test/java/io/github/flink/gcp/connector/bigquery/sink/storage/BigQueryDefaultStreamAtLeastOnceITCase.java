@@ -28,11 +28,12 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import com.google.cloud.bigquery.FieldValueList;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -236,7 +237,7 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
 
     private static void createTables(String prefix, int count) {
         for (int i = 0; i < count; i++) {
-            RealBigQuery.createTable(table(prefix, i), NameValueRowSerializer.SCHEMA);
+            RealTables.createTable(table(prefix, i), NameValueRowSerializer.SCHEMA);
         }
     }
 

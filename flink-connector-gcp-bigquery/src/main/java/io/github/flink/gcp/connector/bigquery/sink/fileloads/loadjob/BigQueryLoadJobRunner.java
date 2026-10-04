@@ -457,7 +457,14 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         }
         Dataset dataset;
         try {
-            dataset = client().getDataset(datasetId);
+            // The metadata view: the location is all this reads, and the default view also returns
+            // the access controls, which fine-grained dataset access control guards with
+            // bigquery.datasets.getIamPolicy on top of bigquery.datasets.get.
+            dataset =
+                    client().getDataset(
+                                    datasetId,
+                                    BigQuery.DatasetOption.datasetView(
+                                            BigQuery.DatasetView.METADATA));
         } catch (BigQueryException e) {
             throw new IOException(
                     "Failed to look up dataset "

@@ -66,6 +66,36 @@ limitations under the License.
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-datagen</artifactId>
         </dependency>
+        <!--
+            The FILE_LOADS mode's PARQUET staging format. The connector declares these `provided`
+            and keeps the minimum a deployment adds for a compressed Parquet staging file on its
+            test classpath, measured; mirrored here with the same pins, which move with
+            ${hadoop.version} (see the connector pom and .github/dependabot.yml).
+        -->
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-avro</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-common</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop.thirdparty</groupId>
+            <artifactId>hadoop-shaded-guava</artifactId>
+            <version>1.5.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-collections4</artifactId>
+            <version>4.4</version>
+        </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils</artifactId>
