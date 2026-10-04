@@ -91,6 +91,13 @@ public final class BigtableLookupConfig implements Serializable {
                             LookupOptions.CACHE_TYPE.key()));
         }
 
+        if (partialMaxRows != null && partialMaxRows < 0) {
+            throw new ValidationException(
+                    "Option '"
+                            + LookupOptions.PARTIAL_CACHE_MAX_ROWS.key()
+                            + "' must be zero or greater.");
+        }
+
         // Let Flink's own implementations validate the standard cache option combinations while
         // the DDL is planned, not later on a task manager.
         if (cacheType == LookupCacheType.PARTIAL) {

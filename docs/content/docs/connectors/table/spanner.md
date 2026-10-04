@@ -374,7 +374,7 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 | `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
 | `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | `true` | Whether partial cache records lookup misses |
-| `lookup.partial-cache.max-rows` | *unset* | Maximum rows retained by the partial cache |
+| `lookup.partial-cache.max-rows` | *unset* | Maximum rows retained by the partial cache. The source rejects negative values at planning, regardless of cache mode |
 | `sink.buffer-flush.max-cells` | `5000` | Maps to `maxBatchCells` |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations` |
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |

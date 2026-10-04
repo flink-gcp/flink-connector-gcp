@@ -60,6 +60,12 @@ public final class SpannerLookupConfig implements Serializable {
         if (maxRetries < 0) {
             throw new ValidationException("'lookup.max-retries' must be zero or greater.");
         }
+        if (maxRows != null && maxRows < 0) {
+            throw new ValidationException(
+                    "Option '"
+                            + LookupOptions.PARTIAL_CACHE_MAX_ROWS.key()
+                            + "' must be zero or greater.");
+        }
         if (cacheType == LookupCacheType.PARTIAL) {
             createPartialCache();
         }

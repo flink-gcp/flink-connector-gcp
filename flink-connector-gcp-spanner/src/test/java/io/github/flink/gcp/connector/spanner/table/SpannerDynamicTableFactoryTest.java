@@ -55,6 +55,9 @@ import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -578,6 +581,56 @@ class SpannerDynamicTableFactoryTest {
 
         assertThatThrownBy(() -> sink(SCHEMA, options))
                 .hasStackTraceContaining("UUID must be declared as STRING");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "false, NONE, -1",
+        "true, NONE, -1",
+        "false, PARTIAL, -1",
+        "true, PARTIAL, -1",
+        "false, PARTIAL, -9223372036854775808"
+    })
+    void rejectsNegativePartialCacheRowsWhenTheSourceIsPlanned(
+            boolean async, String cacheType, long maxRows) {
+        Map<String, String> options = options();
+        options.put("lookup.async", Boolean.toString(async));
+        options.put("lookup.cache", cacheType);
+        options.put("lookup.partial-cache.max-rows", Long.toString(maxRows));
+
+        assertThatThrownBy(() -> source(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'lookup.partial-cache.max-rows' must be zero or greater.");
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {0, 1, Long.MAX_VALUE})
+    void acceptsNonnegativePartialCacheRows(long maxRows) {
+        Map<String, String> options = options();
+        options.put("lookup.cache", "PARTIAL");
+        options.put("lookup.partial-cache.max-rows", Long.toString(maxRows));
+
+        assertThat(source(SCHEMA, options)).isInstanceOf(SpannerDynamicSource.class);
+    }
+
+    @Test
+    void acceptsPartialCachingWithOnlyAnExpiry() {
+        Map<String, String> options = options();
+        options.put("lookup.cache", "PARTIAL");
+        options.put("lookup.partial-cache.expire-after-write", "1 min");
+
+        assertThat(source(SCHEMA, options)).isInstanceOf(SpannerDynamicSource.class);
+    }
+
+    @Test
+    void partialCachingStillRequiresAnEvictionOption() {
+        Map<String, String> options = options();
+        options.put("lookup.cache", "PARTIAL");
+
+        assertThatThrownBy(() -> source(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("The cache will not have evictions");
     }
 
     private static DynamicTableSource source(ResolvedSchema schema, Map<String, String> options) {

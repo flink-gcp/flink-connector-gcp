@@ -1170,7 +1170,7 @@ DataStream builder.
 | `lookup.partial-cache.expire-after-access` | Duration | Standard PARTIAL-cache access expiry |
 | `lookup.partial-cache.expire-after-write` | Duration | Standard PARTIAL-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | Boolean | Whether PARTIAL caches misses |
-| `lookup.partial-cache.max-rows` | Long | Maximum PARTIAL-cache rows |
+| `lookup.partial-cache.max-rows` | Long | Maximum PARTIAL-cache rows. The source rejects negative values at planning, regardless of cache mode |
 | `lookup.full-cache.reload-strategy` | Enum | FULL reload strategy: `PERIODIC` or `TIMED` |
 | `lookup.full-cache.periodic-reload.interval` | Duration | Interval for periodic FULL reloads |
 | `lookup.full-cache.periodic-reload.schedule-mode` | Enum | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
