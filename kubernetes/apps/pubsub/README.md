@@ -146,7 +146,7 @@ Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 cons
 The proposal's `cost` is `unestimated`: spend is approved from an estimate before dispatch, and a runnable trial still needs one.
 A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
-The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict); dispatch, the verdict's recomputation from exported evidence and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence; dispatch and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Run identity and service resources
 
@@ -466,7 +466,7 @@ Synthetic tests run each trial through the supervisor's loop over a simulated re
 
 When the last stage completes, the exercise decides the trial's verdict over the `complete` record it is about to write, so the verdict reaches the `recovery-complete` evidence as well as the run control the final receipt reads.
 The record adds the output oracle's account of every collected line, the observation coverage per window and the Pod each attempt was announced by.
-[`pubsub_verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
+[`pubsub.verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
 
 | Condition | Reason when it fails |
 | --- | --- |
@@ -500,7 +500,33 @@ Every earlier transition also carries the coverage so far, so a trial that stops
 The oracle's duplicate counters are reported in the record beside the verdict and decide nothing.
 At-least-once delivery owes them, and neither unique Pub/Sub message IDs nor a deduplicated count can establish exactly-once output, so their absence would prove nothing either.
 A `usable` verdict says nothing about ordering across the replay: the oracle is a completeness check over a set of identities.
-Recomputing the verdict from the exported evidence is [#1625](https://github.com/flink-gcp/flink-connector-gcp/issues/1625)'s.
+
+### Offline recomputation
+
+`flink-tier3 analyze --evidence <directory>` reads a downloaded run directory, as `gcloud storage cp --recursive` leaves `runs/<run-id>/`, and recomputes a `pubsub-recovery` run's verdict beside the Cloud Tasks and BigQuery sections; it contacts no service.
+[`pubsub.analyze`](../../../tools/tier3/src/flink_tier3/pubsub/analyze.py) rebuilds from the evidence alone:
+
+- the output oracle, from every batch in batch order, each appended once, with its lines derived again from the saved pull response by the function the collector used, so an `observations.json` that differs from its response is refused;
+- the input identities, from the runner's publication receipts, which bind the returned IDs to request order within the interval their path names, so each output's input message ID is checked against what was published for its input and sequence;
+- the observation coverage, from the `pubsub-measurement` events;
+- `replay_by_new_attempts`, from the observations and the record's fault, through the same predicate the exercise uses.
+
+Whether the boundary held and which observations were collected before the fault are read from the `recovery-complete` record, because rebuilding them would re-run the exercise offline over the exported Pod logs and checkpoint statistics.
+They are held instead to the earlier `recovery-<stage>` records, which wrote the same outcomes as the trial reached them, to the approval, whose trial the fault must name, and to the observations: every attempt the fault names as running before it is the initial job's and restored nothing, the expected replay is the fault's own list, recovery cannot have seen more of it than the whole evidence holds, and a completion record preserving replay IDs is refused when a replay came under an ID no pre-fault attempt processed at all, the looser question an export without collection times can ask; the recovery's own claim, made before later replays arrived, is not asked against the whole export.
+The verdict is recomputed with the rebuilt values, and the run is classified with the BigQuery section's rules, from steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
+
+| Status | Problems that lead to it |
+| --- | --- |
+| `usable` or `inconclusive` | None; the status is the recomputed verdict |
+| `inconsistent` | `unpublished-input-ids`, `readings-the-record-does-not-account-for`, `output-the-record-does-not-account-for`, `oracle-disagrees-with-its-evidence`, `replay-disagrees-with-its-evidence`, `verdict-disagrees-with-its-evidence`, `receipt-record-mismatch`, `receipt-scenario-mismatch`, `repeated-recovery-complete` |
+| `tampered` | `coverage-unsupported-by-its-readings`, `oracle-overstates-its-evidence`, `replay-understated` (a rescale, whose verdict reads the count), `replay-overstated`, `outcomes-differ-from-earlier-records`, `fault-unreadable`, `fault-names-a-later-attempt`, `fault-kind-differs-from-the-approval`, `observed-unreadable`, `observations-differ-from-pull-response`, `replay-ids-overstated`, `verdict-unsupported-by-its-inputs`, `receipt-success-mismatch` |
+| `unexported` | `approval-without-pubsub-trial`, `missing-result.json`, `malformed-evidence`, `malformed-message-evidence`, `missing-recovery-complete`, `missing-output-batches`, `missing-input-receipts` |
+
+A `tampered` problem outranks an `unexported` one, which outranks an `inconsistent` one, as for BigQuery.
+A partial download, found by a gap in a collector's batch counter, by fewer exported lines than the record counted, or by an output of a completed run whose input has no publication receipt, stops every comparison that needs the missing objects, so the record is not charged with what the export lost; the comparisons that do not need them still run first, and the verdict is still asked over the record's own oracle and outcomes, which can only flatter it, so a stored `usable` or a successful receipt that even they refuse is an overstatement.
+An unreadable `supervisor/` or `result.json` document stops the analyzer for the whole directory, as for the other sections.
+The section reports the oracle's duplicate counters, and the runner's receipts beyond one per input as extra publications, apart from the verdict, and states that a usable verdict establishes neither ordering across the replay nor exactly-once output.
+Tests export the evidence a simulated run writes through the real supervisor, collector and message helpers and recompute each trial, a lost boundary, an interrupted run and a redelivery after a rescale from it; edited copies name each problem alone, and outcomes edited in every record are still caught.
 
 ## Input publication and output collection
 
@@ -770,7 +796,7 @@ The port returns the same five counters, and both test suites decide the cases i
 Those cases pin the report's own rejection messages; where the JDK writes the message instead, as for an unparseable number, UUID or Base64 field, the port words it differently, and the cases require only that both refuse.
 The Java tool's 64 MiB file bound and each side's line-reader checks are outside the shared cases.
 Instead of refusing a run with missing inputs, the port reports how many are missing, so that the verdict can tell a refused line from an incomplete set.
-Recomputing the verdict from the exported evidence is [#1625](https://github.com/flink-gcp/flink-connector-gcp/issues/1625)'s; deployed trials of either entry point remain on the parent issue.
+The [offline recomputation](#offline-recomputation) uses the same port over the exported batches; deployed trials of either entry point remain on the parent issue.
 
 ### Internal approval contract
 
@@ -796,7 +822,7 @@ Earlier internal fixtures without version 5 retain the strict full-receipt compa
 
 The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
 Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, and the supervisor runs the [recovery exercise](#recovery-exercise), but dispatch still refuses before the environment lock until that accounting exists.
-Complete execution accounting, the verdict's offline recomputation ([#1625](https://github.com/flink-gcp/flink-connector-gcp/issues/1625)) and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+Complete execution accounting and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Approval dispatch
 

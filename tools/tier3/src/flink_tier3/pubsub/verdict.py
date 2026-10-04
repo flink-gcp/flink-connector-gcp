@@ -21,6 +21,8 @@ from ..metrics import coverage_reasons, fold_coverage, metric_name
 from .observe import FAMILIES
 
 COMPLETE_STAGE = "complete"
+# The evidence events the exercise writes and the offline analysis reads.
+COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "pubsub-measurement"
 REPLACEMENTS = ("jm-replacement", "tm-replacement")
 RESCALES = ("rescale-out", "rescale-in")
@@ -120,7 +122,21 @@ def _replay(kind, recovery, after):
     return reasons
 
 
-def _oracle(oracle):
+def started_by_fault(attempt, restored, phase, before, kind):
+    """Whether an attempt is one the fault started, from restored state.
+
+    A replacement restarts attempts in the same phase; a rescale's are the
+    upgraded job's. The exercise and the offline analysis ask the same thing.
+    """
+    return (
+        attempt not in before
+        and restored is True
+        and (kind in REPLACEMENTS or phase == "upgrade")
+    )
+
+
+def oracle_reasons(oracle):
+    """Why the oracle's account does not carry the claim, if it does not."""
     if not isinstance(oracle, dict):
         return ["oracle-missing"]
     # An absent refusal is not an acceptance, and `False == 0` in Python, so
@@ -162,6 +178,6 @@ def verdict(recovery):
     after = outcomes.get("after")
     if all(isinstance(value, dict) for value in (fault, recovery_outcome, after)):
         reasons.extend(_replay(fault.get("kind"), recovery_outcome, after))
-    reasons.extend(_oracle(record.get("oracle")))
+    reasons.extend(oracle_reasons(record.get("oracle")))
     reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_WINDOWS, OBSERVED))
     return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}

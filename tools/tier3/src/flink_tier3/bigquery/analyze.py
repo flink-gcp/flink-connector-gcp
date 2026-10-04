@@ -28,7 +28,15 @@ from, so a rename cannot reach only one side and leave this reporting missing
 evidence.
 """
 
-from ..common import INCONCLUSIVE, INCONSISTENT, TAMPERED, UNEXPORTED, USABLE
+from ..common import UNEXPORTED
+from ..recovery_analysis import (
+    accounted,
+    measurements,
+    rebuild,
+    receipt_problems,
+    verdict_problems,
+)
+from ..recovery_analysis import status as assess_status
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
@@ -56,78 +64,7 @@ OVERSTATEMENTS = (
 
 
 def _measurements(run):
-    """Every sample the run emitted, and how many of its records are unreadable.
-
-    A payload that is not an object is dropped by `events_of`, so it is counted
-    here instead. It cannot simply be ignored: the lost reading lowers the
-    rebuilt coverage, and the record would then look like one overstating
-    itself — a truncated download reported as forgery.
-    """
-    readings = run.events_of(MEASUREMENT_EVENT)
-    malformed = sum(
-        1
-        for entry in run.events
-        if entry["event"] in (MEASUREMENT_EVENT, COMPLETE_EVENT)
-        and not isinstance(entry["payload"], dict)
-    ) + sum(
-        # A dict the fold cannot place is lost in exactly the same way.
-        1
-        for entry in readings
-        if not isinstance(entry["payload"].get("stage"), str)
-    )
-    return readings, malformed
-
-
-def _rebuild(readings):
-    """Coverage folded from the readings themselves, not read from the record.
-
-    This is the whole point of recomputing offline. Each sample was emitted as
-    `{"stage": ..., **reading}`, so the same fold the Pod ran can be run again
-    over the exported evidence — and a `coverage` claiming a family the
-    readings beside it never returned is then a disagreement rather than an
-    input. The fold is a per-stage union and a count, so the order the evidence
-    happens to be listed in does not change the result.
-    """
-    coverage = {}
-    for entry in readings:
-        stage = entry["payload"].get("stage")
-        if isinstance(stage, str):
-            coverage = summarize(coverage, stage, entry["payload"])
-    return coverage
-
-
-def _accounted(claimed, rebuilt, complete):
-    """What the record's coverage claims beyond, or short of, its readings.
-
-    Two different accusations. A record claiming an attempt or a family the
-    readings do not support is overstating itself, which is the forgery. A
-    completed record that accounts for fewer readings than the run emitted is
-    not overstating anything, but its evidence disagrees with it — an
-    incomplete record is expected to, because it was written at the run's last
-    transition and the remaining samples came after.
-    """
-    claimed = claimed if isinstance(claimed, dict) else {}
-    problems = []
-    for stage, window in claimed.items():
-        against = rebuilt.get(stage) if isinstance(rebuilt.get(stage), dict) else {}
-        window = window if isinstance(window, dict) else {}
-        attempts = window.get("attempts")
-        observed = window.get("observed")
-        if (
-            not isinstance(attempts, int)
-            or attempts > against.get("attempts", 0)
-            or not isinstance(observed, list)
-            # Element types too, and before the subset test: `set` of an
-            # unhashable element raises, and `analyze` catches only `Failure`,
-            # so one edited record would abort the whole directory's analysis.
-            or not all(isinstance(name, str) for name in observed)
-            or not set(observed) <= set(against.get("observed", ()))
-        ):
-            problems.append("coverage-unsupported-by-its-readings")
-            break
-    if complete and claimed != rebuilt and not problems:
-        problems.append("readings-the-record-does-not-account-for")
-    return problems
+    return measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
 
 
 def _excluded(run, problems):
@@ -175,7 +112,7 @@ def assess(run):
     # Decide over the coverage the readings support, never the coverage the
     # record claims: recomputing from a field the same hand could edit would
     # only restate the record to itself.
-    rebuilt = _rebuild(readings)
+    rebuilt = rebuild(readings, summarize)
     # The trial the receipt names decides which families are required.
     trial = result.get("bigquery_trial")
     decided = verdict(
@@ -193,56 +130,23 @@ def assess(run):
     missing = not complete and record.get("stage") == COMPLETE_STAGE
     if missing:
         problems.append("missing-" + COMPLETE_EVENT)
-    unsupported = _accounted(record.get("coverage"), rebuilt, complete)
+    unsupported = accounted(record.get("coverage"), rebuilt, complete)
     problems.extend(unsupported)
     # The verdict the Pod wrote, against the decision the evidence supports.
     # This is the check the receipt cannot do itself. An incomplete record
     # carries no verdict to compare, and cannot recompute to `usable`, because
     # its stage is not the completed one.
-    stored, reasons = record.get("verdict"), record.get("reasons")
-    if (stored is not None or complete) and (
-        stored != decided["verdict"]
-        or (reasons if isinstance(reasons, list) else None) != decided["reasons"]
-    ):
-        # Anything that is not the conservative outcome, or its absence, is
-        # the forgery — whatever its type. Testing for the safe value rather
-        # than for the literal `usable` is deliberate twice over: a record
-        # edited to `USABLE` makes the same claim and must not escape on a
-        # spelling, and a field holding something no writer produces at all
-        # cannot be read as a modest claim, so it takes the severe label. A
-        # stored `inconclusive`, or none, under-reports instead, and nobody
-        # forges a run into being unusable.
-        problems.append(
-            "verdict-disagrees-with-its-readings"
-            if stored in (None, INCONCLUSIVE)
-            else OVERSTATEMENTS[1]
+    # The verdict the Pod wrote, against the decision the evidence supports.
+    # This is the check the receipt cannot do itself. An incomplete record
+    # carries no verdict to compare, and cannot recompute to `usable`, because
+    # its stage is not the completed one.
+    problems.extend(
+        verdict_problems(
+            record, decided, complete, "verdict-disagrees-with-its-readings"
         )
-    if complete and result.get("recovery") != record:
-        problems.append("receipt-record-mismatch")
-    if result.get("scenario") != SCENARIO:
-        problems.append("receipt-scenario-mismatch")
-    # One-directional on purpose. The receipt's `success` is a conjunction that
-    # also requires the run's own evidence to have been written, so `false`
-    # beside a usable verdict is the runner obeying its rules. `true` beside a
-    # verdict that is not usable is the forgery.
-    if result.get("success") is True and decided["verdict"] != USABLE:
-        problems.append(OVERSTATEMENTS[2])
-    # Computed once every claim has been examined, the receipt's included: a
-    # forgery can be made in the receipt as readily as in the record.
-    tampered = bool(set(problems) & set(OVERSTATEMENTS))
-    # An overstatement outranks the missing object, because a truncated export
-    # and a fabricated record look alike once the readings are gone and only
-    # one of the two is safe to report as benign. The operator clears a
-    # re-fetchable case by fetching the evidence again and asking once more.
-    status = (
-        TAMPERED
-        if tampered
-        else UNEXPORTED
-        if missing
-        else INCONSISTENT
-        if problems
-        else decided["verdict"]
     )
+    problems.extend(receipt_problems(result, record, complete, SCENARIO, decided))
+    status = assess_status(problems, OVERSTATEMENTS, missing, decided["verdict"])
     return {
         "run_id": run.run_id,
         "status": status,
@@ -259,14 +163,6 @@ def assess(run):
 def assess_runs(runs):
     """Every BigQuery run in a discovered evidence directory, in the order given."""
     return [assess(run) for run in runs if run.scenario == SCENARIO]
-
-
-def counts(assessments):
-    """How many runs carry each status, for the analyzer's own summary line."""
-    table = {}
-    for item in assessments:
-        table[item["status"]] = table.get(item["status"], 0) + 1
-    return ", ".join(f"{status} {number}" for status, number in sorted(table.items()))
 
 
 def render(assessments):
