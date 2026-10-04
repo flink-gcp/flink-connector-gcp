@@ -381,6 +381,19 @@ The runner and supervisor remain trusted Operator administrators; selecting its 
 Existing lifecycle scenarios still admit only their own applications; the BigQuery application and runtime remain subsequent work.
 Application publication and bounded execution follow separately; these persistent grants provide no deployed BigQuery result and authorize no paid trial.
 
+Refined under [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550) for the [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313) FILE_LOADS scenario: the writer also receives a project-wide custom role holding `bigquery.jobs.create` alone, because its committer submits load jobs and jobs are project resources.
+Grant nothing else on that path, each omission for a measured or documented reason; the application behaviour cited is that of its FILE_LOADS mode, added under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), and until that mode lands no mode uses this grant:
+
+- No `bigquery.jobs.get` or `bigquery.jobs.update`: BigQuery accepts `bigquery.jobs.create` from a job's creator for reading and cancelling it.
+- No `bigquery.datasets.get`: the application sets the sink's location, and the committer reads a dataset only to find that location.
+- No table creation or deletion: the overflow path that needs them requires more than 10,000 files or 11 TiB for one destination in one commit, or a truncating disposition. The application appends, and its two writers each fail rather than hold more than the 10,000 pending files it leaves as the default, spread evenly over at least 10 destinations, so one destination's commit stays near 2,000 files whatever the staging file size.
+- No `storage.buckets.get`: the existing bucket-wide Object Viewer grant lets load jobs read staged files, and the E2E identity loads with Object Admin alone.
+
+Staging under `runs/<run-id>/staging/` falls inside the existing conditioned Object User grant and the one-day lifecycle rule.
+The predefined `roles/bigquery.jobUser` was declined, because it adds Dataform repository creation and project listing to the same permission.
+`bigquery.jobs.create` cannot be narrowed to load jobs: the workload can also submit queries, which read no Tier-3 table without `bigquery.tables.getData` but run and bill in the project.
+This grant does not fence load jobs: one keeps writing after the workload's Pods are gone, which the rig's load-job barrier must cover ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)).
+
 ### BigQuery recovery application
 
 The opt-in `tier3-bigquery` Maven profile builds an internal Flink 2.2.1 workload with the production default-stream and buffered-stream sinks.

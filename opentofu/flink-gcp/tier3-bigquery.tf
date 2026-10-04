@@ -145,6 +145,49 @@ resource "google_project_iam_member" "tier3_bigquery_jobs" {
   member   = each.value
 }
 
+# The FILE_LOADS committer submits load jobs as the workload, and jobs are
+# project resources, so this grant cannot be scoped to the dataset. It is the
+# one permission that path lacks; everything else it touches is already held.
+# The application behaviour cited below is that of its FILE_LOADS mode, added
+# under #1549; until that lands no mode uses this grant.
+# - bigquery.jobs.get/update: not granted. The committer reads and polls only
+#   jobs it created, and BigQuery accepts bigquery.jobs.create from a job's
+#   creator in their place (jobs.get and jobs.cancel API contracts).
+# - bigquery.datasets.get: not granted. The committer reads a dataset only to
+#   find the location of its jobs, and the application sets that location on
+#   the sink instead.
+# - bigquery.tables.create/delete: not granted. Temporary tables and copy jobs
+#   arise only when one destination's commit exceeds 10,000 files or 11 TiB,
+#   or under a truncating write disposition. The application appends, and
+#   each of its two writers fails rather than hold more than maxPendingFiles,
+#   which it leaves at 10,000, spread evenly over at least 10 destinations: at
+#   most about 2,000 files reach one destination in one commit, whatever the
+#   staging file size.
+# - Cloud Storage: the bucket-wide Object Viewer below lets load jobs read the
+#   staged files, and the conditioned Object User writes and deletes them under
+#   runs/. No storage.buckets.get: the E2E identity loads staged files with
+#   Object Admin alone, which carries none.
+# jobs.create also lets the workload submit queries; they read no Tier-3 table,
+# for which it holds no bigquery.tables.getData, but they are billed to the
+# project. roles/bigquery.jobUser would add Dataform repository creation and
+# project listing to the same jobs.create.
+resource "google_project_iam_custom_role" "tier3_bigquery_workload_jobs" {
+  project     = local.project_id
+  role_id     = "tier3BigQueryWorkloadJobs"
+  title       = "Tier-3 BigQuery workload load jobs"
+  description = "Submits the FILE_LOADS load jobs of a Tier-3 BigQuery trial"
+  permissions = ["bigquery.jobs.create"]
+  stage       = "GA"
+
+  depends_on = [google_project_iam_member.opentofu["roles/iam.roleAdmin"]]
+}
+
+resource "google_project_iam_member" "tier3_bigquery_workload_jobs" {
+  project = local.project_id
+  role    = google_project_iam_custom_role.tier3_bigquery_workload_jobs.name
+  member  = google_service_account.tier3_bigquery.member
+}
+
 resource "google_storage_bucket_iam_member" "tier3_bigquery_reader" {
   for_each = merge(local.tier3_bigquery_lifecycle, {
     writer = google_service_account.tier3_bigquery.member

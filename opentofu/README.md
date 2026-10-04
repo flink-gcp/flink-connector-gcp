@@ -191,18 +191,30 @@ Dataset-scoped custom roles separate the three actors:
 | Runner | `bigquery.datasets.get`, `bigquery.tables.create/get/getData/list/delete`: check the dataset, admit tables, validate and clean up |
 | Supervisor | The runner's dataset permissions except `bigquery.tables.create` |
 
-The workload receives no query-job, table-creation, table-deletion or IAM-administration grant.
+The workload receives no table-creation, table-deletion or IAM-administration grant, and no grant to read table data.
 The runtime must use `CREATE_NEVER` with an explicit location and pre-created matching schemas.
+[Issue #1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550) adds one project-wide grant for the [FILE_LOADS mode](../kubernetes/apps/bigquery/README.md#trial-inputs): a custom role holding `bigquery.jobs.create` alone, so the workload can submit its load jobs.
+The application behaviour this section cites is that of the application's FILE_LOADS mode, added under [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549); until that mode lands, no mode uses this grant.
+The same permission lets it submit any job type, queries included; without `bigquery.tables.getData` they cannot read the Tier-3 tables, but they run and bill in this project.
+As their creator it can read and cancel those jobs without `bigquery.jobs.get` or `bigquery.jobs.update`, which BigQuery requires only for other principals' jobs.
+It holds no `bigquery.datasets.get`, so a FILE_LOADS runtime must set the sink's location, as the application's FILE_LOADS mode ([#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549)) does; without one, the committer looks up each destination dataset's location and fails.
+Temporary tables and copy jobs, which would need table creation and deletion, arise only when one destination's commit exceeds 10,000 files or 11 TiB, or under a truncating write disposition.
+The application's FILE_LOADS mode appends, and each of its two writers fails rather than hold more than `maxPendingFiles` files, which it leaves at 10,000; spread evenly over at least 10 destinations, that is at most about 2,000 files for one destination in one commit, whatever the staging file size.
+`roles/bigquery.jobUser` would add Dataform repository creation and project listing to the same `bigquery.jobs.create`.
+A load job keeps writing server-side after the workload's Pods are gone, so the quiescence barrier's Pod listing does not cover it; the rig's load-job barrier ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)) owns that.
 The dataset bindings cover every table in this dedicated dataset, not one run prefix.
 The runner and supervisor also receive project-wide `bigquery.jobs.create/get/update` so either actor can inspect and cancel an outstanding validation query after the other fails.
 These job permissions can inspect and cancel other principals' jobs in the project; they are not scoped to the dataset or an approved run.
 The later runtime must record exact query IDs before submission, enforce the approved query and byte budget, and limit recovery to those IDs.
-The existing project-wide Role Admin grant lets the apply identity manage these four custom roles.
+The existing project-wide Role Admin grant lets the apply identity manage these five custom roles.
 
 All three actors can list and read the dedicated state bucket and use Object User under `runs/` and `.inprogress/flink-gcp-tier3-bigquery/runs/`, where the Flink GCS filesystem's recoverable writer stages each upload before composing it into place; the bucket's one-day expiry covers both prefixes.
 That grant covers all runs in the bucket; run ownership must be checked by the lifecycle code before deletion.
 The workload receives no access to the evidence bucket or environment lock.
 The runtime must keep checkpoint, savepoint and HA paths under `runs/`.
+FILE_LOADS stages under `runs/<run-id>/staging/`, inside the conditioned Object User grant and the one-day lifecycle rule.
+Its connector writes and deletes those objects directly, not through the recoverable writer, so they never appear under `.inprogress/`.
+Load jobs read the staged files as the workload through the bucket-wide Object Viewer grant; no `storage.buckets.get` is needed, as the E2E identity's Object Admin-only loads show.
 A separately approved checkpoint write and restore with the pinned Flink GCS filesystem is a follow-up acceptance requirement; these static grants alone do not establish filesystem compatibility, and pilot `bq1312-alo-10-a5` found the staging prefix only when its first checkpoint was refused.
 
 The GCP plan should add 19 resources without changing existing resources.
