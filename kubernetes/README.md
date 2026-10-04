@@ -40,6 +40,9 @@ kubernetes/
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
   runs/common.cue                # Run inputs and environment constraints
+  lifecycle/delivery.cue         # Shared lifecycle ConfigMap and supervisor
+  lifecycle/{smoke,cloudtasks,bigquery,pubsub}.cue # Scenario inputs and applications
+  lifecycle/sessions/            # Reviewed Cloud Tasks session files
   tests/                         # CI delivery discovery and synthetic regression cases
   upstream.toml                  # Operator chart version, URL and SHA-512
 ```

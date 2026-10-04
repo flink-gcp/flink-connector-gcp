@@ -52,6 +52,7 @@ limitations under the License.
 - Updated: 2026-10-04 (supervised Pub/Sub recovery exercise and 120-second application checkpoints)
 - Updated: 2026-10-04 (checkout-only modules kept out of the delivered package)
 - Updated: 2026-10-04 (Pub/Sub recovery verdict decided by the supervisor)
+- Updated: 2026-10-04 (uniform lifecycle scenario files and reviewed-trial instructions)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
 - Modules: opentofu, kubernetes, CI
@@ -710,7 +711,9 @@ Keep runner and supervisor entrypoints disabled and the offline delivery approva
 The [internal approval runbook](../../kubernetes/apps/pubsub/README.md#internal-approval-contract) records the exact limits and remaining boundaries.
 
 Refined under [#1429](https://github.com/flink-gcp/flink-connector-gcp/issues/1429): the run workflow and the lifecycle CLI accept `pubsub-recovery` and build the version 5 approval, and admission is still refused.
-A dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`, which holds the offline schema as TOML beside its licence header, and the published application digest.
+A dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`, containing the offline schema as TOML beside its licence header, and the published application digest.
+Refined under [#1655](https://github.com/flink-gcp/flink-connector-gcp/issues/1655), the lifecycle delivery keeps shared resources in `delivery.cue` and each scenario in a sibling CUE file in the same package.
+The [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials) live in the lifecycle runbook; the directory is created with its first reviewed trial file.
 Its phrase carries the policy's Pod count and window and the trial's own record and total-request ceilings, so a phrase typed for one trial does not approve another trial with different numbers.
 The window starts at admission on the whole second and lasts exactly the approval's hour; the typed expiry may lie at most ten minutes beyond it, as for BigQuery.
 Dispatch assembles the approval from the proposal it rendered and verified, mapping the proposal's recovery-application digest to the approval's `upgrade_application_sha256`, and prepares the approval-bound bundle, which re-renders from the approval alone.
