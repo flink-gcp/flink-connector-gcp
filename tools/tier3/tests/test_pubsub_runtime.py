@@ -195,8 +195,8 @@ def test_runner_releases_before_supervisor_cleanup_and_complete_settlement(runti
     assert a.sender.env.refresh().idle and a.sender.env.refresh().success
     assert a.sender.env.refresh().pubsub["traffic"]["used"]["input_messages"] == 1
     saved = copy.deepcopy(a.sender.env.refresh().pubsub)
-    # Settlement success is not a deployed recovery verdict: no Pub/Sub exercise
-    # has yet supplied the final success criteria.
+    # Settlement success is not a deployed recovery verdict: the receipt reports
+    # success only for a usable verdict, which this run's record carries none of.
     assert (
         runner.finalize(
             {

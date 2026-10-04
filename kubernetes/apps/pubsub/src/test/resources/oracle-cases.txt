@@ -1,0 +1,131 @@
+#
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Cases PubSubRecoveryReport.java and its Python port in tools/tier3 must decide
+# alike. A case names its records per subscription for the run "oracle",
+# accepts output messages in order as "accept <output message ID> <payload>",
+# and ends with one result: the counters the complete report returns
+# ("expect"), the message of the first refusal ("reject"), or "refuse" where
+# the JDK writes that message and only the refusal is shared. Both test suites
+# read this file and require its case count.
+
+case four-duplicate-populations records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-b v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-c v1|oracle|0|0|aW5wdXQtYQ|a0000002-0000-4000-8000-000000000002|a0000002-0000-4000-8000-000000000002|initial|false
+accept output-d v1|oracle|0|0|aW5wdXQtYg|a0000003-0000-4000-8000-000000000003|a0000003-0000-4000-8000-000000000003|initial|false
+accept output-e v1|oracle|1|0|aW5wdXQtYQ|a0000004-0000-4000-8000-000000000004|a0000004-0000-4000-8000-000000000004|initial|false
+expect logical_inputs=2 input_publication_duplicates=1 repeated_input_processing=1 output_publication_duplicates=1 repeated_output_delivery=1
+
+case complete-without-duplicates records=2
+accept output-0 v1|oracle|0|0|aW5wdXQtMA|a0000001-0000-4000-8000-000000000001|a000000a-0000-4000-8000-00000000000a|initial|false
+accept output-1 v1|oracle|0|1|aW5wdXQtMQ|a0000001-0000-4000-8000-000000000001|a000000b-0000-4000-8000-00000000000b|initial|false
+accept output-2 v1|oracle|1|0|aW5wdXQtMg|a0000002-0000-4000-8000-000000000002|a000000c-0000-4000-8000-00000000000c|initial|false
+accept output-3 v1|oracle|1|1|aW5wdXQtMw|a0000002-0000-4000-8000-000000000002|a000000d-0000-4000-8000-00000000000d|initial|false
+expect logical_inputs=4 input_publication_duplicates=0 repeated_input_processing=0 output_publication_duplicates=0 repeated_output_delivery=0
+
+case restored-upgrade-attempt records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-b v1|oracle|1|0|aW5wdXQtYg|a0000002-0000-4000-8000-000000000002|a0000002-0000-4000-8000-000000000002|upgrade|true
+expect logical_inputs=2 input_publication_duplicates=0 repeated_input_processing=0 output_publication_duplicates=0 repeated_output_delivery=0
+
+case missing-logical-input records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Missing logical inputs: expected=2 observed=1
+
+case output-id-names-two-payloads records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-a v1|oracle|1|0|aW5wdXQtYg|a0000002-0000-4000-8000-000000000002|a0000002-0000-4000-8000-000000000002|initial|false
+reject One evidence identity names conflicting records
+
+case observation-id-names-two-payloads records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-b v1|oracle|1|0|aW5wdXQtYg|a0000002-0000-4000-8000-000000000002|a0000001-0000-4000-8000-000000000001|initial|false
+reject One evidence identity names conflicting records
+
+case attempt-changes-its-state records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-b v1|oracle|1|0|aW5wdXQtYg|a0000001-0000-4000-8000-000000000001|a0000002-0000-4000-8000-000000000002|initial|true
+reject One evidence identity names conflicting records
+
+case input-id-names-two-sequences records=2
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+accept output-b v1|oracle|0|1|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000002-0000-4000-8000-000000000002|initial|false
+reject One evidence identity names conflicting records
+
+case foreign-run records=1
+accept output-a v1|foreign|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Input must belong to this version and run
+
+case unrestored-upgrade records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|upgrade|false
+reject Invalid output observation
+
+case unknown-phase records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|final|false
+reject Invalid output observation
+
+case eight-fields records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial
+reject Invalid output observation
+
+case third-input records=1
+accept output-a v1|oracle|2|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Input index must be 0 or 1
+
+case sequence-outside-the-domain records=1
+accept output-a v1|oracle|0|1|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Sequence is outside this run's logical input domain
+
+case signed-sequence records=1
+accept output-a v1|oracle|0|+0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Input identity must use canonical decimal fields
+
+case padded-input-message-id records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ==|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Noncanonical UTF-8/base64 field
+
+case empty-input-message-id records=1
+accept output-a v1|oracle|0|0||a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Input message ID is missing
+
+case uppercase-attempt records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|A0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Attempt and observation IDs must be UUIDs
+
+case uppercase-observation records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|A0000002-0000-4000-8000-000000000002|initial|false
+reject Attempt and observation IDs must be UUIDs
+
+case oversized-output-id records=1
+accept xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx v1|oracle|0|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+reject Evidence exceeds its bound or lacks an output message ID
+
+case index-beyond-int records=1
+accept output-a v1|oracle|2147483648|0|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+refuse
+
+case unparseable-sequence records=1
+accept output-a v1|oracle|0|x|aW5wdXQtYQ|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+refuse
+
+case illegal-base64-input-message-id records=1
+accept output-a v1|oracle|0|0|a+b|a0000001-0000-4000-8000-000000000001|a0000001-0000-4000-8000-000000000001|initial|false
+refuse
+
+case unparseable-attempt records=1
+accept output-a v1|oracle|0|0|aW5wdXQtYQ|zzzz|a0000001-0000-4000-8000-000000000001|initial|false
+refuse

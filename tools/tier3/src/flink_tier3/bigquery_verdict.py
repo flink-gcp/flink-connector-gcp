@@ -16,7 +16,7 @@
 
 from .bigquery_observe import MEMORY_METRICS, SINK_FAMILIES
 from .common import INCONCLUSIVE, USABLE
-from .metrics import metric_name
+from .metrics import coverage_reasons, fold_coverage, metric_name
 
 # What the run has to have observed to carry the measurement claim: the sink
 # families #1312 asks for, and the TaskManager memory beside them. The verdict
@@ -85,15 +85,7 @@ def summarize(previous, stage, reading):
     during the baseline is read, even if a later baseline sample lost it to a
     restart, but it says nothing about the post-recovery window.
     """
-    coverage = {
-        name: dict(window)
-        for name, window in previous.items()
-        if isinstance(window, dict)
-    }
-    window = coverage.setdefault(stage, {"attempts": 0, "observed": []})
-    window["attempts"] += 1
-    window["observed"] = sorted(set(window["observed"]) | _read(reading))
-    return coverage
+    return fold_coverage(previous, stage, _read(reading))
 
 
 def verdict(recovery):
@@ -116,8 +108,6 @@ def verdict(recovery):
     record = recovery if isinstance(recovery, dict) else {}
     outcomes = record.get("outcomes")
     outcomes = outcomes if isinstance(outcomes, dict) else {}
-    coverage = record.get("coverage")
-    coverage = coverage if isinstance(coverage, dict) else {}
     reasons = []
     if record.get("stage") != COMPLETE_STAGE:
         reasons.append("recovery-incomplete")
@@ -128,17 +118,5 @@ def verdict(recovery):
     report = query.get("report") if isinstance(query, dict) else None
     if not isinstance(report, dict) or report.get("verdict") != "pass":
         reasons.append("oracle-not-passed")
-    for stage in SAMPLED_STAGES:
-        window = coverage.get(stage)
-        window = window if isinstance(window, dict) else {}
-        attempts = window.get("attempts")
-        observed = window.get("observed")
-        observed = observed if isinstance(observed, list) else []
-        # A window that took no sample observed nothing, whatever it claims.
-        if not isinstance(attempts, int) or attempts < 1:
-            reasons.append("unsampled-" + stage)
-            observed = []
-        reasons.extend(
-            f"unobserved-{name}-in-{stage}" for name in OBSERVED if name not in observed
-        )
+    reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_STAGES, OBSERVED))
     return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}

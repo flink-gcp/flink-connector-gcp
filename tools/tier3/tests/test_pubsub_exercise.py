@@ -20,9 +20,12 @@ import json
 import uuid
 
 import pytest
+from flink_tier3.common import INCONCLUSIVE
 from flink_tier3.policy import PUBSUB, PUBSUB_STATE
-from flink_tier3.pubsub_exercise import MEASUREMENT_EVENT
+from flink_tier3.pubsub_messages import COHORTS, cohort_ranges
+from flink_tier3.pubsub_observe import SINK_METRICS, SOURCE_METRICS
 from flink_tier3.pubsub_plan import COUNTER_CEILINGS
+from flink_tier3.pubsub_verdict import MEASUREMENT_EVENT
 from test_pubsub_actors import prepared as prepared  # noqa: PLC0414
 from test_pubsub_admission import admitting as admitting  # noqa: PLC0414
 from test_pubsub_admission import supervisor_uid
@@ -77,6 +80,7 @@ class Relay:
         new_ids=False,
         restored_flag=True,
         ignore_delete=False,
+        savepoint_acks=True,
     ):
         self.a, self.kube, self.clock = a, a.environment.kube, a.environment.clock
         self.approval = a.environment.approval
@@ -91,6 +95,11 @@ class Relay:
         self.restored_flag = restored_flag
         # The deleted Pod stays, and the job restarts in place anyway.
         self.ignore_delete = ignore_delete
+        # A savepoint's acknowledgements reach the service; when they do not,
+        # what it covered is redelivered to the upgraded job.
+        self.savepoint_acks = savepoint_acks
+        # Output messages the collector has been given, for redelivering one.
+        self.delivered = []
         # A checkpoint triggered and not yet completed, with what it covers.
         self.inflight = None
         # Deleted Pods still terminating, and when they go.
@@ -116,6 +125,13 @@ class Relay:
         self.events = []
         # Called at each step, after the simulated job has advanced.
         self.hooks = []
+        # The connector metric names the vertex lists once its operators open.
+        self.listed = (*SOURCE_METRICS, *SINK_METRICS)
+        # The vertex metrics endpoints alone answer 503.
+        self.metrics_down = False
+        # The value query answers no id, as Flink's store does for metrics it
+        # does not hold yet.
+        self.values_held = True
         self.original_request = self.kube.request
         self.original_delete = self.kube.delete
         self.original_patch = self.kube.patch
@@ -164,6 +180,7 @@ class Relay:
             self.output[: kwargs["json"]["maxMessages"]],
             self.output[kwargs["json"]["maxMessages"] :],
         )
+        self.delivered.extend(batch)
         return Response(
             {
                 "receivedMessages": [
@@ -452,7 +469,9 @@ class Relay:
             "external_path": self.checkpoint_path("savepoints"),
         }
         self.next_id += 1
-        self.unacked = []
+        lost = set(self.attempts.values())
+        if self.savepoint_acks:
+            self.unacked = []
         app["status"]["jobStatus"]["state"] = "FINISHED"
         app["status"]["reconciliationStatus"] = {"state": "UPGRADING"}
         self.kube.put(app)
@@ -482,6 +501,7 @@ class Relay:
             )
             self.kube.put(current)
             self.restore(savepoint=savepoint)
+            self.requeue(lost)
             self.attempts = {}
             self.start_attempts(range(self.parallelism), restored=True)
 
@@ -504,6 +524,24 @@ class Relay:
             }
         if suffix.endswith("/backpressure"):
             return {"status": "ok", "backpressureLevel": "ok", "subtasks": []}
+        if "/subtasks/metrics" in suffix and self.metrics_down:
+            raise rt.ApiError(503, method, path)
+        if suffix.endswith("/vertices/relay/subtasks/metrics"):
+            # The planner's operator names carry a prefix, and the vertex
+            # lists Flink's own task metrics beside the connector's.
+            return [
+                {"id": "numRecordsIn"},
+                *({"id": "Source__Pub_Sub_input." + name} for name in self.listed),
+            ]
+        if "/vertices/relay/subtasks/metrics?get=" in suffix:
+            ids = suffix.split("?get=")[1].split("&")[0].split(",")
+            values = {"pendingAcks": len(self.unacked)}
+            if not self.values_held:
+                return []
+            return [
+                {"id": i, "min": 0, "max": 0, "sum": values.get(i.rsplit(".")[-1], 0)}
+                for i in ids
+            ]
         if "/" not in suffix:
             return {"vertices": [{"id": "relay", "name": "Source: Pub/Sub input"}]}
         raise AssertionError(path)
@@ -596,12 +634,68 @@ def test_each_trial_runs_to_completion_and_cleans(admitting, monkeypatch):
     if kind in ("jm-replacement", "tm-replacement"):
         assert recovery["first_output_after_fault"] is not None
         assert recovery["extra_replay"] == 0
+    # By the end, the replay cohort as the fault's new attempts processed it:
+    # what recovery saw, and none at all after a savepoint.
+    assert outcomes["after"]["replay_by_new_attempts"] == (
+        recovery["replayed"] + recovery["extra_replay"]
+    )
+    assert control.recovery["verdict"] == rt.USABLE, control.recovery["reasons"]
+    assert control.recovery["reasons"] == []
+    oracle = control.recovery["oracle"]
+    assert oracle["rejected"] is None and oracle["missing_inputs"] == 0
+    assert oracle["logical_inputs"] == 2 * RECORDS
+    # Each redelivered input was processed again under its own message ID;
+    # nothing was published twice, and the collector saw each output once.
+    assert oracle["repeated_input_processing"] == recovery["replayed"]
+    assert oracle["input_publication_duplicates"] == 0
+    assert oracle["output_publication_duplicates"] == 0
+    assert oracle["repeated_output_delivery"] == 0
+    assert set(control.recovery["coverage"]) >= {"before", "after"}
+    # Every Pod that announced an attempt, as the application logged it.
+    assert {
+        attempt["pod_uid"] for attempt in control.recovery["attempts"].values()
+    } == set(world.relay.logs)
     # Each cohort request leaves the runner 90 seconds to start publishing.
     for name in ("after_checkpoint", "after_recovery"):
         cohort = control.pubsub["cohorts"][name]
         assert cohort["deadline"] - cohort["requested_at"] == 90
     measurements = world.evidence(MEASUREMENT_EVENT)
-    assert measurements and all(m["payload"]["vertices"] for m in measurements)
+    assert measurements
+    readings = {}
+    for m in measurements:
+        vertices = m["payload"]["vertices"]
+        assert isinstance(vertices, list) and vertices, m
+        for vertex in vertices:
+            assert isinstance(vertex["metrics"], list), m
+            for item in vertex["metrics"]:
+                readings.setdefault(item["id"].rsplit(".")[-1], []).append(item)
+    # The values came from the query, not the listing: the leased population
+    # the source reports is the simulated service's unacknowledged messages.
+    assert set(readings) >= set(SOURCE_METRICS) | set(SINK_METRICS)
+    assert all("sum" in item for item in readings["pendingAcks"])
+    assert any(item["sum"] > 0 for item in readings["pendingAcks"])
+    # The derived backlog counts the cohorts each stage has requested.
+    ranges = cohort_ranges(RECORDS)
+    requested = {
+        "baseline": 1,
+        "checkpoint": 1,
+        "boundary": 2,
+        "recovering": 2,
+        "after": 3,
+    }
+    for m in measurements:
+        backlog, stage = m["payload"]["backlog"], m["payload"]["stage"]
+        assert backlog["cohorts"] == list(COHORTS[: requested[stage]]), m
+        assert backlog["requested"] == 2 * sum(
+            ranges[name]["count"] for name in backlog["cohorts"]
+        )
+        assert backlog["outstanding"] == backlog["requested"] - backlog["observed"]
+    assert m["payload"]["backlog"] == {
+        "cohorts": ["before_checkpoint", "after_checkpoint", "after_recovery"],
+        "requested": 2 * RECORDS,
+        "observed": 2 * RECORDS,
+        "outstanding": 0,
+    }
     times = [rt.timestamp(m["at"]) for m in measurements]
     assert all(later - earlier >= 60 for earlier, later in itertools.pairwise(times))
     stages = [
@@ -712,14 +806,8 @@ def test_a_rescale_that_restores_another_savepoint_is_refused(admitting, monkeyp
     assert "did not restore its newly completed savepoint" in control.reason
 
 
-@one("jm-replacement")
-def test_a_completed_exercise_leaves_the_verdict_to_the_offline_analysis(
-    admitting, monkeypatch
-):
-    world = World(admitting, monkeypatch)
-    control = world.run()
-    assert control.recovery["stage"] == "complete" and control.success
-    receipt = world.a.runner.receipt(
+def receipt(world, control):
+    return world.a.runner.receipt(
         control,
         {
             "nonce": world.a.environment.approval.nonce,
@@ -727,8 +815,217 @@ def test_a_completed_exercise_leaves_the_verdict_to_the_offline_analysis(
             "empty": True,
         },
     )
-    assert receipt["success"] is False
-    assert receipt["recovery"] == control.recovery
+
+
+@one("jm-replacement")
+def test_the_receipt_succeeds_only_with_the_usable_verdict(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    control = world.run()
+    assert control.recovery["stage"] == "complete" and control.success
+    result = receipt(world, control)
+    assert result["success"] is True
+    assert result["recovery"] == control.recovery
+    # A completed record without the verdict is not the claim.
+    for value in (None, INCONCLUSIVE, "USABLE", ["usable"]):
+        control.recovery["verdict"] = value
+        assert receipt(world, control)["success"] is False
+    del control.recovery["verdict"]
+    assert receipt(world, control)["success"] is False
+
+
+@pytest.mark.parametrize("trial", ["jm-replacement", "tm-replacement"], indirect=True)
+def test_a_lost_boundary_completes_inconclusive(admitting, monkeypatch):
+    """The trial exercised no redelivery, so it cannot carry the claim."""
+    world = World(admitting, monkeypatch, interval=15)
+    control = world.run()
+    assert control.recovery["stage"] == "complete" and control.success
+    assert control.recovery["verdict"] == INCONCLUSIVE
+    assert control.recovery["reasons"] == ["replay-unobserved"]
+    assert receipt(world, control)["success"] is False
+
+
+@one("jm-replacement")
+def test_foreign_output_makes_the_oracle_refuse_the_evidence(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    relay = world.relay
+
+    def foreign():
+        if stage(world) == "after" and not relay.events.count("foreign"):
+            relay.events.append("foreign")
+            relay.output.append({"messageId": "stray", "data": "not the relay's"})
+
+    relay.hooks.append(foreign)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    assert control.recovery["observed"]["foreign"] == 1
+    oracle = control.recovery["oracle"]
+    assert oracle["rejected"] == "Invalid output observation"
+    assert "logical_inputs" not in oracle
+    assert control.recovery["reasons"] == ["oracle-rejected"]
+    assert receipt(world, control)["success"] is False
+
+
+@one("rescale-out")
+@pytest.mark.parametrize("failure", ["never-listed", "endpoint-down", "no-values"])
+def test_connector_metrics_never_read_leave_the_trial_inconclusive(
+    admitting, monkeypatch, failure
+):
+    """An unreadable metric is recorded as unavailable; it does not stop the trial."""
+    world = World(admitting, monkeypatch)
+    if failure == "never-listed":
+        world.relay.listed = ()
+    elif failure == "endpoint-down":
+        world.relay.metrics_down = True
+    else:
+        world.relay.values_held = False
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    assert control.recovery["reasons"] == [
+        "unobserved-sink-in-before",
+        "unobserved-source-in-before",
+        "unobserved-sink-in-after",
+        "unobserved-source-in-after",
+    ]
+    metrics = world.evidence(MEASUREMENT_EVENT)[0]["payload"]["vertices"][0]["metrics"]
+    assert metrics == [] if failure == "no-values" else set(metrics) == {"unavailable"}
+    if failure == "never-listed":
+        assert metrics["unavailable"] == "no Pub/Sub connector metric is listed"
+    assert receipt(world, control)["success"] is False
+
+
+@pytest.mark.parametrize("trial", ["rescale-out", "rescale-in"], indirect=True)
+def test_a_redelivery_after_the_savepoint_is_inconclusive_until_measured(
+    admitting, monkeypatch
+):
+    """The savepoint's acknowledgements are lost, so what it covered returns."""
+    world = World(admitting, monkeypatch, savepoint_acks=False)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    outcomes = control.recovery["outcomes"]
+    assert outcomes["recovery"]["replay"] == "not-expected"
+    # Recovery read its outcome before the redelivery reached the output.
+    assert (
+        outcomes["after"]["replay_by_new_attempts"]
+        > outcomes["recovery"]["extra_replay"]
+    )
+    assert (
+        control.recovery["oracle"]["repeated_input_processing"]
+        >= (outcomes["after"]["replay_by_new_attempts"])
+    )
+    assert control.recovery["reasons"] == ["replay-after-savepoint"]
+    assert receipt(world, control)["success"] is False
+
+
+@one("jm-replacement")
+def test_a_redelivery_under_any_id_processed_before_the_fault_is_preserved(
+    admitting, monkeypatch
+):
+    """One input published twice and processed under both IDs before the fault."""
+    world = World(admitting, monkeypatch)
+    exercise = world.a.supervisor.exercise
+    start = cohort_ranges(RECORDS)[COHORTS[1]]["start"]
+    exercise.fault = {"expected_replay": [[0, start]], "before": ["a1"], "at": 100}
+
+    def seen(attempt, message_id, at, restored=False):
+        return {
+            "input_index": 0,
+            "sequence": start,
+            "input_message_id": message_id,
+            "attempt": attempt,
+            "phase": "initial",
+            "restored": restored,
+            "at": at,
+        }
+
+    # Processed under the first ID, then under the second, before the fault;
+    # a record keeping only the last would judge the first's redelivery new.
+    exercise.collector.observations = [
+        seen("a1", "first", 90),
+        seen("a1", "second", 95),
+        seen("a2", "first", 130, restored=True),
+        seen("a2", "second", 131, restored=True),
+    ]
+    assert exercise.ids_preserved() is True
+    # A replay of an identity the fault did not displace is an extra replay,
+    # which the oracle counts; it is not this check's.
+    extra = dict(seen("a2", "elsewhere", 132, restored=True), sequence=start + 1)
+    exercise.collector.observations.append(extra)
+    assert exercise.ids_preserved() is True
+    exercise.collector.observations.remove(extra)
+    exercise.collector.observations.append(seen("a2", "third", 140, restored=True))
+    assert exercise.ids_preserved() is False
+    # A surviving attempt processing a republished copy after the fault does
+    # not make that copy's ID one the fault returned for redelivery.
+    exercise.collector.observations[-1:] = [
+        seen("a1", "late", 120),
+        seen("a2", "late", 150, restored=True),
+    ]
+    assert exercise.ids_preserved() is False
+
+
+@one("jm-replacement")
+def test_a_replay_under_a_new_message_id_after_recovery_is_still_judged(
+    admitting, monkeypatch
+):
+    """Recovery was proven on preserved IDs; a later replay arrives republished."""
+    world = World(admitting, monkeypatch)
+    relay = world.relay
+    start = cohort_ranges(RECORDS)[COHORTS[1]]["start"]
+
+    def republish():
+        if stage(world) == "after" and "late" not in relay.events:
+            relay.events.append("late")
+            relay.pending[0].append(
+                {
+                    "id": "late-copy",
+                    "payload": f"v1|{relay.run_id}|0|{start}",
+                    "index": 0,
+                }
+            )
+
+    relay.hooks.append(republish)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    outcomes = control.recovery["outcomes"]
+    assert outcomes["recovery"]["replay_ids_preserved"] is True
+    assert outcomes["after"]["replay_ids_preserved"] is False
+    assert control.recovery["reasons"] == ["replay-ids-not-preserved"]
+
+
+@one("jm-replacement")
+def test_the_oracle_reads_every_collected_line_repeats_included(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    relay = world.relay
+
+    def redeliver():
+        if stage(world) == "after" and relay.delivered and "again" not in relay.events:
+            relay.events.append("again")
+            relay.output.append(relay.delivered[0])
+
+    relay.hooks.append(redeliver)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    assert control.recovery["oracle"]["repeated_output_delivery"] == 1
+    assert control.recovery["verdict"] == rt.USABLE
+
+
+@one("jm-replacement")
+def test_every_transition_carries_the_coverage_so_far(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    world.run()
+    records = [
+        value["payload"]
+        for value in world.evidence_events()
+        if value["event"].startswith("recovery-") and "stage" in value["payload"]
+    ]
+    coverage = {record["stage"]: record["coverage"] for record in records}
+    assert len(coverage) == len(records) == 6
+    # Admission writes the first record before any sample, and each later
+    # one what the windows behind it read.
+    assert coverage["baseline"] == {}
+    assert set(coverage["recovering"]) == {"before"}
+    assert "after" not in coverage["after"]
+    assert coverage["complete"]["after"]["attempts"] >= 1
 
 
 @one("jm-replacement")
@@ -956,6 +1253,9 @@ def test_a_wider_restart_than_the_fault_s_is_counted_as_extra_replay(
     third = RECORDS // 3
     assert recovery["expected_replay"] == recovery["replayed"] == third
     assert recovery["extra_replay"] == third
+    # Extra replay is a duplicate population, reported and not disqualifying.
+    assert control.recovery["verdict"] == rt.USABLE
+    assert control.recovery["oracle"]["repeated_input_processing"] == 2 * third
 
 
 @one("jm-replacement")
@@ -965,6 +1265,12 @@ def test_a_replay_under_new_message_ids_is_recorded(admitting, monkeypatch):
     recovery = control.recovery["outcomes"]["recovery"]
     assert recovery["replay"] == "observed"
     assert recovery["replay_ids_preserved"] is False
+    # Each replayed input came back as a second publication, not a redelivery.
+    assert (
+        control.recovery["oracle"]["input_publication_duplicates"]
+        == (recovery["replayed"])
+    )
+    assert control.recovery["reasons"] == ["replay-ids-not-preserved"]
 
 
 @one("jm-replacement")

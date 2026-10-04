@@ -64,13 +64,13 @@ class BigQueryExercise(RecoveryExercise):
     timing = BIGQUERY_OBSERVATIONS
     progress_event = "bigquery-progress"
     expected_pods = 3
+    records_coverage = True
 
     def __init__(self, env, upgrade):
         if env.approval.scenario != "bigquery-recovery":
             raise Failure("BigQuery exercise requires a BigQuery approval")
         self.trial = env.approval.bigquery_plan.trial
         self.rest, self.vertices, self.measured_at = None, None, None
-        self.coverage = {}
         self.records = self.trial.records
         super().__init__(env, upgrade)
         self.deadline = min(
@@ -143,9 +143,6 @@ class BigQueryExercise(RecoveryExercise):
             self.post_until = self.env.clock() + self.timing["post_recovery_seconds"]
         if stage == "complete":
             stage = "visibility"
-        # Every transition carries the coverage so far: for a run that aborts
-        # before the verdict, this record is the only account of what it read.
-        details.setdefault("coverage", self._coverage())
         super().persist(stage, **details)
 
     def attach_rest(self, service, job_id):
@@ -166,9 +163,6 @@ class BigQueryExercise(RecoveryExercise):
         reading = observation(self.rest, self.vertices)
         self.coverage = summarize(self.coverage, self.stage, reading)
         self.env.emit(MEASUREMENT_EVENT, {"stage": self.stage, **reading})
-
-    def _coverage(self):
-        return {stage: dict(window) for stage, window in self.coverage.items()}
 
     def observe(self, app, rest, pods):
         self.measure()

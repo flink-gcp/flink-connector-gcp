@@ -148,6 +148,10 @@ def test_a_window_that_took_no_sample_observed_nothing_whatever_it_claims(stage)
     coverage[stage] = dict(coverage[stage], attempts=0)
     decided = verdict(complete(coverage=coverage))
     assert decided["reasons"] == ["unsampled-" + stage, *unobserved(stage)]
+    # `True` is an int in Python, and not a sample count.
+    coverage[stage] = dict(coverage[stage], attempts=True)
+    decided = verdict(complete(coverage=coverage))
+    assert decided["reasons"] == ["unsampled-" + stage, *unobserved(stage)]
 
 
 def test_a_recovery_that_did_not_complete_is_not_rescued_by_its_observations():

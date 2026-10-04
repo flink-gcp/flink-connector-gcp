@@ -14,6 +14,8 @@
 # limitations under the License.
 """What the sink measurement reads, and what it says when a reading is absent."""
 
+import json
+
 import pytest
 from flink_tier3.bigquery_exercise import BigQueryExercise
 from flink_tier3.bigquery_observe import (
@@ -23,9 +25,9 @@ from flink_tier3.bigquery_observe import (
     observation,
     vertices,
 )
-from flink_tier3.common import ApiError
+from flink_tier3.common import ApiError, Failure, ReadCeilingExceeded, TransportError
 from flink_tier3.exercise import RecoveryExercise
-from flink_tier3.metrics import FlinkRest, unavailable
+from flink_tier3.metrics import FlinkRest, sample, unavailable
 from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS
 
 JOB = "a" * 32
@@ -244,3 +246,27 @@ def test_a_job_between_states_is_not_measured_against_its_last_service():
     # One measurement, from before the job left its state.
     assert len(exercise.emitted) == 1
     assert exercise.rest is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ApiError(503, "GET", "/jobs"),
+        TransportError("GET Kubernetes request failed: ReadTimeoutError"),
+        ReadCeilingExceeded("Response exceeds its read ceiling"),
+        json.JSONDecodeError("Expecting value", "<html>", 0),
+    ],
+)
+def test_a_reading_that_is_not_one_is_named_unavailable(error):
+    def read():
+        raise error
+
+    assert unavailable(sample(read))
+
+
+def test_any_other_failure_still_stops_the_caller():
+    def read():
+        raise Failure("Recovery exercise deadline expired: after")
+
+    with pytest.raises(Failure, match="deadline expired"):
+        sample(read)

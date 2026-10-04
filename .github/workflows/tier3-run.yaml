@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, one Cloud Tasks measurement session, one BigQuery recovery trial, or one Pub/Sub recovery trial (approved and verified, then refused before the lock until its runner admission exists)'
+        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, one Cloud Tasks measurement session, one BigQuery recovery trial, or one Pub/Sub recovery trial (approved and verified, then refused before the lock until its execution accounting exists)'
         required: true
         type: choice
         default: smoke

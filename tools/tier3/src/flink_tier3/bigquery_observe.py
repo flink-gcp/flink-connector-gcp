@@ -14,7 +14,13 @@
 # limitations under the License.
 """Sample what the deployed BigQuery sink does, through the job's REST service."""
 
-from .metrics import AGGREGATES, JVM_METRICS, metric_name, sample, unavailable
+from .metrics import (
+    JVM_METRICS,
+    metric_name,
+    sample,
+    subtask_metrics,
+    unavailable,
+)
 
 # Flink's documented TaskManager memory metrics. Heap alone is the wrong
 # instrument for this sink: the Storage Write path appends through native
@@ -110,13 +116,6 @@ def vertices(rest, known=None):
     return {"source": source, "sink": sink, "sink_metrics": ids}
 
 
-def metrics(rest, vertex, ids):
-    if not ids:
-        return {"unavailable": "no metric ids selected"}
-    query = f"?get={','.join(ids)}&agg={AGGREGATES}"
-    return sample(lambda: rest.job(f"/vertices/{vertex}/subtasks/metrics{query}"))
-
-
 def taskmanagers(rest):
     listing = sample(lambda: rest.root("/taskmanagers"))
     if unavailable(listing):
@@ -144,7 +143,7 @@ def observation(rest, state):
     if unavailable(state):
         return {"vertices": state}
     return {
-        "sink": metrics(rest, state["sink"], state["sink_metrics"]),
-        "source": metrics(rest, state["source"], list(SOURCE_METRICS)),
+        "sink": subtask_metrics(rest, state["sink"], state["sink_metrics"]),
+        "source": subtask_metrics(rest, state["source"], list(SOURCE_METRICS)),
         "taskmanagers": taskmanagers(rest),
     }

@@ -26,7 +26,7 @@ PHASES = ("initial", "upgrade")
 DECIMAL = re.compile(r"0|[1-9][0-9]{0,4}")
 
 
-def _decode(text):
+def decode(text):
     """Canonical unpadded base64url as UTF-8, or None."""
     if not isinstance(text, str) or not re.fullmatch(r"[A-Za-z0-9_-]*", text):
         return None
@@ -38,7 +38,7 @@ def _decode(text):
     return decoded if _encode(value) == text else None
 
 
-def _uuid(text):
+def canonical_uuid(text):
     try:
         return str(uuid.UUID(text)) == text
     except ValueError:
@@ -52,18 +52,18 @@ def parse(line, run_id, records):
     the input message ID, the processing attempt, a fresh observation ID,
     phase and whether the attempt restored state. Anything else, including a
     payload of another run, is not this relay's output; the collector keeps
-    its line in the evidence for the offline oracle to reject.
+    its line in the evidence for the oracle to refuse.
     """
     parts = line.split("\t")
     if len(parts) != 2:
         return None
-    message_id, payload = (_decode(part) for part in parts)
+    message_id, payload = (decode(part) for part in parts)
     if not message_id or payload is None:
         return None
     fields = payload.split("|")
     if len(fields) != 9:
         return None
-    input_message_id = _decode(fields[4])
+    input_message_id = decode(fields[4])
     if (
         fields[0] != "v1"
         or fields[1] != run_id
@@ -71,8 +71,8 @@ def parse(line, run_id, records):
         or not DECIMAL.fullmatch(fields[3])
         or int(fields[3]) >= records
         or not input_message_id
-        or not _uuid(fields[5])
-        or not _uuid(fields[6])
+        or not canonical_uuid(fields[5])
+        or not canonical_uuid(fields[6])
         or fields[7] not in PHASES
         or fields[8] not in ("true", "false")
     ):
@@ -109,6 +109,9 @@ class OutputCollector:
         self.observations = []
         # Lines that are not this relay's output, by batch.
         self.foreign = []
+        # Every collected line in collection order, repeats included, which
+        # is the oracle's input.
+        self.lines = []
 
     def pull(self):
         """Pull one batch; return how many messages it received."""
@@ -119,6 +122,7 @@ class OutputCollector:
         lines = result["tsv"].splitlines()
         if len(lines) != result["count"]:
             raise Failure("Collected Pub/Sub observations differ from their count")
+        self.lines.extend(lines)
         for line in lines:
             parsed = parse(line, self.run_id, self.records)
             if parsed is None:

@@ -24,7 +24,7 @@ import urllib3
 
 from kubernetes import client as kubernetes_client
 
-from .common import ApiError, Failure, TransportError, encoded
+from .common import ApiError, Failure, ReadCeilingExceeded, TransportError, encoded
 from .policy import HTTP_TIMEOUT, MIB, NAMESPACES, SMOKE, inventory_namespaces
 
 COLLECTIONS = {
@@ -90,7 +90,7 @@ class KubernetesTransport:
             try:
                 data = response.read() if limit is None else response.read(limit + 1)
                 if limit is not None and len(data) > limit:
-                    raise Failure("Response exceeds its read ceiling")
+                    raise ReadCeilingExceeded("Response exceeds its read ceiling")
                 return data
             finally:
                 response.close()
