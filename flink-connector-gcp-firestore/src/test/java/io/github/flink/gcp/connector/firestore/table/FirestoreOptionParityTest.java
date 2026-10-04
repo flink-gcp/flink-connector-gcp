@@ -20,6 +20,7 @@ import org.apache.flink.configuration.ConfigOption;
 
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSinkBuilder;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
+import io.github.flink.gcp.connector.firestore.source.FirestoreSourceBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -128,7 +129,12 @@ class FirestoreOptionParityTest {
                         "sink.retry.max-rpc-timeout",
                         "sink.retry.max-attempts",
                         "sink.in-flight.max-writes",
-                        "sink.in-flight.max-bytes");
+                        "sink.in-flight.max-bytes",
+                        "type-mismatch-policy",
+                        "scan.collection-group",
+                        "scan.partition.max-partitions",
+                        "scan.read-time",
+                        "scan.max-rows-per-fetch");
         FirestoreDynamicTableFactory factory = new FirestoreDynamicTableFactory();
         Set<String> accepted =
                 factory.requiredOptions().stream()
@@ -136,6 +142,35 @@ class FirestoreOptionParityTest {
                         .collect(Collectors.toSet());
         factory.optionalOptions().stream().map(ConfigOption::key).forEach(accepted::add);
         assertThat(accepted).containsAll(declaredKeys());
+    }
+
+    @Test
+    void everySourceBuilderSetterIsMappedOrSuppliedByTheTableLayer() {
+        assertThat(publicSettersOf(FirestoreSourceBuilder.class))
+                .containsExactlyInAnyOrder(
+                        "database",
+                        "deserializer",
+                        "collectionGroup",
+                        "query",
+                        "select",
+                        "partitionCount",
+                        "readTime",
+                        "pageSize",
+                        "serviceAccountKeyFile",
+                        "emulatorEndpoint");
+
+        // database is assembled from project and database, deserializer from the physical schema,
+        // the markers and type-mismatch-policy, collectionGroup and query from collection and
+        // scan.collection-group, select from the planner's projection; the other three map one
+        // option each.
+        assertThat(declaredKeys())
+                .contains(
+                        "collection",
+                        "type-mismatch-policy",
+                        "scan.collection-group",
+                        "scan.partition.max-partitions",
+                        "scan.read-time",
+                        "scan.max-rows-per-fetch");
     }
 
     private static Set<String> declaredKeys() {

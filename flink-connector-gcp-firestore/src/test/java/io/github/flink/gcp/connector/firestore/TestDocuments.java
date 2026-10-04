@@ -64,6 +64,28 @@ public final class TestDocuments {
      */
     public static DocumentSnapshot document(
             Firestore client, String path, Map<String, Object> fields, Timestamp readTime) {
+        return document(client, path, fields, readTime, readTime, readTime);
+    }
+
+    /**
+     * Returns a snapshot of one document with distinct create, update and read times.
+     *
+     * @param client the client whose database the document belongs to
+     * @param path the document path, relative to the database's documents root
+     * @param fields the document's fields, as {@link #document(Firestore, String, Map, Timestamp)}
+     *     takes them
+     * @param createTime when the document was created
+     * @param updateTime when the document was last updated
+     * @param readTime the read time the snapshot carries
+     * @return the snapshot
+     */
+    public static DocumentSnapshot document(
+            Firestore client,
+            String path,
+            Map<String, Object> fields,
+            Timestamp createTime,
+            Timestamp updateTime,
+            Timestamp readTime) {
         FirestoreOptions options = client.getOptions();
         Document.Builder document =
                 Document.newBuilder()
@@ -74,8 +96,8 @@ public final class TestDocuments {
                                         + options.getDatabaseId()
                                         + "/documents/"
                                         + path)
-                        .setCreateTime(readTime.toProto())
-                        .setUpdateTime(readTime.toProto());
+                        .setCreateTime(createTime.toProto())
+                        .setUpdateTime(updateTime.toProto());
         fields.forEach((name, value) -> document.putFields(name, encode(value)));
         try (GrpcFirestoreRpc rpc = new GrpcFirestoreRpc(options)) {
             return new Internal(options, rpc).snapshotFromProto(readTime, document.build());

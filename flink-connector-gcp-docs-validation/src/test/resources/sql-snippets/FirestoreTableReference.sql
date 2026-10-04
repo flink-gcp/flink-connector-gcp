@@ -72,3 +72,35 @@ CREATE TABLE audit_events (
 
 INSERT INTO audit_events SELECT actor, action, occurred_at FROM staged_events;
 -- end::append[]
+
+-- tag::scan[]
+CREATE TABLE order_snapshot (
+  order_id STRING NOT NULL,
+  customer STRING,
+  total DOUBLE,
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'firestore',
+  'project' = 'my-project',
+  'collection' = 'orders',
+  'scan.read-time' = '2026-10-04T00:00:00Z'
+);
+
+SELECT customer, SUM(total) FROM order_snapshot GROUP BY customer;
+-- end::scan[]
+
+-- tag::collection-group[]
+CREATE TABLE all_audit_events (
+  action STRING,
+  path STRING METADATA FROM 'document-path' VIRTUAL,
+  updated TIMESTAMP_LTZ(6) METADATA FROM 'update-time' VIRTUAL
+) WITH (
+  'connector' = 'firestore',
+  'project' = 'my-project',
+  'collection' = 'audit',
+  'scan.collection-group' = 'true',
+  'type-mismatch-policy' = 'null'
+);
+
+SELECT path, action, updated FROM all_audit_events;
+-- end::collection-group[]

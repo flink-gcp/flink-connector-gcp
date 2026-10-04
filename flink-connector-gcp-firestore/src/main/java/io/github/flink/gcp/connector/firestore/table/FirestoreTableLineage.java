@@ -18,11 +18,22 @@ package io.github.flink.gcp.connector.firestore.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SourceReader;
+import org.apache.flink.api.connector.source.SourceReaderContext;
+import org.apache.flink.api.connector.source.SourceSplit;
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.lineage.LineageVertex;
 import org.apache.flink.streaming.api.lineage.LineageVertexProvider;
+import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
 import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
@@ -37,8 +48,8 @@ import java.util.Objects;
 
 /**
  * The physical identity of a {@code firestore} table, carried from the factory to the runtime
- * providers it wraps (ADR-0160): the collection the table names, in its database, reported under
- * the table's catalog name.
+ * providers it wraps (ADR-0160): the collection the table names, in its database, or for a
+ * collection-group scan the group, reported under the table's catalog name.
  */
 @Internal
 public final class FirestoreTableLineage implements Serializable {
@@ -66,12 +77,46 @@ public final class FirestoreTableLineage implements Serializable {
      */
     public static FirestoreTableLineage of(
             String logicalName, DatabaseDestination database, String collection) {
-        return new FirestoreTableLineage(
+        return of(
                 logicalName,
-                "firestore://" + database.getProject() + "/" + database.getDatabaseId(),
-                List.of(
-                        LineageIdentifiers.firestoreCollection(
-                                database.getProject(), database.getDatabaseId(), collection)));
+                LineageIdentifiers.firestoreCollection(
+                        database.getProject(), database.getDatabaseId(), collection));
+    }
+
+    private static FirestoreTableLineage of(String logicalName, ResourceIdentifier resource) {
+        return new FirestoreTableLineage(logicalName, resource.namespace(), List.of(resource));
+    }
+
+    /**
+     * Captures a collection-group scan's group, before any runtime client exists.
+     *
+     * @param logicalName the table's catalog name
+     * @param database the database the table is in
+     * @param collectionGroup the collection id every collection of the group has
+     * @return the lineage
+     */
+    public static FirestoreTableLineage ofCollectionGroup(
+            String logicalName, DatabaseDestination database, String collectionGroup) {
+        return of(
+                logicalName,
+                LineageIdentifiers.firestoreCollectionGroup(
+                        database.getProject(), database.getDatabaseId(), collectionGroup));
+    }
+
+    /**
+     * Wraps a source so that it reports this table's lineage, keeping its runtime operations and
+     * produced type.
+     *
+     * @param source the source
+     * @param type the produced type
+     * @param <T> the produced type
+     * @param <S> the split type
+     * @param <E> the enumerator checkpoint type
+     * @return the wrapped source
+     */
+    public <T, S extends SourceSplit, E> Source<T, S, E> source(
+            Source<T, S, E> source, TypeInformation<T> type) {
+        return new TableSource<>(source, type, this);
     }
 
     /**
@@ -102,6 +147,64 @@ public final class FirestoreTableLineage implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(logicalName, namespace, resources);
+    }
+
+    static final class TableSource<T, S extends SourceSplit, E>
+            implements Source<T, S, E>, ResultTypeQueryable<T>, LineageVertexProvider {
+        private static final long serialVersionUID = 1L;
+        @VisibleForTesting final Source<T, S, E> delegate;
+        private final TypeInformation<T> type;
+        private final FirestoreTableLineage metadata;
+
+        private TableSource(
+                Source<T, S, E> delegate, TypeInformation<T> type, FirestoreTableLineage metadata) {
+            this.delegate = delegate;
+            this.type = type;
+            this.metadata = metadata;
+        }
+
+        @Override
+        public SourceLineageVertex getLineageVertex() {
+            return Lineage.tableSource(
+                    metadata.logicalName, metadata.namespace, getBoundedness(), metadata.resources);
+        }
+
+        @Override
+        public Boundedness getBoundedness() {
+            return delegate.getBoundedness();
+        }
+
+        @Override
+        public TypeInformation<T> getProducedType() {
+            return type;
+        }
+
+        @Override
+        public SourceReader<T, S> createReader(SourceReaderContext context) throws Exception {
+            return delegate.createReader(context);
+        }
+
+        @Override
+        public SplitEnumerator<S, E> createEnumerator(SplitEnumeratorContext<S> context)
+                throws Exception {
+            return delegate.createEnumerator(context);
+        }
+
+        @Override
+        public SplitEnumerator<S, E> restoreEnumerator(
+                SplitEnumeratorContext<S> context, E checkpoint) throws Exception {
+            return delegate.restoreEnumerator(context, checkpoint);
+        }
+
+        @Override
+        public SimpleVersionedSerializer<S> getSplitSerializer() {
+            return delegate.getSplitSerializer();
+        }
+
+        @Override
+        public SimpleVersionedSerializer<E> getEnumeratorCheckpointSerializer() {
+            return delegate.getEnumeratorCheckpointSerializer();
+        }
     }
 
     static final class TableSink<T> implements CrossVersionSink<T>, LineageVertexProvider {

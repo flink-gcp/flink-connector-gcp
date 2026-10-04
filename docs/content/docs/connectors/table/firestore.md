@@ -22,14 +22,13 @@ limitations under the License.
 
 # Firestore SQL connector
 
-The `firestore` connector writes Table API and SQL rows into one collection of a Firestore database in Native mode, one document per row, through `flink-connector-gcp-firestore`.
-It maps onto the [DataStream sink]({{< relref "docs/connectors/datastream/firestore" >}}#sink), so throttling, batching, retry, delivery, metrics and failure behavior remain the same.
+The `firestore` connector reads and writes Table API and SQL rows in one collection of a Firestore database in Native mode, or reads every collection with one id, one document per row, through `flink-connector-gcp-firestore`.
+It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/firestore" >}}), so snapshot, paging, recovery, throttling, batching, retry, delivery, metrics and failure behavior remain the same.
 A table with a PRIMARY KEY writes its rows under their key as the document id; a table without one creates a new document for every row.
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="overview" >}}
 
-The connector is a sink for now.
-Scanning a collection arrives with [#1608]({{< param BookRepo >}}/issues/1608) and lookup joins with [#1609]({{< param BookRepo >}}/issues/1609); until then, reading a `firestore` table is refused when the statement is planned.
+A scan reads the collection as a bounded snapshot; lookup joins arrive with [#1609]({{< param BookRepo >}}/issues/1609).
 The Datastore-mode table connector is [#1545]({{< param BookRepo >}}/issues/1545).
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
@@ -40,16 +39,17 @@ DataStream applications should depend on `flink-connector-gcp-firestore` instead
 
 ## Lineage
 
-The Table sink reports its configured collection in the `gcp` facet of one logical SQL dataset, named by the table's catalog identifier.
+The Table source and sink report their configured collection in the `gcp` facet of one logical SQL dataset, named by the table's catalog identifier.
+A scan under `scan.collection-group` reports the group instead, as a `firestore-collection-group` resource named by the collection id.
 The collection is a `firestore-collection` resource: namespace `firestore://{project}/{database}`, with the default database spelled `(default)`, and the collection path relative to the database as its name, such as `orders` or `users/alice/audit`.
 It names the documents directly in that collection, not those of its subcollections.
 See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and what Flink 1.20 and 2.x each deliver.
 
 ## Credentials
 
-`service-account-key-file` selects one service-account JSON key for the sink.
-When it and `emulator-endpoint` are absent, the sink uses Application Default Credentials.
-The option stores only the path in the job graph, and each sink subtask reads the file on its TaskManager, so mount the same path in every TaskManager container.
+`service-account-key-file` selects one service-account JSON key for the scan and the sink.
+When it and `emulator-endpoint` are absent, both use Application Default Credentials.
+The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, and each sink subtask reads it on its TaskManager, so mount the same path in every container.
 The option is mutually exclusive with `emulator-endpoint`, because the emulator channel carries no credentials.
 See the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) for the `FIRESTORE_EMULATOR_HOST` variable, which the client library reads on its own.
 
@@ -57,7 +57,7 @@ See the [DataStream credentials]({{< relref "docs/connectors/datastream/firestor
 
 A table names one collection with `collection`: a collection id such as `orders`, or a path that alternates collection and document ids and ends with a collection id, such as `users/alice/audit`.
 A path with an even number of segments names a document and is refused.
-Each row is one document of that collection, and each column other than the PRIMARY KEY is one top-level field, named exactly as the column is: a column named `a.b` is a field whose name contains a dot.
+Each row is one document of that collection (or, for a collection-group scan, of any collection with its id), and each column other than the PRIMARY KEY is one top-level field, named exactly as the column is: a column named `a.b` is a field whose name contains a dot.
 A column or `ROW` field whose name starts and ends with `__` is refused when the statement is planned, because Firestore reserves such names and would refuse every document.
 
 The PRIMARY KEY is the document id.
@@ -94,6 +94,47 @@ A marker that names a path the table does not declare, a field of the wrong type
 
 A reference's value is a document path relative to the same database, such as `staff/alice`; the connector stores it as a reference to that document in the database the table writes to, and a value that is not a document path fails the job.
 A point's latitude and longitude must both be set and within range, or the row fails the job.
+
+### Reading values back
+
+A scan reads each column from the top-level field of its name, and the PRIMARY KEY column from the document id.
+A field the document does not have reads as NULL, as does a field that holds null.
+An integer reads into a `DOUBLE` column only when the `DOUBLE` represents it exactly, up to `2^53` in magnitude; a 32-bit BSON integer reads only into a `BIGINT`, and a table sink writes it back as a 64-bit integer.
+A timestamp reads at the column's precision, truncated.
+A reference reads as its document path into a column `reference-field-paths` names, and a geographical point into a ROW `geo-point-field-paths` names.
+
+A collection has no schema, so a document can hold, under a column's name, a value of another type: a string where the column is `BIGINT`, a reference where the column is an unmarked `STRING`, a reference into another database, or a value outside the mapping such as bytes of a BSON subtype, a vector or one of the BSON value types an Enterprise-edition database stores.
+`type-mismatch-policy` decides what such a value does.
+Under `fail` the read fails, naming the document and the field's path in the schema, with a map's values as `.value`.
+Under `null` the innermost nullable field around the value reads as NULL instead; a `NOT NULL` field cannot, so the nearest nullable field around it does, which also covers a `NOT NULL` nested field the document lacks.
+A `NOT NULL` column has no nullable field around it, so a mismatched or missing value there fails the read under either policy.
+
+## Source
+
+A scan reads the documents directly in the table's collection, as one query on one split, at one read time.
+With `scan.collection-group` it reads every collection whose id is the last segment of `collection`, at any depth of the database, as a collection-group scan that the service partitions; `scan.partition.max-partitions` caps the partitions it asks for.
+Both read a consistent snapshot at `scan.read-time`, or at the service's time when the read is planned.
+
+{{< sql-snippet file="flink/FirestoreTableReference.sql" tag="scan" >}}
+
+A scan reads only the fields of the columns it produces: the declared columns, or the projected ones when the planner pushes a projection down, each named as one literal field, so a document's undeclared top-level fields never travel; a `ROW` or `MAP` column's field is read whole, with any nested keys the `ROW` does not declare.
+Filters are not pushed down.
+
+A collection-group scan reads documents of many collections, whose ids repeat across them, so its table cannot declare a PRIMARY KEY: the planner trusts a declared key to be unique and removes a `GROUP BY` or a `DISTINCT` over it, so repeated ids would come back unaggregated.
+The `document-path` metadata column, which is unique, identifies a document instead.
+
+The scan can read four metadata columns:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `document-path` | `STRING NOT NULL` | The document's path relative to the database, which tells the parents of a collection-group scan's documents apart |
+| `create-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the document was created |
+| `update-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the document was last updated |
+| `read-time` | `TIMESTAMP_LTZ(6) NOT NULL` | The read time the scan read the document at |
+
+{{< sql-snippet file="flink/FirestoreTableReference.sql" tag="collection-group" >}}
+
+The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#source) describes the snapshot's time window, paging and recovery.
 
 ## Sink
 
@@ -138,9 +179,15 @@ No table write carries a precondition.
 | `database` | *unset ⇒ `(default)`* | The id of the Firestore database in Native mode |
 | `collection` | **required** | The collection path the table's documents are in, relative to the database; an odd number of `/`-separated segments, each without leading or trailing whitespace |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator; setting it also stops credential discovery. Parsed when a statement over the table is planned, not at `CREATE TABLE` |
-| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by each sink subtask; rejected with `emulator-endpoint` |
+| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each sink subtask; rejected with `emulator-endpoint` |
 | `geo-point-field-paths` | empty | Semicolon-separated field paths of `ROW<latitude DOUBLE, longitude DOUBLE>` values written as geographical points |
 | `reference-field-paths` | empty | Semicolon-separated field paths of `STRING` values written as references to documents |
+| `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
+| `scan.collection-group` | `false` | Scan every collection whose id is the last segment of `collection`, partitioned, rather than the one collection as a single split |
+| `scan.partition.max-partitions` | *unset ⇒ the scan's parallelism* | Maps to `partitionCount`: the partitions a collection-group scan asks the service for; only with `scan.collection-group` |
+| `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, within the past hour, or a whole minute within seven days with point-in-time recovery |
+| `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the documents one request asks for |
+| `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
 | `sink.write-mode` | `set` | `set`, `merge` or `update`, for a table with a PRIMARY KEY |
 | `sink.throttling.enabled` | `true` | Maps to `throttlingEnabled`: whether the client library ramps the write rate up |
 | `sink.throttling.initial-ops-per-second` | *unset ⇒ the client library's `500`* | Maps to `initialOpsPerSecond`, at least `20`; only with throttling enabled |
@@ -158,9 +205,11 @@ No table write carries a precondition.
 | `sink.in-flight.max-bytes` | `64 mb` | Maps to `maxInFlightBytes` |
 | `sink.parallelism` | *unset ⇒ the input's parallelism* | Flink's standard sink parallelism override |
 
-The [configuration reference]({{< relref "docs/reference/firestore" >}}#firestorewriteroptions) explains each writer option, and a refusal of a `sink.*` value names the option key the `WITH` clause spells.
+The [configuration reference]({{< relref "docs/reference/firestore" >}}#firestorewriteroptions) explains each writer option, and a refusal of a `scan.*` or `sink.*` value names the option key the `WITH` clause spells.
 
 ## Delivery guarantee
+
+A scan restored from a checkpoint resumes each split just after the last document it passed, at the same read time, without reading a document twice or skipping one; a job that restarts before its first checkpoint plans again, at a new read time unless `scan.read-time` is set.
 
 The sink is at-least-once: it waits for every write it has sent at each checkpoint, and a restart replays the records after the last completed one.
 With a PRIMARY KEY, `set`, `merge` and a delete are idempotent, so a replayed row writes the same document again; an `update` replayed after something outside the job deleted the document fails the job, and fails again after each restart until the document exists.
@@ -170,4 +219,4 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 ## Design decisions and testing
 
 The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md).
-The emulator integration tests write every type through SQL and read the documents back with the client library; the uber-jar's tests write through its relocated classes.
+The emulator integration tests write every type through SQL and read the documents back with the client library, and read every type back through a SQL scan; the uber-jar's tests write through its relocated classes.

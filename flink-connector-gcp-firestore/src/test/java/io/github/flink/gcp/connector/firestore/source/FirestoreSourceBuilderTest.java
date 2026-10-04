@@ -18,9 +18,12 @@ package io.github.flink.gcp.connector.firestore.source;
 
 import org.apache.flink.api.connector.source.Boundedness;
 
+import com.google.cloud.firestore.FieldPath;
 import io.github.flink.gcp.connector.firestore.source.batch.enumerator.DefaultQueryPlannerFactory;
 import io.github.flink.gcp.connector.firestore.source.batch.reader.ClientQueryPageReader;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.function.UnaryOperator;
@@ -67,6 +70,39 @@ class FirestoreSourceBuilderTest {
         assertThat(config.getPartitionCount()).isEqualTo(12);
         assertThat(config.getReadTime()).isEqualTo(readTime);
         assertThat(config.getPageSize()).isEqualTo(50);
+    }
+
+    @Test
+    void aFieldPathNamesLiteralSegmentsAndTheMaskKeepsTheEncodedForm() {
+        FirestoreSourceConfig<String> config =
+                TestSources.scanConfig(
+                        builder ->
+                                builder.select(FieldPath.of("a.b"), FieldPath.of("x", "y"))
+                                        .select("plain"));
+
+        // The encoded form is what FieldPath.fromServerFormat reads back segment by segment.
+        assertThat(config.getFieldMask()).containsExactly("`a.b`", "x.y", "plain");
+        assertThat(config.getFieldMask())
+                .extracting(FieldPath::fromServerFormat)
+                .containsExactly(
+                        FieldPath.of("a.b"), FieldPath.of("x", "y"), FieldPath.of("plain"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a..b", ".a", "a."})
+    void aDotSeparatedPathWithAnEmptySegmentIsRefusedWhenSet(String path) {
+        assertThatThrownBy(() -> FirestoreSource.builder().select(path))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("the field path '" + path + "' has an empty segment");
+    }
+
+    @Test
+    void aDotSeparatedPathThatHoldsAReservedCharacterIsRefusedWhenSet() {
+        assertThatThrownBy(() -> FirestoreSource.builder().select("a*b"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "the field path 'a*b' holds one of ~, *, /, [ and ]; name such a field"
+                                + " with select(FieldPath...)");
     }
 
     @Test

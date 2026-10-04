@@ -721,7 +721,13 @@ public class DocumentationSqlPlanTest {
                                         + "SELECT 'alice' AS actor, 'login' AS action, "
                                         + "CAST('2026-01-01 00:00:00.000' "
                                         + "AS TIMESTAMP_LTZ(3)) AS occurred_at"),
-                        snippet("flink/FirestoreTableReference.sql", "append")));
+                        snippet("flink/FirestoreTableReference.sql", "append")),
+                scenario(
+                        "Firestore table reference scan",
+                        snippet("flink/FirestoreTableReference.sql", "scan")),
+                scenario(
+                        "Firestore table reference collection-group scan",
+                        snippet("flink/FirestoreTableReference.sql", "collection-group")));
     }
 
     private static Scenario scenario(String name, ValidationStep... steps) {

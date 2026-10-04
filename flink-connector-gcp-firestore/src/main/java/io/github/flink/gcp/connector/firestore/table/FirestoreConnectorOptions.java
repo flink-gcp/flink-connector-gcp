@@ -109,6 +109,55 @@ public final class FirestoreConnectorOptions {
                                     + " 'author' or 'items.product'.");
 
     /**
+     * What a read does with a stored value whose type does not match its column: 'fail' the read,
+     * or read the field as 'null'.
+     */
+    public static final ConfigOption<TypeMismatchPolicy> TYPE_MISMATCH_POLICY =
+            ConfigOptions.key("type-mismatch-policy")
+                    .enumType(TypeMismatchPolicy.class)
+                    .defaultValue(TypeMismatchPolicy.FAIL)
+                    .withDescription(
+                            "What a read does with a stored value whose type does not match its"
+                                    + " column: 'fail' the read, or read the field as 'null'.");
+
+    /**
+     * Whether a scan reads every collection whose id is the last segment of 'collection', at any
+     * depth of the database, as a partitioned collection-group scan, rather than the one collection
+     * as a single split.
+     */
+    public static final ConfigOption<Boolean> SCAN_COLLECTION_GROUP =
+            ConfigOptions.key("scan.collection-group")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether a scan reads every collection whose id is the last segment of"
+                                    + " 'collection', at any depth of the database, as a"
+                                    + " partitioned collection-group scan, rather than the one"
+                                    + " collection as a single split.");
+
+    /** The desired maximum number of partitions of a collection-group scan. */
+    public static final ConfigOption<Integer> SCAN_PARTITION_MAX_PARTITIONS =
+            ConfigOptions.key("scan.partition.max-partitions")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The desired maximum number of partitions of a collection-group scan.");
+
+    /** An ISO-8601 instant at which every split of the scan reads. */
+    public static final ConfigOption<String> SCAN_READ_TIME =
+            ConfigOptions.key("scan.read-time")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("An ISO-8601 instant at which every split of the scan reads.");
+
+    /** How many documents one request of the scan asks for. */
+    public static final ConfigOption<Integer> SCAN_MAX_ROWS_PER_FETCH =
+            ConfigOptions.key("scan.max-rows-per-fetch")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("How many documents one request of the scan asks for.");
+
+    /**
      * How a row with a PRIMARY KEY is written: 'set' replaces the document, 'merge' merges the row
      * into it, and 'update' replaces the table's fields of a document that must exist.
      */

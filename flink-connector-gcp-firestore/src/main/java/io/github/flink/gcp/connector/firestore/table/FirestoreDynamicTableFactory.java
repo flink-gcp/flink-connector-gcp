@@ -21,7 +21,9 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -31,6 +33,8 @@ import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.table.sink.FirestoreDynamicSink;
 import io.github.flink.gcp.connector.firestore.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.firestore.table.source.FirestoreDynamicSource;
+import io.github.flink.gcp.connector.firestore.table.source.ScanConfig;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -38,14 +42,16 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Creates the {@code firestore} table sink from a SQL DDL: the documents of one collection, a row
- * per document, the PRIMARY KEY column as the document id.
+ * Creates the {@code firestore} table source and sink from a SQL DDL: the documents of one
+ * collection, or a scan of every collection with its id, a row per document, the PRIMARY KEY column
+ * as the document id.
  *
  * <p>Every check that needs only the {@code WITH} clause and the schema runs here, so a mistake is
  * reported when the statement is planned, in the option keys the DDL spells.
  */
 @Internal
-public final class FirestoreDynamicTableFactory implements DynamicTableSinkFactory {
+public final class FirestoreDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     /** The {@code connector} value that selects this factory. */
     public static final String IDENTIFIER = "firestore";
@@ -71,6 +77,11 @@ public final class FirestoreDynamicTableFactory implements DynamicTableSinkFacto
                         FirestoreConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         FirestoreConnectorOptions.GEO_POINT_FIELD_PATHS,
                         FirestoreConnectorOptions.REFERENCE_FIELD_PATHS,
+                        FirestoreConnectorOptions.TYPE_MISMATCH_POLICY,
+                        FirestoreConnectorOptions.SCAN_COLLECTION_GROUP,
+                        FirestoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
+                        FirestoreConnectorOptions.SCAN_READ_TIME,
+                        FirestoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
                         FirestoreConnectorOptions.SINK_WRITE_MODE,
                         FirestoreConnectorOptions.SINK_THROTTLING_ENABLED,
                         FirestoreConnectorOptions.SINK_THROTTLING_INITIAL_OPS_PER_SECOND,
@@ -86,30 +97,16 @@ public final class FirestoreDynamicTableFactory implements DynamicTableSinkFacto
                         FirestoreConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
                         FirestoreConnectorOptions.SINK_IN_FLIGHT_MAX_WRITES,
                         FirestoreConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
-                        FactoryUtil.SINK_PARALLELISM));
+                        FactoryUtil.SINK_PARALLELISM,
+                        FactoryUtil.SOURCE_PARALLELISM));
     }
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
-        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        helper.validate();
-        ReadableConfig config = helper.getOptions();
-        validateCredentialsMode(config);
-        config.getOptional(FirestoreConnectorOptions.EMULATOR_ENDPOINT)
-                .ifPresent(
-                        value ->
-                                EmulatorEndpoint.parse(
-                                        value, FirestoreConnectorOptions.EMULATOR_ENDPOINT.key()));
+        ReadableConfig config = validatedOptions(context);
         DatabaseDestination database = database(config);
         String collection = collection(config);
-        FirestoreTableSchema schema =
-                FirestoreTableSchema.of(
-                        (RowType) context.getPhysicalRowDataType().getLogicalType(),
-                        context.getPrimaryKeyIndexes(),
-                        config.getOptional(FirestoreConnectorOptions.GEO_POINT_FIELD_PATHS)
-                                .orElse(Collections.emptyList()),
-                        config.getOptional(FirestoreConnectorOptions.REFERENCE_FIELD_PATHS)
-                                .orElse(Collections.emptyList()));
+        FirestoreTableSchema schema = schema(context, config);
         WriteMode writeMode = config.get(FirestoreConnectorOptions.SINK_WRITE_MODE);
         validateWriteMode(context, schema, writeMode);
 
@@ -131,6 +128,69 @@ public final class FirestoreDynamicTableFactory implements DynamicTableSinkFacto
                                 context.getObjectIdentifier().asSummaryString(),
                                 database,
                                 collection));
+    }
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        ReadableConfig config = validatedOptions(context);
+        DatabaseDestination database = database(config);
+        String collection = collection(config);
+        FirestoreTableSchema schema = schema(context, config);
+        ScanConfig scanConfig = ScanConfig.from(config);
+        if (scanConfig.isCollectionGroup() && schema.hasPrimaryKey()) {
+            // A document id is unique only within its collection, and the planner trusts a
+            // declared key to be unique: it would drop a GROUP BY or a DISTINCT over it.
+            throw new ValidationException(
+                    "A scan with "
+                            + FirestoreConnectorOptions.SCAN_COLLECTION_GROUP.key()
+                            + " = 'true' reads documents of many collections, whose ids repeat"
+                            + " across them, so the table cannot declare a PRIMARY KEY. Read"
+                            + " the 'document-path' metadata column, which is unique, instead.");
+        }
+        String logicalName = context.getObjectIdentifier().asSummaryString();
+        return new FirestoreDynamicSource(
+                schema,
+                database,
+                collection,
+                scanConfig,
+                config.get(FirestoreConnectorOptions.TYPE_MISMATCH_POLICY),
+                context.getPhysicalRowDataType(),
+                config.getOptional(FirestoreConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                config.getOptional(FirestoreConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
+                scanConfig.isCollectionGroup()
+                        ? FirestoreTableLineage.ofCollectionGroup(
+                                logicalName,
+                                database,
+                                FirestoreDynamicSource.collectionId(collection))
+                        : FirestoreTableLineage.of(logicalName, database, collection));
+    }
+
+    /**
+     * Validates the options and the checks every direction shares: the credentials mode, and the
+     * emulator endpoint's grammar under its key.
+     */
+    private ReadableConfig validatedOptions(Context context) {
+        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        helper.validate();
+        ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
+        config.getOptional(FirestoreConnectorOptions.EMULATOR_ENDPOINT)
+                .ifPresent(
+                        value ->
+                                EmulatorEndpoint.parse(
+                                        value, FirestoreConnectorOptions.EMULATOR_ENDPOINT.key()));
+        return config;
+    }
+
+    private static FirestoreTableSchema schema(Context context, ReadableConfig config) {
+        return FirestoreTableSchema.of(
+                (RowType) context.getPhysicalRowDataType().getLogicalType(),
+                context.getPrimaryKeyIndexes(),
+                config.getOptional(FirestoreConnectorOptions.GEO_POINT_FIELD_PATHS)
+                        .orElse(Collections.emptyList()),
+                config.getOptional(FirestoreConnectorOptions.REFERENCE_FIELD_PATHS)
+                        .orElse(Collections.emptyList()));
     }
 
     /**
