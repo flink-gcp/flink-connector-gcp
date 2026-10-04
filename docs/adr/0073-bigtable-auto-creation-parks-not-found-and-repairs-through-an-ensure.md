@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0073: Bigtable auto-creation parks `NOT_FOUND` and repairs through an ensure
 
 - Status: Accepted
-- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11, and its description match corrected against the service by [#948] on 2026-08-17)
-- Issues: [#233], [#414], [#432], [#948]
+- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11, and its description match corrected against the service by [#948] on 2026-08-17; admin requests built as protobufs since [#1622] on 2026-10-04)
+- Issues: [#233], [#414], [#432], [#948], [#1622]
 - Modules: bigtable (`sink`, `sink.tables`, `sink.mutaterows.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Table auto-creation
 
@@ -83,8 +83,12 @@ options beside `CREATE_NEVER` — is rejected too, both at `build()`. The defaul
 `CREATE_NEVER`: a table nobody declared is the liability [#233] names. The GC rules ride in the
 sink's own `Serializable` model (`GcRule`: `maxVersions`, `maxAge`, `union`, `intersection`),
 because the config ships in the job graph and the client's `GCRules` wrappers do not serialize.
-The `maxAge` conversion is seconds-and-nanos to seconds-and-nanos (threeten), never `toNanos()`,
-so ADR-0068's setter ceiling is deliberately not applied.
+The `maxAge` conversion is seconds-and-nanos to seconds-and-nanos (threeten then, a protobuf
+`Duration` since [#1622]), never `toNanos()`,
+so ADR-0068's setter ceiling is deliberately not applied. Since [#1622] the ensure builds the
+`CreateTable` and `ModifyColumnFamilies` protobufs itself, field for field what the client's
+request models sent: a raw family declared without a rule is an empty family on creation and
+carries an empty rule on modification.
 
 **The ensure is idempotent and add-only.** `TableAdmin.ensureTable` (SPI in `sink.tables`, the
 BigQuery precedent; implementation short-lived-client-per-call, the `PubSubTopicAdmin` precedent)
@@ -210,6 +214,7 @@ same way.
 [#432]: https://github.com/flink-gcp/flink-connector-gcp/issues/432
 [#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948
 [#1196]: https://github.com/flink-gcp/flink-connector-gcp/issues/1196
+[#1622]: https://github.com/flink-gcp/flink-connector-gcp/issues/1622
 
 ## Refinement: typed family validation (2026-09-06, #1176)
 

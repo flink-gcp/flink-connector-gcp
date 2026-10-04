@@ -20,9 +20,10 @@ import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
-import com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest;
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.CreateTableRequest;
+import com.google.bigtable.admin.v2.ModifyColumnFamiliesRequest;
+import com.google.bigtable.admin.v2.Table;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
@@ -38,16 +39,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.maxVersions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link BigtableTableAdmin}'s translation of the sink's serializable creation settings
- * into the client's request models — compared through {@code toProto} so the assertion is on what
- * would go on the wire — and for the ensure flow those requests are issued by, driven through the
- * {@link BigtableTableAdmin#ensureWith} seam so the rounds a lost family race produces can be
- * scripted. What that seam leaves to the emulator (a real client behind the three operations, and
- * the family readback the middle one projects) is {@code BigtableTableAdminEmulatorITCase}'s.
+ * into the admin protobuf requests it sends, spelled out field by field, and for the ensure flow
+ * those requests are issued by, driven through the {@link BigtableTableAdmin#ensureWith} seam so
+ * the rounds a lost family race produces can be scripted. What that seam leaves to the emulator (a
+ * real client behind the three operations, and the family readback the middle one projects) is
+ * {@code BigtableTableAdminEmulatorITCase}'s.
  */
 class BigtableTableAdminTest {
 
@@ -82,16 +84,15 @@ class BigtableTableAdminTest {
                         .columnFamily("aged", GcRule.maxAge(Duration.ofHours(24)))
                         .build();
 
+        // A raw family without a rule is an empty family, not one with an empty rule.
         CreateTableRequest expected =
-                CreateTableRequest.of("orders")
-                        .addFamily("plain")
-                        .addFamily("versions", GCRules.GCRULES.maxVersions(3))
-                        .addFamily(
-                                "aged",
-                                GCRules.GCRULES.maxAge(org.threeten.bp.Duration.ofHours(24)));
+                creationOf(
+                        Table.newBuilder()
+                                .putColumnFamilies("plain", ColumnFamily.getDefaultInstance())
+                                .putColumnFamilies("versions", familyWith(maxVersions(3)))
+                                .putColumnFamilies("aged", familyWith(maxAge(86_400, 0))));
 
-        assertThat(BigtableTableAdmin.toCreateTableRequest(TABLE, options).toProto("p", "i"))
-                .isEqualTo(expected.toProto("p", "i"));
+        assertThat(BigtableTableAdmin.toCreateTableRequest(TABLE, options)).isEqualTo(expected);
     }
 
     @Test
@@ -109,24 +110,28 @@ class BigtableTableAdminTest {
                                                 GcRule.maxVersions(10))))
                         .build();
 
+        com.google.bigtable.admin.v2.GcRule intersection =
+                com.google.bigtable.admin.v2.GcRule.newBuilder()
+                        .setIntersection(
+                                com.google.bigtable.admin.v2.GcRule.Intersection.newBuilder()
+                                        .addRules(maxAge(5, 123))
+                                        .addRules(maxVersions(10)))
+                        .build();
         CreateTableRequest expected =
-                CreateTableRequest.of("orders")
-                        .addFamily(
-                                "kept",
-                                GCRules.GCRULES
-                                        .union()
-                                        .rule(GCRules.GCRULES.maxVersions(1))
-                                        .rule(
-                                                GCRules.GCRULES
-                                                        .intersection()
-                                                        .rule(
-                                                                GCRules.GCRULES.maxAge(
-                                                                        org.threeten.bp.Duration
-                                                                                .ofSeconds(5, 123)))
-                                                        .rule(GCRules.GCRULES.maxVersions(10))));
+                creationOf(
+                        Table.newBuilder()
+                                .putColumnFamilies(
+                                        "kept",
+                                        familyWith(
+                                                com.google.bigtable.admin.v2.GcRule.newBuilder()
+                                                        .setUnion(
+                                                                com.google.bigtable.admin.v2.GcRule
+                                                                        .Union.newBuilder()
+                                                                        .addRules(maxVersions(1))
+                                                                        .addRules(intersection))
+                                                        .build())));
 
-        assertThat(BigtableTableAdmin.toCreateTableRequest(TABLE, options).toProto("p", "i"))
-                .isEqualTo(expected.toProto("p", "i"));
+        assertThat(BigtableTableAdmin.toCreateTableRequest(TABLE, options)).isEqualTo(expected);
     }
 
     @Test
@@ -135,22 +140,33 @@ class BigtableTableAdminTest {
         missing.put("plain", null);
         missing.put("versions", GcRule.maxVersions(2));
 
+        // Unlike creation, a family added without a rule carries an empty rule.
         ModifyColumnFamiliesRequest expected =
-                ModifyColumnFamiliesRequest.of("orders")
-                        .addFamily("plain")
-                        .addFamily("versions", GCRules.GCRULES.maxVersions(2));
+                ModifyColumnFamiliesRequest.newBuilder()
+                        .setName("projects/p/instances/i/tables/orders")
+                        .addModifications(
+                                ModifyColumnFamiliesRequest.Modification.newBuilder()
+                                        .setId("plain")
+                                        .setCreate(
+                                                familyWith(
+                                                        com.google.bigtable.admin.v2.GcRule
+                                                                .getDefaultInstance())))
+                        .addModifications(
+                                ModifyColumnFamiliesRequest.Modification.newBuilder()
+                                        .setId("versions")
+                                        .setCreate(familyWith(maxVersions(2))))
+                        .build();
 
         assertThat(
                         BigtableTableAdmin.toModifyColumnFamiliesRequest(
-                                        TABLE,
-                                        missing,
-                                        Map.of(
-                                                "plain",
-                                                ColumnFamilyType.RAW,
-                                                "versions",
-                                                ColumnFamilyType.RAW))
-                                .toProto("p", "i"))
-                .isEqualTo(expected.toProto("p", "i"));
+                                TABLE,
+                                missing,
+                                Map.of(
+                                        "plain",
+                                        ColumnFamilyType.RAW,
+                                        "versions",
+                                        ColumnFamilyType.RAW)))
+                .isEqualTo(expected);
     }
 
     @Test
@@ -178,9 +194,7 @@ class BigtableTableAdminTest {
         assertThat(result.existingColumnFamilies()).containsExactlyInAnyOrder("existing", "added");
         assertThat(admin.creations).hasSize(1);
         assertThat(admin.readTableIds).containsExactly("orders");
-        assertThat(admin.modifications)
-                .extracting(request -> request.toProto("p", "i"))
-                .containsExactly(additionOf("added"));
+        assertThat(admin.modifications).containsExactly(additionOf("added"));
     }
 
     @Test
@@ -197,9 +211,7 @@ class BigtableTableAdminTest {
         assertThat(result.columnFamiliesAdded()).isEqualTo(1);
         assertThat(result.existingColumnFamilies()).containsExactlyInAnyOrder("a", "b");
         assertThat(admin.readTableIds).containsExactly("orders", "orders");
-        assertThat(admin.modifications)
-                .extracting(request -> request.toProto("p", "i"))
-                .containsExactly(additionOf("a", "b"), additionOf("b"));
+        assertThat(admin.modifications).containsExactly(additionOf("a", "b"), additionOf("b"));
     }
 
     @Test
@@ -258,13 +270,39 @@ class BigtableTableAdminTest {
     }
 
     /** The wire form of a request adding exactly the given families to the test's table. */
-    private static com.google.bigtable.admin.v2.ModifyColumnFamiliesRequest additionOf(
-            String... families) {
-        ModifyColumnFamiliesRequest request = ModifyColumnFamiliesRequest.of("orders");
+    private static ModifyColumnFamiliesRequest additionOf(String... families) {
+        ModifyColumnFamiliesRequest.Builder request =
+                ModifyColumnFamiliesRequest.newBuilder()
+                        .setName("projects/p/instances/i/tables/orders");
         for (String family : families) {
-            request.addFamily(family);
+            request.addModificationsBuilder()
+                    .setId(family)
+                    .setCreate(
+                            familyWith(com.google.bigtable.admin.v2.GcRule.getDefaultInstance()));
         }
-        return request.toProto("p", "i");
+        return request.build();
+    }
+
+    /** The wire form of creating the test's table with the given families. */
+    private static CreateTableRequest creationOf(Table.Builder table) {
+        return CreateTableRequest.newBuilder()
+                .setParent("projects/p/instances/i")
+                .setTableId("orders")
+                .setTable(table)
+                .build();
+    }
+
+    private static ColumnFamily familyWith(com.google.bigtable.admin.v2.GcRule rule) {
+        return ColumnFamily.newBuilder().setGcRule(rule).build();
+    }
+
+    private static com.google.bigtable.admin.v2.GcRule maxAge(long seconds, int nanos) {
+        return com.google.bigtable.admin.v2.GcRule.newBuilder()
+                .setMaxAge(
+                        com.google.protobuf.Duration.newBuilder()
+                                .setSeconds(seconds)
+                                .setNanos(nanos))
+                .build();
     }
 
     /**

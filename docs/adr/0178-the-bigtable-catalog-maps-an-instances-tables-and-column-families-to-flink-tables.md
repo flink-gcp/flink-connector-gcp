@@ -137,7 +137,7 @@ Measured on 2026-10-03 against Flink 2.2.1 and 1.20.4 and the Bigtable emulator:
   It also holds the planner facts the docs state: `_key = CAST('user1' AS BYTES)` is pushed as a row-key filter, `_key = 'user1'` and `cf['name']` are refused on `BYTES` keys, and under `string` `_key = 'user1'` and `_key >= 'user' AND _key < 'uses'` are pushed while `_key LIKE 'user%'` is evaluated after a full scan.
   It refuses a table with a family named `_key`, and reads an empty cell as a `NULL` map value under a present qualifier key.
 - A standalone planner probe, run once while deciding the key type, found `LIKE` on `BYTES` refused as `=` is, and `STARTS_WITH` and `SAFE_CONVERT_BYTES_TO_STRING` missing from Flink; no test holds these, since the docs only name the functions as GoogleSQL's.
-- `BigtableCatalogSchemaTest` holds the value-type rules against the admin protobuf the client builds for each aggregate and against hand-built ones for an unset encoding, a reported state and an HLL family reporting an `int64` state, since the emulator cannot create an aggregate family.
+- `BigtableCatalogSchemaTest` holds the value-type rules against the admin protobuf each aggregate family is created with and against hand-built ones for an unset encoding, a reported state and an HLL family reporting an `int64` state, since the emulator cannot create an aggregate family.
 - `BigtableCatalogFactoryTest` holds the offline `CREATE CATALOG` and `USE CATALOG`, which also answer `SHOW DATABASES`, and the rejection of `default-database` and tuning keys as unknown.
 
 ## Alternatives declined

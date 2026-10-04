@@ -28,23 +28,47 @@ import java.util.Map;
 /** Converts creation types and compares the writable portion of live family types. */
 @Internal
 final class ColumnFamilyTypes {
+    private static final Type BIG_ENDIAN_INT64 =
+            Type.newBuilder()
+                    .setInt64Type(
+                            Type.Int64.newBuilder()
+                                    .setEncoding(
+                                            Type.Int64.Encoding.newBuilder()
+                                                    .setBigEndianBytes(
+                                                            Type.Int64.Encoding.BigEndianBytes
+                                                                    .getDefaultInstance())))
+                    .build();
+
     private ColumnFamilyTypes() {}
 
-    static com.google.cloud.bigtable.admin.v2.models.Type toClient(ColumnFamilyType type) {
+    /**
+     * Returns the value type a family of the given type is created with, as the admin protobuf
+     * spells it: no type at all for a raw family, and an aggregate over big-endian Int64 input
+     * otherwise.
+     */
+    static Type toProto(ColumnFamilyType type) {
+        Type.Aggregate.Builder aggregate =
+                Type.Aggregate.newBuilder().setInputType(BIG_ENDIAN_INT64);
         switch (type) {
             case RAW:
-                return com.google.cloud.bigtable.admin.v2.models.Type.raw();
+                return Type.getDefaultInstance();
             case INT64_SUM:
-                return com.google.cloud.bigtable.admin.v2.models.Type.int64Sum();
+                aggregate.setSum(Type.Aggregate.Sum.getDefaultInstance());
+                break;
             case INT64_MIN:
-                return com.google.cloud.bigtable.admin.v2.models.Type.int64Min();
+                aggregate.setMin(Type.Aggregate.Min.getDefaultInstance());
+                break;
             case INT64_MAX:
-                return com.google.cloud.bigtable.admin.v2.models.Type.int64Max();
+                aggregate.setMax(Type.Aggregate.Max.getDefaultInstance());
+                break;
             case INT64_HLL:
-                return com.google.cloud.bigtable.admin.v2.models.Type.int64Hll();
+                aggregate.setHllppUniqueCount(
+                        Type.Aggregate.HyperLogLogPlusPlusUniqueCount.getDefaultInstance());
+                break;
             default:
                 throw new IllegalArgumentException("Unsupported column family type: " + type);
         }
+        return Type.newBuilder().setAggregateType(aggregate).build();
     }
 
     static void check(
@@ -58,8 +82,7 @@ final class ColumnFamilyTypes {
                     if (live == null && allowMissing) {
                         return;
                     }
-                    if (live == null
-                            || !normalize(toClient(type).toProto()).equals(normalize(live))) {
+                    if (live == null || !normalize(toProto(type)).equals(normalize(live))) {
                         throw new Mismatch(
                                 "Bigtable table "
                                         + destination
@@ -84,13 +107,7 @@ final class ColumnFamilyTypes {
         if (input.hasInt64Type()) {
             Type.Int64.Encoding.Builder encoding = input.getInt64Type().getEncoding().toBuilder();
             if (encoding.getEncodingCase() == Type.Int64.Encoding.EncodingCase.ENCODING_NOT_SET) {
-                encoding.mergeFrom(
-                        toClient(ColumnFamilyType.INT64_SUM)
-                                .toProto()
-                                .getAggregateType()
-                                .getInputType()
-                                .getInt64Type()
-                                .getEncoding());
+                encoding.mergeFrom(BIG_ENDIAN_INT64.getInt64Type().getEncoding());
             }
             if (encoding.hasBigEndianBytes()) {
                 // The pinned admin schema marks this field deprecated and ignored if set.
@@ -107,7 +124,7 @@ final class ColumnFamilyTypes {
 
     private static String describe(Type type) {
         for (ColumnFamilyType candidate : ColumnFamilyType.values()) {
-            if (normalize(toClient(candidate).toProto()).equals(normalize(type))) {
+            if (normalize(toProto(candidate)).equals(normalize(type))) {
                 return candidate.toString();
             }
         }

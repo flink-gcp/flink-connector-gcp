@@ -23,9 +23,6 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.util.CloseableIterator;
 
 import com.google.api.gax.rpc.StatusCode;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.CreateAppProfileRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ReadModifyWriteRow;
@@ -64,22 +61,10 @@ class BigtableReadModifyWriteRealGcpITCase extends AbstractBigtableRealGcpITCase
     private static final String ENABLED = "rmw-enabled";
 
     @BeforeAll
-    static void createProfiles() throws Exception {
-        String instance = tableDestination("unused").getInstance();
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
-            String cluster = admin.listClusters(instance).get(0).getId();
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, ENABLED)
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of(cluster, true)));
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, "rmw-disabled")
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of(cluster, false)));
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, "rmw-multi")
-                            .setRoutingPolicy(AppProfile.MultiClusterRoutingPolicy.of()));
-        }
+    static void createProfiles() {
+        createSingleClusterAppProfile(ENABLED, true);
+        createSingleClusterAppProfile("rmw-disabled", false);
+        createMultiClusterAppProfile("rmw-multi");
     }
 
     @Test

@@ -17,8 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import com.google.api.gax.rpc.NotFoundException;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
-import com.google.cloud.bigtable.admin.v2.models.Type;
 import com.google.cloud.bigtable.data.v2.models.ConditionalRowMutation;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Mutation;
@@ -55,6 +53,10 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Sum;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.maxVersionsFamily;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.rawFamily;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.typedFamily;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -122,27 +124,20 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
         datastreamTable = createStagedTable("staged-datastream");
         tableApiTable = createStagedTable("staged-table");
         noTxTable = createStagedTable("staged-no-tx");
-        markerMissing = createTable("marker-missing", request -> request.addFamily(FAMILY));
+        markerMissing = createTable("marker-missing", Map.of(FAMILY, rawFamily()));
         markerGc =
-                createTable(
-                        "marker-gc",
-                        request ->
-                                request.addFamily(FAMILY)
-                                        .addFamily(MARKER, GCRules.GCRULES.maxVersions(1)));
+                createTable("marker-gc", Map.of(FAMILY, rawFamily(), MARKER, maxVersionsFamily(1)));
         markerTyped =
                 createTable(
                         "marker-typed",
-                        request -> request.addFamily(FAMILY).addFamily(MARKER, Type.int64Sum()));
+                        Map.of(FAMILY, rawFamily(), MARKER, typedFamily(int64Sum())));
     }
 
     /** The shape the staged mode documents: data family, INT64 SUM family, raw no-GC markers. */
     private static TableDestination createStagedTable(String tableId) {
         return createTable(
                 tableId,
-                request ->
-                        request.addFamily(FAMILY)
-                                .addFamily("agg", Type.int64Sum())
-                                .addFamily(MARKER));
+                Map.of(FAMILY, rawFamily(), "agg", typedFamily(int64Sum()), MARKER, rawFamily()));
     }
 
     @ParameterizedTest(name = "tableApi={0}")

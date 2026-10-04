@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-02 (design settled on [#33], which holds the full comparison), revised by [#236]
   (2026-08-08), by [#436] (2026-08-10, the flow controller's figures), and by [#1175]
-  (2026-09-05, protobuf wrappers for aggregate state)
-- Issues: [#33], [#216], [#217], [#232], [#236], [#436], [#1175]
+  (2026-09-05, protobuf wrappers for aggregate state), and by [#1622] (2026-10-04, the admin path
+  moved to the protobuf client)
+- Issues: [#33], [#216], [#217], [#232], [#236], [#436], [#1175], [#1622]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md`
 
@@ -78,11 +79,15 @@ rather than assumed:
   the Evidence section carries the numbers and their limits. There is no local fix to weigh
   against them, which is why the knob to reach for is upstream, not here.
 
-The admin path the auto-creation feature later added has vendor tiers of its own — the
-client's `GCRules` is class-level `@BetaApi`, and the admin methods the ensure calls are
-`@ObsoleteApi` —
-recorded in [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)'s
-inventory under the same accepted-internal-call reading as the batcher facts above.
+The admin path the auto-creation feature later added first rode vendor tiers of its own — the
+client's `GCRules` is class-level `@BetaApi`, and the admin methods the ensure called are
+`@ObsoleteApi` — recorded in
+[ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)'s
+inventory under the same accepted-internal-call reading as the batcher facts above. [#1622]
+moved every admin call of the module to the protobuf client (`getBaseClient()` with
+`com.google.bigtable.admin.v2` requests), so neither tier is ridden any more. Unlike a batcher
+fact, an obsolete method had a supported replacement in the same artifact, and a later release
+that removes it would have broken the build and every integration-test harness at once.
 
 Further design decisions of the same cluster:
 
@@ -296,3 +301,4 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178
 [#1175]: https://github.com/flink-gcp/flink-connector-gcp/issues/1175
 [#1204]: https://github.com/flink-gcp/flink-connector-gcp/issues/1204
+[#1622]: https://github.com/flink-gcp/flink-connector-gcp/issues/1622

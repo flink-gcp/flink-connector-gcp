@@ -20,6 +20,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
 
 import com.google.bigtable.admin.v2.Type;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.table.CatalogKeyType;
 import org.junit.jupiter.api.Test;
 
@@ -32,16 +33,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link BigtableCatalogSchema}: the row key, one map per family, and the value type each family's
- * metadata decides. The aggregate types are built as the client builds them, since the emulator
- * cannot create an aggregate family.
+ * metadata decides. The aggregate types are built as a family is created with them ({@link
+ * BigtableAdminProtos}), since the emulator cannot create an aggregate family.
  */
 class BigtableCatalogSchemaTest {
 
     private static final Type RAW = Type.getDefaultInstance();
-
-    private static Type client(com.google.cloud.bigtable.admin.v2.models.Type type) {
-        return type.toProto();
-    }
 
     private static String render(Schema schema) {
         return schema.getColumns().stream()
@@ -76,11 +73,7 @@ class BigtableCatalogSchemaTest {
     void theStringKeyTypeAppliesToTheRowKeyAndEveryMapKeyButNoValue() {
         Schema schema =
                 BigtableCatalogSchema.of(
-                        families(
-                                "cf",
-                                RAW,
-                                "totals",
-                                client(com.google.cloud.bigtable.admin.v2.models.Type.int64Sum())),
+                        families("cf", RAW, "totals", BigtableAdminProtos.int64Sum()),
                         CatalogKeyType.STRING);
 
         assertThat(render(schema))
@@ -96,21 +89,13 @@ class BigtableCatalogSchemaTest {
 
     @Test
     void int64SumMinAndMaxFamiliesReadAsBigintAndHllAsBytes() {
-        assertThat(
-                        BigtableCatalogSchema.valueType(
-                                client(com.google.cloud.bigtable.admin.v2.models.Type.int64Sum())))
+        assertThat(BigtableCatalogSchema.valueType(BigtableAdminProtos.int64Sum()))
                 .isEqualTo(DataTypes.BIGINT());
-        assertThat(
-                        BigtableCatalogSchema.valueType(
-                                client(com.google.cloud.bigtable.admin.v2.models.Type.int64Min())))
+        assertThat(BigtableCatalogSchema.valueType(BigtableAdminProtos.int64Min()))
                 .isEqualTo(DataTypes.BIGINT());
-        assertThat(
-                        BigtableCatalogSchema.valueType(
-                                client(com.google.cloud.bigtable.admin.v2.models.Type.int64Max())))
+        assertThat(BigtableCatalogSchema.valueType(BigtableAdminProtos.int64Max()))
                 .isEqualTo(DataTypes.BIGINT());
-        assertThat(
-                        BigtableCatalogSchema.valueType(
-                                client(com.google.cloud.bigtable.admin.v2.models.Type.int64Hll())))
+        assertThat(BigtableCatalogSchema.valueType(BigtableAdminProtos.int64Hll()))
                 .isEqualTo(DataTypes.BYTES());
         assertThat(BigtableCatalogSchema.valueType(RAW)).isEqualTo(DataTypes.BYTES());
     }

@@ -22,12 +22,16 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.PermissionDeniedException;
+import com.google.bigtable.admin.v2.AppProfile;
+import com.google.bigtable.admin.v2.AppProfileName;
+import com.google.bigtable.admin.v2.GetAppProfileRequest;
+import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.TableName;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.Table;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
@@ -115,7 +119,16 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     @Override
     public void validateSingleClusterAppProfile() throws Exception {
         validateSingleClusterAppProfile(
-                () -> instanceAdmin().getAppProfile(table.getInstance(), appProfileId));
+                () -> instanceAdmin().getBaseClient().getAppProfile(appProfileRequest()));
+    }
+
+    /** The profile lookup the preflight sends. */
+    GetAppProfileRequest appProfileRequest() {
+        return GetAppProfileRequest.newBuilder()
+                .setName(
+                        AppProfileName.of(table.getProject(), table.getInstance(), appProfileId)
+                                .toString())
+                .build();
     }
 
     /**
@@ -144,29 +157,48 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         }
     }
 
-    /** Rejects a profile whose routing policy Change Streams cannot be read through. */
+    /**
+     * Rejects a profile whose routing policy Change Streams cannot be read through.
+     *
+     * <p>Anything but single-cluster routing is refused, including a routing policy this client's
+     * protobuf does not know, which arrives with no routing case set.
+     */
     static void checkSingleClusterRouting(AppProfile profile, String appProfileId) {
         Preconditions.checkArgument(
-                profile.getPolicy() instanceof AppProfile.SingleClusterRoutingPolicy,
+                profile.hasSingleClusterRouting(),
                 "Bigtable Change Streams requires a single-cluster application profile, but app"
-                        + " profile '%s' uses multi-cluster routing.",
+                        + " profile '%s' does not use single-cluster routing.",
                 appProfileId);
     }
 
     @Override
     public Duration retention() throws Exception {
-        return retentionOf(tableAdmin().getTable(table.getTable()), table);
+        return retentionOf(tableAdmin().getBaseClient().getTable(tableRequest()), table);
     }
 
-    /** Converts the client's retention, rejecting a table that has no change stream enabled. */
+    /**
+     * The table read the retention comes from: the schema view, which carries the change-stream
+     * configuration and is the view the client's model method read through.
+     */
+    GetTableRequest tableRequest() {
+        return GetTableRequest.newBuilder()
+                .setName(
+                        TableName.of(table.getProject(), table.getInstance(), table.getTable())
+                                .toString())
+                .setView(Table.View.SCHEMA_VIEW)
+                .build();
+    }
+
+    /** Converts the table's retention, rejecting a table that has no change stream enabled. */
     static Duration retentionOf(Table description, TableDestination table) {
-        org.threeten.bp.Duration clientRetention = description.getChangeStreamRetention();
         Preconditions.checkState(
-                clientRetention != null,
+                description.hasChangeStreamConfig(),
                 "Bigtable Change Streams is not enabled on %s; enable a change stream before"
                         + " starting this source.",
                 table);
-        return Duration.ofSeconds(clientRetention.getSeconds(), clientRetention.getNano());
+        com.google.protobuf.Duration retention =
+                description.getChangeStreamConfig().getRetentionPeriod();
+        return Duration.ofSeconds(retention.getSeconds(), retention.getNanos());
     }
 
     @Override

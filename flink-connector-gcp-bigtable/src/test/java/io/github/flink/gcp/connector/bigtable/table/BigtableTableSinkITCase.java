@@ -27,10 +27,9 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.types.RowKind;
 
-import com.google.cloud.bigtable.admin.v2.models.ColumnFamily;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -339,14 +338,13 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         tEnv.executeSql("INSERT INTO bt VALUES ('r1', ROW('alice', CAST(7 AS BIGINT)), ROW(true))")
                 .await();
 
-        assertThat(describeTable("sql-created").getColumnFamilies())
-                .extracting(ColumnFamily::getId)
+        assertThat(describeTable("sql-created").getColumnFamiliesMap().keySet())
                 .containsExactlyInAnyOrder("cf1", "cf2");
-        assertThat(describeTable("sql-created").getColumnFamilies())
+        assertThat(describeTable("sql-created").getColumnFamiliesMap().values())
                 .allSatisfy(
                         family ->
-                                assertThat(family.getGCRule().toProto())
-                                        .isEqualTo(GCRules.GCRULES.maxVersions(1).toProto()));
+                                assertThat(family.getGcRule())
+                                        .isEqualTo(BigtableAdminProtos.maxVersions(1)));
         assertThat(readRows(TableDestination.of(PROJECT, INSTANCE, "sql-created"))).hasSize(1);
     }
 

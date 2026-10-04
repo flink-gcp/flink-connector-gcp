@@ -23,15 +23,16 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.api.gax.rpc.NotFoundException;
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.CreateTableRequest;
 import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.InstanceName;
+import com.google.bigtable.admin.v2.ModifyColumnFamiliesRequest;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
 import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
-import com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
@@ -119,14 +120,9 @@ public class BigtableTableAdmin implements TableAdmin {
             return ensureWith(
                     destination,
                     options,
-                    client::createTable,
+                    client.getBaseClient()::createTable,
                     tableId -> familyTypesOf(client, destination),
-                    request ->
-                            client.getBaseClient()
-                                    .modifyColumnFamilies(
-                                            request.toProto(
-                                                    destination.getProject(),
-                                                    destination.getInstance())));
+                    client.getBaseClient()::modifyColumnFamilies);
         } catch (ColumnFamilyTypes.Mismatch e) {
             throw e;
         } catch (RuntimeException e) {
@@ -153,9 +149,7 @@ public class BigtableTableAdmin implements TableAdmin {
      * test that reaches this class; the gated real-GCP auto-creation cases are single-threaded and
      * would not produce the race either.
      *
-     * <p>The read yields live family types as protobufs rather than the client's {@code Table}:
-     * that type has no public constructor, so a test would have to mint one through its
-     * {@code @InternalApi} {@code fromProto}. What that leaves outside the seam is one projection,
+     * <p>What the seam leaves outside is one projection, of the live table onto its family types,
      * which {@code BigtableTableAdminEmulatorITCase} pins in both directions — its no-op case fails
      * if the read reports too few families, its amend case if it reports too many. That ITCase is
      * also why the method references binding this call to a real client are covered, unlike the
@@ -282,12 +276,7 @@ public class BigtableTableAdmin implements TableAdmin {
                 client.getBaseClient()
                         .getTable(
                                 GetTableRequest.newBuilder()
-                                        .setName(
-                                                TableName.of(
-                                                                destination.getProject(),
-                                                                destination.getInstance(),
-                                                                destination.getTable())
-                                                        .toString())
+                                        .setName(tableName(destination))
                                         .setView(Table.View.SCHEMA_VIEW)
                                         .build());
         Map<String, Type> types = new LinkedHashMap<>();
@@ -296,85 +285,113 @@ public class BigtableTableAdmin implements TableAdmin {
         return types;
     }
 
-    /** Translates the create options into the table-creation request. */
+    /**
+     * Translates the create options into the table-creation request.
+     *
+     * <p>A raw family declared without a rule goes on the wire as an empty family; every other
+     * family carries its rule, an empty one standing for none, and its value type unless it is raw.
+     */
     @VisibleForTesting
     static CreateTableRequest toCreateTableRequest(
             TableDestination destination, TableCreateOptions options) {
-        CreateTableRequest request = CreateTableRequest.of(destination.getTable());
+        Table.Builder table = Table.newBuilder();
         Map<String, ColumnFamilyType> types = options.getColumnFamilyTypes();
         options.getColumnFamilies()
                 .forEach(
                         (name, rule) -> {
-                            if (rule == null && types.get(name) == ColumnFamilyType.RAW) {
-                                request.addFamily(name);
-                            } else if (rule == null) {
-                                request.addFamily(
-                                        name, ColumnFamilyTypes.toClient(types.get(name)));
-                            } else {
-                                request.addFamily(
-                                        name,
-                                        toGcRule(rule),
-                                        ColumnFamilyTypes.toClient(
-                                                types.getOrDefault(name, ColumnFamilyType.RAW)));
-                            }
+                            ColumnFamilyType type = types.getOrDefault(name, ColumnFamilyType.RAW);
+                            table.putColumnFamilies(
+                                    name,
+                                    rule == null && type == ColumnFamilyType.RAW
+                                            ? ColumnFamily.getDefaultInstance()
+                                            : toColumnFamily(rule, type));
                         });
-        return request;
+        return CreateTableRequest.newBuilder()
+                .setParent(
+                        InstanceName.of(destination.getProject(), destination.getInstance())
+                                .toString())
+                .setTableId(destination.getTable())
+                .setTable(table)
+                .build();
     }
 
-    /** Translates the given families into one atomic family-addition request. */
+    /**
+     * Translates the given families into one atomic family-addition request. Unlike creation, a raw
+     * family declared without a rule carries an empty one.
+     */
     @VisibleForTesting
     static ModifyColumnFamiliesRequest toModifyColumnFamiliesRequest(
             TableDestination destination,
             Map<String, GcRule> families,
             Map<String, ColumnFamilyType> types) {
-        ModifyColumnFamiliesRequest request =
-                ModifyColumnFamiliesRequest.of(destination.getTable());
+        ModifyColumnFamiliesRequest.Builder request =
+                ModifyColumnFamiliesRequest.newBuilder().setName(tableName(destination));
         families.forEach(
-                (name, rule) -> {
-                    if (rule == null) {
-                        request.addFamily(
-                                name,
-                                ColumnFamilyTypes.toClient(
-                                        types.getOrDefault(name, ColumnFamilyType.RAW)));
-                    } else {
-                        request.addFamily(
-                                name,
-                                toGcRule(rule),
-                                ColumnFamilyTypes.toClient(
-                                        types.getOrDefault(name, ColumnFamilyType.RAW)));
-                    }
-                });
-        return request;
+                (name, rule) ->
+                        request.addModificationsBuilder()
+                                .setId(name)
+                                .setCreate(
+                                        toColumnFamily(
+                                                rule,
+                                                types.getOrDefault(name, ColumnFamilyType.RAW))));
+        return request.build();
+    }
+
+    /** One family with its rule, an empty one standing for none, and its non-raw value type. */
+    private static ColumnFamily toColumnFamily(@Nullable GcRule rule, ColumnFamilyType type) {
+        ColumnFamily.Builder family =
+                ColumnFamily.newBuilder()
+                        .setGcRule(
+                                rule == null
+                                        ? com.google.bigtable.admin.v2.GcRule.getDefaultInstance()
+                                        : toGcRule(rule));
+        if (type != ColumnFamilyType.RAW) {
+            family.setValueType(ColumnFamilyTypes.toProto(type));
+        }
+        return family.build();
     }
 
     /**
-     * Translates the sink's serializable rule into the client's model. The age conversion goes
+     * Translates the sink's serializable rule into the admin protobuf. The age goes
      * seconds-and-nanos to seconds-and-nanos, so no magnitude a {@link Duration} can hold overflows
-     * it.
+     * it. A composite holds at least two rules ({@link GcRule#union(GcRule...)}), so none collapses
+     * into its only member.
      */
     @VisibleForTesting
-    static GCRules.GCRule toGcRule(GcRule rule) {
+    static com.google.bigtable.admin.v2.GcRule toGcRule(GcRule rule) {
+        com.google.bigtable.admin.v2.GcRule.Builder proto =
+                com.google.bigtable.admin.v2.GcRule.newBuilder();
         switch (rule.getKind()) {
             case MAX_VERSIONS:
-                return GCRules.GCRULES.maxVersions(rule.getMaxVersions());
+                return proto.setMaxNumVersions(rule.getMaxVersions()).build();
             case MAX_AGE:
                 Duration maxAge = rule.getMaxAge();
-                return GCRules.GCRULES.maxAge(
-                        org.threeten.bp.Duration.ofSeconds(maxAge.getSeconds(), maxAge.getNano()));
+                return proto.setMaxAge(
+                                com.google.protobuf.Duration.newBuilder()
+                                        .setSeconds(maxAge.getSeconds())
+                                        .setNanos(maxAge.getNano()))
+                        .build();
             case UNION:
-                GCRules.UnionRule union = GCRules.GCRULES.union();
+                com.google.bigtable.admin.v2.GcRule.Union.Builder union = proto.getUnionBuilder();
                 for (GcRule nested : rule.getRules()) {
-                    union = union.rule(toGcRule(nested));
+                    union.addRules(toGcRule(nested));
                 }
-                return union;
+                return proto.build();
             case INTERSECTION:
-                GCRules.IntersectionRule intersection = GCRules.GCRULES.intersection();
+                com.google.bigtable.admin.v2.GcRule.Intersection.Builder intersection =
+                        proto.getIntersectionBuilder();
                 for (GcRule nested : rule.getRules()) {
-                    intersection = intersection.rule(toGcRule(nested));
+                    intersection.addRules(toGcRule(nested));
                 }
-                return intersection;
+                return proto.build();
         }
         throw new IllegalStateException("Unknown GcRule kind: " + rule.getKind());
+    }
+
+    private static String tableName(TableDestination destination) {
+        return TableName.of(
+                        destination.getProject(), destination.getInstance(), destination.getTable())
+                .toString();
     }
 
     @Override

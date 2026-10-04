@@ -129,7 +129,9 @@ trees, all internal calls under the fourth clause:
   `GCRules` is class-level `@BetaApi` (`BigtableTableAdmin`); the admin methods the module
   calls — `createTable`, `getTable`, `modifyFamilies` on the sink's ensure, `getTable` and
   `getAppProfile` on the change-stream preflight — are `@ObsoleteApi` (a deprecation-adjacent
-  tier, not an instability one).
+  tier, not an instability one). Both entries are historical since
+  [#1622](https://github.com/flink-gcp/flink-connector-gcp/issues/1622) moved every admin call to
+  the protobuf client, which builds no `GCRules` and calls no model method.
 - **spanner**: `com.google.cloud.ByteArray` and `com.google.cloud.Date` are class-level
   `@BetaApi` (`RowDataToSpannerValueConverter`, `DataChangeRecordToRowDataConverter`); every
   Spanner client surface the module calls (`DatabaseClient.batchWriteAtLeastOnce`,

@@ -23,8 +23,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
@@ -43,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.rawFamily;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -94,11 +93,8 @@ class BigtableTableSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
     void keepLatestReplacesAllVersionsWithoutTouchingOmittedCells(boolean explicitTimestamp)
             throws Exception {
         String id = explicitTimestamp ? "table-keep-latest-explicit" : "table-keep-latest-clock";
-        TableDestination table = createTable(id);
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, table.getInstance())) {
-            admin.modifyFamilies(ModifyColumnFamiliesRequest.of(id).addFamily("untouched"));
-        }
+        TableDestination table =
+                createTable(id, Map.of(FAMILY, rawFamily(), "untouched", rawFamily()));
         mutateRow(
                 table,
                 ByteString.copyFromUtf8("r1"),
