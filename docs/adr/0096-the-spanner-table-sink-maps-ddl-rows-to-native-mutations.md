@@ -76,7 +76,7 @@ The five keys 1.0.0 and 1.1.0 published under the prefix (`schema`, `schema.json
 `schema.generated-columns` was never released and has no deprecated key.
 A DDL that sets one option under both its key and its deprecated key, an `OPTIONS` hint included, is refused at planning, because Flink would read the current key and silently ignore the other, and two named-schema values address two different tables.
 The Java constants are renamed with the keys (`NAMED_SCHEMA`, `JSON_FIELD_PATHS`, and so on); `SpannerConnectorOptions` is `@PublicEvolving`, so ADR-0124 allows the break at a minor release with a release-notes entry.
-`SpannerConnectorOptionsTest` holds that no key starts with `schema` and that every option the factory registers survives the persisting round trip on the Flink version under test.
+`SpannerConnectorOptionsTest` uses the shared `CatalogOptionAssertions` to hold that every option the factory registers survives the persisting round trip on the Flink version under test, including keys reserved for attributes other than the schema.
 
 **The table source is a bounded `partitionRead` and pushes down top-level projection.**
 The retained DDL columns become the read operation's column list and the converter emits the projected shape in planner order.

@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,6 +43,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * directly, and the factory tests only ever set a handful of keys.
  */
 class PubSubConnectorOptionsTest {
+
+    @Test
+    void everyOptionSurvivesACatalogThatPersistsTheTable() {
+        PubSubDynamicTableFactory factory = new PubSubDynamicTableFactory();
+        assertOptionsSurviveCatalogRoundTrip(factory.requiredOptions(), factory.optionalOptions());
+    }
 
     private static List<ConfigOption<?>> declaredOptions() {
         List<ConfigOption<?>> options = new ArrayList<>();

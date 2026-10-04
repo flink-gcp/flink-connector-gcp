@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,6 +45,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * directly, and the factory tests only ever set a handful of keys.
  */
 class BigtableConnectorOptionsTest {
+
+    @Test
+    void everyOptionSurvivesACatalogThatPersistsTheTable() {
+        BigtableDynamicTableFactory factory = new BigtableDynamicTableFactory();
+        assertOptionsSurviveCatalogRoundTrip(factory.requiredOptions(), factory.optionalOptions());
+    }
 
     /** The table-owned options that define a Table API default rather than require an opt-in. */
     private static final Set<String> DEFAULTED_TABLE_OWNED =

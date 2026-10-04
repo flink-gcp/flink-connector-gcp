@@ -60,6 +60,12 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <!-- Public catalog APIs for the shared table-option round-trip guard. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <!-- SplitReader/RecordsWithSplitIds for the fetch-loop helper. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-base</artifactId>

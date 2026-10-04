@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +41,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * none carries a default the connector would then own a second copy of.
  */
 class BigQueryConnectorOptionsTest {
+
+    @Test
+    void everyOptionSurvivesACatalogThatPersistsTheTable() {
+        BigQueryDynamicTableFactory factory = new BigQueryDynamicTableFactory();
+        assertOptionsSurviveCatalogRoundTrip(factory.requiredOptions(), factory.optionalOptions());
+    }
 
     /** The Flink-owned keys the factory borrows rather than declaring itself. */
     private static final Set<String> FLINK_OWNED =

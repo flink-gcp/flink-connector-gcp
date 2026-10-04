@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 
+import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
 import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,14 +67,9 @@ class FirestoreConnectorOptionsTest {
     }
 
     @Test
-    void noOptionKeyStartsWithSchema() {
-        // Flink's CatalogPropertiesUtil drops every option whose key starts with "schema" (2.2.1)
-        // or "schema." (1.20.4) when it rebuilds a table from a catalog's stored properties, so
-        // such an option would vanish from a persisted table without an error, and a marker
-        // with it (ADR-0179).
-        assertThat(DeclaredOptions.all())
-                .extracting(ConfigOption::key)
-                .noneMatch(key -> key.startsWith("schema"));
+    void everyOptionSurvivesACatalogThatPersistsTheTable() {
+        FirestoreDynamicTableFactory factory = new FirestoreDynamicTableFactory();
+        assertOptionsSurviveCatalogRoundTrip(factory.requiredOptions(), factory.optionalOptions());
     }
 
     @Test
