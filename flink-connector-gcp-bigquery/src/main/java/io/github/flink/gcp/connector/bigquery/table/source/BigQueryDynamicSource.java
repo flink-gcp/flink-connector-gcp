@@ -31,12 +31,12 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder;
 import io.github.flink.gcp.connector.bigquery.source.BigQueryStorageReadSource;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
-import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 

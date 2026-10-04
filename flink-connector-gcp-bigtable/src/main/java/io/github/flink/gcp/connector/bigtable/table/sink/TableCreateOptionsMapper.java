@@ -21,13 +21,13 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import javax.annotation.Nullable;
 

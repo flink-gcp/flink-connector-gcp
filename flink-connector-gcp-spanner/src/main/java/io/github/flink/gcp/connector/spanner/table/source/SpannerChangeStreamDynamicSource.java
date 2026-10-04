@@ -33,6 +33,7 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
@@ -40,7 +41,6 @@ import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamStartPositionMapper;
-import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;

@@ -19,8 +19,8 @@ package io.github.flink.gcp.connector.spanner.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
-import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 
 /** Maps table options onto {@link SpannerWriterOptions}. */

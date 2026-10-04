@@ -34,6 +34,7 @@ import org.apache.flink.table.types.logical.RowType;
 
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;

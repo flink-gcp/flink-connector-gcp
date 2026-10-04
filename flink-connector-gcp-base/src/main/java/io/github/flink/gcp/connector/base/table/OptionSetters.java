@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.table;
+package io.github.flink.gcp.connector.base.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
@@ -32,10 +32,12 @@ import java.util.function.Function;
  *
  * <p>A builder setter's {@code Preconditions} message names the setter — the right name for a
  * DataStream caller, and one that appears nowhere in a {@code WITH} clause. {@code FactoryUtil}
- * wraps whatever a factory throws in a {@code ValidationException} whose own message says only
+ * wraps whatever a factory throws in a {@code ValidationException} whose own message is only the
  * "Unable to create a …" line for the table, leaving the actionable sentence in the cause, so the
  * rename here is what makes the failure name the option. The builder's sentence stays as the
  * detail: the bound itself is defined and tested there, never restated here.
+ *
+ * <p>Every connector's table layer shares this class (issue #1623).
  */
 @Internal
 public final class OptionSetters {

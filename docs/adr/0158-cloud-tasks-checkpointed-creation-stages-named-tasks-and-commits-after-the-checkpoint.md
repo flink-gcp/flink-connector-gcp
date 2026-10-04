@@ -192,7 +192,7 @@ Each check runs where it can see what it checks.
 |---|---|---|
 | `EXACTLY_ONCE` with a destination resolver other than the fixed one `queue(...)` installs | `CloudTasksSinkBuilder.build()` | Rejected; the first release supports one fixed queue, so the readback and the retention assumption have one target. |
 | `EXACTLY_ONCE` with a failure handler other than `failJob()` | `build()` | Rejected; a dropping or dead-lettering handler would let a commit that failed become success, and the committer has no handler context in this release (§ Alternatives declined). |
-| Staged options without `EXACTLY_ONCE` | `build()` and the Table factory | Rejected, naming the option key in the Table layer through the module's `OptionSetters`. |
+| Staged options without `EXACTLY_ONCE` | `build()` and the Table factory | Rejected, naming the option key in the Table layer through `OptionSetters`. |
 | `nameRetention` not greater than `clockSkewAllowance` plus `requestTimeout` | The options builder | Rejected, naming the three values; otherwise every envelope's deadline would precede its origin and the first commit would fail every task. |
 | `taskIdExtractor(...)` or `task-id` with `EXACTLY_ONCE` | `build()` | Accepted; it selects the stable-key identity. |
 | Serializer returned `null` | Writer | Skipped and counted, as in every mode ([ADR-0001](0001-a-serializer-returning-null-skips-the-record.md)). |
@@ -267,7 +267,7 @@ Manual recovery after expiry is a loss or duplicate risk the operator takes know
 
 ### Options and public API
 
-A `CloudTasksStagedOptions` value (immutable, built from `builder().build()`) carries the mode's knobs; the sink builder accepts it beside `writerOptions(...)`, and `sink.staged.*` Table keys map onto it through the module's `OptionSetters` ([ADR-0133](0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md)).
+A `CloudTasksStagedOptions` value (immutable, built from `builder().build()`) carries the mode's knobs; the sink builder accepts it beside `writerOptions(...)`, and `sink.staged.*` Table keys map onto it through `OptionSetters` ([ADR-0133](0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md)).
 The mode is a sink-root enum, `CloudTasksDeliveryGuarantee`, selected by `deliveryGuarantee(...)` on the builder and by `sink.delivery-guarantee` in the Table API, whose values render as `at-least-once` and `exactly-once` in DDL, the module's enum convention.
 The key is offered as the cross-connector spelling for the concept; the committer-based Bigtable mode of [#1211](https://github.com/flink-gcp/flink-connector-gcp/issues/1211) decides in its own ADR whether it shares it, and [ADR-0137](0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md) is why the key is not a Cloud Tasks-specific name.
 

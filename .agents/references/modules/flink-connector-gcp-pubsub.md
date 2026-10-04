@@ -73,7 +73,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Publisher.Builder`, since gax alone does not see them.
 - **A table-layer check that fires inside `createDynamicTable{Source,Sink}` is wrapped by
   `FactoryUtil`. A single value the builder rejects is renamed to its option key through the
-  module's `table.OptionSetters`** (`docs/adr/0133`); the restate-in-DDL-keys judgment remains
+  shared `base.table.OptionSetters`** (`docs/adr/0133`); the restate-in-DDL-keys judgment remains
   only for cross-field checks (`docs/adr/0007`, refined by `docs/adr/0133`). Never assert on an
   option key through the wrapper's own message in a factory test.
 

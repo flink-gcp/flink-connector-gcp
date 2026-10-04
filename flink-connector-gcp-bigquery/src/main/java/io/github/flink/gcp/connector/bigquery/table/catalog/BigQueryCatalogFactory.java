@@ -26,10 +26,10 @@ import org.apache.flink.table.factories.FactoryUtil;
 
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryCatalogOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryDynamicTableFactory;
-import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import java.util.Arrays;
 import java.util.HashSet;

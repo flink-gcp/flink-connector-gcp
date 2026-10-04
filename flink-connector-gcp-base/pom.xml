@@ -51,7 +51,8 @@ limitations under the License.
         </dependency>
         <dependency>
             <!-- Catalog and CatalogDatabase, the interfaces base.catalog's read-only skeleton
-                 implements for every connector catalog (docs/adr/0168). -->
+                 implements for every connector catalog (docs/adr/0168), and the
+                 ValidationException base.table's OptionSetters throws (docs/adr/0133). -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-common</artifactId>
             <scope>provided</scope>

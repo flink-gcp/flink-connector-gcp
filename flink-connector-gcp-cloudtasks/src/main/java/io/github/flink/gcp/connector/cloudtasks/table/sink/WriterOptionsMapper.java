@@ -21,11 +21,11 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksDeliveryGuarantee;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.table.CloudTasksConnectorOptions;
-import io.github.flink.gcp.connector.cloudtasks.table.OptionSetters;
 
 import javax.annotation.Nullable;
 

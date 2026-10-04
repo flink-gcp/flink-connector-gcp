@@ -21,10 +21,10 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.base.options.ResourceNames;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import javax.annotation.Nullable;
 

@@ -93,7 +93,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table sink (`docs/adr/0107`; shared rules `docs/adr/0139`)
 
 - A single option value a DataStream builder rejects is renamed to its option key through the
-  module's `table.OptionSetters` (`docs/adr/0133`); a new mapper line goes through it, and
+  shared `base.table.OptionSetters` (`docs/adr/0133`); a new mapper line goes through it, and
   cross-field checks keep the restate-in-DDL-keys judgment (`docs/adr/0007`).
 - A mapped option carries no default and no description restates one (`docs/adr/0139`); the
   table-owned target selection and method options carry theirs, recorded in

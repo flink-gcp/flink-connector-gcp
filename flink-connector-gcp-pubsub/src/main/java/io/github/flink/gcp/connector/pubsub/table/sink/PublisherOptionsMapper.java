@@ -21,9 +21,9 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
-import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 import java.util.ArrayList;

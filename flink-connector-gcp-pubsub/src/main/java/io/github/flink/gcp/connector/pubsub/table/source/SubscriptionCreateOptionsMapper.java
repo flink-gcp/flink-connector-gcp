@@ -21,10 +21,10 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
-import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 import java.time.Duration;

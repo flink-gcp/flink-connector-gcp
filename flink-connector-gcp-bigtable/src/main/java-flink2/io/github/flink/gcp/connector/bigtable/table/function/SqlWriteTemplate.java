@@ -29,6 +29,7 @@ import org.apache.flink.types.Row;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalMutation;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalRequest;
@@ -40,7 +41,6 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOpti
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.RowRequest;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import java.io.Serializable;
 import java.nio.ByteBuffer;

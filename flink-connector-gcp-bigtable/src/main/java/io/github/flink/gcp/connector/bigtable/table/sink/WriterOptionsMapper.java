@@ -19,9 +19,9 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 /**
  * Builds {@link BigtableWriterOptions} from the table options.

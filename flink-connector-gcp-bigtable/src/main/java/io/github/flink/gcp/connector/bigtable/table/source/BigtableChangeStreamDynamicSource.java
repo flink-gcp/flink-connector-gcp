@@ -31,12 +31,12 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.ChangeStreamChangelogMode;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 

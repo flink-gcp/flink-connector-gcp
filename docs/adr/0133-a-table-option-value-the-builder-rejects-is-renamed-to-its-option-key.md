@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0133: A Table option value the builder rejects is renamed to its option key
 
 - Status: Accepted
-- Date: 2026-08-22, revised by [#1027] (2026-08-22), [#1047] (2026-08-23) and [#1570] (2026-09-30)
-- Issues: [#1030], [#1019], [#895], [#235], [#1027], [#1047], [#1570]
-- Modules: bigquery, pubsub, cloudtasks, bigtable, spanner (table layers)
-- Current behavior: each module's `table.OptionSetters` and the mapper javadocs that cite it
+- Date: 2026-08-22, revised by [#1027] (2026-08-22), [#1047] (2026-08-23), [#1570] (2026-09-30)
+  and [#1623] (2026-10-04)
+- Issues: [#1030], [#1019], [#895], [#235], [#1027], [#1047], [#1570], [#1623]
+- Modules: base; bigquery, pubsub, cloudtasks, bigtable, spanner, firestore (table layers)
+- Current behavior: `base.table.OptionSetters` and the mapper javadocs that cite it
 
 ## Context
 
@@ -44,8 +45,8 @@ single-value checks, a rule nobody was applying.
 
 ## Decision
 
-Every Table mapper applies option values to builder setters through a per-module
-`table.OptionSetters` helper: the setter's `IllegalArgumentException` is rethrown as a
+Every Table mapper applies option values to builder setters through the shared
+`base.table.OptionSetters` helper: the setter's `IllegalArgumentException` is rethrown as a
 `ValidationException` naming the option key first, with the builder's own sentence kept intact as
 the detail and the original exception as the cause —
 `Option 'sink.buffer-flush.max-cells' is invalid: maxBatchCells must be positive`. The same
@@ -81,11 +82,20 @@ check takes the knob names as parameters, and the mapper calls it with the optio
 restatement would need a second copy of the SDK defaults, which the declined sweep below never
 weighed. That makes one parameterized check, not a sweep.
 
-The helper is copied per module rather than hoisted into `flink-connector-gcp-base`, although it
-now has five consumers, because base deliberately carries no Table API dependency and
+The helper was first copied per module rather than hoisted into `flink-connector-gcp-base`,
+although it had five consumers, because base carried no Table API dependency and
 `ValidationException` lives in `flink-table-common`; adding that dependency for one 80-line class
-is a bigger change to base's surface than five identical copies whose drift a cross-module grep
-catches.
+looked like a bigger change to base's surface than five identical copies whose drift a
+cross-module grep would catch. [#1623] moved the helper into base, on two measured facts; the
+decision above, renaming at the seam, is unchanged, so this is a refinement of where the helper
+lives. The premise lapsed: base has declared `flink-table-common` (provided) since `base.catalog`
+moved in ([ADR-0168]), so hoisting adds no dependency. And the copies were never identical: the
+Bigtable and Pub/Sub copies carried a `convert` the other three lacked from the commit that
+created them, the grep never reported it, and the Firestore table sink ([#1607]) added a sixth
+copy. The helper now lives in `base.table`, `@Internal`, with the union of the copies' methods,
+and each SQL uber jar carries a relocated copy as it does for every base class ([ADR-0015]).
+`OptionSettersTest` in base holds what each method renames; the mapper-level rejection tests stay
+in the connectors.
 
 Alongside the rename, the [#895] treatment is applied to the five builder messages that named a
 method parameter rather than their setter — `absentRetentionFallback`, `heartbeatInterval`,
@@ -136,5 +146,9 @@ method parameter rather than their setter — `absentRetentionFallback`, `heartb
 [#1030]: https://github.com/flink-gcp/flink-connector-gcp/issues/1030
 [#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047
 [#1570]: https://github.com/flink-gcp/flink-connector-gcp/issues/1570
+[#1607]: https://github.com/flink-gcp/flink-connector-gcp/issues/1607
+[#1623]: https://github.com/flink-gcp/flink-connector-gcp/issues/1623
 [ADR-0007]: 0007-the-publisher-teardown-is-two-phase-and-its-bound-is-real.md
+[ADR-0015]: 0015-everything-bundled-in-a-sql-uber-jar-is-relocated-and-its-notice-is-generated.md
 [ADR-0068]: 0068-duration-budgets-are-bounded-at-the-setter-by-what-a-nanosecond-clock-can-express.md
+[ADR-0168]: 0168-connector-catalogs-are-read-only-views-of-the-service-schema.md

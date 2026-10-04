@@ -63,7 +63,7 @@ one of the three.** A proposal to add a character check names which shape it is.
 setter's message names the setter, which is the right name for a DataStream caller and appears
 nowhere in a `WITH` clause.
 
-**Apply the value through the module's `table.OptionSetters`, not through the setter directly.**
+**Apply the value through `base.table.OptionSetters`, not through the setter directly.**
 ADR-0133 made this the rule for every Table mapper: the setter's `IllegalArgumentException` is
 rethrown as a `ValidationException` naming the option key first, with the builder's own sentence
 kept as the detail.

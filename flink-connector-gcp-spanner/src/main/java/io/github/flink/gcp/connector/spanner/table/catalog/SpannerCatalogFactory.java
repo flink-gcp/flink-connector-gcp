@@ -26,9 +26,9 @@ import org.apache.flink.table.factories.FactoryUtil;
 
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerCatalogOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerDynamicTableFactory;
 

@@ -20,10 +20,10 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
-import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
