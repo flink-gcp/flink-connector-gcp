@@ -17,17 +17,30 @@
 package io.github.flink.gcp.connector.bigtable;
 
 import com.google.api.gax.retrying.RetrySettings;
+import com.google.api.gax.rpc.ApiExceptions;
 import com.google.api.gax.rpc.NotFoundException;
+import com.google.bigtable.admin.v2.AppProfile;
+import com.google.bigtable.admin.v2.ChangeStreamConfig;
+import com.google.bigtable.admin.v2.Cluster;
+import com.google.bigtable.admin.v2.ClusterName;
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.CreateAppProfileRequest;
+import com.google.bigtable.admin.v2.CreateInstanceRequest;
+import com.google.bigtable.admin.v2.CreateTableRequest;
+import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.Instance;
+import com.google.bigtable.admin.v2.InstanceName;
+import com.google.bigtable.admin.v2.ListClustersResponse;
+import com.google.bigtable.admin.v2.ListInstancesResponse;
+import com.google.bigtable.admin.v2.ListTablesRequest;
+import com.google.bigtable.admin.v2.LocationName;
+import com.google.bigtable.admin.v2.ProjectName;
+import com.google.bigtable.admin.v2.StorageType;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.TableName;
+import com.google.bigtable.admin.v2.UpdateTableRequest;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.CreateAppProfileRequest;
-import com.google.cloud.bigtable.admin.v2.models.CreateInstanceRequest;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.Instance;
-import com.google.cloud.bigtable.admin.v2.models.StorageType;
-import com.google.cloud.bigtable.admin.v2.models.Table;
-import com.google.cloud.bigtable.admin.v2.models.UpdateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
@@ -39,6 +52,7 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.FieldMask;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
@@ -53,6 +67,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -160,15 +175,32 @@ public abstract class AbstractBigtableRealGcpITCase {
         String runId = TestNames.runId();
         instanceId = INSTANCE_PREFIX + Instant.now().getEpochSecond() + "-" + runId;
         LOG.info("Creating ephemeral Bigtable instance {} in {}", instanceId, ZONE);
-        instanceAdmin.createInstance(
-                CreateInstanceRequest.of(instanceId)
-                        .setDisplayName("flink-connector-gcp E2E")
-                        .setType(Instance.Type.PRODUCTION)
-                        // One node is the minimum a production instance takes, and this suite
-                        // writes tens of rows. The cluster id is built from the run id rather
-                        // than from the instance id, which at 28 characters leaves no room
-                        // under a cluster id's own 30-character limit.
-                        .addCluster("c-" + runId, ZONE, 1, StorageType.SSD));
+        ApiExceptions.callAndTranslateApiException(
+                instanceAdmin
+                        .getBaseClient()
+                        .createInstanceAsync(
+                                CreateInstanceRequest.newBuilder()
+                                        .setParent(ProjectName.of(PROJECT).toString())
+                                        .setInstanceId(instanceId)
+                                        .setInstance(
+                                                Instance.newBuilder()
+                                                        .setDisplayName("flink-connector-gcp E2E")
+                                                        .setType(Instance.Type.PRODUCTION))
+                                        // One node is the minimum a production instance takes,
+                                        // and this suite writes tens of rows. The cluster id is
+                                        // built from the run id rather than from the instance id,
+                                        // which at 28 characters leaves no room under a cluster
+                                        // id's own 30-character limit.
+                                        .putClusters(
+                                                "c-" + runId,
+                                                Cluster.newBuilder()
+                                                        .setLocation(
+                                                                LocationName.of(PROJECT, ZONE)
+                                                                        .toString())
+                                                        .setServeNodes(1)
+                                                        .setDefaultStorageType(StorageType.SSD)
+                                                        .build())
+                                        .build()));
 
         tableAdmin = BigtableTableAdminClient.create(PROJECT, instanceId);
         dataClient = BigtableDataClient.create(PROJECT, instanceId);
@@ -181,11 +213,12 @@ public abstract class AbstractBigtableRealGcpITCase {
             if (instanceAdmin != null && instanceId != null) {
                 // Disable retention before deleting the billed instance, while clients are open.
                 if (tableAdmin != null) {
-                    disableChangeStreams(
-                            tableAdmin.listTables(), tableAdmin::getTable, tableAdmin::updateTable);
+                    disableChangeStreams(tableAdmin, instanceId);
                 }
                 try {
-                    instanceAdmin.deleteInstance(instanceId);
+                    instanceAdmin
+                            .getBaseClient()
+                            .deleteInstance(InstanceName.of(PROJECT, instanceId));
                 } catch (NotFoundException absent) {
                     // A failed creation may never have installed the registered instance.
                 }
@@ -209,17 +242,21 @@ public abstract class AbstractBigtableRealGcpITCase {
      */
     private static void sweepStaleInstances() {
         Instant cutoff = Instant.now().minus(STALE_AFTER);
-        for (Instance instance : instanceAdmin.listInstances()) {
-            Instant created = createdAt(instance.getId());
+        ListInstancesResponse instances =
+                instanceAdmin.getBaseClient().listInstances(ProjectName.of(PROJECT));
+        BigtableAdminProtos.checkListedEverywhere(instances.getFailedLocationsList(), "instances");
+        for (Instance instance : instances.getInstancesList()) {
+            String id = InstanceName.parse(instance.getName()).getInstance();
+            Instant created = createdAt(id);
             if (created == null || !created.isBefore(cutoff)) {
                 continue;
             }
-            LOG.warn("Sweeping stale instance {}, created {}", instance.getId(), created);
+            LOG.warn("Sweeping stale instance {}, created {}", id, created);
             try {
-                disableChangeStreams(instance.getId());
-                instanceAdmin.deleteInstance(instance.getId());
+                disableChangeStreams(id);
+                instanceAdmin.getBaseClient().deleteInstance(InstanceName.of(PROJECT, id));
             } catch (Exception e) {
-                LOG.warn("Failed to sweep {}", instance.getId(), e);
+                LOG.warn("Failed to sweep {}", id, e);
             }
         }
     }
@@ -227,26 +264,60 @@ public abstract class AbstractBigtableRealGcpITCase {
     private static void disableChangeStreams(String staleInstanceId) throws Exception {
         try (BigtableTableAdminClient staleTableAdmin =
                 BigtableTableAdminClient.create(PROJECT, staleInstanceId)) {
-            disableChangeStreams(
-                    staleTableAdmin.listTables(),
-                    staleTableAdmin::getTable,
-                    staleTableAdmin::updateTable);
+            disableChangeStreams(staleTableAdmin, staleInstanceId);
         }
     }
 
+    private static void disableChangeStreams(BigtableTableAdminClient admin, String instance)
+            throws Exception {
+        List<String> tableNames = new ArrayList<>();
+        admin.getBaseClient()
+                .listTables(
+                        ListTablesRequest.newBuilder()
+                                .setParent(InstanceName.of(PROJECT, instance).toString())
+                                .setView(Table.View.NAME_ONLY)
+                                .build())
+                .iterateAll()
+                .forEach(table -> tableNames.add(table.getName()));
+        disableChangeStreams(
+                tableNames,
+                name ->
+                        admin.getBaseClient()
+                                .getTable(
+                                        GetTableRequest.newBuilder()
+                                                .setName(name)
+                                                .setView(Table.View.SCHEMA_VIEW)
+                                                .build()),
+                request ->
+                        ApiExceptions.callAndTranslateApiException(
+                                admin.getBaseClient().updateTableAsync(request)));
+    }
+
+    /**
+     * Disables the change stream of every listed table that has one, attempting each table even
+     * when an earlier one fails.
+     *
+     * @param tableNames the tables, by full resource name
+     * @param getTable reads a table's schema view by name
+     * @param updateTable applies a table update
+     */
     static void disableChangeStreams(
-            List<String> tableIds,
+            List<String> tableNames,
             Function<String, Table> getTable,
             Consumer<UpdateTableRequest> updateTable)
             throws Exception {
         List<AutoCloseable> updates = new ArrayList<>();
-        for (String tableId : tableIds) {
+        for (String tableName : tableNames) {
             updates.add(
                     () -> {
-                        Table table = getTable.apply(tableId);
-                        if (table.getChangeStreamRetention() != null) {
+                        if (getTable.apply(tableName).hasChangeStreamConfig()) {
                             updateTable.accept(
-                                    UpdateTableRequest.of(tableId).disableChangeStreamRetention());
+                                    UpdateTableRequest.newBuilder()
+                                            .setTable(Table.newBuilder().setName(tableName))
+                                            .setUpdateMask(
+                                                    FieldMask.newBuilder()
+                                                            .addPaths("change_stream_config"))
+                                            .build());
                         }
                     });
         }
@@ -270,39 +341,36 @@ public abstract class AbstractBigtableRealGcpITCase {
 
     /** Creates an Int64 Sum fixture directly through the SDK. */
     protected static TableDestination createAggregateTable(String tableId) {
-        tableAdmin.createTable(
-                CreateTableRequest.of(tableId)
-                        .addFamily(
-                                FAMILY, com.google.cloud.bigtable.admin.v2.models.Type.int64Sum()));
-        return tableDestination(tableId);
+        return createTable(
+                tableId,
+                Map.of(FAMILY, BigtableAdminProtos.typedFamily(BigtableAdminProtos.int64Sum())));
     }
 
     /** Creates a table with the shared column family and returns its destination. */
     protected static TableDestination createTable(String tableId) {
-        return createTable(tableId, request -> request.addFamily(FAMILY));
+        return createTable(tableId, Map.of(FAMILY, BigtableAdminProtos.rawFamily()));
     }
 
     /** Creates a table whose Change Streams history is retained for one day. */
     protected static TableDestination createChangeStreamTable(String tableId) {
-        tableAdmin.createTable(
-                CreateTableRequest.of(tableId)
-                        .addFamily(FAMILY)
-                        .addChangeStreamRetention(org.threeten.bp.Duration.ofHours(24)));
-        return TableDestination.of(PROJECT, instanceId, tableId);
+        return createChangeStreamTableWithSplits(tableId);
     }
 
     /** Creates a Change Streams table already split at the given row keys. */
     protected static TableDestination createChangeStreamTableWithSplits(
             String tableId, String... splitKeys) {
-        CreateTableRequest request =
-                CreateTableRequest.of(tableId)
-                        .addFamily(FAMILY)
-                        .addChangeStreamRetention(org.threeten.bp.Duration.ofHours(24));
-        for (String splitKey : splitKeys) {
-            request.addSplit(ByteString.copyFromUtf8(splitKey));
-        }
-        tableAdmin.createTable(request);
-        return TableDestination.of(PROJECT, instanceId, tableId);
+        return create(
+                tableId,
+                Table.newBuilder()
+                        .putColumnFamilies(FAMILY, BigtableAdminProtos.rawFamily())
+                        .setChangeStreamConfig(
+                                ChangeStreamConfig.newBuilder()
+                                        .setRetentionPeriod(
+                                                com.google.protobuf.Duration.newBuilder()
+                                                        .setSeconds(
+                                                                Duration.ofHours(24)
+                                                                        .getSeconds()))),
+                splitKeys);
     }
 
     /**
@@ -406,8 +474,14 @@ public abstract class AbstractBigtableRealGcpITCase {
     }
 
     /** Returns the live table description, for asserting what auto-creation actually made. */
-    protected static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
-        return tableAdmin.getTable(tableId);
+    protected static Table describeTable(String tableId) {
+        return tableAdmin
+                .getBaseClient()
+                .getTable(
+                        GetTableRequest.newBuilder()
+                                .setName(TableName.of(PROJECT, instanceId, tableId).toString())
+                                .setView(Table.View.SCHEMA_VIEW)
+                                .build());
     }
 
     /** Reads every row of the table, in row-key order. */
@@ -430,12 +504,10 @@ public abstract class AbstractBigtableRealGcpITCase {
      * @return the table's destination
      */
     protected static TableDestination createTableWithSplits(String tableId, String... splitKeys) {
-        CreateTableRequest request = CreateTableRequest.of(tableId).addFamily(FAMILY);
-        for (String splitKey : splitKeys) {
-            request.addSplit(ByteString.copyFromUtf8(splitKey));
-        }
-        tableAdmin.createTable(request);
-        return TableDestination.of(PROJECT, instanceId, tableId);
+        return create(
+                tableId,
+                Table.newBuilder().putColumnFamilies(FAMILY, BigtableAdminProtos.rawFamily()),
+                splitKeys);
     }
 
     /** Writes one cell per given row key, so a read test has something to find. */
@@ -486,13 +558,17 @@ public abstract class AbstractBigtableRealGcpITCase {
      */
     protected static String createSingleClusterAppProfile(
             String appProfileId, boolean allowTransactionalWrites) {
-        String clusterId = instanceAdmin.listClusters(instanceId).get(0).getId();
-        instanceAdmin.createAppProfile(
-                CreateAppProfileRequest.of(instanceId, appProfileId)
-                        .setRoutingPolicy(
-                                AppProfile.SingleClusterRoutingPolicy.of(
-                                        clusterId, allowTransactionalWrites))
-                        .setDescription("flink-connector-gcp integration test"));
+        ListClustersResponse clusters =
+                instanceAdmin.getBaseClient().listClusters(InstanceName.of(PROJECT, instanceId));
+        BigtableAdminProtos.checkListedEverywhere(clusters.getFailedLocationsList(), "clusters");
+        String clusterId = ClusterName.parse(clusters.getClusters(0).getName()).getCluster();
+        createAppProfile(
+                appProfileId,
+                AppProfile.newBuilder()
+                        .setSingleClusterRouting(
+                                AppProfile.SingleClusterRouting.newBuilder()
+                                        .setClusterId(clusterId)
+                                        .setAllowTransactionalWrites(allowTransactionalWrites)));
         return clusterId;
     }
 
@@ -500,18 +576,49 @@ public abstract class AbstractBigtableRealGcpITCase {
      * Creates a multi-cluster application profile, the routing a single-row transaction rejects.
      */
     protected static void createMultiClusterAppProfile(String appProfileId) {
-        instanceAdmin.createAppProfile(
-                CreateAppProfileRequest.of(instanceId, appProfileId)
-                        .setRoutingPolicy(AppProfile.MultiClusterRoutingPolicy.of())
-                        .setDescription("flink-connector-gcp integration test"));
+        createAppProfile(
+                appProfileId,
+                AppProfile.newBuilder()
+                        .setMultiClusterRoutingUseAny(
+                                AppProfile.MultiClusterRoutingUseAny.getDefaultInstance()));
     }
 
-    /** Creates a table whose families the caller declares, and returns its destination. */
+    private static void createAppProfile(String appProfileId, AppProfile.Builder profile) {
+        instanceAdmin
+                .getBaseClient()
+                .createAppProfile(
+                        CreateAppProfileRequest.newBuilder()
+                                .setParent(InstanceName.of(PROJECT, instanceId).toString())
+                                .setAppProfileId(appProfileId)
+                                .setAppProfile(
+                                        profile.setDescription(
+                                                "flink-connector-gcp integration test"))
+                                .build());
+    }
+
+    /**
+     * Creates a table with the given column families, and returns its destination.
+     *
+     * @param tableId the table to create
+     * @param families the families by name; {@link BigtableAdminProtos} builds them
+     * @return the table's destination
+     */
     protected static TableDestination createTable(
-            String tableId, Consumer<CreateTableRequest> families) {
-        CreateTableRequest request = CreateTableRequest.of(tableId);
-        families.accept(request);
-        tableAdmin.createTable(request);
+            String tableId, Map<String, ColumnFamily> families) {
+        return create(tableId, Table.newBuilder().putAllColumnFamilies(families));
+    }
+
+    private static TableDestination create(
+            String tableId, Table.Builder table, String... splitKeys) {
+        CreateTableRequest.Builder request =
+                CreateTableRequest.newBuilder()
+                        .setParent(InstanceName.of(PROJECT, instanceId).toString())
+                        .setTableId(tableId)
+                        .setTable(table);
+        for (String splitKey : splitKeys) {
+            request.addInitialSplitsBuilder().setKey(ByteString.copyFromUtf8(splitKey));
+        }
+        tableAdmin.getBaseClient().createTable(request.build());
         return tableDestination(tableId);
     }
 }

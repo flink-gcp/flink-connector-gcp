@@ -19,12 +19,11 @@ package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.cloud.bigtable.admin.v2.models.ColumnFamily;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
@@ -87,14 +86,8 @@ class BigtableAutoCreationRealGcpITCase extends AbstractBigtableRealGcpITCase {
             assertThat(readRows(table))
                     .extracting(row -> row.getKey().toStringUtf8())
                     .containsExactly("row-1", "row-2");
-            assertThat(
-                            describeTable("auto-created").getColumnFamilies().stream()
-                                    .filter(family -> family.getId().equals(FAMILY))
-                                    .findFirst()
-                                    .orElseThrow()
-                                    .getGCRule()
-                                    .toProto())
-                    .isEqualTo(GCRules.GCRULES.maxVersions(1).toProto());
+            assertThat(describeTable("auto-created").getColumnFamiliesOrThrow(FAMILY).getGcRule())
+                    .isEqualTo(BigtableAdminProtos.maxVersions(1));
         } finally {
             writer.close();
         }
@@ -148,18 +141,11 @@ class BigtableAutoCreationRealGcpITCase extends AbstractBigtableRealGcpITCase {
             assertThat(readRows(table))
                     .extracting(row -> row.getKey().toStringUtf8())
                     .containsExactly("row-1");
-            assertThat(describeTable("auto-amended").getColumnFamilies())
-                    .extracting(ColumnFamily::getId)
+            assertThat(describeTable("auto-amended").getColumnFamiliesMap().keySet())
                     .containsExactlyInAnyOrder(FAMILY, "added");
             // Creation-only per family: the live rule wins, the declared maxVersions(9) is
             // neither compared nor applied.
-            assertThat(
-                            describeTable("auto-amended").getColumnFamilies().stream()
-                                    .filter(family -> family.getId().equals(FAMILY))
-                                    .findFirst()
-                                    .orElseThrow()
-                                    .getGCRule()
-                                    .toProto())
+            assertThat(describeTable("auto-amended").getColumnFamiliesOrThrow(FAMILY).getGcRule())
                     .isEqualTo(com.google.bigtable.admin.v2.GcRule.getDefaultInstance());
             assertThat(handler.handled).isEmpty();
         } finally {

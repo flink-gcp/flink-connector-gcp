@@ -19,9 +19,12 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.PermissionDeniedException;
+import com.google.bigtable.admin.v2.AppProfile;
 import com.google.bigtable.admin.v2.ChangeStreamConfig;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.Table;
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
@@ -94,7 +97,24 @@ class DefaultChangeStreamCoordinatorClientTest {
                                 DefaultChangeStreamCoordinatorClient.checkSingleClusterRouting(
                                         multiClusterProfile(), "profile"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("multi-cluster routing");
+                .hasMessageContaining("does not use single-cluster routing");
+    }
+
+    @Test
+    void rejectsARoutingPolicyThisClientDoesNotKnow() {
+        // A routing policy added to the service after the pinned protobuf arrives with no routing
+        // case set; it is not single-cluster routing as far as this check can tell.
+        AppProfile unknownRouting =
+                AppProfile.newBuilder()
+                        .setName("projects/project/instances/instance/appProfiles/profile")
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                DefaultChangeStreamCoordinatorClient.checkSingleClusterRouting(
+                                        unknownRouting, "profile"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not use single-cluster routing");
     }
 
     @Test
@@ -106,12 +126,50 @@ class DefaultChangeStreamCoordinatorClientTest {
     }
 
     @Test
+    void readsTheTableThroughTheSchemaViewAndTheProfileByItsFullName() {
+        // The coordinator builds production admin settings and no local test reaches its RPCs, so
+        // these are the only local pins on the two requests: a narrower view drops
+        // change_stream_config and reads every table as one without Change Streams.
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile");
+
+        assertThat(client.tableRequest())
+                .isEqualTo(
+                        GetTableRequest.newBuilder()
+                                .setName("projects/project/instances/instance/tables/table")
+                                .setView(Table.View.SCHEMA_VIEW)
+                                .build());
+        assertThat(client.appProfileRequest().getName())
+                .isEqualTo("projects/project/instances/instance/appProfiles/profile");
+    }
+
+    @Test
+    void readsTheRetentionOfATableWithAFamilyTypeTheClientModelCannotParse() {
+        // The client's model Table parsed every family's value type and threw on one it does not
+        // know, which failed the source's startup on a table it would only read the retention of.
+        // The protobuf Table the coordinator now reads is converted without touching its families.
+        Table table =
+                tableWithRetention(86_400, 0).toBuilder()
+                        .putColumnFamilies(
+                                "strings",
+                                ColumnFamily.newBuilder()
+                                        .setValueType(
+                                                Type.newBuilder()
+                                                        .setStringType(
+                                                                Type.String.getDefaultInstance()))
+                                        .build())
+                        .build();
+
+        assertThat(DefaultChangeStreamCoordinatorClient.retentionOf(table, DESTINATION))
+                .isEqualTo(java.time.Duration.ofDays(1));
+    }
+
+    @Test
     void rejectsATableWithoutChangeStreams() {
         Table withoutChangeStream =
-                Table.fromProto(
-                        com.google.bigtable.admin.v2.Table.newBuilder()
-                                .setName("projects/project/instances/instance/tables/table")
-                                .build());
+                Table.newBuilder()
+                        .setName("projects/project/instances/instance/tables/table")
+                        .build();
 
         assertThatThrownBy(
                         () ->
@@ -181,7 +239,7 @@ class DefaultChangeStreamCoordinatorClientTest {
 
         assertThatThrownBy(() -> client.validateSingleClusterAppProfile(this::multiClusterProfile))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("multi-cluster routing");
+                .hasMessageContaining("does not use single-cluster routing");
     }
 
     @Test
@@ -239,36 +297,28 @@ class DefaultChangeStreamCoordinatorClientTest {
     }
 
     private AppProfile singleClusterProfile() {
-        return AppProfile.fromProto(
-                com.google.bigtable.admin.v2.AppProfile.newBuilder()
-                        .setName("projects/project/instances/instance/appProfiles/profile")
-                        .setSingleClusterRouting(
-                                com.google.bigtable.admin.v2.AppProfile.SingleClusterRouting
-                                        .newBuilder()
-                                        .setClusterId("cluster"))
-                        .build());
+        return AppProfile.newBuilder()
+                .setName("projects/project/instances/instance/appProfiles/profile")
+                .setSingleClusterRouting(
+                        AppProfile.SingleClusterRouting.newBuilder().setClusterId("cluster"))
+                .build();
     }
 
     private AppProfile multiClusterProfile() {
-        return AppProfile.fromProto(
-                com.google.bigtable.admin.v2.AppProfile.newBuilder()
-                        .setName("projects/project/instances/instance/appProfiles/profile")
-                        .setMultiClusterRoutingUseAny(
-                                com.google.bigtable.admin.v2.AppProfile.MultiClusterRoutingUseAny
-                                        .getDefaultInstance())
-                        .build());
+        return AppProfile.newBuilder()
+                .setName("projects/project/instances/instance/appProfiles/profile")
+                .setMultiClusterRoutingUseAny(
+                        AppProfile.MultiClusterRoutingUseAny.getDefaultInstance())
+                .build();
     }
 
     private static Table tableWithRetention(long seconds, int nanos) {
-        return Table.fromProto(
-                com.google.bigtable.admin.v2.Table.newBuilder()
-                        .setName("projects/project/instances/instance/tables/table")
-                        .setChangeStreamConfig(
-                                ChangeStreamConfig.newBuilder()
-                                        .setRetentionPeriod(
-                                                Duration.newBuilder()
-                                                        .setSeconds(seconds)
-                                                        .setNanos(nanos)))
-                        .build());
+        return Table.newBuilder()
+                .setName("projects/project/instances/instance/tables/table")
+                .setChangeStreamConfig(
+                        ChangeStreamConfig.newBuilder()
+                                .setRetentionPeriod(
+                                        Duration.newBuilder().setSeconds(seconds).setNanos(nanos)))
+                .build();
     }
 }

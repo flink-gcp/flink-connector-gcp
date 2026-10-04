@@ -19,9 +19,6 @@ package io.github.flink.gcp.connector.bigtable.table.function;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
 
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.CreateAppProfileRequest;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -44,15 +41,8 @@ class BigtableAsyncSqlRealGcpITCase extends AbstractBigtableRealGcpITCase {
     private static final String PROFILE = "async-sql";
 
     @BeforeAll
-    static void enableSingleRowTransactions() throws Exception {
-        String instance = tableDestination("unused").getInstance();
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
-            String cluster = admin.listClusters(instance).get(0).getId();
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, PROFILE)
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of(cluster, true)));
-        }
+    static void enableSingleRowTransactions() {
+        createSingleClusterAppProfile(PROFILE, true);
     }
 
     private static TableEnvironment environment(TableDestination table) {

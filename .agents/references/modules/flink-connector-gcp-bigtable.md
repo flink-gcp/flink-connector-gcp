@@ -5,6 +5,18 @@ Module-scoped guidance, read when working in this module. Repository-wide rules
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
+## Admin calls (`docs/adr/0041`)
+
+- **Every admin call goes through the protobuf client**: `getBaseClient()` with a
+  `com.google.bigtable.admin.v2` request, in main code, the test harnesses and the SQL jar's
+  smoke test alike (#1622). The pinned client marks nearly every model method of both admin
+  clients `@ObsoleteApi`, and the model types parse every family's value type, so a family type
+  the SDK does not know fails the whole read (ADR-0156). The wrappers' only unmarked methods are
+  `getBaseClient()`, the `create` factories, `close`, the project and instance id getters, and the
+  consistency and restore-optimization waits. Test harnesses build families with `BigtableAdminProtos`;
+  `BigtableTableAdminTest` and `ColumnFamilyTypesTest` pin the sink's create and modify requests
+  field by field.
+
 ## Sink design (`docs/adr/0041`, `0042`, `0074`, `0145`)
 
 - Implemented, never adopted or vendored; the serializer SPI keeps
@@ -210,12 +222,7 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   family, and the reverse combination is rejected too — a disposition without a schema is the
   feature #233 argued against. GC rules travel in the sink's own `Serializable` `GcRule` model
   (the client's `GCRules` does not serialize); its `maxAge` converts seconds-and-nanos, never
-  `toNanos()`, so ADR-0068's ceiling deliberately does not apply. Two admin-path tiers to reread
-  on a BOM bump, both internal calls, tier-irrelevant under `docs/adr/0141`: the client's
-  `GCRules` is class-level `@BetaApi`, and the admin methods the module calls —
-  `createTable` on this ensure; `getTable` and `getAppProfile` on
-  the change-stream coordinator's preflight — are `@ObsoleteApi`, pointed at the proto-based
-  `getBaseClient()` route. Family validation and modification already use raw protos through that route (ADR-0156), avoiding SDK parsing of undeclared family types in either response.
+  `toNanos()`, so ADR-0068's ceiling deliberately does not apply.
 - **`NOT_FOUND` outranks everything in the classifier** — ahead of the transient-anywhere check,
   `PubSubErrorClassifier`'s precedence — and, unlike Pub/Sub's ADR-0006, **the disposition gates
   the parking itself** (no cascades, no ordering keys). `tableMissing` is the only thing that
@@ -773,9 +780,8 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   No Change Streams table is resolved (a table with a change stream is listed as an ordinary
   table); authorized and materialized views are not listed; the catalog emits no
   `sink.aggregate.column-family-types`, which the source path rejects.
-- **The catalog calls no `@ObsoleteApi` admin method.** Tables are listed (`NAME_ONLY`) and read
-  (`SCHEMA_VIEW`) through `getBaseClient()`, so an unknown value type reaches the mapping instead
-  of failing in the client's models; keep any new catalog request on the protobuf client.
+- Tables are listed with `NAME_ONLY` and read with `SCHEMA_VIEW` (see Admin calls), so an
+  unknown value type reaches the mapping instead of failing in the client's models.
 
 ## Explicit service-account credentials (`docs/adr/0086`)
 

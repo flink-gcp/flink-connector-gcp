@@ -18,7 +18,10 @@ package io.github.flink.gcp.connector.bigtable.sink.tables;
 
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.AlreadyExistsException;
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.ModifyColumnFamiliesRequest;
 import com.google.bigtable.admin.v2.Type;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
@@ -47,17 +50,12 @@ class ColumnFamilyTypesTest {
                 TableCreateOptions.builder()
                         .columnFamily("cf", type, GcRule.maxVersions(2))
                         .build();
-        var expected =
-                com.google.bigtable.admin.v2.ColumnFamily.newBuilder()
-                        .setGcRule(
-                                com.google.bigtable.admin.v2.GcRule.newBuilder()
-                                        .setMaxNumVersions(2));
+        var expected = ColumnFamily.newBuilder().setGcRule(BigtableAdminProtos.maxVersions(2));
         if (type != ColumnFamilyType.RAW) {
             expected.setValueType(proto(type));
         }
         assertThat(
                         BigtableTableAdmin.toCreateTableRequest(TABLE, options)
-                                .toProto("p", "i")
                                 .getTable()
                                 .getColumnFamiliesOrThrow("cf"))
                 .isEqualTo(expected.build());
@@ -66,10 +64,35 @@ class ColumnFamilyTypesTest {
                                         TABLE,
                                         options.getColumnFamilies(),
                                         options.getColumnFamilyTypes())
-                                .toProto("p", "i")
                                 .getModifications(0)
                                 .getCreate())
                 .isEqualTo(expected.build());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ColumnFamilyType.class, names = "RAW", mode = EnumSource.Mode.EXCLUDE)
+    void createsAndAddsATypedFamilyDeclaredWithoutARuleWithAnEmptyRule(ColumnFamilyType type) {
+        // Only a raw family without a rule is created as an empty family; a typed one carries an
+        // empty rule beside its type on both paths.
+        var options = TableCreateOptions.builder().columnFamily("cf", type, null).build();
+        var expected =
+                ColumnFamily.newBuilder()
+                        .setGcRule(com.google.bigtable.admin.v2.GcRule.getDefaultInstance())
+                        .setValueType(proto(type))
+                        .build();
+        assertThat(
+                        BigtableTableAdmin.toCreateTableRequest(TABLE, options)
+                                .getTable()
+                                .getColumnFamiliesOrThrow("cf"))
+                .isEqualTo(expected);
+        assertThat(
+                        BigtableTableAdmin.toModifyColumnFamiliesRequest(
+                                        TABLE,
+                                        options.getColumnFamilies(),
+                                        options.getColumnFamilyTypes())
+                                .getModifications(0)
+                                .getCreate())
+                .isEqualTo(expected);
     }
 
     @Test
@@ -205,8 +228,7 @@ class ColumnFamilyTypesTest {
     void rawOnlyRepairAcceptsAnExistingAggregate(boolean missingRawFamily) {
         var options =
                 TableCreateOptions.builder().columnFamily("totals").columnFamily("plain").build();
-        List<com.google.bigtable.admin.v2.ModifyColumnFamiliesRequest> additions =
-                new ArrayList<>();
+        List<ModifyColumnFamiliesRequest> additions = new ArrayList<>();
 
         var result =
                 BigtableTableAdmin.ensureWith(
@@ -221,17 +243,25 @@ class ColumnFamilyTypesTest {
                                         : Map.of(
                                                 "totals", proto(ColumnFamilyType.INT64_SUM),
                                                 "plain", Type.getDefaultInstance()),
-                        request -> additions.add(request.toProto("p", "i")));
+                        additions::add);
 
         assertThat(result.columnFamiliesAdded()).isEqualTo(missingRawFamily ? 1 : 0);
         assertThat(result.existingColumnFamilies()).containsExactlyInAnyOrder("totals", "plain");
         if (missingRawFamily) {
             assertThat(additions)
                     .containsExactly(
-                            com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest
-                                    .of("t")
-                                    .addFamily("plain")
-                                    .toProto("p", "i"));
+                            ModifyColumnFamiliesRequest.newBuilder()
+                                    .setName("projects/p/instances/i/tables/t")
+                                    .addModifications(
+                                            ModifyColumnFamiliesRequest.Modification.newBuilder()
+                                                    .setId("plain")
+                                                    .setCreate(
+                                                            ColumnFamily.newBuilder()
+                                                                    .setGcRule(
+                                                                            com.google.bigtable
+                                                                                    .admin.v2.GcRule
+                                                                                    .getDefaultInstance())))
+                                    .build());
         } else {
             assertThat(additions).isEmpty();
         }
@@ -339,38 +369,21 @@ class ColumnFamilyTypesTest {
                 "exists", null, GrpcStatusCode.of(Status.Code.ALREADY_EXISTS), false);
     }
 
+    /** The value type a family of the given type is created with, built independently of main. */
     private static Type proto(ColumnFamilyType type) {
-        Type.Aggregate.Builder aggregate =
-                Type.Aggregate.newBuilder()
-                        .setInputType(
-                                Type.newBuilder()
-                                        .setInt64Type(
-                                                Type.Int64.newBuilder()
-                                                        .setEncoding(
-                                                                Type.Int64.Encoding.newBuilder()
-                                                                        .setBigEndianBytes(
-                                                                                Type.Int64.Encoding
-                                                                                        .BigEndianBytes
-                                                                                        .getDefaultInstance()))));
         switch (type) {
             case RAW:
                 return Type.getDefaultInstance();
             case INT64_SUM:
-                aggregate.setSum(Type.Aggregate.Sum.getDefaultInstance());
-                break;
+                return BigtableAdminProtos.int64Sum();
             case INT64_MIN:
-                aggregate.setMin(Type.Aggregate.Min.getDefaultInstance());
-                break;
+                return BigtableAdminProtos.int64Min();
             case INT64_MAX:
-                aggregate.setMax(Type.Aggregate.Max.getDefaultInstance());
-                break;
+                return BigtableAdminProtos.int64Max();
             case INT64_HLL:
-                aggregate.setHllppUniqueCount(
-                        Type.Aggregate.HyperLogLogPlusPlusUniqueCount.getDefaultInstance());
-                break;
+                return BigtableAdminProtos.int64Hll();
             default:
                 throw new AssertionError(type);
         }
-        return Type.newBuilder().setAggregateType(aggregate).build();
     }
 }

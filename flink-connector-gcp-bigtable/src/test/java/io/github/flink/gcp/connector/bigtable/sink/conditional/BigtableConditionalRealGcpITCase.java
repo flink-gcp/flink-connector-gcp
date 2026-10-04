@@ -24,12 +24,6 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.CreateAppProfileRequest;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.Type;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
@@ -47,7 +41,11 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Sum;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.rawFamily;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.typedFamily;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
@@ -60,32 +58,16 @@ class BigtableConditionalRealGcpITCase extends AbstractBigtableRealGcpITCase {
     private static final String ENABLED = "conditional-enabled";
 
     @BeforeAll
-    static void createProfiles() throws Exception {
-        String instance = tableDestination("unused").getInstance();
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
-            String cluster = admin.listClusters(instance).get(0).getId();
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, ENABLED)
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of(cluster, true)));
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, "conditional-disabled")
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of(cluster, false)));
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, "conditional-multi")
-                            .setRoutingPolicy(AppProfile.MultiClusterRoutingPolicy.of()));
-        }
+    static void createProfiles() {
+        createSingleClusterAppProfile(ENABLED, true);
+        createSingleClusterAppProfile("conditional-disabled", false);
+        createMultiClusterAppProfile("conditional-multi");
     }
 
     @Test
     void sqlChecksUndeclaredFamiliesAndPreservesAnExistingRow() throws Exception {
-        TableDestination table = tableDestination("conditional-sql");
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, table.getInstance())) {
-            admin.createTable(
-                    CreateTableRequest.of(table.getTable()).addFamily("cf").addFamily("hidden"));
-        }
+        TableDestination table =
+                createTable("conditional-sql", Map.of("cf", rawFamily(), "hidden", rawFamily()));
         mutateRow(
                 table,
                 bytes("existing"),
@@ -115,14 +97,10 @@ class BigtableConditionalRealGcpITCase extends AbstractBigtableRealGcpITCase {
 
     @Test
     void asyncExecutesBothOrderedBranchesIncludingCompatibleAggregateUpdates() throws Exception {
-        TableDestination table = tableDestination("conditional-aggregate");
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, table.getInstance())) {
-            admin.createTable(
-                    CreateTableRequest.of(table.getTable())
-                            .addFamily("cf")
-                            .addFamily("sum", Type.int64Sum()));
-        }
+        TableDestination table =
+                createTable(
+                        "conditional-aggregate",
+                        Map.of("cf", rawFamily(), "sum", typedFamily(int64Sum())));
         mutateRow(
                 table,
                 bytes("existing"),
@@ -242,14 +220,10 @@ class BigtableConditionalRealGcpITCase extends AbstractBigtableRealGcpITCase {
 
     @Test
     void sqlCommandsExecuteBothBranchesAndOrderedTypedAggregateMutations() throws Exception {
-        TableDestination table = tableDestination("conditional-command-aggregate");
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, table.getInstance())) {
-            admin.createTable(
-                    CreateTableRequest.of(table.getTable())
-                            .addFamily("cf")
-                            .addFamily("sum", Type.int64Sum()));
-        }
+        TableDestination table =
+                createTable(
+                        "conditional-command-aggregate",
+                        Map.of("cf", rawFamily(), "sum", typedFamily(int64Sum())));
         mutateRow(
                 table,
                 bytes("existing"),

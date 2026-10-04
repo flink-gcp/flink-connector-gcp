@@ -17,8 +17,8 @@
 package io.github.flink.gcp.connector.bigtable;
 
 import com.google.bigtable.admin.v2.ChangeStreamConfig;
-import com.google.cloud.bigtable.admin.v2.models.Table;
-import com.google.cloud.bigtable.admin.v2.models.UpdateTableRequest;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.UpdateTableRequest;
 import com.google.protobuf.Duration;
 import org.junit.jupiter.api.Test;
 
@@ -32,19 +32,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AbstractBigtableRealGcpITCaseTest {
 
+    private static final String NAME = "projects/project/instances/instance/tables/";
+
     @Test
     void disablesOnlyTablesThatHaveChangeStreamsBeforeInstanceDeletion() throws Exception {
         List<UpdateTableRequest> updates = new ArrayList<>();
         Map<String, Table> tables = new LinkedHashMap<>();
-        tables.put("plain", table("plain", false));
-        tables.put("streamed", table("streamed", true));
+        tables.put(NAME + "plain", table("plain", false));
+        tables.put(NAME + "streamed", table("streamed", true));
 
         AbstractBigtableRealGcpITCase.disableChangeStreams(
                 new ArrayList<>(tables.keySet()), tables::get, updates::add);
 
         assertThat(updates).hasSize(1);
-        com.google.bigtable.admin.v2.UpdateTableRequest request =
-                updates.get(0).toProto("project", "instance");
+        UpdateTableRequest request = updates.get(0);
         assertThat(request.getTable().getName())
                 .isEqualTo("projects/project/instances/instance/tables/streamed");
         assertThat(request.getTable().hasChangeStreamConfig()).isFalse();
@@ -58,28 +59,26 @@ class AbstractBigtableRealGcpITCaseTest {
         assertThatThrownBy(
                         () ->
                                 AbstractBigtableRealGcpITCase.disableChangeStreams(
-                                        List.of("first", "second"),
+                                        List.of(NAME + "first", NAME + "second"),
                                         id -> {
                                             attempted.add(id);
-                                            if (id.equals("first")) {
+                                            if (id.equals(NAME + "first")) {
                                                 throw failure;
                                             }
-                                            return table(id, true);
+                                            return table("second", true);
                                         },
                                         request -> attempted.add("updated")))
                 .isSameAs(failure);
-        assertThat(attempted).containsExactly("first", "second", "updated");
+        assertThat(attempted).containsExactly(NAME + "first", NAME + "second", "updated");
     }
 
     private static Table table(String id, boolean changeStreams) {
-        com.google.bigtable.admin.v2.Table.Builder table =
-                com.google.bigtable.admin.v2.Table.newBuilder()
-                        .setName("projects/project/instances/instance/tables/" + id);
+        Table.Builder table = Table.newBuilder().setName(NAME + id);
         if (changeStreams) {
             table.setChangeStreamConfig(
                     ChangeStreamConfig.newBuilder()
                             .setRetentionPeriod(Duration.newBuilder().setSeconds(86_400)));
         }
-        return Table.fromProto(table.build());
+        return table.build();
     }
 }

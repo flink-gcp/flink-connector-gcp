@@ -19,12 +19,13 @@ package io.github.flink.gcp.connector.bigtable.table;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.Type;
+import com.google.bigtable.admin.v2.GcRule.RuleCase;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.sql.ResultSet;
+import com.google.protobuf.TextFormat;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
@@ -40,6 +41,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Hll;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Max;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Min;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Sum;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.rawFamily;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.typedFamily;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -78,16 +85,17 @@ class BigtableAggregateTableRealGcpITCase extends AbstractBigtableRealGcpITCase 
                         .satisfies(cell -> assertThat(cell.getTimestamp()).isEqualTo(TIMESTAMP));
             }
         }
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, destination.getInstance())) {
-            var families = admin.getTable(id).getColumnFamilies();
-            assertThat(families).hasSize(4);
-            assertThat(families).allSatisfy(family -> assertThat(family.hasGCRule()).isTrue());
-            assertThat(families)
-                    .extracting(family -> family.getValueType())
-                    .containsExactlyInAnyOrder(
-                            Type.int64Sum(), Type.int64Min(), Type.int64Max(), Type.int64Hll());
-        }
+        Table table = describeTable(id);
+        assertThat(table.getColumnFamiliesMap()).hasSize(4);
+        assertThat(table.getColumnFamiliesMap().values())
+                .allSatisfy(
+                        family ->
+                                assertThat(family.getGcRule().getRuleCase())
+                                        .isNotEqualTo(RuleCase.RULE_NOT_SET));
+        assertAggregate(table, "totals", int64Sum());
+        assertAggregate(table, "minimums", int64Min());
+        assertAggregate(table, "maximums", int64Max());
+        assertAggregate(table, "users", int64Hll());
     }
 
     @Test
@@ -118,14 +126,10 @@ class BigtableAggregateTableRealGcpITCase extends AbstractBigtableRealGcpITCase 
 
     @Test
     void addsTypedFamiliesWithoutChangingExistingGcAndRejectsMismatches() throws Exception {
-        TableDestination destination = tableDestination("aggregate-reconcile");
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, destination.getInstance())) {
-            admin.createTable(
-                    CreateTableRequest.of(destination.getTable())
-                            .addFamily("raw")
-                            .addFamily("totals", Type.int64Sum()));
-        }
+        TableDestination destination =
+                createTable(
+                        "aggregate-reconcile",
+                        Map.of("raw", rawFamily(), "totals", typedFamily(int64Sum())));
         TableCreateOptions options =
                 TableCreateOptions.builder()
                         .columnFamily("raw")
@@ -148,13 +152,12 @@ class BigtableAggregateTableRealGcpITCase extends AbstractBigtableRealGcpITCase 
                     .hasMessageContaining(
                             "column family 'raw' has value type raw; expected int64-sum");
         }
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create(PROJECT, destination.getInstance())) {
-            assertThat(admin.getTable(destination.getTable()).getColumnFamilies())
-                    .filteredOn(f -> f.getId().equals("totals"))
-                    .singleElement()
-                    .satisfies(family -> assertThat(family.hasGCRule()).isFalse());
-        }
+        assertThat(
+                        describeTable(destination.getTable())
+                                .getColumnFamiliesOrThrow("totals")
+                                .getGcRule()
+                                .getRuleCase())
+                .isEqualTo(RuleCase.RULE_NOT_SET);
         TableEnvironment env = environment();
         env.executeSql(
                 ddl(destination.getTable(), false, true, false)
@@ -373,6 +376,33 @@ class BigtableAggregateTableRealGcpITCase extends AbstractBigtableRealGcpITCase 
                         ? ", 'sink.create-disposition'='create-if-needed', 'sink.table-create.gc-rule.max-versions'='2'"
                         : "")
                 + ")";
+    }
+
+    /**
+     * Asserts that a family the service reports is the given aggregate, comparing what the client's
+     * model compared: the aggregator and an Int64 input whose encoding is big-endian or unset,
+     * which the model read as big-endian. The state type the service adds is not part of what a
+     * family is created with, so it is left out.
+     */
+    private static void assertAggregate(Table table, String family, Type expected) {
+        Type reported = table.getColumnFamiliesOrThrow(family).getValueType();
+        Type.Int64.Encoding.EncodingCase encoding =
+                reported.getAggregateType()
+                        .getInputType()
+                        .getInt64Type()
+                        .getEncoding()
+                        .getEncodingCase();
+        assertThat(
+                        reported.hasAggregateType()
+                                && reported.getAggregateType().getAggregatorCase()
+                                        == expected.getAggregateType().getAggregatorCase()
+                                && reported.getAggregateType().getInputType().hasInt64Type()
+                                && (encoding == Type.Int64.Encoding.EncodingCase.BIG_ENDIAN_BYTES
+                                        || encoding
+                                                == Type.Int64.Encoding.EncodingCase
+                                                        .ENCODING_NOT_SET))
+                .as("%s reported as %s", family, TextFormat.shortDebugString(reported))
+                .isTrue();
     }
 
     private static long value(Row row, String family) {

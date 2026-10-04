@@ -16,11 +16,15 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.tables;
 
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.CreateTableRequest;
+import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.InstanceName;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.TableName;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.ColumnFamily;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
@@ -36,9 +40,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.maxVersions;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -115,18 +120,17 @@ class BigtableTableAdminEmulatorITCase {
                 .isEqualTo(com.google.bigtable.admin.v2.GcRule.getDefaultInstance());
         assertThat(families.get("kept"))
                 .isEqualTo(
-                        GCRules.GCRULES
-                                .union()
-                                .rule(GCRules.GCRULES.maxVersions(1))
-                                .rule(GCRules.GCRULES.maxAge(org.threeten.bp.Duration.ofDays(7)))
-                                .toProto());
+                        com.google.bigtable.admin.v2.GcRule.newBuilder()
+                                .setUnion(
+                                        com.google.bigtable.admin.v2.GcRule.Union.newBuilder()
+                                                .addRules(maxVersions(1))
+                                                .addRules(maxAge(Duration.ofDays(7))))
+                                .build());
     }
 
     @Test
     void addsOnlyTheMissingFamiliesAndNeverTouchesAnExistingRule() throws Exception {
-        verification.createTable(
-                CreateTableRequest.of("ensure-amends")
-                        .addFamily("existing", GCRules.GCRULES.maxVersions(3)));
+        createTable("ensure-amends", "existing", BigtableAdminProtos.maxVersionsFamily(3));
         TableDestination table = TableDestination.of(PROJECT, INSTANCE, "ensure-amends");
 
         // The declared rule for the existing family disagrees on purpose: creation-only
@@ -142,16 +146,15 @@ class BigtableTableAdminEmulatorITCase {
         assertThat(result.tableCreated()).isFalse();
         assertThat(result.columnFamiliesAdded()).isEqualTo(1);
         Map<String, com.google.bigtable.admin.v2.GcRule> families = familiesOf("ensure-amends");
-        assertThat(families.get("existing")).isEqualTo(GCRules.GCRULES.maxVersions(3).toProto());
-        assertThat(families.get("added"))
-                .isEqualTo(GCRules.GCRULES.maxAge(org.threeten.bp.Duration.ofHours(24)).toProto());
+        assertThat(families.get("existing")).isEqualTo(maxVersions(3));
+        assertThat(families.get("added")).isEqualTo(maxAge(Duration.ofHours(24)));
     }
 
     @Test
     void isANoOpWhenTheTableAndEveryFamilyExist() throws Exception {
         // The lost-race shape: another subtask created exactly this table first, and the loser's
         // ensure must succeed silently without modifying anything.
-        verification.createTable(CreateTableRequest.of("ensure-noop").addFamily("cf"));
+        createTable("ensure-noop", "cf", BigtableAdminProtos.rawFamily());
         TableDestination table = TableDestination.of(PROJECT, INSTANCE, "ensure-noop");
 
         TableAdmin.EnsureResult result =
@@ -162,10 +165,34 @@ class BigtableTableAdminEmulatorITCase {
         assertThat(familiesOf("ensure-noop").keySet()).containsExactly("cf");
     }
 
+    private static void createTable(String tableId, String family, ColumnFamily definition) {
+        verification
+                .getBaseClient()
+                .createTable(
+                        CreateTableRequest.newBuilder()
+                                .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
+                                .setTableId(tableId)
+                                .setTable(Table.newBuilder().putColumnFamilies(family, definition))
+                                .build());
+    }
+
     private static Map<String, com.google.bigtable.admin.v2.GcRule> familiesOf(String tableId) {
-        return verification.getTable(tableId).getColumnFamilies().stream()
-                .collect(
-                        Collectors.toMap(
-                                ColumnFamily::getId, family -> family.getGCRule().toProto()));
+        Map<String, com.google.bigtable.admin.v2.GcRule> rules = new HashMap<>();
+        verification
+                .getBaseClient()
+                .getTable(
+                        GetTableRequest.newBuilder()
+                                .setName(TableName.of(PROJECT, INSTANCE, tableId).toString())
+                                .setView(Table.View.SCHEMA_VIEW)
+                                .build())
+                .getColumnFamiliesMap()
+                .forEach((name, family) -> rules.put(name, family.getGcRule()));
+        return rules;
+    }
+
+    private static com.google.bigtable.admin.v2.GcRule maxAge(Duration age) {
+        return com.google.bigtable.admin.v2.GcRule.newBuilder()
+                .setMaxAge(com.google.protobuf.Duration.newBuilder().setSeconds(age.getSeconds()))
+                .build();
     }
 }

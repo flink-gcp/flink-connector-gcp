@@ -17,15 +17,21 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import com.google.api.gax.rpc.NotFoundException;
+import com.google.bigtable.admin.v2.AppProfile;
+import com.google.bigtable.admin.v2.Cluster;
+import com.google.bigtable.admin.v2.CreateAppProfileRequest;
+import com.google.bigtable.admin.v2.CreateInstanceRequest;
+import com.google.bigtable.admin.v2.CreateTableRequest;
+import com.google.bigtable.admin.v2.Instance;
+import com.google.bigtable.admin.v2.InstanceName;
+import com.google.bigtable.admin.v2.ListInstancesResponse;
+import com.google.bigtable.admin.v2.LocationName;
+import com.google.bigtable.admin.v2.ProjectName;
+import com.google.bigtable.admin.v2.StorageType;
+import com.google.bigtable.admin.v2.Table;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.AppProfile;
-import com.google.cloud.bigtable.admin.v2.models.CreateAppProfileRequest;
-import com.google.cloud.bigtable.admin.v2.models.CreateInstanceRequest;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
-import com.google.cloud.bigtable.admin.v2.models.Instance;
-import com.google.cloud.bigtable.admin.v2.models.StorageType;
-import com.google.cloud.bigtable.admin.v2.models.Type;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import java.io.IOException;
@@ -45,6 +51,8 @@ import java.util.function.Consumer;
  * Exact-resource lease journal. The parent process supervises it independently of experiment JVMs.
  */
 final class Stage2Lease {
+    private static final String PROJECT = "flink-gcp";
+
     static final List<String> TABLES =
             List.of(
                     "bulk-r1",
@@ -83,7 +91,7 @@ final class Stage2Lease {
         token = properties.getProperty("owner", "");
         if (!instance.matches("flink-s2-[0-9]{10}-[a-f0-9]{6}")
                 || !token.matches("[a-f0-9]{32}")
-                || !properties.getProperty("project", "").equals("flink-gcp")
+                || !properties.getProperty("project", "").equals(PROJECT)
                 || !properties.getProperty("zone", "").equals("us-central1-b")) {
             throw new IOException("Invalid or unsupported Stage 2 authorization manifest");
         }
@@ -117,7 +125,7 @@ final class Stage2Lease {
         properties.setProperty(
                 "instance",
                 "flink-s2-" + Instant.now().getEpochSecond() + "-" + owner.substring(0, 6));
-        properties.setProperty("project", "flink-gcp");
+        properties.setProperty("project", PROJECT);
         properties.setProperty("zone", "us-central1-b");
         properties.setProperty("phase", "PLANNED");
         properties.setProperty("remainingAttempts", "250000");
@@ -239,7 +247,7 @@ final class Stage2Lease {
 
     void requireTarget(TableDestination table) throws IOException {
         requireLive();
-        if (!table.getProject().equals("flink-gcp")
+        if (!table.getProject().equals(PROJECT)
                 || !table.getInstance().equals(instance)
                 || !tables.contains(table.getTable())) {
             throw new IOException("Destination is not owned by this Stage 2 lease");
@@ -247,7 +255,7 @@ final class Stage2Lease {
     }
 
     TableDestination table(String name) throws IOException {
-        TableDestination table = TableDestination.of("flink-gcp", instance, name);
+        TableDestination table = TableDestination.of(PROJECT, instance, name);
         requireTarget(table);
         return table;
     }
@@ -262,7 +270,7 @@ final class Stage2Lease {
 
     void claim(String table) throws IOException {
         rejectRetiredDiagnostic();
-        requireTarget(TableDestination.of("flink-gcp", instance, table));
+        requireTarget(TableDestination.of(PROJECT, instance, table));
         if (System.currentTimeMillis() >= startedAt() + 45 * 60_000L) {
             throw new IOException("Stage 2 admission deadline expired");
         }
@@ -338,9 +346,9 @@ final class Stage2Lease {
                 throw new IOException("Independent production lease supervisor is not running");
             }
         }
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create("flink-gcp")) {
+        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
             try {
-                admin.getInstance(instance);
+                admin.getBaseClient().getInstance(instanceName());
                 throw new IOException(
                         "Pre-existing instance collision; it must not be reused or deleted");
             } catch (NotFoundException absent) {
@@ -363,52 +371,69 @@ final class Stage2Lease {
             var creation =
                     admin.getBaseClient()
                             .createInstanceAsync(
-                                    CreateInstanceRequest.of(instance)
-                                            .setDisplayName("Flink Stage 2 experiment")
-                                            .setType(Instance.Type.PRODUCTION)
-                                            .addLabel("stage2-owner", token)
-                                            .addCluster(
+                                    CreateInstanceRequest.newBuilder()
+                                            .setParent(ProjectName.of(PROJECT).toString())
+                                            .setInstanceId(instance)
+                                            .setInstance(
+                                                    Instance.newBuilder()
+                                                            .setDisplayName(
+                                                                    "Flink Stage 2 experiment")
+                                                            .setType(Instance.Type.PRODUCTION)
+                                                            .putLabels("stage2-owner", token))
+                                            .putClusters(
                                                     "stage2-c1",
-                                                    "us-central1-b",
-                                                    1,
-                                                    StorageType.SSD)
-                                            .toProto("flink-gcp"));
+                                                    Cluster.newBuilder()
+                                                            .setLocation(
+                                                                    LocationName.of(
+                                                                                    PROJECT,
+                                                                                    "us-central1-b")
+                                                                            .toString())
+                                                            .setServeNodes(1)
+                                                            .setDefaultStorageType(StorageType.SSD)
+                                                            .build())
+                                            .build());
             String operation = creation.getName();
             update(properties -> properties.setProperty("operation", operation));
             creation.get(10, java.util.concurrent.TimeUnit.MINUTES);
             update(properties -> properties.setProperty("creationFinished", "true"));
             requireCreating();
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, LocalStagedHarness.PROFILE)
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of("stage2-c1", true)));
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, "no-tx")
-                            .setRoutingPolicy(
-                                    AppProfile.SingleClusterRoutingPolicy.of("stage2-c1", false)));
-            admin.createAppProfile(
-                    CreateAppProfileRequest.of(instance, "multi-cluster")
-                            .setRoutingPolicy(AppProfile.MultiClusterRoutingPolicy.of()));
+            createAppProfile(admin, LocalStagedHarness.PROFILE, singleCluster(true));
+            createAppProfile(admin, "no-tx", singleCluster(false));
+            createAppProfile(
+                    admin,
+                    "multi-cluster",
+                    AppProfile.newBuilder()
+                            .setMultiClusterRoutingUseAny(
+                                    AppProfile.MultiClusterRoutingUseAny.getDefaultInstance()));
         }
-        try (BigtableTableAdminClient admin =
-                BigtableTableAdminClient.create("flink-gcp", instance)) {
+        try (BigtableTableAdminClient admin = BigtableTableAdminClient.create(PROJECT, instance)) {
             for (String name : tables) {
                 requireCreating();
-                CreateTableRequest request = CreateTableRequest.of(name).addFamily("cf");
+                Table.Builder table =
+                        Table.newBuilder().putColumnFamilies("cf", BigtableAdminProtos.rawFamily());
                 if (name.equals("marker-gc")) {
-                    request.addFamily(
+                    table.putColumnFamilies(
                             StagedMutationTestSink.MARKER_FAMILY,
-                            com.google.cloud.bigtable.admin.v2.models.GCRules.GCRULES.maxVersions(
-                                    1));
+                            BigtableAdminProtos.maxVersionsFamily(1));
                 } else if (name.equals("marker-typed")) {
-                    request.addFamily(StagedMutationTestSink.MARKER_FAMILY, Type.int64Sum());
+                    table.putColumnFamilies(
+                            StagedMutationTestSink.MARKER_FAMILY,
+                            BigtableAdminProtos.typedFamily(BigtableAdminProtos.int64Sum()));
                 } else if (!name.equals("marker-missing")) {
-                    request.addFamily(StagedMutationTestSink.MARKER_FAMILY);
+                    table.putColumnFamilies(
+                            StagedMutationTestSink.MARKER_FAMILY, BigtableAdminProtos.rawFamily());
                 }
                 if (name.startsWith("recovery-")) {
-                    request.addFamily("agg", Type.int64Sum());
+                    table.putColumnFamilies(
+                            "agg", BigtableAdminProtos.typedFamily(BigtableAdminProtos.int64Sum()));
                 }
-                admin.createTable(request);
+                admin.getBaseClient()
+                        .createTable(
+                                CreateTableRequest.newBuilder()
+                                        .setParent(instanceName().toString())
+                                        .setTableId(name)
+                                        .setTable(table)
+                                        .build());
             }
         }
         requireCreating();
@@ -428,6 +453,30 @@ final class Stage2Lease {
                 || System.currentTimeMillis() >= startedAt() + 45 * 60_000L) {
             throw new IOException("Resource setup exceeded its lease");
         }
+    }
+
+    private void createAppProfile(
+            BigtableInstanceAdminClient admin, String profile, AppProfile.Builder routing) {
+        admin.getBaseClient()
+                .createAppProfile(
+                        CreateAppProfileRequest.newBuilder()
+                                .setParent(instanceName().toString())
+                                .setAppProfileId(profile)
+                                // What the client's model request defaulted the description to.
+                                .setAppProfile(routing.setDescription(profile))
+                                .build());
+    }
+
+    private InstanceName instanceName() {
+        return InstanceName.of(PROJECT, instance);
+    }
+
+    private static AppProfile.Builder singleCluster(boolean allowTransactionalWrites) {
+        return AppProfile.newBuilder()
+                .setSingleClusterRouting(
+                        AppProfile.SingleClusterRouting.newBuilder()
+                                .setClusterId("stage2-c1")
+                                .setAllowTransactionalWrites(allowTransactionalWrites));
     }
 
     interface OwnedInstance {
@@ -500,7 +549,7 @@ final class Stage2Lease {
         }
         update(p -> p.setProperty("phase", "CLEANING"));
         terminateWorker(properties);
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create("flink-gcp")) {
+        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
             removeOwned(
                     token,
                     new OwnedInstance() {
@@ -508,8 +557,9 @@ final class Stage2Lease {
                         @Override
                         public String owner() {
                             try {
-                                return admin.getInstance(instance)
-                                        .getLabels()
+                                return admin.getBaseClient()
+                                        .getInstance(instanceName())
+                                        .getLabelsMap()
                                         .getOrDefault("stage2-owner", "");
                             } catch (NotFoundException absent) {
                                 return null;
@@ -551,9 +601,10 @@ final class Stage2Lease {
                         @Override
                         public boolean ready() throws IOException {
                             try {
-                                Instance current = admin.getInstance(instance);
+                                Instance current =
+                                        admin.getBaseClient().getInstance(instanceName());
                                 boolean ready =
-                                        token.equals(current.getLabels().get("stage2-owner"))
+                                        token.equals(current.getLabelsMap().get("stage2-owner"))
                                                 && current.getState() == Instance.State.READY;
                                 if (ready) {
                                     update(p -> p.setProperty("creationFinished", "true"));
@@ -566,13 +617,20 @@ final class Stage2Lease {
 
                         @Override
                         public void delete() {
-                            admin.deleteInstance(instance);
+                            admin.getBaseClient().deleteInstance(instanceName());
                         }
 
                         @Override
                         public boolean listed() {
-                            return admin.listInstances().stream()
-                                    .anyMatch(value -> value.getId().equals(instance));
+                            ListInstancesResponse listing =
+                                    admin.getBaseClient().listInstances(ProjectName.of(PROJECT));
+                            BigtableAdminProtos.checkListedEverywhere(
+                                    listing.getFailedLocationsList(), "instances");
+                            return listing.getInstancesList().stream()
+                                    .anyMatch(
+                                            value ->
+                                                    value.getName()
+                                                            .equals(instanceName().toString()));
                         }
                     });
         }

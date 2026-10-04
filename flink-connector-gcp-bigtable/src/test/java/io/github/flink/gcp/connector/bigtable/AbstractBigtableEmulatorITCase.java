@@ -16,8 +16,12 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
+import com.google.bigtable.admin.v2.CreateTableRequest;
+import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.InstanceName;
+import com.google.bigtable.admin.v2.Table;
+import com.google.bigtable.admin.v2.TableName;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
@@ -104,17 +108,30 @@ public abstract class AbstractBigtableEmulatorITCase {
      * @return the destination naming it
      */
     protected static TableDestination createTable(String tableId, String... families) {
-        CreateTableRequest request = CreateTableRequest.of(tableId);
+        Table.Builder table = Table.newBuilder();
         for (String family : families) {
-            request.addFamily(family);
+            table.putColumnFamilies(family, BigtableAdminProtos.rawFamily());
         }
-        adminClient.createTable(request);
+        adminClient
+                .getBaseClient()
+                .createTable(
+                        CreateTableRequest.newBuilder()
+                                .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
+                                .setTableId(tableId)
+                                .setTable(table)
+                                .build());
         return TableDestination.of(PROJECT, INSTANCE, tableId);
     }
 
     /** Returns the live table description, for asserting what auto-creation actually made. */
-    protected static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
-        return adminClient.getTable(tableId);
+    protected static Table describeTable(String tableId) {
+        return adminClient
+                .getBaseClient()
+                .getTable(
+                        GetTableRequest.newBuilder()
+                                .setName(TableName.of(PROJECT, INSTANCE, tableId).toString())
+                                .setView(Table.View.SCHEMA_VIEW)
+                                .build());
     }
 
     /** Reads every row of the table, in row-key order. */

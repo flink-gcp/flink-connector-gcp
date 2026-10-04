@@ -36,6 +36,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.bigEndianInt64;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Hll;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Max;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Min;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.int64Sum;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.rawFamily;
+import static io.github.flink.gcp.connector.bigtable.BigtableAdminProtos.typedFamily;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -55,24 +62,12 @@ class BigtableCatalogRealGcpITCase extends AbstractBigtableRealGcpITCase {
         TableDestination destination =
                 createTable(
                         id,
-                        request ->
-                                request.addFamily("cf")
-                                        .addFamily(
-                                                "totals",
-                                                com.google.cloud.bigtable.admin.v2.models.Type
-                                                        .int64Sum())
-                                        .addFamily(
-                                                "minimums",
-                                                com.google.cloud.bigtable.admin.v2.models.Type
-                                                        .int64Min())
-                                        .addFamily(
-                                                "maximums",
-                                                com.google.cloud.bigtable.admin.v2.models.Type
-                                                        .int64Max())
-                                        .addFamily(
-                                                "users",
-                                                com.google.cloud.bigtable.admin.v2.models.Type
-                                                        .int64Hll()));
+                        Map.of(
+                                "cf", rawFamily(),
+                                "totals", typedFamily(int64Sum()),
+                                "minimums", typedFamily(int64Min()),
+                                "maximums", typedFamily(int64Max()),
+                                "users", typedFamily(int64Hll())));
 
         // The value types as the catalog's own client reads them, recorded for ADR-0178: whether
         // the service reports a state type, and which one it reports for HLL.
@@ -90,16 +85,7 @@ class BigtableCatalogRealGcpITCase extends AbstractBigtableRealGcpITCase {
                                 TextFormat.shortDebugString(type)));
         // Measured 2026-10-04: every aggregate family reports its state type; sum, min and max an
         // int64 in big-endian bytes, HLL raw bytes.
-        Type int64State =
-                Type.newBuilder()
-                        .setInt64Type(
-                                Type.Int64.newBuilder()
-                                        .setEncoding(
-                                                Type.Int64.Encoding.newBuilder()
-                                                        .setBigEndianBytes(
-                                                                Type.Int64.Encoding.BigEndianBytes
-                                                                        .getDefaultInstance())))
-                        .build();
+        Type int64State = bigEndianInt64();
         for (String family : new String[] {"totals", "minimums", "maximums"}) {
             assertThat(reported.get(family).getAggregateType().getStateType())
                     .as(family)

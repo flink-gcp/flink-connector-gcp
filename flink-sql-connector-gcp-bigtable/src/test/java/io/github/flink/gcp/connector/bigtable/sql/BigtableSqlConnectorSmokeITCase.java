@@ -20,8 +20,11 @@ import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.bigtable.admin.v2.ColumnFamily;
+import com.google.bigtable.admin.v2.CreateTableRequest;
+import com.google.bigtable.admin.v2.InstanceName;
+import com.google.bigtable.admin.v2.Table;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
@@ -111,6 +114,21 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
         }
     }
 
+    /** Creates a table with one raw family through the stock admin client's protobuf surface. */
+    private static void createTable(String table, String family) {
+        adminClient
+                .getBaseClient()
+                .createTable(
+                        CreateTableRequest.newBuilder()
+                                .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
+                                .setTableId(table)
+                                .setTable(
+                                        Table.newBuilder()
+                                                .putColumnFamilies(
+                                                        family, ColumnFamily.getDefaultInstance()))
+                                .build());
+    }
+
     @Override
     protected ShadedJar shadedJar() {
         return UberJar.SHADED;
@@ -149,7 +167,7 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
             return;
         }
         String table = "sql-async-smoke";
-        adminClient.createTable(CreateTableRequest.of(table).addFamily("cf"));
+        createTable(table, "cf");
         env.getConfig().set("parallelism.default", "1");
         env.getConfig().set("table.exec.async-scalar.max-attempts", "1");
         String base = "bigtable.functions.smoke.";
@@ -195,7 +213,7 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
     @Test
     void whatSqlWritesThroughTheShadedClassesIsWhatTheStockClientReadsBack() throws Exception {
         String table = "sql-smoke";
-        adminClient.createTable(CreateTableRequest.of(table).addFamily("cf1"));
+        createTable(table, "cf1");
 
         TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
         // The write below deliberately uses a clause-less bounded INSERT. This table-local mode
@@ -247,7 +265,7 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
      */
     @Test
     void aCatalogListsAndResolvesTablesThroughTheShadedClasses() throws Exception {
-        adminClient.createTable(CreateTableRequest.of("catalog-smoke").addFamily("cf"));
+        createTable("catalog-smoke", "cf");
         TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
         tEnv.executeSql(
                 "CREATE CATALOG bt WITH ('type' = 'bigtable', 'project' = '"

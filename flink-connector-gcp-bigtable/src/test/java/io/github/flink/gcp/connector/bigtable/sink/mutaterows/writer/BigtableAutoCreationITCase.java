@@ -19,11 +19,10 @@ package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.cloud.bigtable.admin.v2.models.ColumnFamily;
-import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
+import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
@@ -68,17 +67,10 @@ class BigtableAutoCreationITCase extends AbstractBigtableEmulatorITCase {
             assertThat(readRows(table))
                     .extracting(row -> row.getKey().toStringUtf8())
                     .containsExactly("row-1", "row-2");
-            assertThat(describeTable("auto-created").getColumnFamilies())
-                    .extracting(ColumnFamily::getId)
+            assertThat(describeTable("auto-created").getColumnFamiliesMap().keySet())
                     .containsExactlyInAnyOrder(FAMILY, "plain");
-            assertThat(
-                            describeTable("auto-created").getColumnFamilies().stream()
-                                    .filter(family -> family.getId().equals(FAMILY))
-                                    .findFirst()
-                                    .orElseThrow()
-                                    .getGCRule()
-                                    .toProto())
-                    .isEqualTo(GCRules.GCRULES.maxVersions(1).toProto());
+            assertThat(describeTable("auto-created").getColumnFamiliesOrThrow(FAMILY).getGcRule())
+                    .isEqualTo(BigtableAdminProtos.maxVersions(1));
         } finally {
             // A plain close is an assertion (#238): the incident left NOT_FOUND failures in the
             // batcher's accumulated stats, and a close re-reporting them would throw here.
@@ -115,11 +107,9 @@ class BigtableAutoCreationITCase extends AbstractBigtableEmulatorITCase {
             assertThat(readRows(odd))
                     .extracting(row -> row.getKey().toStringUtf8())
                     .containsExactly("row-1");
-            assertThat(describeTable("auto-created-even").getColumnFamilies())
-                    .extracting(ColumnFamily::getId)
+            assertThat(describeTable("auto-created-even").getColumnFamiliesMap().keySet())
                     .containsExactly(FAMILY);
-            assertThat(describeTable("auto-created-odd").getColumnFamilies())
-                    .extracting(ColumnFamily::getId)
+            assertThat(describeTable("auto-created-odd").getColumnFamiliesMap().keySet())
                     .containsExactly(FAMILY);
         } finally {
             writer.close();

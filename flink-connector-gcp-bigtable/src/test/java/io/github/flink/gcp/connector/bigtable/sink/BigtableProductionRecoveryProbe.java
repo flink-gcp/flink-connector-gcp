@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.sink;
 import com.google.bigtable.admin.v2.AppProfile;
 import com.google.bigtable.admin.v2.GetAppProfileRequest;
 import com.google.bigtable.admin.v2.GetTableRequest;
+import com.google.bigtable.admin.v2.InstanceName;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
@@ -248,7 +249,11 @@ public final class BigtableProductionRecoveryProbe {
                         table.startsWith("recovery-table"),
                         () -> {
                             lease.requireLive();
-                            instances.getInstance(lease.instance);
+                            instances
+                                    .getBaseClient()
+                                    .getInstance(
+                                            InstanceName.of(
+                                                    destination.getProject(), lease.instance));
                             verifyReadback(
                                     run, proxy, data.readRows(Query.create(table).limit(129)));
                             if (BigtableStage2Probe.directorySize(lease.work) > (2L << 30)) {
