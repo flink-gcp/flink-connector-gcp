@@ -335,3 +335,18 @@ CREATE TABLE account_counters (
 INSERT INTO account_counters
 VALUES ('account-1', ROW(CAST(-5 AS BIGINT), CAST(1 AS BIGINT)));
 -- end::increment[]
+
+-- tag::catalog[]
+CREATE CATALOG bt WITH (
+  'type' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'key-type' = 'string'
+);
+
+USE CATALOG bt;
+-- end::catalog[]
+
+-- tag::catalog-string-keys[]
+SELECT address['street'], address['city'] FROM myTable WHERE _key = 'user1';
+-- end::catalog-string-keys[]
