@@ -46,7 +46,6 @@ from itertools import pairwise
 from pathlib import Path
 
 from .bigquery.analyze import assess_runs, render
-from .bigquery.analyze import counts as bigquery_counts
 from .cloudtasks.evidence import (
     MARKER,
     RECEIPT,
@@ -62,6 +61,8 @@ from .cloudtasks.evidence import (
 )
 from .cloudtasks.protocol import SHAPES, load, next_probe, protocol_sha256, window
 from .common import EXCLUDED, INCONCLUSIVE, USABLE, Failure
+from .pubsub import analyze as pubsub_analyze
+from .recovery_analysis import counts as run_counts
 
 SUFFIX = re.compile(r"-(x2|q[0-9]+)\Z")
 PROBE = re.compile(r"-q([0-9]+)\Z")
@@ -1577,7 +1578,12 @@ def render_markdown(report):
                     f"detected with throughput {show(delay['throughput'])} and p95 "
                     f"{show(delay['p95_nanos'])} ns."
                 )
-    return "\n".join(lines) + "\n" + render(report.get("bigquery") or [])
+    return (
+        "\n".join(lines)
+        + "\n"
+        + render(report.get("bigquery") or [])
+        + pubsub_analyze.render(report.get("pubsub") or [])
+    )
 
 
 def analyze(evidence, protocol_path=None, kind=None):
@@ -1616,6 +1622,8 @@ def analyze(evidence, protocol_path=None, kind=None):
         # Recomputed from the exported evidence; empty unless the directory
         # holds a deployed BigQuery run.
         "bigquery": assess_runs(runs),
+        # Likewise for a deployed Pub/Sub recovery run.
+        "pubsub": pubsub_analyze.assess_runs(runs),
     }
 
 
@@ -1639,7 +1647,12 @@ def summary_line(report, out):
         f"({status or 'none'}); {len(report['groups'])} groups"
         + (
             f"; bigquery runs: {bigquery}"
-            if (bigquery := bigquery_counts(report.get("bigquery") or []))
+            if (bigquery := run_counts(report.get("bigquery") or []))
+            else ""
+        )
+        + (
+            f"; pubsub runs: {pubsub}"
+            if (pubsub := run_counts(report.get("pubsub") or []))
             else ""
         )
         + f"; reports in {out}"

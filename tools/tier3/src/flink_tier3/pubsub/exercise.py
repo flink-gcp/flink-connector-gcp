@@ -24,7 +24,14 @@ from .messages import COHORTS, cohort_ranges
 from .observe import connector_metrics
 from .oracle import reconcile
 from .output import OutputCollector
-from .verdict import COMPLETE_STAGE, MEASUREMENT_EVENT, REPLACEMENTS, summarize, verdict
+from .verdict import (
+    COMPLETE_STAGE,
+    MEASUREMENT_EVENT,
+    REPLACEMENTS,
+    started_by_fault,
+    summarize,
+    verdict,
+)
 
 FIRST, REPLAY, LAST = COHORTS
 ATTEMPT = re.compile(
@@ -451,10 +458,8 @@ class PubSubExercise(RecoveryExercise):
 
     def fresh(self, attempt, restored, phase):
         """An attempt the fault started, from restored state."""
-        return (
-            attempt not in self.fault["before"]
-            and restored
-            and (self.kind in REPLACEMENTS or phase == "upgrade")
+        return started_by_fault(
+            attempt, restored, phase, self.fault["before"], self.kind
         )
 
     def restarted(self, item):

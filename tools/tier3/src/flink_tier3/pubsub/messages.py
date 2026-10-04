@@ -69,6 +69,29 @@ def _encode(value):
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
+def output_line(message):
+    """One received message as the oracle's TSV line: its ID and payload, encoded.
+
+    The collector writes these lines, and the offline analysis derives them
+    again from the saved pull response, so the two cannot disagree on a byte.
+    """
+    message_id = _identifier(
+        message.get("messageId"), MAX_ID_BYTES, "output message ID"
+    )
+    data = message.get("data", "")
+    if not isinstance(data, str) or len(data) > 4 * ((MAX_PAYLOAD_BYTES + 2) // 3):
+        raise Failure("Pub/Sub output payload exceeds the collector limit")
+    try:
+        payload = base64.b64decode(
+            data + "=" * (-len(data) % 4), altchars=b"-_", validate=True
+        )
+    except (ValueError, binascii.Error) as error:
+        raise Failure("Malformed Pub/Sub output encoding") from error
+    if len(payload) > MAX_PAYLOAD_BYTES:
+        raise Failure("Pub/Sub output payload exceeds the collector limit")
+    return _encode(message_id.encode("utf-8")) + "\t" + _encode(payload)
+
+
 class Messages:
     """Internal helper; construction does not authenticate or admit a run.
 
@@ -220,26 +243,7 @@ class Messages:
             ack_ids.append(
                 _identifier(item.get("ackId"), MAX_ACK_ID_BYTES, "acknowledgement ID")
             )
-            message = item["message"]
-            message_id = _identifier(
-                message.get("messageId"), MAX_ID_BYTES, "output message ID"
-            )
-            data = message.get("data", "")
-            if not isinstance(data, str) or len(data) > 4 * (
-                (MAX_PAYLOAD_BYTES + 2) // 3
-            ):
-                raise Failure("Pub/Sub output payload exceeds the collector limit")
-            try:
-                payload = base64.b64decode(
-                    data + "=" * (-len(data) % 4), altchars=b"-_", validate=True
-                )
-            except (ValueError, binascii.Error) as error:
-                raise Failure("Malformed Pub/Sub output encoding") from error
-            if len(payload) > MAX_PAYLOAD_BYTES:
-                raise Failure("Pub/Sub output payload exceeds the collector limit")
-            lines.append(
-                _encode(message_id.encode("utf-8")) + "\t" + _encode(payload) + "\n"
-            )
+            lines.append(output_line(item["message"]) + "\n")
         evidence = {
             "version": 1,
             "subscription": subscription,

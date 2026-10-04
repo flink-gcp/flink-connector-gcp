@@ -23,7 +23,7 @@ import json
 
 import pytest
 from flink_tier3 import analyze
-from flink_tier3.bigquery.analyze import SCENARIO, counts, render
+from flink_tier3.bigquery.analyze import SCENARIO, render
 from flink_tier3.bigquery.verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
@@ -33,6 +33,7 @@ from flink_tier3.bigquery.verdict import (
     SAMPLED_STAGES,
 )
 from flink_tier3.common import INCONCLUSIVE, INCONSISTENT, TAMPERED, UNEXPORTED, USABLE
+from flink_tier3.recovery_analysis import counts
 
 RUN = "bq-1423-0001"
 ATTEMPTS = 3

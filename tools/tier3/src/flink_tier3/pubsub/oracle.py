@@ -41,7 +41,8 @@ COUNTERS = (
 
 
 def _units(text):
-    return len(text.encode("utf-16-le")) // 2
+    # A lone surrogate is one unit to Java's String.length(), not an error.
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
 
 def _consistent(values, key, value):
