@@ -336,6 +336,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and `com.google.cloud.Date` — internal calls, tier-irrelevant under `docs/adr/0141`; reread
   them on a BOM bump.
 
+- Asynchronous lookup retries use `base.table.AsyncLookupRetries` (ADR-0039); keep the read,
+  row conversion and failure classifier here, and the stack-safety and late-callback tests in base.
+
 ## Table Change Streams CDC (`docs/adr/0105`)
 
 - A single option value a DataStream builder rejects is renamed to its option key through the

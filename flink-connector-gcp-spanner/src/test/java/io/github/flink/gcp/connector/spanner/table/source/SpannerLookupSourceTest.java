@@ -555,7 +555,7 @@ class SpannerLookupSourceTest {
     }
 
     @Test
-    void asyncCancellationCancelsTheActiveSpannerRead() {
+    void asyncLookupWaitsForALaterSpannerRead() {
         SettableApiFuture<Struct> pending = SettableApiFuture.create();
         ScriptedLookup lookup = new ScriptedLookup().answer(pending);
         SpannerRowDataAsyncLookupFunction function =
@@ -565,10 +565,11 @@ class SpannerLookupSourceTest {
         CompletableFuture<Collection<RowData>> result =
                 function.asyncLookup(GenericRowData.of(StringData.fromString("eu"), 7L));
         assertThat(result).isNotDone();
-        result.cancel(true);
+        pending.set(Struct.newBuilder().set("name").to("Alice").build());
 
-        assertThat(pending.isCancelled()).isTrue();
-        assertThat(lookup.keys).hasSize(1);
+        assertThat(result.join()).hasSize(1);
+        assertThat(result.join().iterator().next().getString(0).toString()).isEqualTo("Alice");
+        assertThat(lookup.keys).containsExactly(Key.of("eu", 7L));
     }
 
     @Test

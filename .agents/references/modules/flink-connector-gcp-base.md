@@ -88,7 +88,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - `ReadOnlyCatalogDatabase` is the one `CatalogDatabase` value; Flink's `CatalogDatabaseImpl` is
   `@Internal`.
 
-## `base.table` (`docs/adr/0133`)
+## `base.table` (`docs/adr/0133`, `0039`)
 
 - `OptionSetters` is the one helper every connector's table layer uses to apply an option value to
   a builder setter, renaming the setter's `IllegalArgumentException` to a `ValidationException`
@@ -97,6 +97,13 @@ record — context, evidence, declined alternatives — is the named ADR under `
   only, so cross-field `build()` checks pass through unrenamed. `OptionSettersTest` holds what
   each method renames; each connector's mapper-level rejection tests hold that its mapper lines go
   through it.
+
+- `AsyncLookupRetries` holds the stack-safe asynchronous lookup loop for Spanner, Bigtable and
+  Firestore (ADR-0039). A connector supplies a read, a checked-exception-capable row converter, its
+  own failure classifier and its validated retry budget. Keep key validation and client lifecycle
+  in the connector. Conversion failures are never retried; callbacks run directly, with no owned
+  executor. Do not add RPC cancellation: Flink does not propagate cancellation to the lookup result,
+  and the three client libraries do not share a cancellation contract.
 
 ## `base.source` (`docs/adr/0083`, `0108`)
 
@@ -144,7 +151,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## `base.retry` and `base.rpc` (`docs/adr/0039`)
 
-- Retry loops stay in the connectors; do not add a `Retries.run` executor. Every schedule
+- Retry loops stay in the connectors except the asynchronous Table API lookup loop in
+  `base.table.AsyncLookupRetries`; do not add a general `Retries.run` executor. Every schedule
   jitters at `RetrySchedule.DEFAULT_JITTER_RATIO` — a literal ratio is a review finding, and the
   ratio is never a knob. Knob-to-schedule mapping lives on the options class that owns the
   knobs (`toRetrySchedule()`), never in the consumer.

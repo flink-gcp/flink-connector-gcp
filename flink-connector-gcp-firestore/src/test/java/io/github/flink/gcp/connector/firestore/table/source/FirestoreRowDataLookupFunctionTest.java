@@ -23,7 +23,6 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.logical.RowType;
 
-import com.google.api.core.SettableApiFuture;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.Timestamp;
@@ -39,10 +38,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -226,24 +223,6 @@ class FirestoreRowDataLookupFunctionTest {
     }
 
     @Test
-    void anAsyncLookupWaitsForALaterCallbackAndRetriesALaterFailure() throws Exception {
-        SettableApiFuture<DocumentSnapshot> first = SettableApiFuture.create();
-        SettableApiFuture<DocumentSnapshot> second = SettableApiFuture.create();
-        FakeDocumentLookup lookup = new FakeDocumentLookup().then(first).then(second);
-
-        CompletableFuture<Collection<RowData>> result = async(1, lookup).asyncLookup(key("a"));
-        assertThat(result).isNotDone();
-
-        first.setException(FakeDocumentLookup.failure(StatusCode.Code.UNAVAILABLE));
-        assertThat(result).isNotDone();
-        assertThat(lookup.reads()).containsExactly("a", "a");
-
-        second.set(document("a", 5L));
-        assertThat(result.get(10, SECONDS))
-                .containsExactly(GenericRowData.of(StringData.fromString("a"), 5L));
-    }
-
-    @Test
     void aReadThatThrowsAtOnceIsRetriedLikeAFailedOne() throws Exception {
         FakeDocumentLookup lookup =
                 new FakeDocumentLookup()
@@ -254,45 +233,6 @@ class FirestoreRowDataLookupFunctionTest {
 
         assertThat(async(1, lookup).asyncLookup(key("a")).get(10, SECONDS)).hasSize(1);
         assertThat(lookup.reads()).hasSize(2);
-    }
-
-    @Test
-    void immediateFailuresDoNotGrowTheTaskThreadStack() throws Exception {
-        int budget = 5_000;
-        FakeDocumentLookup lookup = new FakeDocumentLookup();
-        for (int i = 0; i < budget; i++) {
-            lookup.then(FakeDocumentLookup.failure(StatusCode.Code.UNAVAILABLE));
-        }
-        lookup.then(document("a", 1L));
-
-        FirestoreRowDataAsyncLookupFunction function = async(budget, lookup);
-        // A thread with a small stack, so recursion overflows it whatever the default is.
-        CompletableFuture<Collection<RowData>> result = new CompletableFuture<>();
-        Thread caller =
-                new Thread(
-                        null,
-                        () -> {
-                            try {
-                                function.asyncLookup(key("a"))
-                                        .whenComplete(
-                                                (rows, failure) -> {
-                                                    if (failure != null) {
-                                                        result.completeExceptionally(failure);
-                                                    } else {
-                                                        result.complete(rows);
-                                                    }
-                                                });
-                            } catch (Throwable failure) {
-                                result.completeExceptionally(failure);
-                            }
-                        },
-                        "small-stack-lookup",
-                        256 * 1024);
-        caller.start();
-        caller.join(10_000);
-
-        assertThat(result.get(10, SECONDS)).hasSize(1);
-        assertThat(lookup.reads()).hasSize(budget + 1);
     }
 
     @Test

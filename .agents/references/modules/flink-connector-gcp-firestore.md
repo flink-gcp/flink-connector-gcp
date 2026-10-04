@@ -151,6 +151,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   libraries-bom bump that moves the library's set fails there.
 - The lookup functions are `public`: the planner refuses a function class that is not.
 
+- Asynchronous lookup retries use `base.table.AsyncLookupRetries` (ADR-0039); keep the read,
+  row conversion and failure classifier here, and the stack-safety and late-callback tests in base.
+
 ## Datastore-mode sink (`docs/adr/0175`)
 
 - **The SPI carries the client library's `FullEntity<Key>` and `Key`** (both serializable; a test

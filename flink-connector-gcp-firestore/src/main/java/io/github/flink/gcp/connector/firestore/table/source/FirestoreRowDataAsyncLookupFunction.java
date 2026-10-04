@@ -22,15 +22,11 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.FunctionContext;
 
-import com.google.api.core.ApiFuture;
-import com.google.api.core.ApiFutureCallback;
-import com.google.api.core.ApiFutures;
-import com.google.cloud.firestore.DocumentSnapshot;
+import io.github.flink.gcp.connector.base.table.AsyncLookupRetries;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Looks a document up by id through the client library's asynchronous API. Public because the
@@ -75,83 +71,11 @@ public final class FirestoreRowDataAsyncLookupFunction extends AsyncLookupFuncti
         if (id == null) {
             return CompletableFuture.completedFuture(Collections.emptyList());
         }
-        CompletableFuture<Collection<RowData>> result = new CompletableFuture<>();
-        new LookupAttempt(id, result).schedule();
-        return result;
-    }
-
-    /**
-     * One lookup and its retries. A retry is scheduled from the failed read's callback, which may
-     * run on the calling thread when the read fails at once; the work counter turns that recursion
-     * into a loop, so a long retry budget cannot grow the task thread's stack.
-     *
-     * <p>Nothing cancels a read: Flink only waits on the result, and cancelling the client
-     * library's future would not stop its {@code BatchGetDocuments} stream.
-     */
-    private final class LookupAttempt {
-        private final String id;
-        private final CompletableFuture<Collection<RowData>> result;
-        private final AtomicInteger work = new AtomicInteger();
-        private int retry;
-
-        private LookupAttempt(String id, CompletableFuture<Collection<RowData>> result) {
-            this.id = id;
-            this.result = result;
-        }
-
-        private void schedule() {
-            if (work.getAndIncrement() != 0) {
-                return;
-            }
-            int pending = 1;
-            do {
-                if (!result.isDone()) {
-                    issue();
-                }
-                pending = work.addAndGet(-pending);
-            } while (pending != 0);
-        }
-
-        private void issue() {
-            final ApiFuture<DocumentSnapshot> future;
-            try {
-                future = lookup.readAsync(id);
-            } catch (RuntimeException failure) {
-                handleFailure(failure);
-                return;
-            }
-            ApiFutures.addCallback(
-                    future,
-                    new ApiFutureCallback<DocumentSnapshot>() {
-                        @Override
-                        public void onFailure(Throwable failure) {
-                            handleFailure(failure);
-                        }
-
-                        @Override
-                        public void onSuccess(DocumentSnapshot snapshot) {
-                            try {
-                                result.complete(
-                                        FirestoreDocumentLookups.rows(deserializer, snapshot));
-                            } catch (Exception failure) {
-                                result.completeExceptionally(failure);
-                            }
-                        }
-                    },
-                    Runnable::run);
-        }
-
-        private void handleFailure(Throwable failure) {
-            if (result.isDone()) {
-                return;
-            }
-            if (retry < maxRetries && FirestoreLookupErrorClassifier.isTransient(failure)) {
-                retry++;
-                schedule();
-            } else {
-                result.completeExceptionally(failure);
-            }
-        }
+        return AsyncLookupRetries.lookup(
+                () -> lookup.readAsync(id),
+                snapshot -> FirestoreDocumentLookups.rows(deserializer, snapshot),
+                FirestoreLookupErrorClassifier::isTransient,
+                maxRetries);
     }
 
     @Override

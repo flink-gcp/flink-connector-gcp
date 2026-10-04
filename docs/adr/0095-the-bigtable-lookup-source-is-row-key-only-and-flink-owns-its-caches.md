@@ -90,6 +90,8 @@ operation, correcting the prior rejection of a closed-start key.
 - A source-unit test inspects the FULL loader directly and pins that an already accepted scan
   filter keeps its range intersection and condition/projection composition.
 
+The asynchronous retry loop is shared through `base.table.AsyncLookupRetries` ([ADR-0039](0039-retry-schedules-are-shared-retry-loops-are-not-and-every-schedule-jitters.md)); the read, conversion and failure classifier stay in this connector.
+
 ## Alternatives declined
 
 - Connector-specific cache keys: Flink already owns compatible cache policy and validation.

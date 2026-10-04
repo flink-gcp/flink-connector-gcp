@@ -22,11 +22,9 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.FunctionContext;
 
-import com.google.api.core.ApiFuture;
-import com.google.api.core.ApiFutureCallback;
-import com.google.api.core.ApiFutures;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.base.table.AsyncLookupRetries;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
@@ -36,8 +34,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /** Asynchronous primary-key lookup producing the projected table row. */
 @Internal
@@ -145,91 +141,11 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
         if (!filters.matchesPrimaryKey(key)) {
             return CompletableFuture.completedFuture(Collections.emptyList());
         }
-        CompletableFuture<Collection<RowData>> result = new CompletableFuture<>();
-        new LookupAttempt(key, result).schedule();
-        return result;
-    }
-
-    private final class LookupAttempt {
-        private final Key key;
-        private final CompletableFuture<Collection<RowData>> result;
-        private final AtomicInteger work = new AtomicInteger();
-        private final AtomicReference<ApiFuture<Struct>> active = new AtomicReference<>();
-        private int retry;
-
-        private LookupAttempt(Key key, CompletableFuture<Collection<RowData>> result) {
-            this.key = key;
-            this.result = result;
-            result.whenComplete(
-                    (ignored, failure) -> {
-                        if (result.isCancelled()) {
-                            ApiFuture<Struct> call = active.get();
-                            if (call != null) {
-                                call.cancel(true);
-                            }
-                        }
-                    });
-        }
-
-        private void schedule() {
-            if (work.getAndIncrement() != 0) {
-                return;
-            }
-            int pending = 1;
-            do {
-                if (!result.isDone()) {
-                    issue();
-                }
-                pending = work.addAndGet(-pending);
-            } while (pending != 0);
-        }
-
-        private void issue() {
-            final ApiFuture<Struct> future;
-            try {
-                future = lookup.readAsync(key);
-            } catch (RuntimeException failure) {
-                handleFailure(failure);
-                return;
-            }
-            active.set(future);
-            if (result.isCancelled()) {
-                future.cancel(true);
-                return;
-            }
-            ApiFutures.addCallback(
-                    future,
-                    new ApiFutureCallback<Struct>() {
-                        @Override
-                        public void onFailure(Throwable failure) {
-                            active.compareAndSet(future, null);
-                            handleFailure(failure);
-                        }
-
-                        @Override
-                        public void onSuccess(@Nullable Struct row) {
-                            active.compareAndSet(future, null);
-                            try {
-                                result.complete(convert(row));
-                            } catch (RuntimeException failure) {
-                                result.completeExceptionally(failure);
-                            }
-                        }
-                    },
-                    Runnable::run);
-        }
-
-        private void handleFailure(Throwable failure) {
-            if (result.isDone()) {
-                return;
-            }
-            if (retry < maxRetries && SpannerLookupErrorClassifier.isTransient(failure)) {
-                retry++;
-                schedule();
-            } else {
-                result.completeExceptionally(failure);
-            }
-        }
+        return AsyncLookupRetries.lookup(
+                () -> lookup.readAsync(key),
+                this::convert,
+                SpannerLookupErrorClassifier::isTransient,
+                maxRetries);
     }
 
     private Collection<RowData> convert(@Nullable Struct row) {
