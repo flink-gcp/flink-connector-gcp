@@ -60,6 +60,9 @@ import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamE
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
 import org.assertj.core.api.AbstractThrowableAssert;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -1543,6 +1546,60 @@ class BigtableDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("'scan.row-ranges' entry 2")
                 .hasStackTraceContaining("decoded start greater than its end");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "false, NONE, -1",
+        "true, NONE, -1",
+        "false, PARTIAL, -1",
+        "true, PARTIAL, -1",
+        "false, PARTIAL, -9223372036854775808",
+        "false, FULL, -1"
+    })
+    void rejectsNegativePartialCacheRowsWhenTheSourceIsPlanned(
+            boolean async, String cacheType, long maxRows) {
+        Map<String, String> options = minimalOptions();
+        options.put("lookup.async", Boolean.toString(async));
+        options.put("lookup.cache", cacheType);
+        options.put("lookup.partial-cache.max-rows", Long.toString(maxRows));
+        if (cacheType.equals("FULL")) {
+            options.put("lookup.full-cache.periodic-reload.interval", "1 min");
+        }
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'lookup.partial-cache.max-rows' must be zero or greater.");
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {0, 1, Long.MAX_VALUE})
+    void acceptsNonnegativePartialCacheRows(long maxRows) {
+        Map<String, String> options = minimalOptions();
+        options.put("lookup.cache", "PARTIAL");
+        options.put("lookup.partial-cache.max-rows", Long.toString(maxRows));
+
+        assertThat(source(options)).isInstanceOf(BigtableDynamicSource.class);
+    }
+
+    @Test
+    void acceptsPartialCachingWithOnlyAnExpiry() {
+        Map<String, String> options = minimalOptions();
+        options.put("lookup.cache", "PARTIAL");
+        options.put("lookup.partial-cache.expire-after-write", "1 min");
+
+        assertThat(source(options)).isInstanceOf(BigtableDynamicSource.class);
+    }
+
+    @Test
+    void partialCachingStillRequiresAnEvictionOption() {
+        Map<String, String> options = minimalOptions();
+        options.put("lookup.cache", "PARTIAL");
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("The cache will not have evictions");
     }
 
     @Test
