@@ -31,6 +31,7 @@ import org.apache.flink.types.RowKind;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSink;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreBulkWriterSink;
@@ -93,8 +94,7 @@ class FirestoreDynamicTableFactoryTest {
     private static FirestoreSinkConfig<?> config(
             ResolvedSchema schema, Map<String, String> options) {
         Sink<?> sink = runtimeSink(schema, options);
-        return ((FirestoreBulkWriterSink<?>) ((FirestoreTableLineage.TableSink<?>) sink).delegate)
-                .getConfig();
+        return ((FirestoreBulkWriterSink<?>) ((TableLineageSink<?>) sink).delegate()).getConfig();
     }
 
     @Test

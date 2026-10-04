@@ -136,11 +136,14 @@ limitations under the License.
              both properties in its edit list, so a range move keeps them equal; a
              drift fails the next release build loudly, which is the safe direction. -->
         <flink.version.floor>2.2.1</flink.version.floor>
-        <!-- Which per-major source root the connector modules compile
-             (src/main/java-${flink.compat}): the roots absorb the two API differences
+        <!-- Which per-major source root the modules compile
+             (src/main/java-${flink.compat}): the roots absorb API differences
              between the supported majors, one small same-FQCN file per root per difference.
-             Every connector has a CrossVersionSink interface — Flink 1.20 still declares the
-             deprecated createWriter(Sink.InitContext) abstract, Flink 2.x removed the type —
+             Every connector has a CrossVersionSink interface, and base has a package-private
+             one for its Table lineage sink adapter — Flink 1.20 still declares the
+             deprecated createWriter(Sink.InitContext) abstract, Flink 2.x removed the type.
+             Base also has CrossVersionSource to forward Flink 2.x generalized watermark
+             declarations without importing their type or calling the absent method on 1.20,
              and flink-connector-gcp-bigquery adds CrossVersionCheckpointId, because the
              CommittableMessage accessor returning a long checkpoint id is the deprecated one
              on exactly one of the two majors (issue #404). Building for the 1.x LTS means

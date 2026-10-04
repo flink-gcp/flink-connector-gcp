@@ -38,6 +38,7 @@ import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 import org.junit.jupiter.api.Test;
@@ -128,8 +129,7 @@ class SpannerTableLineageTest {
         source.applyProjection(new int[0][], DataTypes.ROW());
         Source<RowData, ?, ?> runtime = source((ScanTableSource) source.copy());
         SpannerBatchReadSource<?> delegate =
-                (SpannerBatchReadSource<?>)
-                        ((SpannerTableLineage.TableSource<?, ?, ?>) runtime).delegate;
+                (SpannerBatchReadSource<?>) ((TableLineageSource<?, ?, ?>) runtime).delegate();
         assertThat(delegate.getConfig().getReadOperation().getTable()).isNull();
         assertThat(delegate.getConfig().getReadOperation().toString()).contains("deferred read");
         Map<String, String> identity =
