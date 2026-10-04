@@ -17,12 +17,14 @@
 import copy
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import requests
 from flink_tier3.bigquery import Trial, query
 from flink_tier3.bigquery_resources import BASE, BigQueryResources, ResourcePlan
 from flink_tier3.common import ApiError, Failure, TransportError
+from flink_tier3.policy import BIGQUERY_STATE
 
 NOW = 1700000000
 
@@ -593,3 +595,293 @@ def test_expiration_bounds_before_any_request(plan, seconds):
     with pytest.raises(Failure, match="expiration"):
         api.ensure_table(0)
     assert not http.calls
+
+
+FLINK = "f" * 32
+
+
+@pytest.fixture
+def fl_plan(plan):
+    return replace(plan, trial=Trial("resources-1312", "FILE_LOADS", 10, 23))
+
+
+def load(plan, state="RUNNING", destination=0, uris=None, job_id=None, **config):
+    """A load job as the committer submits it: no labels, staged sources."""
+    staged = f"gs://{BIGQUERY_STATE}/{plan.staging_prefix()}{FLINK}/d0/part-0.avro"
+    return {
+        "jobReference": {
+            "projectId": "flink-gcp",
+            "location": "us-central1",
+            "jobId": job_id or f"flink-bq-load-{FLINK}-c3-{'0' * 16}",
+        },
+        "configuration": {
+            "jobType": "LOAD",
+            "load": {
+                "destinationTable": plan.table_body(destination)["tableReference"],
+                "sourceUris": [staged] if uris is None else uris,
+                "sourceFormat": "AVRO",
+                "writeDisposition": "WRITE_APPEND",
+                "createDisposition": "CREATE_NEVER",
+            },
+            **config,
+        },
+        "status": {"state": state},
+    }
+
+
+def listed(*jobs, token=None):
+    """The redacted listing `bigquery.jobs.list` returns for another user's jobs."""
+    value = {
+        "jobs": [
+            {"jobReference": job["jobReference"], "state": job["status"]["state"]}
+            for job in jobs
+        ]
+    }
+    if token is not None:
+        value["nextPageToken"] = token
+    return value
+
+
+def test_connector_jobs_are_found_by_listing_then_read_whole(fl_plan):
+    """A load still RUNNING when the Pods stopped is what cleanup waits for."""
+    running = load(fl_plan)
+    foreign = load(
+        fl_plan,
+        uris=["gs://elsewhere/x.avro"],
+        job_id=f"flink-bq-load-{'e' * 32}-{'1' * 16}",
+    )
+    api, http = client(
+        fl_plan,
+        listed(
+            running,
+            {"jobReference": {"jobId": "bquxjob_1"}, "status": {"state": "RUNNING"}},
+            token="next",
+        ),
+        running,
+        listed(foreign),
+        foreign,
+    )
+    assert api.unfinished_connector_jobs(NOW - 600) == [
+        {
+            "id": running["jobReference"]["jobId"],
+            "kind": "load",
+            "table": fl_plan.table_body(0)["tableReference"]["tableId"],
+            "state": "RUNNING",
+        }
+    ]
+    first = http.calls[0]
+    assert (first[0], first[1]) == ("GET", BASE + "/jobs")
+    assert first[2]["params"] == {
+        "allUsers": "true",
+        "stateFilter": ["pending", "running"],
+        "minCreationTime": str((NOW - 600) * 1000),
+        "maxResults": 1000,
+        "projection": "minimal",
+    }
+    # Only a connector-shaped id is read whole, at the location it was listed.
+    assert [call[1] for call in http.calls[1:]] == [
+        BASE + "/jobs/" + running["jobReference"]["jobId"],
+        BASE + "/jobs",
+        BASE + "/jobs/" + foreign["jobReference"]["jobId"],
+    ]
+    assert http.calls[1][2]["params"] == {"location": "us-central1"}
+    assert http.calls[2][2]["params"]["pageToken"] == "next"
+
+
+def test_a_job_done_between_listing_and_reading_is_not_waited_for(fl_plan):
+    api, _ = client(fl_plan, listed(load(fl_plan)), load(fl_plan, state="DONE"))
+    assert api.unfinished_connector_jobs(NOW) == []
+
+
+def test_a_listed_job_that_cannot_be_read_counts_as_unfinished(fl_plan):
+    """Skipped, a 404 between listing and reading would let cleanup delete."""
+    running = load(fl_plan)
+    api, _ = client(fl_plan, listed(running), Response({}, 404))
+    assert api.unfinished_connector_jobs(NOW) == [
+        {
+            "id": running["jobReference"]["jobId"],
+            "kind": None,
+            "table": None,
+            "state": "UNREADABLE",
+        }
+    ]
+
+
+def test_a_listed_job_whose_id_is_redacted_fails_rather_than_passing(fl_plan):
+    """Read as no job, a hidden id would let cleanup delete under a load."""
+    api, _ = client(fl_plan, {"jobs": [{"state": "RUNNING", "jobReference": {}}]})
+    with pytest.raises(Failure, match="no readable id"):
+        api.unfinished_connector_jobs(NOW)
+
+
+@pytest.mark.parametrize(
+    "change,match",
+    [
+        # This run's staged files loaded into another dataset's table.
+        (
+            lambda job: job["configuration"]["load"]["destinationTable"].update(
+                datasetId="other"
+            ),
+            "differs from its plan",
+        ),
+        # Into the right dataset, but a table that is not this run's.
+        (
+            lambda job: job["configuration"]["load"]["destinationTable"].update(
+                tableId="bq_other_d0"
+            ),
+            "differs from its plan",
+        ),
+        # A load mixing this run's staged files with something else.
+        (
+            lambda job: job["configuration"]["load"]["sourceUris"].append("gs://x/y"),
+            "differs from its plan",
+        ),
+        (lambda job: job["configuration"].update(copy={}), "no single"),
+        (lambda job: job.update(status={"state": "QUEUED"}), "no usable status"),
+    ],
+)
+def test_a_job_on_this_runs_staged_files_that_differs_from_the_plan_fails(
+    fl_plan, change, match
+):
+    value = load(fl_plan)
+    change(value)
+    api, _ = client(fl_plan)
+    with pytest.raises(Failure, match=match):
+        api.connector_job(value)
+
+
+def test_attribution_by_configuration_since_the_jobs_carry_no_labels(fl_plan):
+    api, _ = client(fl_plan)
+    run_table = fl_plan.table_body(3)["tableReference"]
+    copy_job = {
+        "jobReference": {"jobId": f"flink-bq-copy-{FLINK}-c3-{'2' * 16}"},
+        "configuration": {"copy": {"destinationTable": run_table}},
+        "status": {"state": "PENDING"},
+    }
+    assert api.connector_job(copy_job)["kind"] == "copy"
+    # Into another table, a copy is not this run's.
+    copy_job["configuration"]["copy"]["destinationTable"] = {
+        **run_table,
+        "tableId": "bq_other_d3",
+    }
+    assert api.connector_job(copy_job) is None
+    # The rig's own query slots are `_verify_job`'s, never the connector's.
+    assert api.connector_job(job(fl_plan, state="RUNNING")) is None
+    # A temporary table of the overflow path is a load target too.
+    temporary = load(fl_plan, state="RUNNING")
+    temporary["configuration"]["load"]["destinationTable"]["tableId"] = (
+        f"tmp_{FLINK}_0123456789ab_c3_p0"
+    )
+    assert api.connector_job(temporary)["table"].startswith("tmp_")
+    # A retried id after a failed attempt is the same job family.
+    retried = load(fl_plan, job_id=f"flink-bq-load-{FLINK}-c3-{'0' * 16}-r1")
+    assert api.connector_job(retried)["id"].endswith("-r1")
+
+
+def test_job_listing_is_bounded_and_refuses_a_repeated_token(fl_plan):
+    api, _ = client(fl_plan, listed(token="a"), listed(token="a"))
+    with pytest.raises(Failure, match="repeated"):
+        api.unfinished_connector_jobs(NOW)
+    api, http = client(fl_plan, *[listed(token=str(i)) for i in range(20)])
+    with pytest.raises(Failure, match="page ceiling"):
+        api.unfinished_connector_jobs(NOW)
+    assert len(http.calls) == 20
+
+
+def test_temporary_tables_since_the_run_started_are_listed_and_deleted(fl_plan):
+    old, new = f"tmp_{FLINK}_aaaaaaaaaaaa_c1", f"tmp_{FLINK}_bbbbbbbbbbbb_c4"
+    api, http = client(
+        fl_plan,
+        {
+            "tables": [
+                {
+                    "tableReference": {"tableId": old},
+                    "creationTime": str((NOW - 7200) * 1000),
+                },
+                {"tableReference": {"tableId": new}, "creationTime": str(NOW * 1000)},
+                {
+                    "tableReference": {"tableId": "bq_resources_1312_d0"},
+                    "creationTime": str(NOW * 1000),
+                },
+            ]
+        },
+        Response(b"", 204),
+    )
+    assert api.temporary_tables(NOW - 600) == [
+        {"table": new, "creationTime": str(NOW * 1000)}
+    ]
+    api.delete_temporary_table(new)
+    assert http.calls[-1][:2] == (
+        "DELETE",
+        BASE + f"/datasets/flink_gcp_tier3_bigquery/tables/{new}",
+    )
+    # A run table is deleted through its receipt, never by name.
+    with pytest.raises(ValueError):
+        api.delete_temporary_table("bq_resources_1312_d0")
+
+
+@pytest.mark.parametrize("value", [None, "x", True])
+def test_a_temporary_table_without_a_creation_time_fails_the_listing(fl_plan, value):
+    table = {"tableReference": {"tableId": f"tmp_{FLINK}_aaaaaaaaaaaa_c1"}}
+    if value is not None:
+        table["creationTime"] = value
+    api, _ = client(fl_plan, {"tables": [table]})
+    with pytest.raises(Failure, match="creation identity"):
+        api.temporary_tables(NOW)
+
+
+def test_a_temporary_table_created_at_the_run_start_is_the_runs(fl_plan):
+    """The bound is inclusive; the listing pages like the job listing."""
+    name = f"tmp_{FLINK}_aaaaaaaaaaaa_c1"
+    api, http = client(
+        fl_plan,
+        {"tables": [], "nextPageToken": "t"},
+        {
+            "tables": [
+                {"tableReference": {"tableId": name}, "creationTime": str(NOW * 1000)}
+            ]
+        },
+    )
+    assert api.temporary_tables(NOW) == [
+        {"table": name, "creationTime": str(NOW * 1000)}
+    ]
+    assert http.calls[1][2]["params"] == {"maxResults": 1000, "pageToken": "t"}
+    for since in (float("nan"), "1", None):
+        with pytest.raises(ValueError, match="finite"):
+            api.temporary_tables(since)
+        with pytest.raises(ValueError, match="finite"):
+            api.unfinished_connector_jobs(since)
+
+
+ROOT = Path(__file__).resolve().parents[3]
+CONNECTOR = (
+    ROOT
+    / "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connector/bigquery"
+)
+
+
+def test_the_job_and_table_shapes_are_the_ones_the_committer_names(fl_plan):
+    """Out of step, every connector job would read as not the run's and pass.
+
+    The rig cannot import the connector, so this ties the patterns above to
+    the literals that build the names: a changed prefix, hash length or
+    temporary-table stem fails here rather than in a paid trial.
+    """
+    planner = (CONNECTOR / "sink/fileloads/loadjob/CommitPlanner.java").read_text()
+    runner = (
+        CONNECTOR / "sink/fileloads/loadjob/BigQueryLoadJobRunner.java"
+    ).read_text()
+    for kind in ("load", "copy", "query"):
+        assert f'"flink-bq-{kind}"' in planner
+    assert "sha256Hex(material.toString()).substring(0, 16)" in planner
+    assert '"tmp_"' in planner and "substring(0, 12)" in planner
+    assert '"-r" + probe' in runner
+    # The application's `stagingPath`, under the run prefix state cleanup owns.
+    application = (
+        ROOT
+        / "kubernetes/apps/bigquery/src/main/java/io/github/flink/gcp/connector"
+        / "tier3/bigquery/RecoveryOptions.java"
+    ).read_text()
+    assert f'"gs://{BIGQUERY_STATE}/runs"' in application
+    assert '.stagingPath(target.runs + "/" + runId + "/staging")' in application
+    assert fl_plan.staging_prefix() == "runs/resources-1312/staging/"

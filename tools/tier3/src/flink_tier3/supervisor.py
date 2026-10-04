@@ -140,6 +140,12 @@ class Supervisor:
         self.env.wait(collected, deadline)
         return result
 
+    def connector_jobs(self, *, deadline):
+        """This run's connector-issued BigQuery jobs that are not DONE yet."""
+        if self.bigquery is None:
+            raise Failure("BigQuery observation requires an attached handoff")
+        return self.bigquery.connector_jobs(deadline=deadline)
+
     def telemetry(self, items, pods):
         observation = [
             {

@@ -43,12 +43,19 @@ QUERY_TIMEOUT_MS = 60000
 REVIEWED_AT = "2026-09-20T00:00:00Z"
 QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
-# The four dispatchable trials; the query budget above is every trial's.
+# The dispatchable trials; the query budget above is every trial's. FILE_LOADS
+# has one, at ten destinations with the connector's default sink inputs: it
+# asks whether finalization is correct across recovery, not how it scales.
 TRIALS = {
-    f"{mode.lower()}-{destinations}": (mode, destinations)
-    for destinations in (10, 50)
-    for mode in ("ALO", "EO")
+    **{
+        f"{mode.lower()}-{destinations}": (mode, destinations)
+        for destinations in (10, 50)
+        for mode in ("ALO", "EO")
+    },
+    "fl-10": ("FILE_LOADS", 10),
 }
+# A trial's offered input: 30 minutes at 1 MiB/s of its mode's row size.
+RECORDS = {mode: 1800 * 1024**2 // size for mode, size in ROW_BYTES.items()}
 
 
 def trial(name):
@@ -62,11 +69,20 @@ def trial(name):
 def validate_trial(value):
     # Serialized, so `10.0` or `True` cannot pass as a destination count.
     if json_bytes(value) not in {json_bytes(trial(name)) for name in TRIALS}:
-        raise ValueError("Trial must select ALO/EO and 10/50 destinations")
+        raise ValueError(
+            "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10"
+        )
 
 
 def estimate():
-    """Planning estimate for one trial; not a bound on bills or SDK retries."""
+    """Planning estimate for one trial; not a bound on bills or SDK retries.
+
+    It is the same for every trial. FILE_LOADS adds load jobs, which use the
+    shared free slot pool, and staged objects under the run prefix, each held
+    until the commit that loads it: on the order of the trial's 1,800 MiB input
+    for under 90 minutes, and some hundreds of writes. The estimate prices
+    neither; it assumes both fit the reserve, which no trial has measured.
+    """
     shapes = [
         POD_RESOURCES["operator"],
         POD_RESOURCES["supervisor"],
@@ -85,7 +101,7 @@ def resource_plan(run_id, nonce, expires_at, trial):
             run_id,
             trial["mode"],
             trial["destinations"],
-            28800 if trial["mode"] == "ALO" else 1843200,
+            RECORDS[trial["mode"]],
         ),
         nonce,
         int(timestamp(expires_at) * 1000),
@@ -183,27 +199,10 @@ def prepare(
             raise Failure("Rendered application differs from the proposed Pod budget")
         _verify_resources(shape.get("podTemplate", {}).get("spec", {}), "smoke")
     _verify_resources(delivery["supervisor"]["spec"]["template"]["spec"], "supervisor")
-    expected_args = [
-        "--run-id",
-        run_id,
-        "--phase",
-        "initial",
-        "--mode",
-        identity.mode,
-        "--destinations",
-        str(identity.destinations),
-        "--records",
-        str(records),
-        "--bytes-per-second",
-        "1048576",
-        "--require-restored",
-        "false",
-    ]
-    if initial["spec"]["job"]["args"] != expected_args:
+    if initial["spec"]["job"]["args"] != identity.arguments("initial"):
         raise Failure("Rendered application differs from the proposed input")
     expected_upgrade = copy.deepcopy(initial)
-    expected_upgrade["spec"]["job"]["args"][3] = "upgrade"
-    expected_upgrade["spec"]["job"]["args"][-1] = "true"
+    expected_upgrade["spec"]["job"]["args"] = identity.arguments("upgrade")
     if upgrade != expected_upgrade:
         raise Failure("Rendered upgrade changes more than phase and restoration")
     data = delivery["config"]["data"]

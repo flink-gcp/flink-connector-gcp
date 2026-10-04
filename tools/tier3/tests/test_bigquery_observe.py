@@ -15,10 +15,13 @@
 """What the sink measurement reads, and what it says when a reading is absent."""
 
 import json
+from pathlib import Path
 
 import pytest
+from flink_tier3.bigquery import Trial
 from flink_tier3.bigquery_exercise import BigQueryExercise
 from flink_tier3.bigquery_observe import (
+    COMMITTER_METRICS,
     CONNECTOR_METRICS,
     MEMORY_METRICS,
     NETWORK_METRICS,
@@ -157,6 +160,7 @@ class Exercising:
         self.env.emit = lambda event, payload: self.emitted.append((event, payload))
         self.emitted, self.rest, self.vertices = [], None, None
         self.measured_at, self.stage, self.coverage = None, "baseline", {}
+        self.trial = Trial("observe-1312", "EO", 10, 20)
 
     timing = BIGQUERY_OBSERVATIONS
     attach_rest = BigQueryExercise.attach_rest
@@ -270,3 +274,202 @@ def test_any_other_failure_still_stops_the_caller():
 
     with pytest.raises(Failure, match="deadline expired"):
         sample(read)
+
+
+class FileLoadsCluster(Cluster):
+    """The measured FILE_LOADS plan: its committer is a vertex of its own.
+
+    Names as Flink 2.2.1 builds the application's job graph: the writer is
+    chained to the checkpoint stamper, and the committer is fed through a
+    global exchange.
+    """
+
+    def __init__(self, **failures):
+        super().__init__(**failures)
+        self.plan = [
+            {"id": "committer", "name": "BigQuery FILE_LOADS: Committer"},
+            {
+                "id": "sink",
+                "name": "BigQuery FILE_LOADS: Writer -> "
+                "BigQuery FILE_LOADS: Stamp checkpoint ids",
+            },
+            {
+                "id": "source",
+                "name": "Source: BigQuery input -> BigQuery input identity",
+            },
+        ]
+
+    def request(self, method, path, **kwargs):
+        for fragment, status in self.failures.items():
+            if fragment in path:
+                self.paths.append(path)
+                raise ApiError(status, method, path)
+        if "/proxy/jobs/" in path and "/" not in path.split("/proxy/jobs/")[1]:
+            self.paths.append(path)
+            return {"vertices": self.plan}
+        if path.endswith("/vertices/committer/subtasks/metrics"):
+            self.paths.append(path)
+            return [
+                {"id": "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted"},
+                {"id": "BigQuery_FILE_LOADS__Committer.lastCommitDurationMillis"},
+                {"id": "busyTimeMsPerSecond"},
+            ]
+        if path.endswith("/checkpoints"):
+            self.paths.append(path)
+            return {"latest": {"completed": {"id": 7}}}
+        if "/checkpoints/details/7/subtasks/" in path:
+            self.paths.append(path)
+            return {
+                "subtasks": [
+                    {
+                        "index": 0,
+                        "status": "completed",
+                        "checkpoint": {"sync": 3, "async": 40},
+                        "alignment": {"duration": 1},
+                        "start_delay": 2,
+                        "end_to_end_duration": 50,
+                        "state_size": 99,
+                    }
+                ]
+            }
+        return super().request(method, path, **kwargs)
+
+
+def file_loads_reader(**failures):
+    cluster = FileLoadsCluster(**failures)
+    return cluster, FlinkRest(Environment(cluster), SERVICE, JOB)
+
+
+def test_a_file_loads_plan_names_its_writer_and_its_committer():
+    """One non-source vertex is the Storage Write shape; FILE_LOADS has two."""
+    _cluster, rest = file_loads_reader()
+    state = vertices(rest, mode="FILE_LOADS")
+    assert (state["source"], state["sink"], state["committer"]) == (
+        "source",
+        "sink",
+        "committer",
+    )
+    assert state["committer_metrics"] == [
+        "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted",
+        "BigQuery_FILE_LOADS__Committer.lastCommitDurationMillis",
+    ]
+    # The same plan is not a Storage Write sink, whose committer is chained.
+    assert "one sink" in vertices(rest, mode="EO")["unavailable"]
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        # The Storage Write shape: no committer vertex.
+        [{"id": "sink", "name": "BigQuery FILE_LOADS: Writer"}],
+        # A chained committer is not a vertex of its own.
+        [{"id": "sink", "name": "X: Writer -> X: Committer"}, {"id": "c", "name": "Y"}],
+        # Two committers cannot both be the one that commits.
+        [
+            {"id": "sink", "name": "X: Writer"},
+            {"id": "c1", "name": "X: Committer"},
+            {"id": "c2", "name": "Y: Committer"},
+        ],
+    ],
+)
+def test_a_file_loads_plan_of_another_shape_is_named_unavailable(plan):
+    cluster, rest = file_loads_reader()
+    cluster.plan = [*plan, {"id": "source", "name": "Source: input"}]
+    assert (
+        "a writer and a committer" in vertices(rest, mode="FILE_LOADS")["unavailable"]
+    )
+
+
+def test_a_file_loads_reading_samples_the_committer_and_checkpoint_durations():
+    cluster, rest = file_loads_reader()
+    reading = observation(rest, vertices(rest, mode="FILE_LOADS"))
+    assert not unavailable(reading["committer"])
+    assert reading["checkpoints"]["id"] == 7
+    for role in ("sink", "committer"):
+        (subtask,) = reading["checkpoints"]["vertices"][role]
+        # Durations and where the time went; sizes are not this measurement.
+        assert subtask["checkpoint"] == {"sync": 3, "async": 40}
+        assert subtask["start_delay"] == 2 and "state_size" not in subtask
+    asked = "".join(cluster.paths)
+    assert "/checkpoints/details/7/subtasks/sink" in asked
+    assert "/checkpoints/details/7/subtasks/committer" in asked
+    assert "/vertices/committer/subtasks/metrics?get=" in asked
+
+
+def test_an_absent_checkpoint_is_named_rather_than_read_as_zero():
+    _cluster, rest = file_loads_reader(**{"/checkpoints": 503})
+    reading = observation(rest, vertices(rest, mode="FILE_LOADS"))
+    assert unavailable(reading["checkpoints"])
+    cluster, rest = file_loads_reader()
+    original = cluster.request
+
+    def no_completed_checkpoint(method, path, **kwargs):
+        if path.endswith("/checkpoints"):
+            return {"latest": {}}
+        return original(method, path, **kwargs)
+
+    cluster.request = no_completed_checkpoint
+    assert (
+        "no completed"
+        in observation(rest, vertices(rest, mode="FILE_LOADS"))["checkpoints"][
+            "unavailable"
+        ]
+    )
+
+
+def test_a_storage_write_reading_has_no_committer_or_checkpoint_entry():
+    _cluster, rest = reader()
+    reading = observation(rest, vertices(rest, mode="EO"))
+    assert "committer" not in reading and "checkpoints" not in reading
+
+
+def test_the_committer_metrics_are_the_ones_the_connector_registers():
+    """FileLoadsCommitterMetrics; the writer's FILE_LOADS gauges are connector."""
+    assert set(COMMITTER_METRICS) == {
+        "loadJobsSubmitted",
+        "queuedCommitDestinations",
+        "activeCommitDestinations",
+        "currentCommitDurationMillis",
+        "lastCommitDurationMillis",
+    }
+    for metric in ("filesStaged", "pendingFiles", "capacityEvictions", "idleEvictions"):
+        assert metric in CONNECTOR_METRICS
+
+
+def test_committer_ids_are_unioned_and_survive_an_unreadable_listing():
+    """One 503 must not drop the finalization observation for the run."""
+    cluster, rest = file_loads_reader()
+    first = vertices(rest, mode="FILE_LOADS")
+    cluster.failures["/vertices/committer/subtasks/metrics"] = 503
+    kept = vertices(rest, first, mode="FILE_LOADS")
+    assert kept["committer_metrics"] == first["committer_metrics"]
+    del cluster.failures["/vertices/committer/subtasks/metrics"]
+    request = cluster.request
+
+    def later(method, path, **kwargs):
+        if path.endswith("/vertices/committer/subtasks/metrics"):
+            return [{"id": "BigQuery_FILE_LOADS__Committer.queuedCommitDestinations"}]
+        return request(method, path, **kwargs)
+
+    cluster.request = later
+    assert vertices(rest, kept, mode="FILE_LOADS")["committer_metrics"] == [
+        *first["committer_metrics"],
+        "BigQuery_FILE_LOADS__Committer.queuedCommitDestinations",
+    ]
+
+
+def test_the_file_loads_metric_names_are_the_ones_the_connector_registers():
+    """A renamed metric would read as never published, not as a failure."""
+    names = (
+        Path(__file__).resolve().parents[3]
+        / "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp"
+        / "connector/bigquery/BigQueryMetricNames.java"
+    ).read_text()
+    for metric in (
+        *COMMITTER_METRICS,
+        "filesStaged",
+        "pendingFiles",
+        "capacityEvictions",
+        "idleEvictions",
+    ):
+        assert f'= "{metric}";' in names, metric

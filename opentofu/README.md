@@ -201,12 +201,15 @@ It holds no `bigquery.datasets.get`, so a FILE_LOADS runtime must set the sink's
 Temporary tables and copy jobs, which would need table creation and deletion, arise only when one destination's commit exceeds 10,000 files or 11 TiB, or under a truncating write disposition.
 The application's FILE_LOADS mode appends, and each of its two writers fails rather than hold more than `maxPendingFiles` files, which it leaves at 10,000; spread evenly over at least 10 destinations, that is at most about 2,000 files for one destination in one commit, whatever the staging file size.
 `roles/bigquery.jobUser` would add Dataform repository creation and project listing to the same `bigquery.jobs.create`.
-A load job keeps writing server-side after the workload's Pods are gone, so the quiescence barrier's Pod listing does not cover it; the rig's load-job barrier ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)) owns that.
+A load job keeps writing server-side after the workload's Pods are gone, so the quiescence barrier's Pod listing does not cover it.
+The supervisor therefore also receives project-wide `bigquery.jobs.list` through its own custom role ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)): without it a caller lists only the jobs it created, and the load jobs belong to the workload and have ids that hash their staged files, so they can be found only by listing.
+The listing redacts other principals' jobs, and the supervisor reads each candidate whole through the `bigquery.jobs.get` below; `bigquery.jobs.listAll` would add unredacted listings nothing needs, and the runner lists no job.
+With it the supervisor refuses the oracle read while one of the run's jobs is still running and waits for each before cleanup deletes a table, as the [application README](../kubernetes/apps/bigquery/README.md#connector-issued-jobs) describes.
 The dataset bindings cover every table in this dedicated dataset, not one run prefix.
 The runner and supervisor also receive project-wide `bigquery.jobs.create/get/update` so either actor can inspect and cancel an outstanding validation query after the other fails.
 These job permissions can inspect and cancel other principals' jobs in the project; they are not scoped to the dataset or an approved run.
 The later runtime must record exact query IDs before submission, enforce the approved query and byte budget, and limit recovery to those IDs.
-The existing project-wide Role Admin grant lets the apply identity manage these five custom roles.
+The existing project-wide Role Admin grant lets the apply identity manage these six custom roles.
 
 All three actors can list and read the dedicated state bucket and use Object User under `runs/` and `.inprogress/flink-gcp-tier3-bigquery/runs/`, where the Flink GCS filesystem's recoverable writer stages each upload before composing it into place; the bucket's one-day expiry covers both prefixes.
 That grant covers all runs in the bucket; run ownership must be checked by the lifecycle code before deletion.

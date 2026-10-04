@@ -39,7 +39,7 @@ def approval(env, inputs, renderer, monkeypatch):
     inputs.update(run_id=value["run_id"], nonce=value["nonce"])
     proposed = plan.prepare(**inputs)["proposal"]
     value.update(
-        version=4,
+        version=5,
         scenario="bigquery-recovery",
         started_at=proposed["started_at"],
         expires_at=proposed["expires_at"],

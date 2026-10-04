@@ -396,7 +396,7 @@ def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
         actor="octocat",
     )
     validate_approval(approval, environment.clock())
-    assert approval["version"] == 4
+    assert approval["version"] == 5
     assert approval["scenario"] == "bigquery-recovery"
     # A copy, so a later edit to the trial the dispatch holds cannot reach it.
     assert approval["bigquery_trial"] == reference["bigquery_trial"]

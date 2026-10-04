@@ -55,8 +55,9 @@ def prepared(env, inputs, renderer):
     application = bundle["application"]
     application.update(apiVersion="flink.apache.org/v1beta1", kind="FlinkDeployment")
     upgrade = copy.deepcopy(application)
-    upgrade["spec"]["job"]["args"][3] = "upgrade"
-    upgrade["spec"]["job"]["args"][-1] = "true"
+    upgrade["spec"]["job"]["args"] = bundle["upgrade_application"]["spec"]["job"][
+        "args"
+    ]
     saved = approval["namespaces"].pop(rt.SMOKE)
     quota = kube.get("ResourceQuota", rt.SMOKE, "tier3-idle")
     quota["metadata"].update(namespace=BIGQUERY, uid=BIGQUERY + "-quota")
@@ -64,7 +65,7 @@ def prepared(env, inputs, renderer):
     saved.update(uid=BIGQUERY + "-uid", quota_uid=BIGQUERY + "-quota")
     approval["namespaces"][BIGQUERY] = saved
     approval.update(
-        version=4,
+        version=5,
         scenario="bigquery-recovery",
         started_at=proposal["started_at"],
         expires_at=proposal["expires_at"],
@@ -117,8 +118,8 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("version", 4.0),
-        ("version", 3),
+        ("version", 5.0),
+        ("version", 4),
         ("upgrade_application_sha256", ""),
         ("bigquery_trial", {}),
         ("recovery_policy", RECOVERY),
@@ -141,7 +142,7 @@ def test_inconsistent_approval_is_rejected(prepared, key, value):
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("mode", "FILE_LOADS"),
+        ("mode", "STORAGE_WRITE"),
         ("destinations", 11),
         ("version", 1),
         ("query_slots", 1),

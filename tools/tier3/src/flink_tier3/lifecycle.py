@@ -125,13 +125,13 @@ def bigquery_approval(
     owner,
     actor,
 ):
-    """Assemble the version 4 approval from a rendered, verified proposal.
+    """Assemble the version 5 approval from a rendered, verified proposal.
 
     Every digest comes from the proposal, which rendered and checked the
     manifests itself; nothing here renders or hashes a second time.
     """
     return {
-        "version": 4,
+        "version": 5,
         "scenario": "bigquery-recovery",
         "run_id": run_id,
         "nonce": nonce,

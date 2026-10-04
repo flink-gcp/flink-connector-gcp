@@ -23,8 +23,11 @@ from dataclasses import asdict
 from .bigquery import integer
 from .common import ApiError, Failure, digest, json_bytes
 from .model import Phase
+from .policy import BIGQUERY_CEILINGS, BIGQUERY_STATE
 
 MAX_CONTROL_BYTES = 256 * 1024
+# How many leftover staged object names the receipt keeps beside their count.
+STAGING_NAMES = 20
 
 
 def billed_bytes(result):
@@ -52,22 +55,7 @@ class BigQueryLifecycle:
         self.plan = resources.plan
         trial = self.plan.trial
         approval = env.approval
-        expected_args = [
-            "--run-id",
-            trial.run_id,
-            "--phase",
-            "initial",
-            "--mode",
-            trial.mode,
-            "--destinations",
-            str(trial.destinations),
-            "--records",
-            str(trial.records),
-            "--bytes-per-second",
-            "1048576",
-            "--require-restored",
-            "false",
-        ]
+        expected_args = trial.arguments("initial")
         if (
             approval.scenario != "bigquery-recovery"
             or approval.run_id != trial.run_id
@@ -354,6 +342,74 @@ class BigQueryLifecycle:
         self._change(remember)
         return result
 
+    def unfinished_connector_jobs(self):
+        """This run's connector-issued jobs that are not DONE, listed now."""
+        if self.env.actor != "supervisor":
+            raise Failure("Only the supervisor observes connector-issued jobs")
+        self.env.assert_owner()
+        return self.api.unfinished_connector_jobs(self.env.schedule.started)
+
+    def _settle_file_loads(self, state):
+        """Wait out the committer's jobs and remove its temporary tables.
+
+        Runs after the Kubernetes barrier, so nothing can submit another job:
+        a load the committer submitted just before its Pod stopped is still
+        the service's to run, and no table is deleted until it is DONE. Its
+        ids are recorded, because one outliving the workload is a finding.
+        A temporary table is recorded before it is deleted, so a pass that
+        stops between the two loses nothing the next pass cannot list again.
+        Each write here happens only on a pass that then returns False.
+        """
+        previous = state.get("file_loads") or {}
+        jobs = self.api.unfinished_connector_jobs(self.env.schedule.started)
+        waited = sorted(
+            set(previous.get("unfinished_jobs", ())) | {job["id"] for job in jobs}
+        )
+        temporary = [] if jobs else self.api.temporary_tables(self.env.schedule.started)
+        recorded = sorted(
+            set(previous.get("temporary_tables", ()))
+            | {table["table"] for table in temporary}
+        )
+        if not jobs and not temporary:
+            return True
+        if (waited, recorded) != (
+            previous.get("unfinished_jobs", []),
+            previous.get("temporary_tables", []),
+        ):
+            self._change(
+                lambda value: value.update(
+                    file_loads={
+                        **(value.get("file_loads") or {}),
+                        "unfinished_jobs": waited,
+                        "temporary_tables": recorded,
+                    }
+                )
+            )
+        for table in temporary:
+            self.env.assert_owner()
+            self.api.delete_temporary_table(table["table"])
+        return False
+
+    def _staging(self):
+        """What the staging prefix still holds, before state cleanup deletes it.
+
+        A listing that fails is recorded rather than raised: this account must
+        not keep the run's tables alive, and state cleanup reports its own.
+        """
+        try:
+            staged = self.env.store.objects(
+                self.plan.staging_prefix(),
+                BIGQUERY_STATE,
+                BIGQUERY_CEILINGS["state_objects"],
+            )
+        except (Failure, OSError, ValueError) as error:
+            return {"unreadable": str(error)}
+        return {
+            "objects": len(staged),
+            "bytes": sum(int(obj["size"]) for obj in staged),
+            "names": sorted(obj["name"] for obj in staged)[:STAGING_NAMES],
+        }
+
     def request_stop(self):
         return self._change(lambda state: state.update(stopped=True))
 
@@ -380,6 +436,8 @@ class BigQueryLifecycle:
             if job is None or job["status"]["state"] != "DONE":
                 pending = True
         if pending:
+            return False
+        if self.plan.trial.mode == "FILE_LOADS" and not self._settle_file_loads(state):
             return False
         # One control write per pass: Cloud Storage refuses more than about
         # one mutation a second on an object, and fifty per-table writes
@@ -413,5 +471,22 @@ class BigQueryLifecycle:
                 return False
             if not saved["deleted"]:
                 deleted.append(key)
-        self._change(lambda value: (mark(value), value.update(cleaned=True)))
+        file_loads = None
+        if self.plan.trial.mode == "FILE_LOADS":
+            # Kept from a pass that already recorded it: state cleanup may have
+            # emptied the prefix since, and a recount would then read zero.
+            file_loads = {
+                "unfinished_jobs": [],
+                "temporary_tables": [],
+                **(state.get("file_loads") or {}),
+            }
+            file_loads.setdefault("staging", self._staging())
+
+        def finish(value):
+            mark(value)
+            value.update(cleaned=True)
+            if file_loads is not None:
+                value["file_loads"] = file_loads
+
+        self._change(finish)
         return True

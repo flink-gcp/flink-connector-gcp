@@ -145,6 +145,30 @@ resource "google_project_iam_member" "tier3_bigquery_jobs" {
   member   = each.value
 }
 
+# A FILE_LOADS trial's load jobs belong to the workload, and their ids hash
+# the staged files, so the supervisor can find them only by listing. Without
+# bigquery.jobs.list a caller lists only the jobs it created; with it, every
+# principal's jobs, redacted, which bigquery.jobs.get above then reads whole.
+# The supervisor refuses the oracle read while one still runs and waits for
+# each before cleanup deletes a table. bigquery.jobs.listAll would add
+# unredacted listings nothing needs, and the runner lists no job.
+resource "google_project_iam_custom_role" "tier3_bigquery_supervisor_jobs" {
+  project     = local.project_id
+  role_id     = "tier3BigQuerySupervisorJobs"
+  title       = "Tier-3 BigQuery connector job listing"
+  description = "Lists the project's BigQuery jobs to find a Tier-3 trial's connector-issued jobs"
+  permissions = ["bigquery.jobs.list"]
+  stage       = "GA"
+
+  depends_on = [google_project_iam_member.opentofu["roles/iam.roleAdmin"]]
+}
+
+resource "google_project_iam_member" "tier3_bigquery_supervisor_jobs" {
+  project = local.project_id
+  role    = google_project_iam_custom_role.tier3_bigquery_supervisor_jobs.name
+  member  = local.tier3_bigquery_lifecycle.supervisor
+}
+
 # The FILE_LOADS committer submits load jobs as the workload, and jobs are
 # project resources, so this grant cannot be scoped to the dataset. It is the
 # one permission that path lacks; everything else it touches is already held.

@@ -36,16 +36,35 @@ from .bigquery import (
     query,
 )
 from .common import ApiError, Failure, TransportError, digest, json_bytes
-from .policy import HTTP_TIMEOUT, REGION
+from .policy import BIGQUERY_STATE, HTTP_TIMEOUT, REGION
 
 BASE = f"https://bigquery.googleapis.com/bigquery/v2/projects/{PROJECT}"
 MAX_RESPONSE_BYTES = 1024 * 1024
+# The ids the FILE_LOADS committer gives its jobs (`CommitPlanner.jobId`): kind,
+# Flink job id, an optional checkpoint, a hash of destination and sources, and
+# an optional partition or level suffix. A failed job's retry appends `-r<n>`.
+CONNECTOR_JOB = re.compile(
+    r"flink-bq-(load|copy|query)-[0-9a-f]{32}(-c[0-9]+)?-[0-9a-f]{16}"
+    r"(-[a-z0-9]+)*"
+)
+# Temporary tables the overflow path names `tmp_<Flink job id>_...`.
+TEMPORARY_TABLE = re.compile(r"tmp_[0-9a-f]{32}_[0-9a-z_]+")
+# Listing ceilings: a bounded number of pages, each of at most this many items.
+LIST_PAGE = 1000
+LIST_PAGES = 20
 TABLE_FIELDS = (
     ("run_id", "STRING"),
     ("sequence", "INTEGER"),
     ("destination", "INTEGER"),
     ("payload", "BYTES"),
 )
+
+
+def milliseconds(since):
+    """A listing's lower bound, a finite UTC timestamp, in milliseconds."""
+    if type(since) not in (int, float) or not math.isfinite(since):
+        raise ValueError("since must be a finite UTC timestamp")
+    return int(since * 1000)
 
 
 def positive(value, name):
@@ -92,6 +111,10 @@ class ResourcePlan:
             "tier3_nonce": self.nonce,
             "tier3_trial": digest(asdict(self.trial))[:63],
         }
+
+    def staging_prefix(self):
+        """Where the application stages FILE_LOADS files in the state bucket."""
+        return f"runs/{self.trial.run_id}/staging/"
 
     def table_body(self, destination):
         if (
@@ -302,6 +325,161 @@ class BigQueryResources:
         ):
             raise Failure("BigQuery job differs from persisted query intent")
         return job
+
+    def connector_job(self, job):
+        """What a job the connector issued for this run did, or None if it is not one.
+
+        `_verify_job` refuses every job that is not this run's own query slot;
+        this is the other half, for jobs the application's committer submitted
+        as the workload. They carry no labels, so ownership is read from the
+        configuration: a load whose every source is a staged file under this
+        run's prefix, or a copy or query into one of this run's tables. The
+        overflow path's copies between temporary tables name no run table and
+        are not recognized; the workload holds no `bigquery.tables.create`, so
+        the loads that would feed them fail first.
+        """
+        reference = job.get("jobReference") if isinstance(job, dict) else None
+        job_id = reference.get("jobId") if isinstance(reference, dict) else None
+        if not isinstance(job_id, str) or not CONNECTOR_JOB.fullmatch(job_id):
+            return None
+        config = job.get("configuration")
+        status = job.get("status")
+        if not isinstance(config, dict) or not isinstance(status, dict):
+            raise Failure("Connector BigQuery job has no readable configuration")
+        kinds = [k for k in ("load", "copy", "query", "extract") if k in config]
+        if len(kinds) != 1 or not isinstance(config[kinds[0]], dict):
+            raise Failure("Connector BigQuery job has no single configuration")
+        kind, body = kinds[0], config[kinds[0]]
+        destination = body.get("destinationTable")
+        destination = destination if isinstance(destination, dict) else {}
+        tables = {
+            self.plan.table_body(i)["tableReference"]["tableId"]
+            for i in range(self.plan.trial.destinations)
+        }
+        in_dataset = (
+            destination.get("projectId") == PROJECT
+            and destination.get("datasetId") == DATASET
+        )
+        table_id = destination.get("tableId")
+        if kind == "load":
+            uris = body.get("sourceUris")
+            prefix = f"gs://{BIGQUERY_STATE}/{self.plan.staging_prefix()}"
+            staged = [
+                isinstance(uri, str) and uri.startswith(prefix) for uri in uris or ()
+            ]
+            if not isinstance(uris, list) or not any(staged):
+                return None
+            if not all(staged) or not (
+                in_dataset
+                and (
+                    table_id in tables
+                    or (
+                        isinstance(table_id, str)
+                        and TEMPORARY_TABLE.fullmatch(table_id)
+                    )
+                )
+            ):
+                raise Failure("A load of this run's staged files differs from its plan")
+        elif kind == "extract" or not (in_dataset and table_id in tables):
+            return None
+        state = status.get("state")
+        if state not in ("PENDING", "RUNNING", "DONE"):
+            raise Failure("Connector BigQuery job has no usable status")
+        return {
+            "id": job_id,
+            "kind": kind,
+            "table": table_id,
+            "state": state,
+        }
+
+    def _listed(self, path, key, params):
+        """Every item of a bounded, paged listing; a repeated token fails it."""
+        tokens, token = set(), None
+        for _ in range(LIST_PAGES):
+            query = {**params, "maxResults": LIST_PAGE}
+            if token is not None:
+                query["pageToken"] = token
+            page = self._call("GET", path, params=query)
+            items = page.get(key, [])
+            if not isinstance(items, list) or len(items) > LIST_PAGE:
+                raise Failure("Malformed BigQuery listing")
+            yield from items
+            token = page.get("nextPageToken")
+            if token is None or token == "":
+                return
+            if not isinstance(token, str) or token in tokens:
+                raise Failure("Invalid or repeated BigQuery page token")
+            tokens.add(token)
+        raise Failure("BigQuery listing exceeds its page ceiling")
+
+    def unfinished_connector_jobs(self, since):
+        """This run's connector jobs that are not DONE, from a listing taken now.
+
+        Needs `bigquery.jobs.list`, which lists every user's jobs with their
+        details redacted, and `bigquery.jobs.get` to read each candidate whole.
+        A listed job whose id is unreadable fails the call rather than being
+        passed over: a redaction that hid it would otherwise read as no job.
+        A connector-shaped job that is listed but cannot then be read counts
+        as unfinished for the same reason; it leaves the listing once DONE.
+        `since` is a UTC timestamp no later than the run's first submission.
+        """
+        params = {
+            "allUsers": "true",
+            "stateFilter": ["pending", "running"],
+            "minCreationTime": str(milliseconds(since)),
+            "projection": "minimal",
+        }
+        found = []
+        for listed in self._listed("/jobs", "jobs", params):
+            reference = listed.get("jobReference") if isinstance(listed, dict) else None
+            job_id = reference.get("jobId") if isinstance(reference, dict) else None
+            if not isinstance(job_id, str) or not job_id:
+                raise Failure("A listed BigQuery job has no readable id")
+            if not CONNECTOR_JOB.fullmatch(job_id):
+                continue
+            job = self._call(
+                "GET",
+                f"/jobs/{job_id}",
+                params={"location": reference.get("location") or REGION},
+                absent=True,
+            )
+            attributed = (
+                {"id": job_id, "kind": None, "table": None, "state": "UNREADABLE"}
+                if job is None
+                else self.connector_job(job)
+            )
+            if attributed is not None and attributed["state"] != "DONE":
+                found.append(attributed)
+        return found
+
+    def temporary_tables(self, since):
+        """Temporary tables in the dataset created at or after `since`.
+
+        The dataset holds only Tier-3 trial tables and one trial runs at a
+        time under the environment lock, so a temporary table created since
+        this run started is one this run's committer created.
+        """
+        since, found = milliseconds(since), []
+        for table in self._listed(f"/datasets/{DATASET}/tables", "tables", {}):
+            reference = table.get("tableReference") if isinstance(table, dict) else None
+            table_id = reference.get("tableId") if isinstance(reference, dict) else None
+            if not isinstance(table_id, str):
+                raise Failure("A listed BigQuery table has no readable id")
+            if not TEMPORARY_TABLE.fullmatch(table_id):
+                continue
+            try:
+                created = integer(table.get("creationTime"), "creationTime")
+            except ValueError as error:
+                raise Failure("Missing BigQuery table creation identity") from error
+            if created >= since:
+                found.append({"table": table_id, "creationTime": str(created)})
+        return found
+
+    def delete_temporary_table(self, table):
+        """Delete one listed temporary table; an absent one is already gone."""
+        if not isinstance(table, str) or not TEMPORARY_TABLE.fullmatch(table):
+            raise ValueError("Only a temporary table may be deleted by name")
+        self._call("DELETE", f"/datasets/{DATASET}/tables/{table}", absent=True)
 
     def _job_path(self, slot, collection="jobs"):
         return f"/{collection}/{self.plan.job_body(slot)['jobReference']['jobId']}"

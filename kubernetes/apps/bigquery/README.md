@@ -73,6 +73,8 @@ The job enables checkpoints every 30 seconds in the Storage Write modes and ever
 FILE_LOADS refuses an interval below its `minCheckpointInterval`, two minutes by default, because each checkpoint issues a load job per destination table against a daily per-table modification quota.
 Writer and buffered-stream options retain their production defaults; this workload does not search capacity or tune those defaults.
 The FILE_LOADS sink appends to the provisioned tables and stages under `gs://flink-gcp-tier3-bigquery/runs/<run-id>/staging`, inside the run prefix that the state IAM condition, the bucket lifecycle rule and cleanup already cover.
+Staged files therefore also count against the run's 1 GiB and 10,000-object state ceilings, which the supervisor's audit checks on every poll and refuses by failing the run.
+At the 1 MiB/s offered rate and the 120-second interval a checkpoint stages roughly 120 MiB before conversion, and its commit deletes those files; a commit backlog of several intervals, or leftovers from failed commits, could reach the byte ceiling, which no trial has measured yet.
 Its five arguments above default to the connector's values.
 The FILE_LOADS sink also names the dataset's location, `us-central1`, so its committer never reads dataset metadata: without a location it looks each destination dataset up to place its load jobs, which would need `bigquery.datasets.get`.
 The Storage Write modes leave the location unset, as before.
@@ -124,12 +126,12 @@ The [production dispatch](#production-dispatch) path must bind the exact rendere
 ## Offline execution proposal
 
 `flink-tier3 render --scenario bigquery-recovery` combines one trial's proposed limits, initial/upgrade applications and supervisor delivery into a JSON bundle.
-A proposal is not an approval: dispatch admits this scenario only through the [production dispatch](#production-dispatch) below, under its own version 4 approval contract.
+A proposal is not an approval: dispatch admits this scenario only through the [production dispatch](#production-dispatch) below, under its own version 5 approval contract.
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
-Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50` or `eo-50`, one delivery method at one destination count.
-The application and its package accept FILE_LOADS, but no trial selects it yet: the proposal, dispatch and query oracle learn that mode under [issue #1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551).
+Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, one delivery method at one destination count.
+`fl-10` is the one FILE_LOADS trial, at 10 destinations with the five sink inputs at the connector's defaults: it asks whether finalization survives the two recoveries, not how it scales.
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the mode's 30-minute-equivalent input above.
 Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
@@ -178,7 +180,7 @@ The sink uses `CREATE_NEVER`; the workload creates no tables or datasets.
 Rows contain nullable `run_id STRING`, `sequence INTEGER`, `destination INTEGER` and `payload BYTES` columns, with a value supplied for every field.
 Padding is deterministic pseudorandom data derived from run ID and sequence, avoiding an all-zero fixture.
 Replay serializes the same sequence into the same bytes and table.
-The deployed query oracle must require every expected sequence in its correct table; EO additionally requires exact uniqueness, while ALO records duplicate multiplicities.
+The deployed query oracle must require every expected sequence in its correct table; EO and FILE_LOADS additionally require exact uniqueness, while ALO records duplicate multiplicities.
 The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
 The resource adapter and controller below provide internal query, ownership and deletion operations.
 The internal admission path connects those operations to deployment creation; authenticated production dispatch remains subsequent lifecycle work.
@@ -291,9 +293,10 @@ A matching distinct count over the valid finite sequence domain proves completen
 | `invalid_rows` | All observed rows minus rows with valid identity, range and routing |
 | `missing_sequences` | Expected sequences minus distinct valid sequences, summed across tables |
 | `duplicate_rows` | Valid rows minus distinct valid sequences; extra copies, not the number of duplicated identities |
-| `verdict` | `pass` only with no invalid or missing rows, and also no duplicate rows in EO mode |
+| `verdict` | `pass` only with no invalid or missing rows, and also no duplicate rows in EO or FILE_LOADS mode |
 
-ALO reports duplicate copies while permitting them; EO rejects them.
+ALO reports duplicate copies while permitting them; EO and FILE_LOADS reject them.
+FILE_LOADS derives each load job's id from the staged files it loads, so a retried commit re-attaches to its job instead of loading the files twice, and the connector claims exactly-once for it.
 The report includes per-destination counts and totals, with `scope=query-result` to distinguish this check from a deployed recovery verdict.
 It does not inspect payload bytes, prove table ownership, authenticate evidence, establish a checkpoint/fault boundary or prove that no later writes occur.
 Identity fields in the aggregate bind the input parameters for accidental-mismatch detection; they are query literals, not a service attestation.
@@ -359,7 +362,7 @@ The internal runner and supervisor use this controller only with explicitly supp
 Neither production CLI entrypoint admits a BigQuery scenario yet.
 The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
 The controller binds the complete service plan, run ID, nonce and trial arguments to the approved initial application hash.
-The common model validates the version 4 approval; complete deployment admission remains executor work.
+The common model validates the version 5 approval; complete deployment admission remains executor work.
 
 Initialization stores the unchanged plan in `RunRecord.bigquery`.
 Provisioning first checks absence, records a creation intent, then creates or reconciles that table and stores its creation receipt.
@@ -493,7 +496,7 @@ The fixed dataset and namespace grants already exist, but checkpoint/savepoint r
 
 ### Approval and shared resource policy
 
-The common model accepts a version 4 `bigquery-recovery` approval, which [production dispatch](#production-dispatch) builds and the internal integration and cleanup tests construct directly.
+The common model accepts a version 5 `bigquery-recovery` approval, which [production dispatch](#production-dispatch) builds and the internal integration and cleanup tests construct directly.
 It binds `bigquery_trial` to the trial's delivery method and destination count, the only fields a trial chooses.
 The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 A valid document is not authenticated execution permission on its own: dispatch still requires the typed phrase, the environment lock and a verified bundle, and the in-cluster entrypoint builds its supervisor only through the authenticated actor factory.
@@ -517,7 +520,7 @@ Synthetic tests cover these boundaries and compose the real approval, environmen
 They do not establish a functioning external quiescence barrier or live service acceptance.
 
 Authenticated approval delivery, measurement collection, complete evidence accounting and writer fencing must be connected before enabling either execution entrypoint.
-The internal loops require a fixed 10 MiB allocation for query artifacts, reducing supervisor receipts to 80 MiB and runner receipts to 8 MiB for version 4 approvals.
+The internal loops require a fixed 10 MiB allocation for query artifacts, reducing supervisor receipts to 80 MiB and runner receipts to 8 MiB for these approvals.
 The four allowances are now entries under `[bigquery_ceilings]` rather than literals spread across modules, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
 Those documents — the approval, the application and upgrade manifests, the image receipts, the session file and the final result — are weighed against that last allowance before each write, where previously they were written unweighed and nothing proved the run stayed inside what it was approved to retain.
 Only the documents directly under the run prefix count against it; the per-actor receipts and the query artifacts live in subdirectories and answer to their own entries.
@@ -533,7 +536,7 @@ A BigQuery finalization retry compares all receipt fields except the refreshed p
 
 ## Approval-bound delivery bundle
 
-`flink-tier3 bigquery-bundle` prepares the delivery from a separately supplied version 4 approval and verifies it by re-rendering against that approval.
+`flink-tier3 bigquery-bundle` prepares the delivery from a separately supplied version 5 approval and verifies it by re-rendering against that approval.
 The checkout HEAD must match the approval SHA, with no tracked Kubernetes input changes or untracked CUE or TOML inputs, including ignored files.
 Repository checks ignore ambient `GIT_*` overrides and bound each Git invocation to 60 seconds.
 The installed package runtime hash, both application hashes and the supervisor image must also match the approval.
@@ -561,6 +564,23 @@ The future executor must independently authenticate the approval, verify GitHub 
 A previously prepared relative Job deadline is not permission to start that Job later.
 The [production dispatch](#production-dispatch) is that executor, for the checks it can make; image publication and retention remain a live check at dispatch.
 
+## Connector-issued jobs
+
+A FILE_LOADS trial adds writes the Pod listing above cannot see: the committer submits load jobs as the workload, and a job keeps running server-side after the Pod that submitted it is gone.
+They carry no labels, and their ids hash the staged files they load, so the supervisor finds them by listing the project's jobs that are pending or running since the run started, then reading each one whose id has the connector's `flink-bq-` shape.
+A load belongs to the run when every source is a staged file under its `runs/<run-id>/staging/` prefix, and a copy or query when it writes one of the run's tables; a load of the run's files into any other table fails the listing.
+The supervisor holds `bigquery.jobs.list` for this, which lists other principals' jobs with their details redacted, and reads each candidate whole through its existing `bigquery.jobs.get`; a listed job whose id it cannot read fails the listing rather than counting as no job, and a connector-shaped job that is listed but cannot then be read counts as unfinished, which it stops being once it is `DONE` and leaves the listing.
+
+Cleanup runs this after the Pod barrier and the query checks, and before any table is deleted: while one of the run's jobs is not `DONE`, the pass returns without deleting, and the ids it waited for stay in the control record, because a job that outlived the workload is a finding.
+The tables are `CREATE_NEVER` destinations, so a load that reached the service only after a table was deleted would fail; the wait is what keeps one that is already running from racing the deletion.
+Once none remains, cleanup deletes any temporary table the overflow path created in the dataset since the run started, recording each before deleting it, so a pass that stops between the two loses nothing the next pass cannot list again.
+The workload holds no `bigquery.tables.create`, so the overflow loads that would create one fail first; the check exists so that an unexpected one is recorded and removed rather than left to the dataset's one-day expiry.
+The dataset holds only Tier-3 trial tables and one trial runs at a time under the environment lock, which is what lets a temporary table created since the run started be read as this run's.
+After the run's tables are deleted, the write that records cleanup also records the objects left under the staging prefix, with their bytes and the first 20 names, before state cleanup deletes the run prefix that holds them.
+A listing that fails is recorded as unreadable rather than raised, because this account must not keep the run's tables alive, and a later pass keeps the first count rather than reading a prefix state cleanup may have emptied.
+A pass that settles therefore writes the control record twice, the stop request and its result, as a Storage Write cleanup does; only a pass that records a newly seen job or deletes a temporary table adds one write.
+The receipt carries all of this as the `file_loads` part of its `bigquery` record.
+
 ## Production dispatch
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with four inputs beyond the common ones.
@@ -568,7 +588,7 @@ The campaign, its estimate, stop conditions and cleanup checks are preregistered
 
 | Input | Contract |
 | --- | --- |
-| `trial` | `alo-10`, `eo-10`, `alo-50` or `eo-50`; the default `none` is refused |
+| `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 | `expires_at` | 90 to 100 minutes ahead; the latest the run may end |
 | `approval` | `APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES`; it confirms the run, and spend is approved beforehand from the estimate |
@@ -577,7 +597,7 @@ The window starts when dispatch admits the run, on the whole second, and lasts e
 The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
 
 The checks that need neither the cluster nor the lock run first: the trial and digest, the phrase, the exact approved rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID, an existing run's evidence and the window.
-Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the version 4 approval and prepares the bundle with the approval embedded, so a bundle refusal also arrives before the lock.
+Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the version 5 approval and prepares the bundle with the approval embedded, so a bundle refusal also arrives before the lock.
 It then acquires the environment lock, checks the foundation again, writes the run documents and runs the authenticated runner inside its session, minting the runner token in this process.
 If the authenticated session cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.
 
@@ -613,6 +633,11 @@ Inside those windows the sink is sampled through the job's own REST service, at 
 What is read: the sink and source vertices' task metrics — throughput, backpressure, busy and idle time, and the buffer-pool and byte-rate metrics that say whether the network was the limit; every TaskManager's memory, including non-heap, direct, mapped and Flink managed memory rather than heap alone, because this sink appends through native buffers; and the connector's own gauges, which are the active-writer observation — open destinations, in-flight appends and batches, append retries, destination activations and commit durations.
 A connector metric's id carries its operator name, so the ids are discovered and then asked for by id; the discovered set is unioned across samples rather than frozen on the first answer, because a task registers its own metrics when it deploys and the sink's operators theirs when they open — freezing a listing taken between those two moments would silently drop the active-writer gauges for the rest of the job's life.
 The source vertex is identified by its name rather than by its position in the plan, and a plan that does not hold exactly one of each is reported unavailable rather than guessed at.
+A FILE_LOADS plan holds a third vertex: the connector routes every committable to one committer subtask, so the committer is a vertex of its own, named `<sink>: Committer`, while the EO committer is chained into its writer's vertex.
+For that mode the plan must hold one source, one writer and one such committer, and each sample also reads the committer's own metrics (load jobs submitted, queued and active commit destinations, current and last commit duration) and each writer and committer subtask's share of the latest completed checkpoint: its synchronous and asynchronous durations, start delay, alignment and end-to-end duration.
+Finalization means the writer closing its staged files, and the connector adds no metric for it (ADR-0146). Flink 2.2.1 runs it in the writer's pre-barrier step, before the synchronous part's timer starts, so it shows in neither the sync nor the async duration but in the writer subtask's end-to-end duration and, because the barrier leaves later, in the committer's start delay.
+The commit itself runs synchronously when a checkpoint completes, and its time is the committer's `lastCommitDurationMillis`; it delays the committer's next barrier only when it outlasts the interval.
+The writer's staged-file gauges join the connector family.
 No sample is taken on a poll where the loop resolved no Service: the job is between states, and a reading taken through the last one would be attributed to a job that is not the one running.
 An absent reading is recorded as `unavailable` with its cause rather than dropped: a missing sample and a zero reading mean opposite things when the question is whether the sink was the limit.
 Checkpoint duration and state come from the checkpoints the recovery loop already reads.
@@ -621,7 +646,9 @@ What the verdict below reads from these is whether each was obtained, never what
 After Flink reports `FINISHED` with complete input and both recovery proofs, the supervisor requests final queries through the existing runner handoff.
 It recomputes the oracle from the archived rows and compares the archived report.
 Missing rows may consume another approved query slot, with at most 600 seconds for the whole visibility phase and no deadline extension between requests.
-Invalid routing or EO duplicates abort immediately; ALO duplicates remain reported observations.
+In FILE_LOADS mode the supervisor first lists the run's [connector-issued jobs](#connector-issued-jobs), and refuses to read while one is not `DONE`: the committer commits synchronously, so a finished application has no job left by the connector's own account, and waiting for one would let rows that arrive after `FINISHED` land and pass.
+It records the jobs it found as a `bigquery-unfinished-connector-jobs` evidence record and fails the run.
+Invalid routing or EO and FILE_LOADS duplicates abort immediately; ALO duplicates remain reported observations.
 Query errors, slot exhaustion, cancellation or deadline expiry cannot record recovery completion.
 The `complete` recovery record includes both restore proofs and the passing query observation; common cleanup still requires runner release and the external barrier before deleting tables.
 The final receipt retains this recovery record, and its overall BigQuery `success` is the verdict the exercise decided when it completed — not the generic completion flag, which a trial must not be authorized by.
@@ -629,6 +656,8 @@ The final receipt retains this recovery record, and its overall BigQuery `succes
 ## Deployed verdict
 
 A run is `usable` when the instrument worked: both recoveries proved, the query oracle passed, and each observation family read in the `baseline` window and again in the `finishing` window — the sink's task metrics, the network metrics, the connector's own gauges and the TaskManager memory.
+A FILE_LOADS run must also have read two more families in both windows: the committer vertex's metrics, and a subtask's end-to-end, synchronous and asynchronous checkpoint durations for both the writer and the committer vertex.
+The trial's mode decides which families are required, and the analyzer takes it from the receipt's trial.
 Anything short of that is `inconclusive`, the same distinction the Cloud Tasks analyzer draws: a run that happened and cannot carry the claim.
 The verdict carries its reasons, naming the family and the window it was missing from, so an inconclusive run says what it lacked.
 
@@ -652,7 +681,7 @@ Those are the excluded statuses the Cloud Tasks analysis uses and none of them i
 The receipt's `success` is checked in one direction only. It is a conjunction the runner may refuse for reasons of its own, so `false` beside a usable verdict is the runner obeying its rules; `true` beside a verdict that is not usable is the forgery.
 The recomputation uses the rule set as it stands, so evidence re-analyzed after the required families or the sampled windows change can disagree with its own stored verdict for that reason alone; archived evidence is read with the revision that produced it.
 
-Synthetic controller/service tests exercise both delivery modes and both destination counts, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved external barrier.
+Synthetic controller/service tests exercise both Storage Write modes at both destination counts and FILE_LOADS at 10, including a load job that outlives the Pods and one still running when the oracle would read, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved external barrier.
 They establish the internal sequencing and refusal behavior, not actual Operator recovery, BigQuery visibility latency or a working writer fence.
 
 ## Authenticated internal actors

@@ -175,7 +175,12 @@ def assess(run):
     # record claims: recomputing from a field the same hand could edit would
     # only restate the record to itself.
     rebuilt = _rebuild(readings)
-    decided = verdict({**record, "coverage": rebuilt})
+    # The trial the receipt names decides which families are required.
+    trial = result.get("bigquery_trial")
+    decided = verdict(
+        {**record, "coverage": rebuilt},
+        trial.get("mode") if isinstance(trial, dict) else None,
+    )
     problems = []
     if len(completions) > 1:
         problems.append(f"repeated-{COMPLETE_EVENT}:{len(completions)}")

@@ -68,6 +68,13 @@ def rows(trial, *, missing=False, duplicate=False, invalid=False):
 
 
 BILLED_PER_QUERY = 3 * 1024 * 1024
+LOAD = {
+    "id": "flink-bq-load-" + "2" * 32 + "-c43-" + "0" * 16,
+    "kind": "load",
+    "table": "bq_proposal_1312_d0",
+    "state": "RUNNING",
+    "failed": False,
+}
 
 
 class QueryResources(Resources):
@@ -139,6 +146,10 @@ class World:
         monkeypatch.setattr(self.kube, "request", self.request)
         monkeypatch.setattr(self.kube, "logs", self.logs)
         monkeypatch.setattr(self.resources, "results", self.results)
+        self.connector_listings = []
+        monkeypatch.setattr(
+            self.resources, "unfinished_connector_jobs", self.connector_jobs
+        )
 
     def app(self):
         return self.kube.get("FlinkDeployment", BIGQUERY, self.approval.run_id)
@@ -199,11 +210,47 @@ class World:
         # The measurement collector reads the job plan, the sink's metric ids
         # and the TaskManagers; the real service answers all three through the
         # same proxy, so the double does too.
+        file_loads = self.plan.trial.mode == "FILE_LOADS"
         if "/proxy/jobs/" in path and "/" not in path.split("/proxy/jobs/")[1]:
+            if file_loads:
+                # The plan Flink 2.2.1 builds for the application's FILE_LOADS
+                # sink: the committer is a vertex of its own.
+                return {
+                    "vertices": [
+                        {"id": "source-vertex", "name": "Source: datagen"},
+                        {
+                            "id": "sink-vertex",
+                            "name": "BigQuery FILE_LOADS: Writer -> "
+                            "BigQuery FILE_LOADS: Stamp checkpoint ids",
+                        },
+                        {
+                            "id": "committer-vertex",
+                            "name": "BigQuery FILE_LOADS: Committer",
+                        },
+                    ]
+                }
             return {
                 "vertices": [
                     {"id": "source-vertex", "name": "Source: datagen"},
                     {"id": "sink-vertex", "name": "Sink: bigquery"},
+                ]
+            }
+        if path.endswith("/vertices/committer-vertex/subtasks/metrics"):
+            return [
+                {"id": "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted"},
+                {"id": "BigQuery_FILE_LOADS__Committer.lastCommitDurationMillis"},
+            ]
+        if "/checkpoints/details/" in path and "/subtasks/" in path:
+            return {
+                "subtasks": [
+                    {
+                        "index": index,
+                        "status": "completed",
+                        "checkpoint": {"sync": 2, "async": 30},
+                        "start_delay": 1,
+                        "end_to_end_duration": 40,
+                    }
+                    for index in range(2)
                 ]
             }
         if path.endswith("/subtasks/metrics"):
@@ -343,7 +390,7 @@ class World:
         data = rows(
             self.plan.trial,
             missing=self.fault == "invisible"
-            or (self.fault == "late-visibility" and slot == 0),
+            or (self.fault in ("late-visibility", "load-between-reads") and slot == 0),
             duplicate=self.fault == "duplicates",
             invalid=self.fault == "invalid",
         )
@@ -407,13 +454,35 @@ class World:
     def quiesce(self):
         return self.fault != "barrier" and self.app() is None
 
+    def connector_jobs(self, since):
+        """A load the committer left: before the oracle, or after the Pods.
+
+        `load-outlives` is a load still RUNNING when the workload is gone,
+        which cleanup must wait out; `load-after-finished` is one still
+        running when the oracle reads, which it must refuse.
+        """
+        assert since == self.start
+        self.connector_listings.append(self.app() is None)
+        if self.fault == "load-outlives" and self.app() is None:
+            pending = self.connector_listings.count(True) <= 2
+        elif self.fault == "load-after-finished":
+            pending = self.app() is not None
+        elif self.fault == "load-between-reads":
+            # Absent before the first read, running before the second.
+            pending = self.app() is not None and len(self.query_calls) == 1
+        else:
+            pending = False
+        return [dict(LOAD)] if pending else []
+
     def run(self):
         self.supervisor.supervise(self.supervisor_pod["metadata"]["uid"])
         return self.env.refresh()
 
 
-@pytest.mark.parametrize("mode", ["ALO", "EO"])
-@pytest.mark.parametrize("destinations", [10, 50])
+@pytest.mark.parametrize(
+    "mode,destinations",
+    [("ALO", 10), ("ALO", 50), ("EO", 10), ("EO", 50), ("FILE_LOADS", 10)],
+)
 def test_bigquery_recovery_and_query_then_cleanup(
     prepared, monkeypatch, mode, destinations
 ):
@@ -432,8 +501,22 @@ def test_bigquery_recovery_and_query_then_cleanup(
     assert record.recovery["reasons"] == []
     for stage in ("baseline", "finishing"):
         window = record.recovery["coverage"][stage]
-        assert window["observed"] == ["connector", "memory", "network", "task"]
+        assert window["observed"] == (
+            ["checkpoint", "committer", "connector", "memory", "network", "task"]
+            if mode == "FILE_LOADS"
+            else ["connector", "memory", "network", "task"]
+        )
         assert window["attempts"] >= 1
+    if mode == "FILE_LOADS":
+        # The oracle asked before each read, and cleanup before any delete.
+        assert False in world.connector_listings and True in world.connector_listings
+        assert record.bigquery["file_loads"]["staging"] == {
+            "objects": 0,
+            "bytes": 0,
+            "names": [],
+        }
+    else:
+        assert world.connector_listings == []
     assert [name for name, _ in world.calls] == ["upgrade", "failover"]
     # The deployed measurements the issue asks for: sampled through the run's
     # own windows, with every reading named even when it is absent.
@@ -550,6 +633,73 @@ def test_incomplete_trials_fail_and_cleanup(prepared, monkeypatch, fault, reason
     assert reason in record.reason
     assert record.phase == Phase.CLEANED
     assert world.resources.tables == {}
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+def test_cleanup_waits_for_a_load_job_that_outlived_the_workload(
+    prepared, monkeypatch, mode, destinations
+):
+    """A load the committer submitted just before its Pods stopped."""
+    world = World(prepared, monkeypatch, "load-outlives")
+    deleted = []
+    delete_table = world.resources.delete_table
+
+    def delete(destination, receipt):
+        deleted.append(world.connector_listings.count(True))
+        return delete_table(destination, receipt)
+
+    monkeypatch.setattr(world.resources, "delete_table", delete)
+    record = world.run()
+    assert record.success, record.reason
+    # Two listings after the Pods were gone still showed it; no table was
+    # deleted until a third showed it DONE.
+    assert world.connector_listings.count(True) >= 3
+    assert deleted and min(deleted) >= 3
+    assert record.bigquery["file_loads"]["unfinished_jobs"] == [LOAD["id"]]
+    assert world.resources.tables == {}
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+def test_the_oracle_refuses_to_read_while_a_load_job_still_runs(
+    prepared, monkeypatch, mode, destinations
+):
+    """FINISHED says the committer is done; a running load says otherwise."""
+    world = World(prepared, monkeypatch, "load-after-finished")
+    record = world.run()
+    assert not record.success
+    assert "outlived the finished application" in record.reason
+    assert world.query_calls == []
+    events = [
+        value["payload"]
+        for value in world.evidence().values()
+        if isinstance(value, dict)
+        and value.get("event") == "bigquery-unfinished-connector-jobs"
+    ]
+    assert events == [{"jobs": [LOAD]}]
+    assert record.phase == Phase.CLEANED
+    assert world.resources.tables == {}
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+def test_the_oracle_asks_again_before_every_read(
+    prepared, monkeypatch, mode, destinations
+):
+    """A visibility retry is a later read; a load that started since is refused."""
+    world = World(prepared, monkeypatch, "load-between-reads")
+    record = world.run()
+    assert not record.success
+    assert "outlived the finished application" in record.reason
+    assert [slot for slot, _ in world.query_calls] == [0]
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+def test_file_loads_duplicates_fail_the_oracle(
+    prepared, monkeypatch, mode, destinations
+):
+    world = World(prepared, monkeypatch, "duplicates")
+    record = world.run()
+    assert not record.success
+    assert "uniqueness" in record.reason
 
 
 def test_visibility_retries_use_distinct_slots(prepared, monkeypatch):

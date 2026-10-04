@@ -24,7 +24,26 @@ PROJECT = "flink-gcp"
 DATASET = "flink_gcp_tier3_bigquery"
 MAX_RESULT_BYTES = 64 * 1024
 MAX_INT64 = (1 << 63) - 1
-ROW_BYTES = {"ALO": 64 * 1024, "EO": 1024}
+ROW_BYTES = {"ALO": 64 * 1024, "EO": 1024, "FILE_LOADS": 1024}
+# The modes whose oracle refuses a duplicate row as well as a missing or
+# invalid one. FILE_LOADS commits each checkpoint's staged files through load
+# jobs whose ids are derived from those files, so a retried commit re-attaches
+# rather than loading twice: the connector claims exactly-once for it.
+EXACTLY_ONCE = frozenset({"EO", "FILE_LOADS"})
+# The FILE_LOADS sink inputs a trial renders, at the connector's defaults and in
+# the order `pkg/bigquery.#Application` renders them. No trial varies them.
+FILE_LOADS_ARGS = (
+    "--staging-format",
+    "AVRO",
+    "--max-concurrent-checkpoint-finalizations",
+    "1",
+    "--max-concurrent-destinations",
+    "8",
+    "--max-staging-file-bytes",
+    "16777216",
+    "--max-open-destinations",
+    "16",
+)
 FIELDS = {
     "run_id",
     "mode",
@@ -52,7 +71,7 @@ class Trial:
         ):
             raise ValueError("run_id must match the Tier-3 run label grammar")
         if not isinstance(self.mode, str) or self.mode not in ROW_BYTES:
-            raise ValueError("mode must be ALO or EO")
+            raise ValueError("mode must be ALO, EO or FILE_LOADS")
         if type(self.destinations) is not int or self.destinations not in (10, 50):
             raise ValueError("destinations must be 10 or 50")
         if type(self.records) is not int or not (
@@ -65,6 +84,26 @@ class Trial:
 
     def expected(self, destination):
         return (self.records + self.destinations - 1 - destination) // self.destinations
+
+    def arguments(self, phase):
+        """The application arguments the delivery renders for `initial` or `upgrade`."""
+        return [
+            "--run-id",
+            self.run_id,
+            "--phase",
+            phase,
+            "--mode",
+            self.mode,
+            "--destinations",
+            str(self.destinations),
+            "--records",
+            str(self.records),
+            "--bytes-per-second",
+            "1048576",
+            "--require-restored",
+            "true" if phase == "upgrade" else "false",
+            *(FILE_LOADS_ARGS if self.mode == "FILE_LOADS" else ()),
+        ]
 
 
 def query(trial):
@@ -147,7 +186,7 @@ def assess(trial, rows):
         )
     }
     passed = totals["invalid_rows"] == 0 and totals["missing_sequences"] == 0
-    if trial.mode == "EO":
+    if trial.mode in EXACTLY_ONCE:
         passed = passed and totals["duplicate_rows"] == 0
     return {
         "version": 1,
