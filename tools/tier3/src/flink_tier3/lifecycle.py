@@ -275,9 +275,8 @@ def start_pubsub(args, store):
     rt.validate_approval(approval, time.time())
     pubsub_bundle.prepare(approval, prepared_at=rt.utc(math.ceil(time.time())))
     raise rt.Failure(
-        "Pub/Sub execution waits on the supervised exercise (#1431) and execution "
-        "accounting (#1433); the approval and its bundle were verified and nothing "
-        "was locked"
+        "Pub/Sub execution waits on execution accounting (#1433); the approval and "
+        "its bundle were verified and nothing was locked"
     )
 
 

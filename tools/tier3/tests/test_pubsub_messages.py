@@ -217,7 +217,10 @@ def test_collect_keeps_every_delivery_before_ack_and_never_deduplicates(setup):
     result = make("supervisor").collect("first", max_messages=2)
     path = result["path"]
     assert http.calls == [
-        ("projects/flink-gcp/subscriptions/t3-messages-out:pull", {"maxMessages": 2}),
+        (
+            "projects/flink-gcp/subscriptions/t3-messages-out:pull",
+            {"maxMessages": 2, "returnImmediately": True},
+        ),
         (
             "projects/flink-gcp/subscriptions/t3-messages-out:acknowledge",
             {"ackIds": ["ack-1", "ack-2"]},

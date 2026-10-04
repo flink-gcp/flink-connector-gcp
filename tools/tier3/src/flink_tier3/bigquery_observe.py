@@ -15,7 +15,6 @@
 """Sample what the deployed BigQuery sink does, through the job's REST service."""
 
 from .metrics import AGGREGATES, JVM_METRICS, metric_name, sample, unavailable
-from .policy import MIB
 
 # Flink's documented TaskManager memory metrics. Heap alone is the wrong
 # instrument for this sink: the Storage Write path appends through native
@@ -71,37 +70,6 @@ SINK_FAMILIES = {
 }
 SINK_METRICS = frozenset(name for names in SINK_FAMILIES.values() for name in names)
 SOURCE_METRICS = ("numRecordsOut", "numRecordsOutPerSecond", *NETWORK_METRICS)
-
-
-class FlinkRest:
-    """Read the running job's REST API through its own Service, by proxy.
-
-    The Cloud Tasks observer has equivalents bound to that scenario's fixed
-    namespace and to its session's meter; this one takes the namespace from
-    the approval so the same endpoints can be read from a recovery exercise.
-    """
-
-    def __init__(self, env, service, job_id):
-        self.env, self.service, self.job_id = env, service, job_id
-
-    def _read(self, suffix, limit):
-        return self.env.kube.request(
-            "GET",
-            self.env.kube.path(
-                "Service",
-                self.env.approval.application_namespace,
-                self.service["metadata"]["name"] + ":8081",
-            )
-            + "/proxy"
-            + suffix,
-            limit=limit,
-        )
-
-    def job(self, path, limit=MIB):
-        return self._read(f"/jobs/{self.job_id}{path}", limit)
-
-    def root(self, path, limit=MIB):
-        return self._read(path, limit)
 
 
 def vertices(rest, known=None):
