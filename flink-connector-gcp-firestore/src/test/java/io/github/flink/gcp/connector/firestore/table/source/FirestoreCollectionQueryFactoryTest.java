@@ -25,26 +25,29 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class CollectionQueryFactoryTest {
+class FirestoreCollectionQueryFactoryTest {
 
     @Test
     void selectsLiteralNamesOrOnlyTheDocumentName() throws Exception {
         try (Firestore client = TestDocuments.offlineClient("p")) {
-            assertThat(new CollectionQueryFactory("c", new String[] {"a.b", "x"}).create(client))
+            assertThat(
+                            new FirestoreCollectionQueryFactory("c", new String[] {"a.b", "x"})
+                                    .create(client))
                     .isEqualTo(
                             client.collection("c").select(FieldPath.of("a.b"), FieldPath.of("x")));
-            assertThat(new CollectionQueryFactory("c", new String[0]).create(client))
+            assertThat(new FirestoreCollectionQueryFactory("c", new String[0]).create(client))
                     .isEqualTo(client.collection("c").select(FieldPath.documentId()));
         }
     }
 
     @Test
     void comparesByCollectionAndFieldsAndSurvivesJavaSerialization() throws Exception {
-        CollectionQueryFactory factory = new CollectionQueryFactory("c", new String[] {"a"});
+        FirestoreCollectionQueryFactory factory =
+                new FirestoreCollectionQueryFactory("c", new String[] {"a"});
 
         assertThat(InstantiationUtil.clone(factory)).isEqualTo(factory).hasSameHashCodeAs(factory);
         assertThat(factory)
-                .isNotEqualTo(new CollectionQueryFactory("d", new String[] {"a"}))
-                .isNotEqualTo(new CollectionQueryFactory("c", new String[] {"b"}));
+                .isNotEqualTo(new FirestoreCollectionQueryFactory("d", new String[] {"a"}))
+                .isNotEqualTo(new FirestoreCollectionQueryFactory("c", new String[] {"b"}));
     }
 }

@@ -32,7 +32,7 @@ import java.util.Objects;
  * a name containing a dot projects that field.
  */
 @Internal
-final class CollectionQueryFactory implements FirestoreQueryFactory {
+final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
 
     private static final long serialVersionUID = 1L;
 
@@ -46,7 +46,7 @@ final class CollectionQueryFactory implements FirestoreQueryFactory {
      * @param fields the field names to read; an empty array reads none, as for a table or a
      *     projection of only the key and metadata
      */
-    CollectionQueryFactory(String collection, String[] fields) {
+    FirestoreCollectionQueryFactory(String collection, String[] fields) {
         this.collection = collection;
         this.fields = fields.clone();
     }
@@ -70,7 +70,7 @@ final class CollectionQueryFactory implements FirestoreQueryFactory {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        CollectionQueryFactory that = (CollectionQueryFactory) o;
+        FirestoreCollectionQueryFactory that = (FirestoreCollectionQueryFactory) o;
         return collection.equals(that.collection) && Arrays.equals(fields, that.fields);
     }
 

@@ -31,22 +31,24 @@ import java.util.Collections;
  * function class that is not.
  */
 @Internal
-public final class RowDataLookupFunction extends LookupFunction {
+public final class FirestoreRowDataLookupFunction extends LookupFunction {
     private static final long serialVersionUID = 1L;
 
     private final RowDataDeserializationSchema deserializer;
     private final int maxRetries;
-    private final DocumentLookup lookup;
+    private final FirestoreDocumentLookup lookup;
 
-    RowDataLookupFunction(
-            RowDataDeserializationSchema deserializer, int maxRetries, DocumentLookup lookup) {
+    FirestoreRowDataLookupFunction(
+            RowDataDeserializationSchema deserializer,
+            int maxRetries,
+            FirestoreDocumentLookup lookup) {
         this.deserializer = deserializer;
         this.maxRetries = maxRetries;
         this.lookup = lookup;
     }
 
     @VisibleForTesting
-    DocumentLookup documentLookup() {
+    FirestoreDocumentLookup documentLookup() {
         return lookup;
     }
 
@@ -63,16 +65,16 @@ public final class RowDataLookupFunction extends LookupFunction {
 
     @Override
     public Collection<RowData> lookup(RowData keyRow) throws IOException {
-        String id = DocumentLookups.documentId(keyRow);
+        String id = FirestoreDocumentLookups.documentId(keyRow);
         if (id == null) {
             return Collections.emptyList();
         }
         for (int retry = 0; ; retry++) {
             try {
-                return DocumentLookups.rows(
-                        deserializer, DocumentLookups.await(lookup.readAsync(id), id));
+                return FirestoreDocumentLookups.rows(
+                        deserializer, FirestoreDocumentLookups.await(lookup.readAsync(id), id));
             } catch (RuntimeException failure) {
-                if (retry >= maxRetries || !LookupErrorClassifier.isTransient(failure)) {
+                if (retry >= maxRetries || !FirestoreLookupErrorClassifier.isTransient(failure)) {
                     throw failure;
                 }
             }

@@ -32,12 +32,12 @@ import java.util.concurrent.Future;
 
 /** What both lookup functions share: which keys can name a document, and the row a read makes. */
 @Internal
-final class DocumentLookups {
+final class FirestoreDocumentLookups {
 
     /** The longest document id the service stores, in UTF-8 bytes. */
     private static final int MAX_ID_BYTES = 1500;
 
-    private DocumentLookups() {}
+    private FirestoreDocumentLookups() {}
 
     /**
      * Returns the document id a lookup key names, or {@code null} when it can name no document of

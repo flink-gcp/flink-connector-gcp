@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Reads through the lookup's own client against the emulator, where the field mask is built. */
 @Testcontainers
-class CollectionDocumentLookupITCase extends AbstractFirestoreEmulatorITCase {
+class FirestoreCollectionDocumentLookupITCase extends AbstractFirestoreEmulatorITCase {
 
-    private static DocumentSnapshot read(CollectionDocumentLookup lookup, String id)
+    private static DocumentSnapshot read(FirestoreCollectionDocumentLookup lookup, String id)
             throws Exception {
         return lookup.readAsync(id).get(30, TimeUnit.SECONDS);
     }
@@ -45,8 +45,8 @@ class CollectionDocumentLookupITCase extends AbstractFirestoreEmulatorITCase {
                                 "a", Map.of("b", "nested"),
                                 "other", "unread"))
                 .get();
-        CollectionDocumentLookup lookup =
-                new CollectionDocumentLookup(
+        FirestoreCollectionDocumentLookup lookup =
+                new FirestoreCollectionDocumentLookup(
                         database(), collection, new String[] {"a.b"}, emulatorEndpoint(), null);
         lookup.open();
         try {
@@ -63,8 +63,8 @@ class CollectionDocumentLookupITCase extends AbstractFirestoreEmulatorITCase {
     void aReadOfNoFieldReturnsTheDocumentWithoutFields() throws Exception {
         String collection = uniqueCollection();
         client().document(collection + "/d").set(Map.of("x", 1L)).get();
-        CollectionDocumentLookup lookup =
-                new CollectionDocumentLookup(
+        FirestoreCollectionDocumentLookup lookup =
+                new FirestoreCollectionDocumentLookup(
                         database(), collection, new String[0], emulatorEndpoint(), null);
         lookup.open();
         try {

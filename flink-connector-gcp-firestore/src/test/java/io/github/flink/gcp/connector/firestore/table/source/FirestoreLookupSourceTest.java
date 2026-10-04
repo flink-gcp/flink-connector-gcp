@@ -117,25 +117,25 @@ class FirestoreLookupSourceTest {
 
     private static int maxRetries(LookupTableSource.LookupRuntimeProvider provider) {
         return provider instanceof LookupFunctionProvider
-                ? ((RowDataLookupFunction)
+                ? ((FirestoreRowDataLookupFunction)
                                 ((LookupFunctionProvider) provider).createLookupFunction())
                         .maxRetries()
-                : ((RowDataAsyncLookupFunction)
+                : ((FirestoreRowDataAsyncLookupFunction)
                                 ((AsyncLookupFunctionProvider) provider)
                                         .createAsyncLookupFunction())
                         .maxRetries();
     }
 
-    private static CollectionDocumentLookup documentLookup(
+    private static FirestoreCollectionDocumentLookup documentLookup(
             LookupTableSource.LookupRuntimeProvider provider) {
         if (provider instanceof LookupFunctionProvider) {
-            return (CollectionDocumentLookup)
-                    ((RowDataLookupFunction)
+            return (FirestoreCollectionDocumentLookup)
+                    ((FirestoreRowDataLookupFunction)
                                     ((LookupFunctionProvider) provider).createLookupFunction())
                             .documentLookup();
         }
-        return (CollectionDocumentLookup)
-                ((RowDataAsyncLookupFunction)
+        return (FirestoreCollectionDocumentLookup)
+                ((FirestoreRowDataAsyncLookupFunction)
                                 ((AsyncLookupFunctionProvider) provider)
                                         .createAsyncLookupFunction())
                         .documentLookup();
@@ -150,7 +150,7 @@ class FirestoreLookupSourceTest {
         assertThat(provider)
                 .isInstanceOf(LookupFunctionProvider.class)
                 .isNotInstanceOf(PartialCachingLookupProvider.class);
-        CollectionDocumentLookup lookup = documentLookup(provider);
+        FirestoreCollectionDocumentLookup lookup = documentLookup(provider);
         assertThat(lookup.collection()).isEqualTo("users/alice/orders");
         assertThat(lookup.fields()).containsExactly("name", "a.b");
         assertThat(lookup.serviceAccountKeyFile()).isEqualTo("/keys/sa.json");
@@ -208,7 +208,7 @@ class FirestoreLookupSourceTest {
 
     @Test
     void theNamedDatabaseAndProjectReachTheClient() throws Exception {
-        CollectionDocumentLookup lookup =
+        FirestoreCollectionDocumentLookup lookup =
                 documentLookup(
                         source(KEYED, "database", "db", "emulator-endpoint", "localhost:8080")
                                 .getLookupRuntimeProvider(context(new int[] {0})));
@@ -325,16 +325,16 @@ class FirestoreLookupSourceTest {
 
     @Test
     void theMaskNamesEachFieldLiterallyAndOnlyTheNameWhenThereIsNone() {
-        assertThat(CollectionDocumentLookup.maskPaths(new String[] {"a.b", "n"}))
+        assertThat(FirestoreCollectionDocumentLookup.maskPaths(new String[] {"a.b", "n"}))
                 .containsExactly(FieldPath.of("a.b"), FieldPath.of("n"));
-        assertThat(CollectionDocumentLookup.maskPaths(new String[0]))
+        assertThat(FirestoreCollectionDocumentLookup.maskPaths(new String[0]))
                 .containsExactly(FieldPath.documentId());
     }
 
     @Test
     void aMalformedEmulatorEndpointIsRefusedUnderItsKeyWhenTheClientIsBuilt() {
-        CollectionDocumentLookup lookup =
-                new CollectionDocumentLookup(
+        FirestoreCollectionDocumentLookup lookup =
+                new FirestoreCollectionDocumentLookup(
                         DatabaseDestination.of("p"), "c", new String[0], "no-port", null);
 
         assertThatThrownBy(lookup::settings).hasMessageContaining("emulator-endpoint");

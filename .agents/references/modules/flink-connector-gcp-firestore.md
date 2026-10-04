@@ -125,7 +125,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **A failure's remedy follows `Mismatch.readableAsNull()`**: offer `type-mismatch-policy = 'null'`
   only when a nullable field lies around the value, which a `NOT NULL` column can still contain.
 - **Every field is selected as a literal `FieldPath`**: the single collection's
-  `CollectionQueryFactory`, and the collection-group scan through the builder's
+  `FirestoreCollectionQueryFactory`, and the collection-group scan through the builder's
   `select(FieldPath...)`, whose field mask holds encoded paths read back with
   `FieldPath.fromServerFormat`. Never pass a column name to `select(String...)`, which splits dots.
 - **A collection-group table declares no PRIMARY KEY** (ids repeat across the group, and the planner
@@ -140,13 +140,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The lookup key is the document id alone**; a keyless table (every collection-group table) is
   refused in `FirestoreDynamicSource.checkLookupKey`. Rows come from the scan's
   `RowDataDeserializationSchema`, so projection, metadata and the mismatch policy stay one path.
-- **A key that cannot be an id joins no row without a read** (`DocumentLookups.documentId`):
-  NULL, empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/` (`document("a/")` reads `a`).
-- **The client library has no blocking read**: `DocumentLookup` is `readAsync` only, and the blocking
-  function waits on it through `DocumentLookups.await`, which rethrows the library's exception.
-- **`LookupErrorClassifier` mirrors the client's `BatchGetDocuments` retry set**
-  (`retry_policy_1_codes`); `LookupErrorClassifierTest` compares the two, so a libraries-bom bump that
-  moves the library's set fails there.
+- **A key that cannot be an id joins no row without a read**
+  (`FirestoreDocumentLookups.documentId`): NULL, empty, `.`, `..`, `__…__`, over 1,500 bytes, or
+  holding `/` (`document("a/")` reads `a`).
+- **The client library has no blocking read**: `FirestoreDocumentLookup` is `readAsync` only, and
+  the blocking function waits on it through `FirestoreDocumentLookups.await`, which rethrows the
+  library's exception.
+- **`FirestoreLookupErrorClassifier` mirrors the client's `BatchGetDocuments` retry set**
+  (`retry_policy_1_codes`); `FirestoreLookupErrorClassifierTest` compares the two, so a
+  libraries-bom bump that moves the library's set fails there.
 - The lookup functions are `public`: the planner refuses a function class that is not.
 
 ## Datastore-mode sink (`docs/adr/0175`)

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.firestore.table.source;
+package io.github.flink.gcp.connector.firestore.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.Configuration;
@@ -23,8 +23,6 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
-
-import io.github.flink.gcp.connector.firestore.table.FirestoreConnectorOptions;
 
 import javax.annotation.Nullable;
 
@@ -41,7 +39,7 @@ import java.util.Objects;
  * its own.
  */
 @Internal
-public final class LookupConfig implements Serializable {
+public final class FirestoreLookupConfig implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private final boolean async;
@@ -52,7 +50,7 @@ public final class LookupConfig implements Serializable {
     private final boolean cacheMissingKey;
     @Nullable private final Long maxRows;
 
-    private LookupConfig(ReadableConfig config) {
+    private FirestoreLookupConfig(ReadableConfig config) {
         async = config.get(FirestoreConnectorOptions.LOOKUP_ASYNC);
         cacheType = config.get(LookupOptions.CACHE_TYPE);
         maxRetries = config.get(LookupOptions.MAX_RETRIES);
@@ -93,27 +91,27 @@ public final class LookupConfig implements Serializable {
      * @return the lookup configuration
      * @throws ValidationException if a value is refused
      */
-    public static LookupConfig from(ReadableConfig config) {
-        return new LookupConfig(config);
+    public static FirestoreLookupConfig from(ReadableConfig config) {
+        return new FirestoreLookupConfig(config);
     }
 
     /** Returns whether lookups read through the asynchronous API. */
-    boolean isAsync() {
+    public boolean isAsync() {
         return async;
     }
 
     /** Returns the cache type, {@code NONE} or {@code PARTIAL}. */
-    LookupCacheType getCacheType() {
+    public LookupCacheType getCacheType() {
         return cacheType;
     }
 
     /** Returns how many times a transient failure is read again after the first attempt. */
-    int getMaxRetries() {
+    public int getMaxRetries() {
         return maxRetries;
     }
 
     /** Creates the partial cache the options describe. */
-    DefaultLookupCache createPartialCache() {
+    public DefaultLookupCache createPartialCache() {
         Configuration config = new Configuration();
         config.set(LookupOptions.CACHE_TYPE, cacheType);
         if (expireAfterAccess != null) {
@@ -134,10 +132,10 @@ public final class LookupConfig implements Serializable {
         if (this == other) {
             return true;
         }
-        if (!(other instanceof LookupConfig)) {
+        if (!(other instanceof FirestoreLookupConfig)) {
             return false;
         }
-        LookupConfig that = (LookupConfig) other;
+        FirestoreLookupConfig that = (FirestoreLookupConfig) other;
         return async == that.async
                 && maxRetries == that.maxRetries
                 && cacheMissingKey == that.cacheMissingKey

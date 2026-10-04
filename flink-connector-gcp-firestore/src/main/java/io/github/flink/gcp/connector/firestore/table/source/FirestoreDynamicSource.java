@@ -40,6 +40,8 @@ import com.google.cloud.firestore.FieldPath;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceBuilder;
+import io.github.flink.gcp.connector.firestore.table.FirestoreLookupConfig;
+import io.github.flink.gcp.connector.firestore.table.FirestoreScanConfig;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableLineage;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableSchema;
 import io.github.flink.gcp.connector.firestore.table.TypeMismatchPolicy;
@@ -72,8 +74,8 @@ public final class FirestoreDynamicSource
     private final FirestoreTableSchema schema;
     private final DatabaseDestination database;
     private final String collection;
-    private final ScanConfig scanConfig;
-    private final LookupConfig lookupConfig;
+    private final FirestoreScanConfig scanConfig;
+    private final FirestoreLookupConfig lookupConfig;
     private final TypeMismatchPolicy policy;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
@@ -103,8 +105,8 @@ public final class FirestoreDynamicSource
             FirestoreTableSchema schema,
             DatabaseDestination database,
             String collection,
-            ScanConfig scanConfig,
-            LookupConfig lookupConfig,
+            FirestoreScanConfig scanConfig,
+            FirestoreLookupConfig lookupConfig,
             TypeMismatchPolicy policy,
             DataType physicalDataType,
             @Nullable String emulatorEndpoint,
@@ -153,7 +155,7 @@ public final class FirestoreDynamicSource
             builder.collectionGroup(collectionId(collection))
                     .select(paths.length == 0 ? new FieldPath[] {FieldPath.documentId()} : paths);
         } else {
-            builder.query(new CollectionQueryFactory(collection, fields));
+            builder.query(new FirestoreCollectionQueryFactory(collection, fields));
         }
         scanConfig.applyTo(builder);
         if (emulatorEndpoint != null) {
@@ -178,8 +180,8 @@ public final class FirestoreDynamicSource
                         policy,
                         context.createTypeInformation(producedDataType));
         // The collection is always the one addressed: a collection-group table has no key.
-        DocumentLookup lookup =
-                new CollectionDocumentLookup(
+        FirestoreDocumentLookup lookup =
+                new FirestoreCollectionDocumentLookup(
                         database,
                         collection,
                         fieldsRead(),
@@ -188,15 +190,15 @@ public final class FirestoreDynamicSource
         int maxRetries = lookupConfig.getMaxRetries();
         boolean partial = lookupConfig.getCacheType() == LookupCacheType.PARTIAL;
         if (lookupConfig.isAsync()) {
-            RowDataAsyncLookupFunction function =
-                    new RowDataAsyncLookupFunction(deserializer, maxRetries, lookup);
+            FirestoreRowDataAsyncLookupFunction function =
+                    new FirestoreRowDataAsyncLookupFunction(deserializer, maxRetries, lookup);
             return partial
                     ? PartialCachingAsyncLookupProvider.of(
                             function, lookupConfig.createPartialCache())
                     : AsyncLookupFunctionProvider.of(function);
         }
-        RowDataLookupFunction function =
-                new RowDataLookupFunction(deserializer, maxRetries, lookup);
+        FirestoreRowDataLookupFunction function =
+                new FirestoreRowDataLookupFunction(deserializer, maxRetries, lookup);
         return partial
                 ? PartialCachingLookupProvider.of(function, lookupConfig.createPartialCache())
                 : LookupFunctionProvider.of(function);
