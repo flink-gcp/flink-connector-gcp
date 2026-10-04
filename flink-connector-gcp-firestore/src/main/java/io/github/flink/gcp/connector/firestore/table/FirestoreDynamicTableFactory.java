@@ -27,6 +27,7 @@ import org.apache.flink.table.types.logical.RowType;
 
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.table.sink.FirestoreDynamicSink;
 import io.github.flink.gcp.connector.firestore.table.sink.WriterOptionsMapper;

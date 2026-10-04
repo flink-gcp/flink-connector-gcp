@@ -25,10 +25,10 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
-import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 

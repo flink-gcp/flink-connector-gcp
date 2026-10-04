@@ -18,8 +18,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
   in SQL jars. No connector builder gains a manual lineage setter.
 - Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
   (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
-  (BOM-managed). `flink-table-common` serves `base.catalog` alone; base has no other table-layer
-  type.
+  (BOM-managed). `flink-table-common` serves `base.catalog` and `base.table`; base has no other
+  table-layer type.
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
   on the justfile `binary-compat`/`e2e` install lists for the reactor-resolution reason
@@ -87,6 +87,16 @@ record — context, evidence, declined alternatives — is the named ADR under `
   stays without `@Override`: Flink 1.20 has no such method.
 - `ReadOnlyCatalogDatabase` is the one `CatalogDatabase` value; Flink's `CatalogDatabaseImpl` is
   `@Internal`.
+
+## `base.table` (`docs/adr/0133`)
+
+- `OptionSetters` is the one helper every connector's table layer uses to apply an option value to
+  a builder setter, renaming the setter's `IllegalArgumentException` to a `ValidationException`
+  that names the option key. Do not copy it back into a module: the per-module copies it replaced
+  were never identical, and nothing reported it (#1623). It renames `IllegalArgumentException`
+  only, so cross-field `build()` checks pass through unrenamed. `OptionSettersTest` holds what
+  each method renames; each connector's mapper-level rejection tests hold that its mapper lines go
+  through it.
 
 ## `base.source` (`docs/adr/0083`, `0108`)
 

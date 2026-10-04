@@ -30,11 +30,11 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSink;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import javax.annotation.Nullable;
 

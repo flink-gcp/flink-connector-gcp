@@ -21,10 +21,10 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
 import io.github.flink.gcp.connector.firestore.sink.writer.DefaultFirestoreDatabaseAccessFactory;
 import io.github.flink.gcp.connector.firestore.table.FirestoreConnectorOptions;
-import io.github.flink.gcp.connector.firestore.table.OptionSetters;
 
 import java.util.List;
 

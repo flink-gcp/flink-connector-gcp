@@ -25,11 +25,11 @@ import org.apache.flink.table.factories.FactoryUtil;
 
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.table.BigtableCatalogOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableDynamicTableFactory;
 import io.github.flink.gcp.connector.bigtable.table.CatalogKeyType;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import java.util.Arrays;
 import java.util.HashSet;

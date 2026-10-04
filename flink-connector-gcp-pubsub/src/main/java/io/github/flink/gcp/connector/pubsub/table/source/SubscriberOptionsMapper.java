@@ -19,8 +19,8 @@ package io.github.flink.gcp.connector.pubsub.table.source;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
-import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 /**

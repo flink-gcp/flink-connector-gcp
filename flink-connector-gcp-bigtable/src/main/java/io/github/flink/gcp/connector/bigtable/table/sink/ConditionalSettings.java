@@ -19,8 +19,8 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalFilter;
-import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import java.util.ArrayList;
 import java.util.HashMap;

@@ -29,6 +29,7 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
@@ -47,7 +48,6 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
-import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
