@@ -24,8 +24,9 @@ limitations under the License.
   [#176](https://github.com/flink-gcp/flink-connector-gcp/pull/176)); the GitHub App
   deferred to go-public ([#177]) and adopted 2026-08-16 once the org existed ([#177],
   ADR-0121); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444]);
-  extended for Tier-3 deployment infrastructure 2026-09-11 ([#38], [#1246])
-- Issues: [#5], [#38], [#177], [#444], [#1246]
+  extended for Tier-3 deployment infrastructure 2026-09-11 ([#38], [#1246]);
+  persistent App Engine deployment source retained 2026-10-04 ([#1604])
+- Issues: [#5], [#38], [#177], [#444], [#1246], [#1604]
 - Modules: opentofu, kubernetes
 - Current behavior: `opentofu/README.md` (bootstrap, service-agent one-offs, credentials), `kubernetes/README.md` (manifest hierarchy, validation and rendering)
 
@@ -34,7 +35,7 @@ limitations under the License.
 - **`opentofu/flink-gcp` is the single root module for the project's persistent GCP
   resources** ([#5]): enabled APIs, the state bucket, the WIF pool/provider, the service
   accounts (the plan/apply/E2E CI identities, later joined by the deliberately unprivileged
-  `e2e-no-pubsub` probe) and the shared IT bucket/dataset. Fine-grained test resources (tables,
+  `e2e-no-pubsub` probe), the shared IT bucket/dataset and the App Engine E2E source bucket. Fine-grained test resources (tables,
   topics,
   subscriptions, queues) are created by the tests themselves and never belong here. A new
   connector's API and E2E grants are added in the PR that first needs them, not in advance.
@@ -107,6 +108,20 @@ limitations under the License.
 - **The tofu version is pinned twice on purpose**: `mise.toml` (what installs) and
   `versions.tf` `required_version` (what refuses to run on a skew) — a bump edits both.
 
+## Persistent App Engine deployment source (2026-10-04)
+
+[#1604] records an unrelated source-object creation in the plan for a service-only change: App Engine's code bucket deletes staged objects after 15 days.
+The deployment source is a persistent input, so it belongs in a dedicated project-owned bucket with no lifecycle deletion rule.
+The shared IT bucket retains its one-day deletion rule for temporary test data.
+The runtime identity's reading grant moves to the dedicated bucket, keeping it away from shared IT data and OpenTofu state.
+Object versioning stays disabled and soft delete is explicitly disabled; the bucket keeps one small source object rather than accumulating old revisions.
+The new reading grant is created before the old grant is removed, and deployment waits for both the source object and grant.
+The source object keeps default destroy-before-create ordering for any replacement with the same bucket and name.
+A local Storage-endpoint probe with OpenTofu 1.12.5 and Google provider 7.42.0 confirmed that a forced replacement under create-before-destroy uploaded then deleted the new source; ordinary content edits updated in place, and default-order replacements left the source present.
+The deployment URL changes, so the migration plan must be reviewed for an in-place version update through the existing saved-plan apply workflow.
+The [OpenTofu runbook](../../opentofu/README.md#local-use) records deployment costs, fixture shutdown and the post-apply drift check.
+This change does not establish a measured post-apply result before the migration has been applied.
+
 ## Tier-3 deployment infrastructure (2026-09-11)
 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) extends the existing GCP root with a shared regional GKE Autopilot cluster, private network, node identity and Artifact Registry repository.
@@ -178,3 +193,4 @@ The [manifest README](../../kubernetes/README.md) records the current commands a
 [#177]: https://github.com/flink-gcp/flink-connector-gcp/issues/177
 [#444]: https://github.com/flink-gcp/flink-connector-gcp/issues/444
 [#1246]: https://github.com/flink-gcp/flink-connector-gcp/issues/1246
+[#1604]: https://github.com/flink-gcp/flink-connector-gcp/issues/1604

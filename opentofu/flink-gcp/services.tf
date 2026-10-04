@@ -25,8 +25,8 @@ resource "google_project_service" "this" {
     "sts.googleapis.com",
     # Connector E2E targets.
     # App Engine Standard builds use Cloud Build and store their images in
-    # Artifact Registry. The fixture source itself is staged through the App
-    # Engine application's code bucket (appengine-e2e.tf).
+    # Artifact Registry. A dedicated project-owned bucket keeps the fixture
+    # source available for deployment (appengine-e2e.tf).
     "appengine.googleapis.com",
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",

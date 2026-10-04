@@ -20,8 +20,8 @@ locals {
   cloudtasks_appengine_e2e_version = "flink-e2e"
 }
 
-# The application is the one permanent part of this fixture: Google does not
-# let a project change or delete its App Engine location. App Engine calls this
+# The application's location is permanent: Google does not let a project
+# change or delete its App Engine location. App Engine calls this
 # location us-central while Cloud Tasks calls the corresponding queue location
 # us-central1.
 resource "google_app_engine_application" "e2e" {
@@ -39,7 +39,7 @@ resource "google_app_engine_application" "e2e" {
 }
 
 # The handler has no project-level role and no Google Cloud client. Its only
-# resource access is read-only access to the App Engine-owned code bucket below
+# resource access is read-only access to the dedicated source bucket below
 # so the platform can load this deployment.
 resource "google_service_account" "appengine_e2e_runtime" {
   account_id   = "appengine-e2e-runtime"
@@ -47,17 +47,37 @@ resource "google_service_account" "appengine_e2e_runtime" {
   description  = "Runs the no-project-access Cloud Tasks App Engine E2E handler"
 }
 
+# App Engine deletes objects in its code bucket after 15 days (#1604). This
+# persistent deployment input needs a project-owned bucket with no deletion
+# rule; the shared IT bucket instead deletes temporary objects after one day.
+resource "google_storage_bucket" "appengine_e2e_source" {
+  name                        = "${local.project_id}-appengine-e2e-source"
+  location                    = "us-central1"
+  storage_class               = "STANDARD"
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  # Keep only the current source, without retained deleted copies.
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+}
+
 resource "google_storage_bucket_object" "appengine_e2e_source" {
   name         = "cloudtasks-appengine-e2e/main.py"
-  bucket       = google_app_engine_application.e2e.code_bucket
+  bucket       = google_storage_bucket.appengine_e2e_source.name
   source       = "${path.module}/appengine-e2e/main.py"
   content_type = "text/x-python"
 }
 
 resource "google_storage_bucket_iam_member" "appengine_e2e_source" {
-  bucket = google_app_engine_application.e2e.code_bucket
+  bucket = google_storage_bucket.appengine_e2e_source.name
   role   = "roles/storage.objectViewer"
   member = google_service_account.appengine_e2e_runtime.member
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # OpenTofu may impersonate this one runtime identity when it creates a version;
@@ -96,8 +116,8 @@ resource "google_service_account_iam_member" "appengine_e2e_deployer" {
 # **Repair is an in-place update, not a replacement.** `-replace` cannot work:
 # App Engine refuses to delete the final version of a service ("Cannot delete
 # the final version of a service (module)"), and this service has exactly one.
-# Changing the file's content is the only lever, which is why /revision exists
-# in main.py — it serves that same hash, so `curl` against a started version
+# That repair changed the file's content, which is why /revision exists in
+# main.py — it serves that same hash, so `curl` against a started version
 # compared with `sha1sum` of the file is the check that does notice.
 #
 # Allow **at least fifteen minutes** for an apply here. A successful update takes
@@ -141,6 +161,7 @@ resource "google_app_engine_standard_app_version" "e2e" {
   }
 
   depends_on = [
+    google_app_engine_application.e2e,
     google_project_iam_member.opentofu["roles/appengine.deployer"],
     google_project_iam_member.opentofu["roles/appengine.serviceAdmin"],
     google_project_iam_member.opentofu["roles/cloudbuild.builds.editor"],

@@ -118,6 +118,19 @@ OpenTofu ignores only `manual_scaling.instances`, so those lifecycle changes do
 not create drift while every other version setting remains managed. Both
 commands require `CLOUDTASKS_IT_PROJECT` and authenticated `gcloud` access.
 
+The fixture's deployment source is `cloudtasks-appengine-e2e/main.py` in the dedicated `flink-gcp-appengine-e2e-source` bucket in `us-central1`.
+The bucket has no lifecycle deletion rule: this is a persistent input, while App Engine's code bucket deletes staged objects after 15 days and the shared IT bucket deletes temporary objects after one day ([#1604](https://github.com/flink-gcp/flink-connector-gcp/issues/1604)).
+Only the current source is retained; object versioning is not enabled and soft delete is explicitly disabled.
+The runtime identity has bucket-scoped `roles/storage.objectViewer` access.
+The bucket has no monthly base fee; charges follow stored bytes and operations, with free-tier eligibility depending on other usage ([Cloud Storage pricing](https://cloud.google.com/storage/pricing)).
+
+The migration changes the deployment's `source_url` and can incur one-time App Engine deployment and Cloud Build costs.
+Review the plan for an in-place update of the existing version, with the new source object and reading grant available before deployment.
+Apply through the normal merge workflow, which stops the fixture even after a partially successful apply.
+Manual-scaling instance hours continue to accrue for 15 minutes after shutdown ([App Engine pricing](https://cloud.google.com/appengine/pricing)).
+After a successful apply, verify that the source object exists in the bucket, the bucket has no deletion rule, the fixture is `STOPPED` with zero instances, and a refreshed `tofu plan -detailed-exitcode` exits with code 0.
+A plan alone does not verify the running source revision; the failed-deployment readback procedure is recorded in `flink-gcp/appengine-e2e.tf`.
+
 ## Tier-3 Kubernetes environment
 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) owns the shared GKE Autopilot rig.
