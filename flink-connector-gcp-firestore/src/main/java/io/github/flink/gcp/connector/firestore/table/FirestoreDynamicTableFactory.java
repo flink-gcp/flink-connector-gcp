@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -34,6 +35,7 @@ import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.table.sink.FirestoreDynamicSink;
 import io.github.flink.gcp.connector.firestore.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.firestore.table.source.FirestoreDynamicSource;
+import io.github.flink.gcp.connector.firestore.table.source.LookupConfig;
 import io.github.flink.gcp.connector.firestore.table.source.ScanConfig;
 
 import java.util.Arrays;
@@ -82,6 +84,13 @@ public final class FirestoreDynamicTableFactory
                         FirestoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         FirestoreConnectorOptions.SCAN_READ_TIME,
                         FirestoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
+                        FirestoreConnectorOptions.LOOKUP_ASYNC,
+                        LookupOptions.CACHE_TYPE,
+                        LookupOptions.MAX_RETRIES,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
+                        LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
+                        LookupOptions.PARTIAL_CACHE_MAX_ROWS,
                         FirestoreConnectorOptions.SINK_WRITE_MODE,
                         FirestoreConnectorOptions.SINK_THROTTLING_ENABLED,
                         FirestoreConnectorOptions.SINK_THROTTLING_INITIAL_OPS_PER_SECOND,
@@ -153,6 +162,7 @@ public final class FirestoreDynamicTableFactory
                 database,
                 collection,
                 scanConfig,
+                LookupConfig.from(config),
                 config.get(FirestoreConnectorOptions.TYPE_MISMATCH_POLICY),
                 context.getPhysicalRowDataType(),
                 config.getOptional(FirestoreConnectorOptions.EMULATOR_ENDPOINT).orElse(null),

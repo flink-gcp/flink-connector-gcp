@@ -134,7 +134,8 @@ class FirestoreOptionParityTest {
                         "scan.collection-group",
                         "scan.partition.max-partitions",
                         "scan.read-time",
-                        "scan.max-rows-per-fetch");
+                        "scan.max-rows-per-fetch",
+                        "lookup.async");
         FirestoreDynamicTableFactory factory = new FirestoreDynamicTableFactory();
         Set<String> accepted =
                 factory.requiredOptions().stream()

@@ -106,6 +106,18 @@ final class RowDataDeserializationSchema
 
     @Override
     public void deserialize(DocumentSnapshot document, Collector<RowData> out) throws IOException {
+        out.collect(read(document));
+    }
+
+    /**
+     * Reads one document as its row, the one row {@link #deserialize(DocumentSnapshot, Collector)}
+     * collects.
+     *
+     * @param document the document, which exists
+     * @return the row
+     * @throws IOException if a value does not match its column and the policy cannot read it
+     */
+    RowData read(DocumentSnapshot document) throws IOException {
         if (paths == null) {
             open(null);
         }
@@ -138,7 +150,7 @@ final class RowDataDeserializationSchema
         for (int i = 0; i < metadata.length; i++) {
             row.setField(columns.length + i, metadata[i].read(document));
         }
-        out.collect(row);
+        return row;
     }
 
     @Override
