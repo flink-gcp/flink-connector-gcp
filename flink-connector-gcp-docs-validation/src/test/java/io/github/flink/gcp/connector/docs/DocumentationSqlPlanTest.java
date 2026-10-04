@@ -687,7 +687,41 @@ public class DocumentationSqlPlanTest {
                         fragment(
                                 "flink/SpannerTableReference.sql",
                                 "schema-markers",
-                                DocumentationSqlPlanTest::spannerSchemaMarkerScenario)));
+                                DocumentationSqlPlanTest::spannerSchemaMarkerScenario)),
+                scenario(
+                        "Firestore table reference overview",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_orders AS "
+                                        + "SELECT 'o-1001' AS order_id, "
+                                        + "'Alice' AS customer, "
+                                        + "CAST(12.34 AS DOUBLE) AS total, "
+                                        + "CAST('2026-01-01 00:00:00.000000' "
+                                        + "AS TIMESTAMP_LTZ(6)) AS updated_at"),
+                        snippet("flink/FirestoreTableReference.sql", "overview")),
+                // The marker and write-mode regions declare a table and stop; the follow-up
+                // insert is what reaches the factory, which checks the markers against the
+                // schema and the write mode against the key.
+                scenario(
+                        "Firestore table reference schema markers",
+                        withFollowup(
+                                "flink/FirestoreTableReference.sql",
+                                "markers",
+                                "INSERT INTO stores SELECT 'tokyo', 'Tokyo', ROW(35.68, 139.76),"
+                                        + " 'staff/alice', ARRAY[ROW('Food', 'staff/bob')];")),
+                scenario(
+                        "Firestore table reference merge write mode",
+                        withFollowup(
+                                "flink/FirestoreTableReference.sql",
+                                "merge",
+                                "INSERT INTO order_status SELECT 'o-1001', 'shipped';")),
+                scenario(
+                        "Firestore table reference append-only table",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_events AS "
+                                        + "SELECT 'alice' AS actor, 'login' AS action, "
+                                        + "CAST('2026-01-01 00:00:00.000' "
+                                        + "AS TIMESTAMP_LTZ(3)) AS occurred_at"),
+                        snippet("flink/FirestoreTableReference.sql", "append")));
     }
 
     private static Scenario scenario(String name, ValidationStep... steps) {

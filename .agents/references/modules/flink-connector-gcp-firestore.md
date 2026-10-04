@@ -91,6 +91,30 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - A user query is planned from its wire form (`Query.fromProto(toProto())`), which is what readers
   rebuild; planning on the original reverses a `limitToLast` offset.
 
+## Native-mode Table API sink (`docs/adr/0179`)
+
+- **A table is one collection; the PRIMARY KEY (one `STRING` column) is the document id** and is
+  never a field. No key means `SET` under a 20-character `SecureRandom` id (a `CREATE` would fail
+  the job on a library retry). A key that is empty or holds `/` fails the record: it would
+  silently address another document. `update` declares no deletes (restart loop otherwise).
+- **Types are checked when the statement is planned by `FirestoreTableSchema`**, and the converter
+  (`RowDataToFirestoreConverter`) assumes that check ran. Add a type to both, plus the type table
+  on the table docs page. The read side (#1608) reuses the schema class and its markers.
+- **Markers are `geo-point-field-paths` / `reference-field-paths`** (BigQuery's path grammar,
+  ARRAY transparent, MAP values `.value`). **No option key may start with `schema`**: Flink's
+  `CatalogPropertiesUtil` drops such options from a persisted table silently. An unknown
+  or mistyped marker path is refused, never ignored.
+- **A builder cross-check whose message names setters is restated in option keys** in
+  `WriterOptionsMapper` (throttling) or called with the keys as names (`retrySettings` overload).
+  Assert a phrase only the connector's message carries: `FactoryUtil` echoes every option.
+- **The failure handler stays `failJob`**, so `maxConsecutiveRejections` has no option; the parity
+  test records why. Same-document order is not kept (#1556 is the opt-in, v1.3.0 by owner
+  decision 2026-10-04); a test must not write one key twice and expect order.
+- **Run module tests with `-am`** (or install base first): another session's install can replace
+  the base SNAPSHOT in `~/.m2`, and `LineageIdentifiers.firestoreCollection` then fails with
+  `NoSuchMethodError`. In `flink-sql-connector-gcp-firestore`, never pass an ITCase to `-Dtest`:
+  the default test execution would run it against the unshaded classes before the jar exists.
+
 ## Datastore-mode sink (`docs/adr/0175`)
 
 - **The SPI carries the client library's `FullEntity<Key>` and `Key`** (both serializable; a test
