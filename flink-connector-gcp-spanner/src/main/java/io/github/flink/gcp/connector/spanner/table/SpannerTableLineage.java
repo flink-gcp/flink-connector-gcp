@@ -68,7 +68,8 @@ public final class SpannerTableLineage implements Serializable {
         String project = config.get(SpannerConnectorOptions.PROJECT);
         String instance = config.get(SpannerConnectorOptions.INSTANCE);
         String database = config.get(SpannerConnectorOptions.DATABASE);
-        String configuredSchema = config.getOptional(SpannerConnectorOptions.SCHEMA).orElse(null);
+        String configuredSchema =
+                config.getOptional(SpannerConnectorOptions.NAMED_SCHEMA).orElse(null);
         String configuredTable = config.get(SpannerConnectorOptions.TABLE);
         SpannerTableName table =
                 SpannerTableName.of(

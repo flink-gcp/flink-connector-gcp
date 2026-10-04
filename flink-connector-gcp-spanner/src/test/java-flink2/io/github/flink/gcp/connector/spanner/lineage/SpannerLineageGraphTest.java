@@ -111,7 +111,7 @@ class SpannerLineageGraphTest {
         table.useCatalog("catalog");
         String options =
                 "'connector'='spanner', 'project'='p', 'instance'='i', 'database'='db', "
-                        + "'dialect'='POSTGRESQL', 'schema'='\"Analytics\"', "
+                        + "'dialect'='POSTGRESQL', 'named-schema' = '\"Analytics\"', "
                         + "'service-account-key-file'='/lineage-test/must-not-read-credentials.json'";
         table.executeSql(
                 "CREATE TABLE input (id BIGINT, name STRING, pt AS PROCTIME(), PRIMARY KEY(id) NOT ENFORCED) WITH ("

@@ -93,10 +93,10 @@ class SpannerSchemaToFlinkConverterTest {
                         entry("ids", DataTypes.ARRAY(DataTypes.STRING())));
         assertThat(converted.markerOptions())
                 .containsOnly(
-                        Map.entry("schema.json-field-paths", "j"),
-                        Map.entry("schema.uuid-field-paths", "u;ids"),
-                        Map.entry("schema.proto-type-names", "ev:example.events.Event"),
-                        Map.entry("schema.enum-type-names", "st:example.events.Status"));
+                        Map.entry("json-field-paths", "j"),
+                        Map.entry("uuid-field-paths", "u;ids"),
+                        Map.entry("proto-type-names", "ev:example.events.Event"),
+                        Map.entry("enum-type-names", "st:example.events.Status"));
     }
 
     @Test
@@ -125,8 +125,7 @@ class SpannerSchemaToFlinkConverterTest {
                         entry("v", DataTypes.ARRAY(DataTypes.FLOAT())));
         assertThat(converted.markerOptions())
                 .containsOnly(
-                        Map.entry("schema.json-field-paths", "j"),
-                        Map.entry("schema.uuid-field-paths", "u"));
+                        Map.entry("json-field-paths", "j"), Map.entry("uuid-field-paths", "u"));
     }
 
     @Test
@@ -169,7 +168,7 @@ class SpannerSchemaToFlinkConverterTest {
                         entry("k", DataTypes.BIGINT().notNull()),
                         entry("total", DataTypes.BIGINT()));
         assertThat(converted.markerOptions())
-                .containsOnly(Map.entry("schema.generated-columns", "k;total"));
+                .containsOnly(Map.entry("generated-columns", "k;total"));
     }
 
     @Test
@@ -190,8 +189,8 @@ class SpannerSchemaToFlinkConverterTest {
                         entry("Sts", DataTypes.ARRAY(DataTypes.BIGINT())));
         assertThat(converted.markerOptions())
                 .containsOnly(
-                        Map.entry("schema.proto-type-names", "Ev:example.events.Event"),
-                        Map.entry("schema.enum-type-names", "Sts:example.events.Status"));
+                        Map.entry("proto-type-names", "Ev:example.events.Event"),
+                        Map.entry("enum-type-names", "Sts:example.events.Status"));
     }
 
     /**
@@ -214,7 +213,7 @@ class SpannerSchemaToFlinkConverterTest {
 
         assertThat(types(converted.schema())).containsOnlyKeys("id", "stored");
         assertThat(converted.markerOptions())
-                .containsOnly(Map.entry("schema.generated-columns", "stored"));
+                .containsOnly(Map.entry("generated-columns", "stored"));
     }
 
     @Test
@@ -286,7 +285,7 @@ class SpannerSchemaToFlinkConverterTest {
                         NO_NAMED_TYPES);
 
         assertThat(converted.markerOptions())
-                .containsOnly(Map.entry("schema.json-field-paths", "'col;semi';Col.Dot"));
+                .containsOnly(Map.entry("json-field-paths", "'col;semi';Col.Dot"));
     }
 
     private static Map<String, Object> types(Schema schema) {

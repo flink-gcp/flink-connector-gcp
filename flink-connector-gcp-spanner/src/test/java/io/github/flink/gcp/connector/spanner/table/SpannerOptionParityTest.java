@@ -43,22 +43,22 @@ class SpannerOptionParityTest {
         Configuration options =
                 Configuration.fromMap(
                         Map.of(
-                                "schema.json-field-paths",
+                                "json-field-paths",
                                 "metadata;nested.payload",
-                                "schema.uuid-field-paths",
+                                "uuid-field-paths",
                                 "id;nested.id",
-                                "schema.generated-columns",
+                                "generated-columns",
                                 "total;tokens",
-                                "schema.proto-type-names",
+                                "proto-type-names",
                                 "event:example.Event,nested.event:example.Nested"));
 
-        assertThat(options.get(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS))
+        assertThat(options.get(SpannerConnectorOptions.JSON_FIELD_PATHS))
                 .containsExactly("metadata", "nested.payload");
-        assertThat(options.get(SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS))
+        assertThat(options.get(SpannerConnectorOptions.UUID_FIELD_PATHS))
                 .containsExactly("id", "nested.id");
-        assertThat(options.get(SpannerConnectorOptions.SCHEMA_GENERATED_COLUMNS))
+        assertThat(options.get(SpannerConnectorOptions.GENERATED_COLUMNS))
                 .containsExactly("total", "tokens");
-        assertThat(options.get(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES))
+        assertThat(options.get(SpannerConnectorOptions.PROTO_TYPE_NAMES))
                 .containsExactlyInAnyOrderEntriesOf(
                         Map.of("event", "example.Event", "nested.event", "example.Nested"));
     }
@@ -194,15 +194,15 @@ class SpannerOptionParityTest {
                         "instance",
                         "database",
                         "table",
-                        "schema",
+                        "named-schema",
                         "dialect",
                         "emulator-endpoint",
                         "service-account-key-file",
-                        "schema.json-field-paths",
-                        "schema.uuid-field-paths",
-                        "schema.generated-columns",
-                        "schema.proto-type-names",
-                        "schema.enum-type-names",
+                        "json-field-paths",
+                        "uuid-field-paths",
+                        "generated-columns",
+                        "proto-type-names",
+                        "enum-type-names",
                         "scan.mode",
                         "scan.change-stream.name",
                         "scan.change-stream.changelog-mode",

@@ -307,8 +307,9 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
 
     /**
      * The table's options. A table in the default schema names itself through {@code table} alone,
-     * which the connector passes to Spanner as given; one in a named schema sets {@code schema} and
-     * {@code table} in canonical quoting, which the connector decodes back to the native names.
+     * which the connector passes to Spanner as given; one in a named schema sets {@code
+     * named-schema} and {@code table} in canonical quoting, which the connector decodes back to the
+     * native names.
      */
     private Map<String, String> tableOptions(
             String database,
@@ -325,7 +326,7 @@ final class SpannerCatalog extends AbstractReadOnlyCatalog<SpannerCatalogClient>
             options.put(SpannerConnectorOptions.TABLE.key(), table.table());
         } else {
             options.put(
-                    SpannerConnectorOptions.SCHEMA.key(),
+                    SpannerConnectorOptions.NAMED_SCHEMA.key(),
                     SpannerObjectName.encodePart(table.schema(), dialect));
             options.put(
                     SpannerConnectorOptions.TABLE.key(),

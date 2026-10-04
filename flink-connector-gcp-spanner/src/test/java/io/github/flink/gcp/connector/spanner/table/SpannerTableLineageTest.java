@@ -79,7 +79,7 @@ class SpannerTableLineageTest {
         options.put("dialect", dialect);
         options.put("table", table);
         if (schema != null) {
-            options.put("schema", schema);
+            options.put("named-schema", schema);
         }
         Map<String, String> identity =
                 new HashMap<>(
@@ -112,7 +112,7 @@ class SpannerTableLineageTest {
     @Test
     void deferredIndexAndFilterReadsKeepTheKnownTableThroughProjectionAndCopy() throws Exception {
         Map<String, String> options = options();
-        options.put("schema", "analytics");
+        options.put("named-schema", "analytics");
         options.put("scan.index", "by_id");
         SpannerDynamicSource source =
                 (SpannerDynamicSource) FactoryMocks.createTableSource(SCHEMA, options);
@@ -152,7 +152,7 @@ class SpannerTableLineageTest {
     void originalQuotingParticipatesInPlanIdentityEvenWhenCanonicalNamesAgree() {
         Map<String, String> plain = options();
         plain.put("dialect", "POSTGRESQL");
-        plain.put("schema", "analytics");
+        plain.put("named-schema", "analytics");
         plain.put("table", "people");
         Map<String, String> quoted = new HashMap<>(plain);
         quoted.put("table", "\"people\"");

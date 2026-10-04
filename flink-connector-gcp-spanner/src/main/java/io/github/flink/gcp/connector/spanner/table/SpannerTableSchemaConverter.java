@@ -460,7 +460,8 @@ public final class SpannerTableSchemaConverter implements Serializable {
             unknownGenerated.removeAll(generatedConsumed);
             if (!unknownGenerated.isEmpty()) {
                 throw new ValidationException(
-                        "schema.generated-columns names "
+                        SpannerConnectorOptions.GENERATED_COLUMNS.key()
+                                + " names "
                                 + unknownGenerated
                                 + ", which are not top-level physical fields of the table.");
             }

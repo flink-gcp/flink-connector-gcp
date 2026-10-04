@@ -34,7 +34,7 @@ Flink also defines standard lookup cache options and owns the cache lifecycle ar
 The Spanner dynamic source accepts a lookup only when the planner supplies equality predicates for every declared primary-key column.
 It restores the declared composite-key order before calling Spanner.
 Synchronous mode uses `readRow`; asynchronous mode uses `readRowAsync`.
-Both modes qualify the table with the optional dialect-specific `schema` value used by the sink and bounded source.
+Both modes qualify the table with the optional dialect-specific `named-schema` value used by the sink and bounded source.
 
 The connector exposes Flink's `NONE` and `PARTIAL` cache modes and delegates partial-cache storage, expiry, and missing-key behavior to Flink.
 It rejects `FULL` because a full cache would require a scan and a separately defined snapshot and reload contract.

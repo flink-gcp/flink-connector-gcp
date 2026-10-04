@@ -33,8 +33,8 @@ import java.util.Optional;
  * class is the object name the {@code spanner} catalog gives a table. It converts, in both
  * directions, between that object name and the native schema and table names {@code
  * INFORMATION_SCHEMA} reports. It is not {@link SpannerTableName}, which decodes the connector's
- * {@code schema} and {@code table} options of one configured table into the names the data APIs
- * take; the catalog emits those options through {@link #encodePart(String, Dialect)}.
+ * {@code named-schema} and {@code table} options of one configured table into the names the data
+ * APIs take; the catalog emits those options through {@link #encodePart(String, Dialect)}.
  *
  * <p>Spanner addresses a table by database, schema and table, while a Flink catalog has two levels
  * below its name, so the schema travels inside the Flink object name, as the JDBC connector's

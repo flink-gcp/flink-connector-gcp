@@ -542,7 +542,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "  'dialect' = '"
                 + dialect.name()
                 + "',\n"
-                + "  'schema.json-field-paths' = 'metadata',\n"
+                + "  'json-field-paths' = 'metadata',\n"
                 + (scanIndex == null ? "" : "  'scan.index' = '" + scanIndex + "',\n")
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
@@ -607,7 +607,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "  'database' = '"
                 + database.getDatabase()
                 + "',\n"
-                + "  'schema' = '"
+                + "  'named-schema' = '"
                 + schema
                 + "',\n"
                 + "  'table' = '"
@@ -659,7 +659,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "  'dialect' = '"
                 + dialect.name()
                 + "',\n"
-                + "  'schema.uuid-field-paths' = 'external_id',\n"
+                + "  'uuid-field-paths' = 'external_id',\n"
                 + "  'lookup.async' = '"
                 + async
                 + "',\n"
@@ -690,7 +690,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "  'database' = '"
                 + database.getDatabase()
                 + "',\n"
-                + (schema == null ? "" : "  'schema' = '" + schema + "',\n")
+                + (schema == null ? "" : "  'named-schema' = '" + schema + "',\n")
                 + "  'table' = '"
                 + tableName
                 + "',\n"

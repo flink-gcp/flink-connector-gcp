@@ -40,6 +40,11 @@ import java.util.Map;
  * and table docs pages carry a default with its derivation, and a test rejects the restatement
  * phrases. A failure absence selects ("unset fails the source") is a contract, not a default, and
  * stays.
+ *
+ * <p>No key starts with {@code schema}. Flink drops such an option when it rebuilds a table from a
+ * catalog that stores the table as properties, because the serialized table schema uses those keys.
+ * The options first published under a {@code schema}-prefixed key still accept it as a deprecated
+ * key: it works in a {@code WITH} clause, but such a catalog can lose it.
  */
 @PublicEvolving
 public final class SpannerConnectorOptions {
@@ -73,10 +78,11 @@ public final class SpannerConnectorOptions {
                     .withDescription("The Spanner table receiving or supplying rows.");
 
     /** The named schema containing the table. */
-    public static final ConfigOption<String> SCHEMA =
-            ConfigOptions.key("schema")
+    public static final ConfigOption<String> NAMED_SCHEMA =
+            ConfigOptions.key("named-schema")
                     .stringType()
                     .noDefaultValue()
+                    .withDeprecatedKeys("schema")
                     .withDescription("The named schema containing the table.");
 
     /** The database dialect: GOOGLE_STANDARD_SQL or POSTGRESQL. */
@@ -102,24 +108,26 @@ public final class SpannerConnectorOptions {
                             "The service-account JSON key-file path available to each runtime process.");
 
     /** Field paths whose STRING values use Spanner JSON. */
-    public static final ConfigOption<List<String>> SCHEMA_JSON_FIELD_PATHS =
-            ConfigOptions.key("schema.json-field-paths")
+    public static final ConfigOption<List<String>> JSON_FIELD_PATHS =
+            ConfigOptions.key("json-field-paths")
                     .stringType()
                     .asList()
                     .noDefaultValue()
+                    .withDeprecatedKeys("schema.json-field-paths")
                     .withDescription("Field paths whose STRING values use Spanner JSON.");
 
     /** Field paths whose STRING values use native Spanner UUID. */
-    public static final ConfigOption<List<String>> SCHEMA_UUID_FIELD_PATHS =
-            ConfigOptions.key("schema.uuid-field-paths")
+    public static final ConfigOption<List<String>> UUID_FIELD_PATHS =
+            ConfigOptions.key("uuid-field-paths")
                     .stringType()
                     .asList()
                     .noDefaultValue()
+                    .withDeprecatedKeys("schema.uuid-field-paths")
                     .withDescription("Field paths whose STRING values use native Spanner UUID.");
 
     /** Columns Spanner generates, which reads return and writes leave out of their mutations. */
-    public static final ConfigOption<List<String>> SCHEMA_GENERATED_COLUMNS =
-            ConfigOptions.key("schema.generated-columns")
+    public static final ConfigOption<List<String>> GENERATED_COLUMNS =
+            ConfigOptions.key("generated-columns")
                     .stringType()
                     .asList()
                     .noDefaultValue()
@@ -128,17 +136,19 @@ public final class SpannerConnectorOptions {
                                     + " their mutations.");
 
     /** Field paths to fully qualified Spanner PROTO type names. */
-    public static final ConfigOption<Map<String, String>> SCHEMA_PROTO_TYPE_NAMES =
-            ConfigOptions.key("schema.proto-type-names")
+    public static final ConfigOption<Map<String, String>> PROTO_TYPE_NAMES =
+            ConfigOptions.key("proto-type-names")
                     .mapType()
                     .noDefaultValue()
+                    .withDeprecatedKeys("schema.proto-type-names")
                     .withDescription("Field paths to fully qualified Spanner PROTO type names.");
 
     /** Field paths to fully qualified Spanner ENUM type names. */
-    public static final ConfigOption<Map<String, String>> SCHEMA_ENUM_TYPE_NAMES =
-            ConfigOptions.key("schema.enum-type-names")
+    public static final ConfigOption<Map<String, String>> ENUM_TYPE_NAMES =
+            ConfigOptions.key("enum-type-names")
                     .mapType()
                     .noDefaultValue()
+                    .withDeprecatedKeys("schema.enum-type-names")
                     .withDescription("Field paths to fully qualified Spanner ENUM type names.");
 
     /** The secondary index used by bounded table scans. */

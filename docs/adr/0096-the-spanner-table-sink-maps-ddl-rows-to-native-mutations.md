@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0096: The Spanner table connector maps DDL rows to native values
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-13, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134) on 2026-08-29, and by [#1159](https://github.com/flink-gcp/flink-connector-gcp/issues/1159) on 2026-09-05
+- Date: 2026-08-11, revised 2026-08-13, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134) on 2026-08-29, by [#1159](https://github.com/flink-gcp/flink-connector-gcp/issues/1159) on 2026-09-05, and by [#1617](https://github.com/flink-gcp/flink-connector-gcp/issues/1617) on 2026-10-04
 - Issues: [#502](https://github.com/flink-gcp/flink-connector-gcp/issues/502), [#503](https://github.com/flink-gcp/flink-connector-gcp/issues/503), [#527](https://github.com/flink-gcp/flink-connector-gcp/issues/527), [#528](https://github.com/flink-gcp/flink-connector-gcp/issues/528), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529), [#563](https://github.com/flink-gcp/flink-connector-gcp/issues/563) (under
-  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#544](https://github.com/flink-gcp/flink-connector-gcp/issues/544), [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053), [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134)
+  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#544](https://github.com/flink-gcp/flink-connector-gcp/issues/544), [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053), [#1134](https://github.com/flink-gcp/flink-connector-gcp/issues/1134), [#1159](https://github.com/flink-gcp/flink-connector-gcp/issues/1159), [#1617](https://github.com/flink-gcp/flink-connector-gcp/issues/1617)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -59,15 +59,24 @@ That narrows the silent substitution rather than removing it — an implementati
 A seam that builds its own client instead — the Change Streams client factories and the lookup — reads the path itself when its component opens, which is the same boundary.
 Absent on a real-service path keeps ADC, and an emulator endpoint is mutually exclusive with the key path.
 
-**The optional `schema` value qualifies every Table API data path.**
+**The optional `named-schema` value qualifies every Table API data path.**
 The sink mutations, bounded source reads, and lookup point reads use the same dialect-specific fully qualified table name.
-When `schema` is set, the schema, table, and secondary-index options each contain one identifier component rather than a prequalified name.
+When `named-schema` is set, the schema, table, and secondary-index options each contain one identifier component rather than a prequalified name.
 PostgreSQL unquoted components fold to lower case and quoted components preserve case, while GoogleSQL schema-object components are case-insensitive.
 Quoted values use the dialect's canonical delimiter escape: PostgreSQL doubles a double quote, and GoogleSQL backslash-escapes a backtick or backslash.
 The connector checks only that each value is non-blank, structurally one component, and canonically quoted.
 It decodes each component to its catalog spelling before assembling the fully qualified native data-API name; SQL delimiters are not part of that name.
 It does not copy Spanner's evolving character, length, or keyword rules into the connector: bounded-scan catalog resolution uses `INFORMATION_SCHEMA`, and the native Mutation and lookup APIs remain authoritative for their names.
-Leaving `schema` unset preserves the former empty GoogleSQL schema and PostgreSQL `public` behavior.
+Leaving `named-schema` unset preserves the former empty GoogleSQL schema and PostgreSQL `public` behavior.
+
+**No option key starts with `schema`.**
+Flink rebuilds a table's options from the properties a persisting catalog stores, and drops every key it takes for part of the serialized table schema, so an option under such a key disappears from the stored table without an error.
+The named schema is `named-schema` and the markers are `json-field-paths`, `uuid-field-paths`, `proto-type-names`, `enum-type-names` and `generated-columns`, as the Firestore table connector's markers are (ADR-0179).
+The five keys 1.0.0 and 1.1.0 published under the prefix (`schema`, `schema.json-field-paths`, `schema.uuid-field-paths`, `schema.proto-type-names`, `schema.enum-type-names`) remain Flink deprecated keys of the renamed options, so an existing `WITH` clause keeps working; a table stored under one of them in a persisting catalog can still lose it, which the table page states.
+`schema.generated-columns` was never released and has no deprecated key.
+A DDL that sets one option under both its key and its deprecated key, an `OPTIONS` hint included, is refused at planning, because Flink would read the current key and silently ignore the other, and two named-schema values address two different tables.
+The Java constants are renamed with the keys (`NAMED_SCHEMA`, `JSON_FIELD_PATHS`, and so on); `SpannerConnectorOptions` is `@PublicEvolving`, so ADR-0124 allows the break at a minor release with a release-notes entry.
+`SpannerConnectorOptionsTest` holds that no key starts with `schema` and that every option the factory registers survives the persisting round trip on the Flink version under test.
 
 **The table source is a bounded `partitionRead` and pushes down top-level projection.**
 The retained DDL columns become the read operation's column list and the converter emits the projected shape in planner order.
@@ -123,12 +132,23 @@ Measured 2026-09-05 against Flink 2.2.1 and Spanner emulator 1.5.56 for [#1159](
 - Flink scans match forced-residual scans, including differently filtered secondary-index branches of a `UNION ALL`.
 - The emulator accepts NaN keys in both dialects. The real-service fixture excludes NaN from its numeric-range data and checks NaN-key rejection separately for primary and secondary keys in each dialect.
 
+Measured 2026-10-04 for [#1617](https://github.com/flink-gcp/flink-connector-gcp/issues/1617), from the flink-table-common sources and through the public API:
+
+- `CatalogPropertiesUtil.deserializeOptions` drops keys starting with `schema` in 2.2.1 (`!key.startsWith(SCHEMA)`) and with `schema.` in 1.20.4. Of every `ConfigOptions.key(...)` in the repository's main sources, only Spanner's six matched any key it drops.
+- `ResolvedCatalogTable#toProperties()` followed by `CatalogTable.fromProperties(...)` on 2.2.1, with all six former keys set, returned `connector`, `project`, `instance`, `database` and `table` only.
+- On the emulator (one run), a write of `'{"a": 1}'` into a JSON column through a table without the JSON marker succeeded and stored `{"a":1}`, so a lost marker can pass unnoticed there; the real service's answer is unmeasured.
+- `FactoryUtil` in both versions counts an option's deprecated keys, including a map option's `key.name` entries, as consumed, and `Configuration` reads a deprecated key after the current one and logs a warning naming the current key.
+
 ## Alternatives declined
 
 - **Infer JSON, PROTO, and ENUM from carrier types**: `STRING`, `BYTES`, and `BIGINT` are also ordinary Spanner types, so inference would silently change schemas with the same Flink DDL.
 - **Accept every form parsed by `UUID.fromString`**: Java also accepts shortened component forms, which would make the SQL carrier contract wider and less predictable than the documented Spanner spelling.
 - **Use insert-or-update without a declared key**: Spanner tables always have physical keys, but their columns and order are not available in the DDL; an extra metadata read would make planning depend on the live destination and still leave Flink without an upsert key.
 - **Expose failure handlers as strings**: the shared SPI accepts application code, not a closed enum, so a string surface would represent only an arbitrary subset and diverge from the builder.
+- **`schema-name` or any other key starting with `schema`**: Flink 2.2.1 compares with `startsWith("schema")`, without a separator, so the replacement would be lost the same way.
+- **Keep the old keys and document the catalog limitation only**: a stored named-schema table would write to the default schema's same-named table, and a stored marker would write a carrier value, both without an error.
+- **Keep the old Java constant names as deprecated aliases**: two names for each option would outlive the rename, while the `@PublicEvolving` tier already allows the break.
+- **Let Flink's precedence decide when both spellings are set**: the ignored value is the user's own and differs only by accident, which is exactly when a silent choice misleads.
 
 ## Consequences
 
@@ -137,4 +157,4 @@ The DDL schema must match the destination's column names and native types; this 
 Changing a physical `STRING` column to `UUID` requires a coordinated database migration and DDL option update; the connector neither validates existing rows in advance nor changes the live schema.
 Because PostgreSQL DDL does not constrain a `numeric` column to the Flink declaration, a stored value outside that declaration fails the scan or lookup with the physical column name and declared decimal shape.
 The lookup source builds on the same type mapping in [#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504).
-The table connector does not create schemas or qualify a table from a multipart `table` value when `schema` is set.
+The table connector does not create schemas or qualify a table from a multipart `table` value when `named-schema` is set.

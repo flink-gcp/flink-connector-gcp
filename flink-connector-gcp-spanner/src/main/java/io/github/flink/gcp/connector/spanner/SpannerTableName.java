@@ -31,10 +31,10 @@ import java.util.Objects;
 /**
  * A table name as rendered for Spanner APIs and compared with {@code INFORMATION_SCHEMA}.
  *
- * <p>It is built from one configured table's {@code schema} and {@code table} options. A name the
- * {@code spanner} catalog lists or parses from a Flink object name is a {@link SpannerObjectName}
- * instead; "catalog" in this class's methods, such as {@link #catalogKey(String, String, Dialect)},
- * means an {@code INFORMATION_SCHEMA} row, not the Flink catalog.
+ * <p>It is built from one configured table's {@code named-schema} and {@code table} options. A name
+ * the {@code spanner} catalog lists or parses from a Flink object name is a {@link
+ * SpannerObjectName} instead; "catalog" in this class's methods, such as {@link #catalogKey(String,
+ * String, Dialect)}, means an {@code INFORMATION_SCHEMA} row, not the Flink catalog.
  */
 @Internal
 public final class SpannerTableName implements Serializable {
@@ -61,11 +61,25 @@ public final class SpannerTableName implements Serializable {
 
     /** Creates a name from the Table API options. */
     public static SpannerTableName of(@Nullable String schema, String table, Dialect dialect) {
+        return of(schema, "named-schema", table, dialect);
+    }
+
+    /**
+     * Creates a name from the Table API options, naming the schema by the key that supplied it.
+     *
+     * @param schema the named schema, or {@code null} for the dialect's default schema
+     * @param schemaKey the option key the schema was written under, which a rejection names
+     * @param table the table
+     * @param dialect the database dialect
+     * @return the name
+     */
+    public static SpannerTableName of(
+            @Nullable String schema, String schemaKey, String table, Dialect dialect) {
         if (schema == null) {
             return new SpannerTableName(
                     dialect, false, dialect == Dialect.POSTGRESQL ? "public" : "", table, table);
         }
-        String schemaName = SpannerIdentifier.configured(schema, dialect, "schema");
+        String schemaName = SpannerIdentifier.configured(schema, dialect, schemaKey);
         String tableName = SpannerIdentifier.configured(table, dialect, "table");
         return new SpannerTableName(
                 dialect, true, schemaName, tableName, schemaName + "." + tableName);
