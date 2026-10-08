@@ -32,6 +32,9 @@ import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.cloud.http.HttpTransportOptions;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
@@ -438,25 +441,117 @@ class BigQueryTableAdminTest {
     }
 
     @Test
+    void aSchemaUpdateSendsOnlyTheMergedSchemaConditionedOnTheSnapshotsEtag() throws Exception {
+        // The snapshot's table carries labels, partitioning and clustering besides its schema.
+        // Writing any of them back from a read that may be stale would revert a concurrent
+        // change, so the patch names the schema alone; and BigQuery ignores an etag in the body,
+        // so the precondition must travel as `If-Match` or there is none (#1667).
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest().setResponse(updatedTableResponse());
+        SchemaUpdateHarness harness =
+                schemaUpdateHarness(
+                        request,
+                        StubBigQuery.TableAnswer.existing(
+                                StandardTableDefinition.newBuilder()
+                                        .setSchema(
+                                                com.google.cloud.bigquery.Schema.of(
+                                                        com.google.cloud.bigquery.Field.newBuilder(
+                                                                        "name",
+                                                                        com.google.cloud.bigquery
+                                                                                .StandardSQLTypeName
+                                                                                .STRING)
+                                                                .setPolicyTags(PII)
+                                                                .build()))
+                                        .setTimePartitioning(
+                                                TimePartitioning.of(TimePartitioning.Type.DAY))
+                                        .setClustering(
+                                                com.google.cloud.bigquery.Clustering.newBuilder()
+                                                        .setFields(java.util.List.of("name"))
+                                                        .build())
+                                        .build(),
+                                "snapshot-etag",
+                                Map.of("owner", "ops"),
+                                null));
+        TableSchemaSnapshot snapshot = harness.admin.getSchema(DESTINATION);
+
+        assertThat(harness.admin.updateSchema(DESTINATION, snapshot, SCHEMA_WITH_NAME)).isTrue();
+
+        // The production transport has no PATCH, so the client tunnels it through POST.
+        assertThat(harness.methods).containsExactly("POST");
+        assertThat(request.getFirstHeaderValue("X-HTTP-Method-Override")).isEqualTo("PATCH");
+        assertThat(request.getUrl())
+                .startsWith("https://bigquery.example/bigquery/v2/projects/p/datasets/d/tables/t");
+        assertThat(request.getFirstHeaderValue("If-Match")).isEqualTo("snapshot-etag");
+        JsonObject body = JsonParser.parseString(request.getContentAsString()).getAsJsonObject();
+        assertThat(body.keySet()).containsExactlyInAnyOrder("tableReference", "schema");
+        JsonArray fields = body.getAsJsonObject("schema").getAsJsonArray("fields");
+        assertThat(fields).hasSize(2);
+        // The existing column keeps the REST-only attribute the Storage form cannot carry.
+        assertThat(fields.get(0).getAsJsonObject().get("name").getAsString()).isEqualTo("name");
+        assertThat(fields.get(0).getAsJsonObject().has("policyTags")).isTrue();
+        assertThat(fields.get(1).getAsJsonObject().get("name").getAsString()).isEqualTo("event_ts");
+        // The stub's own `update` is never reached: the conditioned client is a derived one.
+        assertThat(harness.client.updatedTables).isEmpty();
+    }
+
+    @Test
     void aLostSchemaUpdateRaceAsksForAFreshReadRatherThanFailingTheJob() throws Exception {
         // `RetryingTableAdmin` passes `updateSchema` through unretried (ADR-0071), because `false`
         // means "re-read and derive again" — repeating a proposal built against a snapshot now
         // known to be stale is what must not happen.
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest()
+                        .setResponse(
+                                errorResponse(
+                                        412, "conditionNotMet", "Precondition check failed."));
+        SchemaUpdateHarness harness =
+                schemaUpdateHarness(
+                        request,
+                        StubBigQuery.TableAnswer.existing(NO_COLUMNS, "stale-etag", null, null));
+        TableSchemaSnapshot snapshot = harness.admin.getSchema(DESTINATION);
+
+        assertThat(harness.admin.updateSchema(DESTINATION, snapshot, SCHEMA)).isFalse();
+        assertThat(request.getFirstHeaderValue("If-Match")).isEqualTo("stale-etag");
+    }
+
+    @Test
+    void aRejectedSchemaUpdateStaysTerminal() throws Exception {
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest()
+                        .setResponse(errorResponse(400, "invalid", "invalid schema change"));
+        SchemaUpdateHarness harness =
+                schemaUpdateHarness(
+                        request,
+                        StubBigQuery.TableAnswer.existing(NO_COLUMNS, "etag-1", null, null));
+        TableSchemaSnapshot snapshot = harness.admin.getSchema(DESTINATION);
+
+        assertThatThrownBy(() -> harness.admin.updateSchema(DESTINATION, snapshot, SCHEMA))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("Failed to update the schema");
+    }
+
+    @Test
+    void aSnapshotWithoutAnEtagIsUpdatedUnconditionallyButStillSchemaOnly() throws Exception {
+        // BigQuery answers an etag; the emulator does not. Without one there is nothing
+        // to condition on, so the update goes through the client as given — still naming only
+        // the table and its schema.
         StubBigQuery client = new StubBigQuery();
         client.tablesAnswering(
-                StubBigQuery.TableAnswer.existing(NO_COLUMNS, "stale-etag", null, null));
-        client.updateTableFailure = new BigQueryException(412, "precondition failed");
+                StubBigQuery.TableAnswer.existing(NO_COLUMNS, null, Map.of("owner", "ops"), null));
         BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
         TableSchemaSnapshot snapshot = admin.getSchema(DESTINATION);
 
-        assertThat(admin.updateSchema(DESTINATION, snapshot, SCHEMA)).isFalse();
-        // The submitted table carries the snapshot's etag, which is what makes the update
-        // conditional at all: without it the service would accept it over a concurrent change.
+        assertThat(admin.updateSchema(DESTINATION, snapshot, SCHEMA)).isTrue();
+
         assertThat(client.updatedTables)
                 .singleElement()
                 .satisfies(
                         submitted -> {
-                            assertThat(submitted.getEtag()).isEqualTo("stale-etag");
+                            assertThat(submitted.getTableId())
+                                    .isEqualTo(BigQueryTableAdmin.toTableId(DESTINATION));
+                            assertThat(submitted.getEtag()).isNull();
+                            assertThat(submitted.getLabels()).isEmpty();
                             assertThat(
                                             submitted
                                                     .<StandardTableDefinition>getDefinition()
@@ -468,17 +563,107 @@ class BigQueryTableAdminTest {
     }
 
     @Test
-    void aRejectedSchemaUpdateStaysTerminal() throws Exception {
+    void aNullEtagLeavesTheClientAsGiven() {
         StubBigQuery client = new StubBigQuery();
-        client.tablesAnswering(StubBigQuery.TableAnswer.existing(NO_COLUMNS, "etag-1", null, null));
-        client.updateTableFailure = new BigQueryException(400, "invalid schema change");
-        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
-        TableSchemaSnapshot snapshot = admin.getSchema(DESTINATION);
 
-        assertThatThrownBy(() -> admin.updateSchema(DESTINATION, snapshot, SCHEMA))
-                .isInstanceOf(IOException.class)
-                .isNotInstanceOf(RetriableTableAdminException.class)
-                .hasMessageContaining("Failed to update the schema");
+        assertThat(BigQueryTableAdmin.conditionedOn(client, null)).isSameAs(client);
+    }
+
+    private static final com.google.cloud.bigquery.PolicyTags PII =
+            com.google.cloud.bigquery.PolicyTags.newBuilder()
+                    .setNames(
+                            java.util.List.of("projects/p/locations/l/taxonomies/t/policyTags/pii"))
+                    .build();
+
+    private static final TableSchema SCHEMA_WITH_NAME =
+            TableSchema.newBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("name")
+                                    .setType(TableFieldSchema.Type.STRING)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
+                    .addFields(SCHEMA.getFields(0))
+                    .build();
+
+    /** An admin whose reads are scripted and whose updates reach a mock HTTP transport. */
+    private static final class SchemaUpdateHarness {
+        final BigQueryTableAdmin admin;
+        final StubBigQuery client;
+        final java.util.List<String> methods;
+
+        SchemaUpdateHarness(
+                BigQueryTableAdmin admin, StubBigQuery client, java.util.List<String> methods) {
+            this.admin = admin;
+            this.client = client;
+            this.methods = methods;
+        }
+    }
+
+    private static SchemaUpdateHarness schemaUpdateHarness(
+            MockLowLevelHttpRequest request, StubBigQuery.TableAnswer table) {
+        java.util.List<String> methods = new java.util.ArrayList<>();
+        StubBigQuery client = mockTransportClient(request, methods::add);
+        client.tablesAnswering(table);
+        return new SchemaUpdateHarness(new BigQueryTableAdmin(client), client, methods);
+    }
+
+    /**
+     * A stub whose own requests reach {@code request} over a mock transport that, like the
+     * production {@code NetHttpTransport}, does not support {@code PATCH}.
+     */
+    private static StubBigQuery mockTransportClient(
+            MockLowLevelHttpRequest request, java.util.function.Consumer<String> onMethod) {
+        MockHttpTransport transport =
+                new MockHttpTransport() {
+                    @Override
+                    public boolean supportsMethod(String method) {
+                        return !"PATCH".equals(method);
+                    }
+
+                    @Override
+                    public MockLowLevelHttpRequest buildRequest(String method, String url) {
+                        onMethod.accept(method);
+                        return request.setUrl(url);
+                    }
+                };
+        BigQueryOptions options =
+                BigQueryOptions.newBuilder()
+                        .setProjectId("p")
+                        .setHost("https://bigquery.example")
+                        .setCredentials(NoCredentials.getInstance())
+                        .setTransportOptions(
+                                HttpTransportOptions.newBuilder()
+                                        .setHttpTransportFactory(() -> transport)
+                                        .build())
+                        .build();
+        return new StubBigQuery(options);
+    }
+
+    private static MockLowLevelHttpResponse updatedTableResponse() {
+        return new MockLowLevelHttpResponse()
+                .setStatusCode(200)
+                .setContentType("application/json")
+                .setContent(
+                        "{\"tableReference\":{\"projectId\":\"p\",\"datasetId\":\"d\","
+                                + "\"tableId\":\"t\"},\"type\":\"TABLE\","
+                                + "\"schema\":{\"fields\":[]}}");
+    }
+
+    private static MockLowLevelHttpResponse errorResponse(
+            int status, String reason, String message) {
+        return new MockLowLevelHttpResponse()
+                .setStatusCode(status)
+                .setContentType("application/json")
+                .setContent(
+                        "{\"error\":{\"code\":"
+                                + status
+                                + ",\"message\":\""
+                                + message
+                                + "\",\"errors\":[{\"reason\":\""
+                                + reason
+                                + "\",\"message\":\""
+                                + message
+                                + "\"}]}}");
     }
 
     @Test
@@ -636,25 +821,8 @@ class BigQueryTableAdminTest {
     }
 
     private static BigQueryCdcTableService completionAdmin(MockLowLevelHttpRequest request) {
-        MockHttpTransport transport =
-                new MockHttpTransport() {
-                    @Override
-                    public MockLowLevelHttpRequest buildRequest(String method, String url) {
-                        assertThat(method).isEqualTo("POST");
-                        return request.setUrl(url);
-                    }
-                };
-        BigQueryOptions options =
-                BigQueryOptions.newBuilder()
-                        .setProjectId("p")
-                        .setHost("https://bigquery.example")
-                        .setCredentials(NoCredentials.getInstance())
-                        .setTransportOptions(
-                                HttpTransportOptions.newBuilder()
-                                        .setHttpTransportFactory(() -> transport)
-                                        .build())
-                        .build();
-        StubBigQuery client = new StubBigQuery(options);
+        StubBigQuery client =
+                mockTransportClient(request, method -> assertThat(method).isEqualTo("POST"));
         client.tablesAnswering(
                 StubBigQuery.TableAnswer.existing(
                         "current-etag", Map.of("flink_gcp_cdc", "pending_spec", "owner", "ops")));

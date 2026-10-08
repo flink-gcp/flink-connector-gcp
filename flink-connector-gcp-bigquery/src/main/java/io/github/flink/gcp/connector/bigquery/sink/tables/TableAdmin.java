@@ -100,7 +100,8 @@ public interface TableAdmin {
 
     /**
      * Replaces the given table's schema with the proposed one, conditioned on the table not having
-     * changed since the {@code base} snapshot was taken.
+     * changed since the {@code base} snapshot was taken. No other attribute of the table is
+     * written.
      *
      * <p>Losing a race — the table changed concurrently (for example a parallel subtask updated it
      * first) or the per-table metadata-update quota was momentarily exceeded — returns {@code
