@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.docs.BigQueryExamplesTablePerDay.DailyTable
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 final class BigQueryExamplesTableAutoCreation {
 
@@ -40,6 +41,8 @@ final class BigQueryExamplesTableAutoCreation {
                                 .timePartitioning(TimePartitioningType.DAY, "created_at")
                                 .timePartitioningExpiration(Duration.ofDays(90))
                                 .clusteredFields(List.of("customer_id"))
+                                .description("Orders, one row per order")
+                                .labels(Map.of("team", "commerce"))
                                 .build())
                 .build();
         // end::bigquery-examples-table-auto-creation[]

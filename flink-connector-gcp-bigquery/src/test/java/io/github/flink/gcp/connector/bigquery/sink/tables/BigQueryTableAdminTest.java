@@ -52,6 +52,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link BigQueryTableAdmin}. */
 class BigQueryTableAdminTest {
@@ -95,6 +96,65 @@ class BigQueryTableAdminTest {
         assertThat(definition.getSchema().getFields().get("event_ts")).isNotNull();
         assertThat(definition.getTimePartitioning()).isNull();
         assertThat(definition.getClustering()).isNull();
+        assertThat(tableInfo.getDescription()).isNull();
+        assertThat(tableInfo.getLabels()).isEmpty();
+    }
+
+    @Test
+    void appliesTheDescriptionAndLabels() {
+        TableInfo tableInfo =
+                BigQueryTableAdmin.buildTableInfo(
+                        DESTINATION,
+                        SCHEMA,
+                        TableCreateOptions.builder()
+                                .description("Orders, one row per order")
+                                .labels(Map.of("team", "data", "env", "prod"))
+                                .build());
+
+        assertThat(tableInfo.getDescription()).isEqualTo("Orders, one row per order");
+        assertThat(tableInfo.getLabels()).containsOnly(entry("team", "data"), entry("env", "prod"));
+    }
+
+    @Test
+    void cdcCreationKeepsTheConfiguredLabelsBesideTheProvisioningLabel() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        // The stub records the request and then answers it; a conflict is the answer it can give.
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+
+        assertThat(
+                        cdcService(client)
+                                .tryCreate(
+                                        DESTINATION,
+                                        SCHEMA,
+                                        TableCreateOptions.builder()
+                                                .description("CDC orders")
+                                                .labels(Map.of("team", "data"))
+                                                .build(),
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(Arrays.asList("id"))
+                                                .build(),
+                                        "pending_specification"))
+                .isFalse();
+
+        TableInfo created = client.createdTables.get(0);
+        assertThat(created.getDescription()).isEqualTo("CDC orders");
+        assertThat(created.getLabels())
+                .containsOnly(
+                        entry("team", "data"),
+                        entry(CdcTableProvisioner.PROVISIONING_LABEL, "pending_specification"));
+    }
+
+    @Test
+    void theProvisioningLabelIsTheKeyCreationOptionsReserve() {
+        assertThatThrownBy(
+                        () ->
+                                TableCreateOptions.builder()
+                                        .labels(
+                                                Map.of(
+                                                        CdcTableProvisioner.PROVISIONING_LABEL,
+                                                        "x")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("reserved");
     }
 
     @Test

@@ -25,7 +25,10 @@ import com.google.cloud.bigquery.TableConstraints;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.RealTables;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
+import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.testutils.bigquery.RealGcs;
@@ -71,6 +74,9 @@ class BigQueryLoadJobRunnerRealGcpITCase {
     private static final String QUERY_SOURCE = "truncate_data_source_" + TestNames.runId();
     private static final String QUERY_DESTINATION =
             "truncate_data_destination_" + TestNames.runId();
+    private static final String COPY_SOURCE_A = "truncate_copy_source_a_" + TestNames.runId();
+    private static final String COPY_SOURCE_B = "truncate_copy_source_b_" + TestNames.runId();
+    private static final String COPY_DESTINATION = "truncate_copy_destination_" + TestNames.runId();
 
     /** Real polling backs off gently: a small load job usually finishes within a few seconds. */
     private static final RetrySchedule POLL = new RetrySchedule(500, 5_000, Integer.MAX_VALUE, 0);
@@ -78,7 +84,14 @@ class BigQueryLoadJobRunnerRealGcpITCase {
     @AfterAll
     static void cleanUp() throws Exception {
         Closers.closeAll(
-                () -> RealBigQuery.deleteTables(TABLE, QUERY_SOURCE, QUERY_DESTINATION),
+                () ->
+                        RealBigQuery.deleteTables(
+                                TABLE,
+                                QUERY_SOURCE,
+                                QUERY_DESTINATION,
+                                COPY_SOURCE_A,
+                                COPY_SOURCE_B,
+                                COPY_DESTINATION),
                 () -> RealGcs.deletePrefix(TABLE + "/"));
     }
 
@@ -164,6 +177,75 @@ class BigQueryLoadJobRunnerRealGcpITCase {
         assertThat(RealBigQuery.tableConstraints(QUERY_DESTINATION).getPrimaryKey().getColumns())
                 .containsExactly("id");
         assertThat(RealBigQuery.queryBytesProcessed(jobId)).isPositive();
+    }
+
+    /**
+     * The copy that finishes a {@code WRITE_TRUNCATE} commit too large for one load job (#1668): a
+     * {@code CREATE_NEVER}/{@code WRITE_TRUNCATE} copy from the commit's temporary tables into the
+     * final table the commit created with its {@code TableCreateOptions}. The created table keeps
+     * its description and labels once the copy replaces its rows.
+     *
+     * <p>Unpartitioned and unclustered on purpose: measured on 2026-10-09, BigQuery refuses this
+     * copy into a column-partitioned table ("Failed to copy Non partitioned table to Column
+     * partitioned table: not supported") and into a clustered one ("incompatible clustering
+     * fields"), under {@code WRITE_APPEND} as well, because the temporary tables carry neither.
+     */
+    @Test
+    void truncatingFinalCopyKeepsTheCreatedTablesDescriptionAndLabels() throws Exception {
+        Schema temporarySchema =
+                Schema.of(
+                        Field.of("id", StandardSQLTypeName.INT64),
+                        Field.of("ts", StandardSQLTypeName.TIMESTAMP),
+                        Field.of("region", StandardSQLTypeName.STRING));
+        for (String source : List.of(COPY_SOURCE_A, COPY_SOURCE_B)) {
+            RealBigQuery.createTable(source, temporarySchema);
+        }
+        RealBigQuery.queryRows(
+                "INSERT INTO "
+                        + RealBigQuery.tablePath(COPY_SOURCE_A)
+                        + " VALUES (2, TIMESTAMP '2026-10-08 01:00:00', 'eu')");
+        RealBigQuery.queryRows(
+                "INSERT INTO "
+                        + RealBigQuery.tablePath(COPY_SOURCE_B)
+                        + " VALUES (3, TIMESTAMP '2026-10-09 01:00:00', 'us')");
+        // Created the way the commit creates a missing final table: through the admin, from the
+        // configured TableCreateOptions.
+        new BigQueryTableAdmin()
+                .create(
+                        RealTables.destination(COPY_DESTINATION),
+                        BigQuerySchemaConverter.toStorageSchema(temporarySchema),
+                        TableCreateOptions.builder()
+                                .description("created by the truncating copy it")
+                                .labels(Map.of("owner", "truncating-copy-it"))
+                                .build());
+        RealBigQuery.queryRows(
+                "INSERT INTO "
+                        + RealBigQuery.tablePath(COPY_DESTINATION)
+                        + " VALUES (1, TIMESTAMP '2026-10-07 01:00:00', 'ap')");
+        String jobId = "flink-bq-copy-truncate-it-" + COPY_DESTINATION;
+        CopyJobSpec spec =
+                new CopyJobSpec(
+                        List.of(
+                                RealTables.destination(COPY_SOURCE_A),
+                                RealTables.destination(COPY_SOURCE_B)),
+                        RealTables.destination(COPY_DESTINATION),
+                        JobInfo.CreateDisposition.CREATE_NEVER,
+                        JobInfo.WriteDisposition.WRITE_TRUNCATE);
+
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(null, POLL);
+        runner.submitCopy(jobId, spec);
+        runner.awaitJob(jobId);
+
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT id FROM "
+                                        + RealBigQuery.tablePath(COPY_DESTINATION)
+                                        + " ORDER BY id"))
+                .containsExactly(2L, 3L);
+        assertThat(RealBigQuery.tableDescription(COPY_DESTINATION))
+                .isEqualTo("created by the truncating copy it");
+        assertThat(RealBigQuery.tableLabels(COPY_DESTINATION))
+                .containsEntry("owner", "truncating-copy-it");
     }
 
     private static byte[] oneRowAvroFile() throws IOException {

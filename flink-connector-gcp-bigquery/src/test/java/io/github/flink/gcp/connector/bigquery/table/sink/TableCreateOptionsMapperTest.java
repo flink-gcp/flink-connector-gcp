@@ -40,6 +40,7 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link TableCreateOptionsMapper}. */
 class TableCreateOptionsMapperTest {
@@ -87,6 +88,12 @@ class TableCreateOptionsMapperTest {
                 "clusteredFields",
                 Collections.singletonList(
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS));
+        SETTER_TO_OPTIONS.put(
+                "description",
+                Collections.singletonList(BigQueryConnectorOptions.SINK_TABLE_CREATE_DESCRIPTION));
+        SETTER_TO_OPTIONS.put(
+                "labels",
+                Collections.singletonList(BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS));
     }
 
     private static final String TYPE =
@@ -99,6 +106,9 @@ class TableCreateOptionsMapperTest {
             BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS.key();
     private static final String DISPOSITION =
             BigQueryConnectorOptions.SINK_CREATE_DISPOSITION.key();
+    private static final String DESCRIPTION =
+            BigQueryConnectorOptions.SINK_TABLE_CREATE_DESCRIPTION.key();
+    private static final String LABELS = BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS.key();
 
     private static TableCreateOptions map(Map<String, String> options) {
         return TableCreateOptionsMapper.map(Configuration.fromMap(options), COLUMNS);
@@ -423,6 +433,55 @@ class TableCreateOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'sink.table-create.clustered-fields' is invalid")
                 .hasMessageContaining("at most 4 clustering columns");
+    }
+
+    @Test
+    void mapsTheDescriptionAndLabels() {
+        Map<String, String> options = new HashMap<>();
+        options.put(DESCRIPTION, "Orders, one row per order");
+        options.put(LABELS, "team:data,env:prod");
+
+        TableCreateOptions mapped = map(options);
+
+        assertThat(mapped.getDescription()).isEqualTo("Orders, one row per order");
+        // containsOnly: Flink parses a map option into a HashMap, so the DDL's order is not kept.
+        assertThat(mapped.getLabels()).containsOnly(entry("team", "data"), entry("env", "prod"));
+    }
+
+    @Test
+    void aReservedLabelIsRenamedToItsOptionKey() {
+        Map<String, String> options = new HashMap<>();
+        options.put(LABELS, "flink_gcp_cdc:mine");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.table-create.labels' is invalid")
+                .hasMessageContaining("reserved for the sink's CDC table provisioning");
+    }
+
+    @Test
+    void aBlankDescriptionIsRenamedToItsOptionKey() {
+        Map<String, String> options = new HashMap<>();
+        options.put(DESCRIPTION, " ");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.table-create.description' is invalid")
+                .hasMessageContaining("description must not be blank");
+    }
+
+    @Test
+    void aDescriptionAlongsideAnExplicitCreateNeverIsRejected() {
+        // Creation settings like the rest of the family: a table this sink never creates has no
+        // use for them, and an existing table is never changed by them.
+        Map<String, String> options = new HashMap<>();
+        options.put(DISPOSITION, "create-never");
+        options.put(DESCRIPTION, "Orders");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(DESCRIPTION)
+                .hasMessageContaining("create-never");
     }
 
     @Test

@@ -521,7 +521,14 @@ public class BigQueryTableAdmin implements TableAdmin {
         if (clustering != null) {
             definition.setClustering(clustering);
         }
-        return TableInfo.newBuilder(toTableId(destination), definition.build()).build();
+        TableInfo.Builder table = TableInfo.newBuilder(toTableId(destination), definition.build());
+        if (options.getDescription() != null) {
+            table.setDescription(options.getDescription());
+        }
+        if (!options.getLabels().isEmpty()) {
+            table.setLabels(options.getLabels());
+        }
+        return table.build();
     }
 
     @VisibleForTesting

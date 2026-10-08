@@ -171,6 +171,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   keeps every REST field attribute `mergeSchema` preserves — do not hand-build the schema JSON.
   Never put a read's non-schema attributes back into the patch resource.
 
+## Table metadata (`docs/adr/0182`)
+
+- `TableCreateOptions` description and labels are creation options like the rest: applied when the
+  sink creates a table under every write method, never to an existing table. CDC creation merges
+  the labels with the provisioning label, whose key `flink_gcp_cdc` the builder refuses. Filling
+  metadata on existing tables was built and removed by owner decision — do not reintroduce it
+  without reading ADR-0182's declined alternative.
+
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
