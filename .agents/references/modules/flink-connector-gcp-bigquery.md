@@ -103,7 +103,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   delegates to `JsonToProtoMessage`; its `BYTES`-column gap is pursued upstream, not patched
   locally (`docs/adr/0025`).
 
-## Error handling and recovery (`docs/adr/0017`, `0030`, `0071`, `0114`)
+## Error handling and recovery (`docs/adr/0017`, `0030`, `0071`, `0114`, `0181`)
 
 - Only explicit `UnroutableRecord` results and row verdicts route to the `FailureHandler`.
   A bare resolver `null` and unexpected resolver exceptions stay fatal; an unroutable result is
@@ -163,6 +163,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   here or in an ADR**: `ensureCdcTable` joined with CDC provisioning (`docs/adr/0112`), which
   ADR-0071 now records but originally predated. **Each wrap has a test asserting the schedule's
   attempt count**, since every other test injects its own admin and an unwrapped one ships green.
+- **`updateSchema` sends a schema-only `tables.patch` with the snapshot's etag as `If-Match`**
+  (`docs/adr/0181`). The library sends no `If-Match` and BigQuery ignores a body `etag`, so the
+  old full-resource write-back was unconditional: a stale union failed the job with `400 invalid`
+  and reverted concurrent description/label changes. The header rides a client derived per update
+  (`conditionedOn`, a header provider) because the library's `toPb` is the only serialization that
+  keeps every REST field attribute `mergeSchema` preserves — do not hand-build the schema JSON.
+  Never put a read's non-schema attributes back into the patch resource.
 
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
 

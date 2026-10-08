@@ -1594,16 +1594,18 @@ Schema changes are handled without a job restart on both Storage Write API metho
 
 When enabled and the serializer's schema evolves past the destination table's (detected through
 the fingerprint pre-check or a `SCHEMA_MISMATCH_EXTRA_FIELDS` append failure), the sink updates
-the table itself: fresh read of the live schema, union with the serializer schema, and an
-etag-conditioned `tables.update`. The union is strictly widening — existing fields are never
-dropped, reordered or re-typed (a type change fails the job); new fields are appended at the end
+the table itself: fresh read of the live schema, union with the serializer schema, and a
+`tables.patch` that carries only the union schema, with the read's etag sent as an `If-Match`
+precondition. The update never writes the table's other attributes, so a concurrent change to its
+description, labels or expiration is never reverted. The union is strictly widening — existing
+fields are never dropped, reordered or re-typed (a type change fails the job); new fields are appended at the end
 — including inside `STRUCT` columns: updates go through the REST API, which unlike SQL
 `ALTER TABLE` supports adding nested fields — and forced `NULLABLE` (BigQuery cannot add
 `REQUIRED` columns); `REQUIRED`→`NULLABLE` relaxation happens only under `allowFieldRelaxation`
 (any mode not explicitly `REQUIRED` counts as nullable); `REPEATED` is never changed. Concurrent updates from
-parallel subtasks need no coordination: updates are additive and idempotent, lost races (etag
-mismatch, HTTP 409/412, `rateLimitExceeded` — the per-table quota is about five metadata updates
-per ten seconds) re-read and re-union with jitter, and unions of concurrent unions converge.
+parallel subtasks need no coordination: updates are additive and idempotent, lost races (a failed
+`If-Match` precondition, HTTP 409/412, `rateLimitExceeded` — the per-table quota is about five
+metadata updates per ten seconds) re-read and re-union with jitter, and unions of concurrent unions converge.
 The credentials need `bigquery.tables.get` and `bigquery.tables.update`.
 
 Caveats:
@@ -2873,6 +2875,12 @@ credential-less CI:
   polled over time, a non-pooled canary writer); the hang's record and open hypotheses are in
   [#174]({{< param BookRepo >}}/issues/174), closed as wait-and-see — a captured reproduction
   gets a new issue referencing it
+- the conditional schema update itself, in the weekly suite
+  (`BigQueryTableAdminSchemaUpdateRealGcpITCase`): two writers read one table and add different
+  columns, the stale one loses on its `If-Match` precondition with HTTP 412 and converges from a
+  fresh read; and an update whose read predates a change to the table's description and labels
+  leaves both as the other party set them. The emulator returns no table etag, so it never sees the
+  precondition and cannot reproduce either race
 - buffered-stream schema evolution has two real-service tests: the normal gated
   `BigQueryBufferedStreamSchemaEvolutionITCase` pre-creates the widened table, changes descriptors
   mid-writer and verifies both values while retaining the stream name and offsets; the connector-

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.tables;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.rpc.FixedHeaderProvider;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
@@ -68,13 +69,15 @@ import java.util.Map;
  * as a {@link RetriableTableAdminException} for the caller to repeat.
  *
  * <p>Schema updates are etag-conditioned: {@link #getSchema} snapshots the REST {@code Table}
- * (which carries the etag), and {@link #updateSchema} submits the modified table so BigQuery
- * rejects the update when the table changed since the snapshot. Lost races — the etag precondition
- * failing, a concurrent-modification conflict, or the per-table metadata-update quota (about five
- * updates per ten seconds) being momentarily exceeded — are reported as {@code false} for the
- * caller to re-read and retry. The updated schema is assembled by <em>merging</em> the proposed
- * Storage-form schema onto the snapshot's REST fields, so REST-only column attributes the Storage
- * form cannot represent (policy tags, collation, ...) are preserved for existing columns.
+ * (which carries the etag), and {@link #updateSchema} sends a {@code tables.patch} carrying only
+ * the merged schema, with the snapshot's etag as an {@code If-Match} precondition, so BigQuery
+ * rejects the update when the table changed since the snapshot and no other table attribute is ever
+ * written. Lost races — the precondition failing, a concurrent-modification conflict, or the
+ * per-table metadata-update quota (about five updates per ten seconds) being momentarily exceeded —
+ * are reported as {@code false} for the caller to re-read and retry. The updated schema is
+ * assembled by <em>merging</em> the proposed Storage-form schema onto the snapshot's REST fields,
+ * so REST-only column attributes the Storage form cannot represent (policy tags, collation, ...)
+ * are preserved for existing columns.
  *
  * <p>CDC creation uses the same REST client for schema, primary key, and provisioning labels.
  * Because BigQuery does not store {@code maxStaleness} from Tables API writes, a configured value
@@ -94,6 +97,9 @@ public class BigQueryTableAdmin implements TableAdmin {
     static final int HTTP_NOT_FOUND = 404;
     static final int HTTP_PRECONDITION_FAILED = 412;
     static final int HTTP_TOO_MANY_REQUESTS = 429;
+
+    /** The header that makes a write conditional on the table's etag. */
+    private static final String IF_MATCH_HEADER = "If-Match";
 
     /** Error reason of a failed etag precondition. */
     private static final String REASON_CONDITION_NOT_MET = "conditionNotMet";
@@ -289,6 +295,40 @@ public class BigQueryTableAdmin implements TableAdmin {
     public boolean updateSchema(
             TableDestination destination, TableSchemaSnapshot base, TableSchema proposed)
             throws IOException {
+        try {
+            patchSchema(destination, base, proposed);
+            LOG.info("Updated the schema of BigQuery table {}", destination);
+            return true;
+        } catch (BigQueryException e) {
+            if (isLostRace(e)) {
+                LOG.info(
+                        "A schema update of BigQuery table {} lost a race and will be retried"
+                                + " from a fresh read (cause: {})",
+                        destination,
+                        e.toString());
+                return false;
+            }
+            throw new IOException(
+                    "Failed to update the schema of BigQuery table " + destination, e);
+        }
+    }
+
+    /**
+     * Sends the request behind {@link #updateSchema}: a {@code tables.patch} carrying only the
+     * schema merged from {@code base} and {@code proposed}, conditioned on {@code base}'s etag.
+     *
+     * <p>Separate so a real-service test can read the service's answer, which {@link #updateSchema}
+     * folds into {@code false} for a precondition failure and a metadata-quota rejection alike.
+     *
+     * @param destination the table to update
+     * @param base the snapshot the proposal was derived from
+     * @param proposed the proposed schema, in Storage API form
+     * @throws IOException if the snapshot cannot be updated through this path
+     * @throws BigQueryException if the service rejects the update
+     */
+    @VisibleForTesting
+    void patchSchema(TableDestination destination, TableSchemaSnapshot base, TableSchema proposed)
+            throws IOException {
         Table baseTable = base.getTable();
         if (baseTable == null) {
             throw new IOException(
@@ -309,26 +349,46 @@ public class BigQueryTableAdmin implements TableAdmin {
                 existingSchema == null
                         ? StorageSchemaConverter.toBigQuerySchema(proposed)
                         : mergeSchema(existingSchema, proposed);
-        StandardTableDefinition updated =
-                ((StandardTableDefinition) definition).toBuilder().setSchema(mergedSchema).build();
-        try {
-            // The table carries the snapshot's etag, so BigQuery rejects the update when the
-            // table changed since the snapshot was taken.
-            client(destination).update(baseTable.toBuilder().setDefinition(updated).build());
-            LOG.info("Updated the schema of BigQuery table {}", destination);
-            return true;
-        } catch (BigQueryException e) {
-            if (isLostRace(e)) {
-                LOG.info(
-                        "A schema update of BigQuery table {} lost a race and will be retried"
-                                + " from a fresh read (cause: {})",
-                        destination,
-                        e.toString());
-                return false;
-            }
-            throw new IOException(
-                    "Failed to update the schema of BigQuery table " + destination, e);
+        // Only the schema: `tables.patch` leaves every omitted attribute as it is, where writing
+        // back the snapshot's would revert a concurrent change to the description, labels or
+        // expiration.
+        TableInfo schemaOnly =
+                TableInfo.of(toTableId(destination), StandardTableDefinition.of(mergedSchema));
+        conditionedOn(client(destination), baseTable.getEtag()).update(schemaOnly);
+    }
+
+    /**
+     * Returns a client whose requests are conditional on the given etag.
+     *
+     * <p>The client library sends no {@code If-Match} header of its own, and BigQuery ignores an
+     * {@code etag} in a {@code tables.patch} body — a stale one is applied — so the precondition
+     * travels as a header on every request of a client derived for this one update. Deriving the
+     * client rather than hand-building the request keeps the library's serialization of the schema,
+     * the only one that carries every REST field attribute {@link #mergeSchema} preserves.
+     *
+     * <p>The derived client carries the original's credentials, host, transport and retry settings,
+     * but not its header provider, which this one replaces, nor the BigQuery-specific options
+     * (location, OpenTelemetry tracing, result retry algorithm, ...), which {@link
+     * BigQueryOptions#toBuilder()} does not copy. The connector's clients set none of them; merging
+     * the original header provider would need the {@code @InternalApi} {@code
+     * getMergedHeaderProvider}.
+     *
+     * <p>A {@code null} etag returns the client unchanged and the update is unconditional. BigQuery
+     * returns an etag with every table; the emulator the integration tests use returns none.
+     *
+     * @param client the client to derive from
+     * @param etag the etag the update is conditional on, or {@code null}
+     * @return the conditioned client
+     */
+    @VisibleForTesting
+    static BigQuery conditionedOn(BigQuery client, @Nullable String etag) {
+        if (etag == null) {
+            return client;
         }
+        return client.getOptions().toBuilder()
+                .setHeaderProvider(FixedHeaderProvider.create(IF_MATCH_HEADER, etag))
+                .build()
+                .getService();
     }
 
     /**
@@ -378,6 +438,10 @@ public class BigQueryTableAdmin implements TableAdmin {
      * Whether a schema-update failure means the update lost a race (concurrent change or metadata
      * quota) rather than being invalid: an etag-precondition failure, a conflict, or the per-table
      * metadata-update rate limit.
+     *
+     * <p>BigQuery's {@code 400 invalid} for a schema that lacks a column added since the read
+     * ("Provided Schema does not match Table") is deliberately absent: the {@code If-Match}
+     * precondition answers such a stale update first, with {@code 412}.
      */
     @VisibleForTesting
     static boolean isLostRace(BigQueryException e) {

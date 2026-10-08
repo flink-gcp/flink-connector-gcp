@@ -29,8 +29,10 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
  * <p>Besides the schema in Storage API form, the snapshot carries the REST {@code Table} it was
  * read from ({@link #getTable()}, {@code null} in test fakes), which {@link
  * TableAdmin#updateSchema} uses both to condition the update on the table not having changed since
- * this read (the table's etag makes the update optimistic-concurrency safe) and to preserve
- * REST-only column attributes the Storage API form cannot represent.
+ * this read (the table's etag, sent as an {@code If-Match} precondition, makes the update
+ * optimistic-concurrency safe) and to preserve REST-only column attributes the Storage API form
+ * cannot represent. Only the schema is written back; the table's other attributes are read here but
+ * never submitted.
  */
 @Internal
 public final class TableSchemaSnapshot {
