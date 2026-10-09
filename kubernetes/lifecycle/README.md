@@ -97,7 +97,7 @@ Merging this implementation does not authorize a dispatch.
 ## Execution approval
 
 A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, the ceilings below and the run's cost estimate; spend is approved from that estimate before dispatch, and nothing at run time compares spend against it.
-The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, and `bigquery_plan.estimate` for a BigQuery trial, which its rendered proposal carries.
+The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
 The run workflow can check out another rig commit through `rig_sha`, which must equal the approved `reviewed_sha` and head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.

@@ -57,6 +57,7 @@ limitations under the License.
 - Updated: 2026-10-04 (Pub/Sub recovery verdict recomputed from exported evidence)
 - Updated: 2026-10-10 (BigQuery FILE_LOADS trial preregistration; unredacted supervisor job listing)
 - Updated: 2026-10-10 (BigQuery FILE_LOADS deployed trial findings)
+- Updated: 2026-10-10 (Pub/Sub trial planning estimate)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md)
 - Modules: opentofu, kubernetes, CI
@@ -685,6 +686,7 @@ Require explicit traffic counters within the existing helper ceilings and check 
 Propose a one-hour window, fifteen-minute cleanup reserve, seven total Pods and no PVCs, with separate total-request and additional-cost caps.
 Reserve four application Pods (three steady plus one replacement) and three control Pods (Operator, supervisor and one replacement); later admission must account for termination overlap within these namespace budgets.
 The request cap is at most 100,000 and the cost cap at most USD 10; neither is wired to full execution accounting, and cost has no estimate yet.
+The cost cap later gave way to an approved estimate, as [spend is approved before dispatch](#spend-is-approved-before-dispatch) records.
 Message-helper reservations do not include connector SDK, provisioning, control, credential or storage requests.
 Later admission must establish complete operation/state/evidence budgets, current pricing and live provenance/access before enforcing those limits.
 Keep the offline delivery approval empty and reject Pub/Sub execution until that contract, external fault-boundary observations and independent orchestration are reviewed.
@@ -717,7 +719,7 @@ Declined: relaxing the receipt comparison, which would also accept a receipt tha
 Keep the Pub/Sub success verdict false until fault/recovery evidence and its oracle are implemented; the verdict refined under [#1624](https://github.com/flink-gcp/flink-connector-gcp/issues/1624) below meets that condition.
 
 This refines the previous blanket refusal to deserialize Pub/Sub, not the prohibition on paid execution.
-The selected dollar cap remains unestimated, the total-request cap is not an aggregate meter, and shared schema validation does not authenticate approval.
+The total-request cap is not an aggregate meter, and shared schema validation does not authenticate approval; the dollar cap gave way to an approved estimate, as [spend is approved before dispatch](#spend-is-approved-before-dispatch) records.
 Keep runner and supervisor entrypoints disabled and the offline delivery approval empty until complete accounting, approval-bound delivery, external fault observations and independent orchestration are reviewed.
 The [internal approval runbook](../../kubernetes/apps/pubsub/README.md#internal-approval-contract) records the exact limits and remaining boundaries.
 
@@ -1081,7 +1083,7 @@ This replaces the reviewed trial file and the phrase bound to its cost in the pr
 A BigQuery trial therefore chooses only what differs between trials, its delivery method and destination count, and dispatch takes it as a workflow choice (`alo-10`, `eo-10`, `alo-50`, `eo-50`, and `fl-10` since [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)) rather than as a reviewed file; the query budget is the scenario's, fixed in code.
 A reviewed file per dispatch existed chiefly to carry the per-trial cost, and keeping those numbers beside a preregistration record needed a test to hold the two together.
 The proposal also drops the repeated-trial ordinal the recovery application section binds: nothing consumed it, and a repetition is a separate run ID.
-The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, and USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), which the rendered proposal carries.
+The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), which the rendered proposal carries, and, refined under [#1673](https://github.com/flink-gcp/flink-connector-gcp/issues/1673), USD 2.44 for a Pub/Sub trial at its 100,000-request ceiling (`pubsub_plan.estimate`), which also scales with the trial's own ceiling and is carried the same way.
 The BigQuery campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md).
 The FILE_LOADS trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) has its own, the [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), which also prices what that mode adds outside `bigquery_plan.estimate` — free load jobs and short-lived staged objects, expected to fit the estimate's reserve.
 

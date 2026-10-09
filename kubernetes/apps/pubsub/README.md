@@ -143,7 +143,13 @@ Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowan
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
 Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-The proposal's `cost` is `unestimated`: spend is approved from an estimate before dispatch, and a runnable trial still needs one.
+The proposal's `cost` is a planning estimate, USD 2.44 for a trial at the 100,000-request ceiling, rounded up to a cent; the owner approves it before a dispatch, and nothing at run time compares spend against it.
+It charges all seven Pods for the whole hour at the conservative CPU, memory and ephemeral-storage rates, the four application slots at the Flink shape and the three control slots at the Operator's.
+It charges each request of `total_request_limit` twice over: as a Cloud Storage Class A operation at USD 0.005 per 1,000, the dearest price one request can carry, and as one 100-message batch of 1 KiB messages through Pub/Sub at USD 40 per TiB, which also covers Pub/Sub's 1 KB minimum per request.
+It adds 100,000 Cloud Monitoring time series at USD 0.50 per million, one read a minute returning at most 1,000 series, the 200 MiB log and evidence allowance leaving Google Cloud at USD 0.12 per GiB, and a USD 0.50 reserve for state and evidence storage and Cloud Logging ingestion.
+It takes no free tier, Spot or commitment discount, and it falls with the request ceiling: USD 1.83 at 30,000.
+The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
+A response that carries more than one batch, or a request beyond the ceiling, falls outside the estimate, which is not a bound on the bill.
 A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
 The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence; dispatch and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
@@ -820,7 +826,7 @@ Final settlement preserves `pubsub_trial` and the recovery observations even bef
 The original receipt is retained; the current plans must still prove the same nonce, all three foundation roots and an empty result.
 Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
 
-The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
+The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch, but the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
 Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, and the supervisor runs the [recovery exercise](#recovery-exercise), but dispatch still refuses before the environment lock until that accounting exists.
 Complete execution accounting and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 

@@ -15,6 +15,7 @@
 
 import copy
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -559,3 +560,74 @@ def test_a_reviewed_trial_file_that_is_not_utf8_is_refused(tmp_path):
     path.write_bytes(b"# caf\xe9\nversion = 3\n")
     with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
         plan.load_reviewed_trial(path)
+
+
+def test_the_estimate_charges_every_part_of_the_ceiling(trial):
+    # Seven Pods of 1 vCPU, 2 GiB and 1 GiB for an hour; 100,000 requests at a
+    # Class A operation and a 100-message batch of 1 KiB at USD 40 per TiB;
+    # 100,000 Monitoring series; 200 MiB out at USD 0.12 per GiB; the reserve.
+    parts = (
+        Decimal("0.987"),
+        Decimal("0.5"),
+        Decimal(100000 * 100 * 1024) / 1024**4 * 40,
+        Decimal("0.05"),
+        Decimal("0.0234375"),
+        Decimal("0.5"),
+    )
+    assert plan.estimate(trial) == sum(parts)
+    assert plan.estimate(trial).quantize(Decimal("0.01")) == Decimal("2.43")
+
+
+def test_the_estimate_charges_each_slot_and_allowance_at_its_own_value(
+    trial, monkeypatch
+):
+    # The policy's Flink and Operator shapes, and its log and evidence
+    # allowances, are equal; distinct values show which one each term uses.
+    shapes = dict(plan.POD_RESOURCES)
+    shapes["operator"] = {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}
+    ceilings = dict(plan.PUBSUB_CEILINGS, log_bytes=0)
+    monkeypatch.setattr(plan, "POD_RESOURCES", shapes)
+    monkeypatch.setattr(plan, "PUBSUB_CEILINGS", ceilings)
+    # Three control slots at 0.10 more each; half the egress.
+    assert plan.estimate(trial) == sum(
+        (
+            Decimal("0.987") + 3 * Decimal("0.10"),
+            Decimal("0.5"),
+            Decimal(100000 * 100 * 1024) / 1024**4 * 40,
+            Decimal("0.05"),
+            Decimal("0.01171875"),
+            Decimal("0.5"),
+        )
+    )
+
+
+def test_the_estimate_follows_the_request_ceiling(trial):
+    trial["total_request_limit"] = 30000
+    assert plan.estimate(trial) == Decimal("1.822196208953857421875000")
+
+
+def test_the_estimate_refuses_an_invalid_trial(trial):
+    trial["total_request_limit"] = 0
+    with pytest.raises(Failure, match="total_request_limit"):
+        plan.estimate(trial)
+
+
+def test_the_proposal_carries_the_estimate_and_its_basis(inputs, renderer):
+    cost = plan.prepare(**inputs)["proposal"]["cost"]
+    assert cost == {
+        "kind": "planning-estimate",
+        "usd": "2.44",
+        "reviewed_at": "2026-10-10T00:00:00Z",
+        "request_usd": "0.000005",
+        "pubsub_usd_per_tib": "40",
+        "billed_message_bytes": 1024,
+        "monitoring_series": 100000,
+        "monitoring_usd_per_million_series": "0.50",
+        "egress_usd_per_gib": "0.12",
+        "other_reserve_usd": "0.50",
+    }
+
+
+def test_the_proposal_rounds_the_estimate_up_to_a_cent(inputs, renderer):
+    inputs["trial"]["total_request_limit"] = 30000
+    assert plan.prepare(**inputs)["proposal"]["cost"]["usd"] == "1.83"

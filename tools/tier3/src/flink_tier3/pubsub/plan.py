@@ -18,10 +18,11 @@ import json
 import re
 import tomllib
 from dataclasses import asdict
+from decimal import ROUND_CEILING, Decimal
 
 from ..bundle import delivery_digest, package_sources, source_digest
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
-from ..model import Schedule
+from ..model import Schedule, _hourly
 from ..policy import GAR, POD_RESOURCES, POLL, PUBSUB_CEILINGS, SHA
 from ..workflow import render
 from .access import probe_spec
@@ -36,6 +37,26 @@ ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 # The supervisor's exercise pulls the output subscription at least once per
 # poll, empty or not, from admission until cleanup: at most this many polls.
 EXERCISE_PULLS = (WINDOW_SECONDS - PUBSUB_CEILINGS["cleanup_seconds"]) // POLL
+# The estimate's rates, read from the official pricing pages on this date;
+# the basis of the number the owner approves, not an admission deadline.
+REVIEWED_AT = "2026-10-10T00:00:00Z"
+# Pub/Sub message delivery throughput, without the monthly free tier.
+PUBSUB_USD_PER_TIB = Decimal(40)
+# A Cloud Storage Class A operation in a single-region bucket: the dearest
+# price any one request of the trial's ceiling can carry.
+REQUEST_USD = Decimal("0.005") / 1000
+# Premium Tier internet data transfer to North America, without the free GiB.
+EGRESS_USD_PER_GIB = Decimal("0.12")
+# Cloud Monitoring read calls, charged by time series returned. The
+# allowance is one read a minute for the hour, each returning at most 1,000
+# series, rounded up; the supervisor's reads must stay inside it.
+MONITORING_USD_PER_MILLION_SERIES = Decimal("0.50")
+MONITORING_SERIES = 100000
+# A message's billed size is under 1 KiB here: the payload, the 20-byte
+# timestamp and the message ID. Each request is priced as moving one batch
+# of 100; a streaming-pull response that carries more is outside the estimate.
+BILLED_MESSAGE_BYTES = 1024
+RESERVE_USD = Decimal("0.50")
 FIELDS = {
     "version",
     "trial",
@@ -67,6 +88,43 @@ def validate_trial(value):
     TrafficLimits(**limits, admit_until=1)
     if value["total_request_limit"] < limits["pubsub_requests"]:
         raise Failure("Total request proposal is below the data request limit")
+
+
+def estimate(trial):
+    """Planning estimate for one trial; not a bound on bills or SDK retries.
+
+    It charges all seven Pods of the policy for the whole window: the four
+    application slots at the Flink shape and the three control slots at the
+    Operator's, which is at least the supervisor's. It charges every request
+    of the trial's ceiling at a Class A storage operation and as moving a full
+    batch of messages through Pub/Sub, adds the Monitoring reads and the run's
+    logs and evidence leaving Google Cloud, and takes no free tier, Spot or
+    commitment discount. The reserve covers bounded state and evidence storage
+    and Cloud Logging ingestion. The proposal shows it rounded up to a cent.
+    """
+    validate_trial(trial)
+    shapes = [POD_RESOURCES["smoke"]] * 4 + [POD_RESOURCES["operator"]] * 3
+    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
+    requests = trial["total_request_limit"]
+    throughput = (
+        Decimal(requests * MAX_BATCH * BILLED_MESSAGE_BYTES)
+        / 1024**4
+        * PUBSUB_USD_PER_TIB
+    )
+    monitoring = Decimal(MONITORING_SERIES) / 10**6 * MONITORING_USD_PER_MILLION_SERIES
+    egress = (
+        Decimal(PUBSUB_CEILINGS["log_bytes"] + PUBSUB_CEILINGS["evidence_bytes"])
+        / 1024**3
+        * EGRESS_USD_PER_GIB
+    )
+    return (
+        compute
+        + requests * REQUEST_USD
+        + throughput
+        + monitoring
+        + egress
+        + RESERVE_USD
+    )
 
 
 def load_trial(path):
@@ -373,7 +431,18 @@ def prepare(
             "pvcs": 0,
             "total_requests": trial["total_request_limit"],
         },
-        "cost": {"kind": "unestimated"},
+        "cost": {
+            "kind": "planning-estimate",
+            "usd": str(estimate(trial).quantize(Decimal("0.01"), ROUND_CEILING)),
+            "reviewed_at": REVIEWED_AT,
+            "request_usd": str(REQUEST_USD),
+            "pubsub_usd_per_tib": str(PUBSUB_USD_PER_TIB),
+            "billed_message_bytes": BILLED_MESSAGE_BYTES,
+            "monitoring_series": MONITORING_SERIES,
+            "monitoring_usd_per_million_series": str(MONITORING_USD_PER_MILLION_SERIES),
+            "egress_usd_per_gib": str(EGRESS_USD_PER_GIB),
+            "other_reserve_usd": str(RESERVE_USD),
+        },
     }
     data["proposal.json"] = json_bytes(proposal).decode()
     return {

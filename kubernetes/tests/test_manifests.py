@@ -2472,7 +2472,8 @@ def test_pubsub_proposal_from_real_cue(
     proposal = bundle["proposal"]
     initial, recovery = bundle["application"], bundle["recovery_application"]
     assert proposal["approved"] is False
-    assert proposal["cost"] == {"kind": "unestimated"}
+    assert proposal["cost"]["kind"] == "planning-estimate"
+    assert proposal["cost"]["usd"] == "2.44"
     assert proposal["application_sha256"] == digest(initial)
     assert proposal["recovery_application_sha256"] == digest(recovery)
     assert proposal["supervisor_sha256"] == digest(bundle["delivery"]["supervisor"])
