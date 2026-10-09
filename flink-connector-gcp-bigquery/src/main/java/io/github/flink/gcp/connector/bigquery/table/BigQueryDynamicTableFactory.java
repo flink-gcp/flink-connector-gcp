@@ -146,6 +146,8 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD,
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION,
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_DESCRIPTION,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS,
                         BigQueryConnectorOptions.SINK_DERIVE_REQUIRED_COLUMNS,
                         BigQueryConnectorOptions.SINK_JSON_FIELD_PATHS,
                         BigQueryConnectorOptions.SINK_GEOGRAPHY_FIELD_PATHS,

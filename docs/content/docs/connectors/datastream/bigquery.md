@@ -1418,8 +1418,8 @@ avoids both.
 Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with a
 [missing-table verdict](#a-missing-table-does-not-say-not_found) is
 recovered on the task thread: the destination table is created through the BigQuery REST API
-(schema from the serializer's `getTableSchema`; partitioning/clustering from
-`tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
+(schema from the serializer's `getTableSchema`; partitioning, clustering, description and labels
+from `tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
 destination's stream writer is rebuilt, and the failed batch is re-appended with backoff while
 table metadata propagates to the Storage Write API backend. Creation is idempotent across
 parallel subtasks (HTTP 409 is treated as success); the credentials need
@@ -1433,6 +1433,36 @@ durably, and relaxing a column afterwards is a schema update rather than an edit
 `WRITE_TRUNCATE_DATA` replaces only the data and preserves the existing schema and constraints.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
+
+#### Table metadata
+
+A table the sink creates carries the `description` and `labels` of its `TableCreateOptions`.
+Column descriptions are not creation options: they travel with the serializer's `TableSchema`, so a
+column with a description in that schema has it in a created table and in a column that a schema
+update appends.
+The protobuf, Avro and `RowData` serializers derive no column descriptions; a schema written by
+hand, such as the one a JSON serializer is given, can carry them.
+Reconciliation keeps the description of every existing column, and it never adds a description to a
+column that already exists without one.
+`FILE_LOADS` under `WRITE_TRUNCATE` is the exception: its load replaces the schema, column
+descriptions included, with the serializer's, but keeps the table's description and labels, as does
+the copy that finishes a commit too large for one load job (both measured).
+
+BigQuery checks a label's key and value, and the number of labels, when it creates the table; the
+builder checks only that keys are not blank, that values are not `null`, and that `flink_gcp_cdc` is
+not among the keys.
+A label BigQuery rejects therefore fails the job when the sink first creates a table with it: as
+early as a missing table's first record, or as late as the next commit (the next checkpoint, or the
+end of a batch job), depending on the write method and on whether a location is configured.
+For a destination resolver that opens a new table later, such as
+[a table per day]({{< relref "docs/examples/bigquery" >}}#a-table-per-day), it is only when that
+table first receives rows.
+
+A table that already exists keeps the description and labels it has, as it keeps its partitioning
+and clustering: these are creation options, and `TableCreateOptions` never updates an existing
+table.
+(The CDC contract is separate: under `RECONCILE` it may change an existing CDC table's provisioning
+label and maximum staleness, as [Change data capture](#change-data-capture) describes.)
 
 #### Losing the creation race costs a retry, not the job
 

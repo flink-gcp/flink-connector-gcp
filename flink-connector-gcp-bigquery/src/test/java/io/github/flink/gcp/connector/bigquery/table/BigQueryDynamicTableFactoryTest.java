@@ -1347,6 +1347,19 @@ class BigQueryDynamicTableFactoryTest {
     }
 
     @Test
+    void tableMetadataKeysReachTheBuiltSink() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.table-create.description", "Orders");
+        options.put("sink.table-create.labels", "team:data");
+        BigQueryDefaultStreamSink<?> built = (BigQueryDefaultStreamSink<?>) built(options);
+
+        TableCreateOptions created =
+                built.getConfig().getTableCreateOptionsProvider().optionsFor(DESTINATION);
+        assertThat(created.getDescription()).isEqualTo("Orders");
+        assertThat(created.getLabels()).containsEntry("team", "data");
+    }
+
+    @Test
     void aTableCreateColumnOutsideTheDdlIsRejected() {
         // The check only this layer can make: the emulator would accept the create request and
         // real BigQuery would refuse it, so a plan-time failure is what keeps the two apart.

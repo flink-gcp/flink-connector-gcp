@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The {@code WITH} options of the {@code bigquery} table connector.
@@ -469,6 +470,26 @@ public final class BigQueryConnectorOptions {
                             "The columns a created table is clustered on, in precedence order."
                                     + " BigQuery takes at most four, and they must be top-level"
                                     + " columns of the table.");
+
+    /** The description of a created table. */
+    public static final ConfigOption<String> SINK_TABLE_CREATE_DESCRIPTION =
+            ConfigOptions.key("sink.table-create.description")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The description of a created table.");
+
+    /**
+     * The labels of a created table, as a map from label key to value. The key 'flink_gcp_cdc' is
+     * reserved for CDC table provisioning.
+     */
+    public static final ConfigOption<Map<String, String>> SINK_TABLE_CREATE_LABELS =
+            ConfigOptions.key("sink.table-create.labels")
+                    .mapType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The labels of a created table, as a map from label key to value. The"
+                                    + " key 'flink_gcp_cdc' is reserved for CDC table"
+                                    + " provisioning.");
 
     // ------------------------------------------------------------------------
     //  Sink — schema derivation from the DDL row type

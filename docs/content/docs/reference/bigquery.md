@@ -202,6 +202,8 @@ See
 | `timePartitioning(type, field)` | unpartitioned | Partitions on the given `TIMESTAMP`, `DATE` or `DATETIME` column instead. A `DATE` column takes no `HOUR` granularity — BigQuery refuses that table at creation, and only the SQL layer checks it client-side |
 | `timePartitioningExpiration` | partitions never expire | How long BigQuery keeps a partition |
 | `clusteredFields` | not clustered | Clusters on the given columns in precedence order, at most four |
+| `description` | no description | The table description. Column descriptions come from the serializer's `TableSchema` instead; see [Table metadata]({{< relref "docs/connectors/datastream/bigquery" >}}#table-metadata) |
+| `labels` | no labels | The table labels. Key and value rules are BigQuery's, checked when the table is created; the key `flink_gcp_cdc` is reserved for CDC table provisioning |
 
 ## `CdcTableOptions`
 

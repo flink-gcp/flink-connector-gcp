@@ -22,22 +22,27 @@ import org.apache.flink.util.StringUtils;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
  * Options applied when the sink creates a destination table under {@link
- * CreateDisposition#CREATE_IF_NEEDED}: time partitioning and clustering.
+ * CreateDisposition#CREATE_IF_NEEDED}: time partitioning, clustering, and the table's description
+ * and labels.
  *
  * <p>The table <em>schema</em> is not part of these options — it always comes from {@link
  * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema#getTableSchema}.
- * Partitioning and clustering only affect table creation. CDC properties are configured through
- * {@link CdcTableOptions} because they also describe existing-table verification and
- * reconciliation.
+ * Column descriptions travel with that schema. Every option here affects table creation only: an
+ * existing table is never changed by them. CDC properties are configured through {@link
+ * CdcTableOptions} because they also describe existing-table verification and reconciliation.
  *
  * <p>Instances are immutable and serializable. Use {@link #defaults()} for plain, unpartitioned
  * tables.
@@ -49,6 +54,12 @@ public final class TableCreateOptions implements Serializable {
 
     /** BigQuery has a hard limit of four clustering columns per table. */
     private static final int MAX_CLUSTERED_FIELDS = 4;
+
+    /**
+     * The label key the sink's CDC table provisioning owns. Its value records the provisioning
+     * phase, so a configured value would either be overwritten or break that protocol.
+     */
+    static final String RESERVED_CDC_LABEL = "flink_gcp_cdc";
 
     /** Granularity of time-based partitioning. */
     public enum TimePartitioningType {
@@ -90,6 +101,13 @@ public final class TableCreateOptions implements Serializable {
     private final String timePartitioningField;
     private final Long timePartitioningExpirationMs;
     private final List<String> clusteredFields;
+    @Nullable private final String description;
+
+    /**
+     * {@code null} only in an instance serialized before the field existed; read through {@link
+     * #getLabels()}.
+     */
+    @Nullable private final Map<String, String> labels;
 
     private TableCreateOptions(Builder builder) {
         this.timePartitioningType = builder.timePartitioningType;
@@ -97,9 +115,14 @@ public final class TableCreateOptions implements Serializable {
         this.timePartitioningExpirationMs = builder.timePartitioningExpirationMs;
         this.clusteredFields =
                 Collections.unmodifiableList(new ArrayList<>(builder.clusteredFields));
+        this.description = builder.description;
+        this.labels = Collections.unmodifiableMap(new LinkedHashMap<>(builder.labels));
     }
 
-    /** Returns options creating a plain table: no partitioning, no clustering. */
+    /**
+     * Returns options creating a plain table: no partitioning, no clustering, no description and no
+     * labels.
+     */
     public static TableCreateOptions defaults() {
         return DEFAULTS;
     }
@@ -139,6 +162,18 @@ public final class TableCreateOptions implements Serializable {
         return clusteredFields;
     }
 
+    /** Returns the table description, or {@code null} when none is configured. */
+    @Nullable
+    public String getDescription() {
+        return description;
+    }
+
+    /** Returns the table labels, in the order they were given; empty when none are configured. */
+    public Map<String, String> getLabels() {
+        // An instance serialized before labels existed restores the field as null.
+        return labels == null ? Collections.emptyMap() : labels;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -151,7 +186,9 @@ public final class TableCreateOptions implements Serializable {
         return timePartitioningType == that.timePartitioningType
                 && Objects.equals(timePartitioningField, that.timePartitioningField)
                 && Objects.equals(timePartitioningExpirationMs, that.timePartitioningExpirationMs)
-                && clusteredFields.equals(that.clusteredFields);
+                && clusteredFields.equals(that.clusteredFields)
+                && Objects.equals(description, that.description)
+                && getLabels().equals(that.getLabels());
     }
 
     @Override
@@ -160,7 +197,9 @@ public final class TableCreateOptions implements Serializable {
                 timePartitioningType,
                 timePartitioningField,
                 timePartitioningExpirationMs,
-                clusteredFields);
+                clusteredFields,
+                description,
+                getLabels());
     }
 
     @Override
@@ -173,6 +212,10 @@ public final class TableCreateOptions implements Serializable {
                 + timePartitioningExpirationMs
                 + ", clusteredFields="
                 + clusteredFields
+                + ", description="
+                + description
+                + ", labels="
+                + getLabels()
                 + "}";
     }
 
@@ -184,6 +227,8 @@ public final class TableCreateOptions implements Serializable {
         private String timePartitioningField;
         private Long timePartitioningExpirationMs;
         private List<String> clusteredFields = Collections.emptyList();
+        private String description;
+        private Map<String, String> labels = Collections.emptyMap();
 
         private Builder() {}
 
@@ -249,6 +294,52 @@ public final class TableCreateOptions implements Serializable {
                         fields);
             }
             this.clusteredFields = new ArrayList<>(fields);
+            return this;
+        }
+
+        /**
+         * Sets the description of a created table.
+         *
+         * @param description the table description, not blank
+         * @return this builder
+         */
+        public Builder description(String description) {
+            Preconditions.checkArgument(
+                    !StringUtils.isNullOrWhitespaceOnly(description),
+                    "description must not be blank");
+            this.description = description;
+            return this;
+        }
+
+        /**
+         * Sets the labels of a created table, replacing any set before.
+         *
+         * <p>Keys must not be blank and values must not be {@code null}; an empty value is a label
+         * with no value. Whether a key or value is one BigQuery accepts is BigQuery's answer, given
+         * when the table is created. The key {@code flink_gcp_cdc} is rejected: the sink's CDC
+         * table provisioning owns it.
+         *
+         * @param labels the table labels
+         * @return this builder
+         */
+        public Builder labels(Map<String, String> labels) {
+            Preconditions.checkNotNull(labels, "labels must not be null");
+            Map<String, String> copy = new LinkedHashMap<>(labels);
+            for (Map.Entry<String, String> label : copy.entrySet()) {
+                Preconditions.checkArgument(
+                        !StringUtils.isNullOrWhitespaceOnly(label.getKey()),
+                        "label keys must not be blank: %s",
+                        copy.keySet());
+                Preconditions.checkArgument(
+                        label.getValue() != null,
+                        "label '%s' must not have a null value",
+                        label.getKey());
+                Preconditions.checkArgument(
+                        !RESERVED_CDC_LABEL.equals(label.getKey()),
+                        "label '%s' is reserved for the sink's CDC table provisioning",
+                        RESERVED_CDC_LABEL);
+            }
+            this.labels = copy;
             return this;
         }
 

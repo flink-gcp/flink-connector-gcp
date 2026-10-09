@@ -16,13 +16,20 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link TableCreateOptions}. */
 class TableCreateOptionsTest {
@@ -35,6 +42,71 @@ class TableCreateOptionsTest {
         assertThat(options.getTimePartitioningField()).isNull();
         assertThat(options.getTimePartitioningExpirationMs()).isNull();
         assertThat(options.getClusteredFields()).isEmpty();
+        assertThat(options.getDescription()).isNull();
+        assertThat(options.getLabels()).isEmpty();
+    }
+
+    @Test
+    void descriptionAndLabelsRoundTripInTheirOrder() {
+        Map<String, String> labels = new LinkedHashMap<>();
+        labels.put("team", "data");
+        labels.put("env", "");
+        TableCreateOptions options =
+                TableCreateOptions.builder().description("Orders").labels(labels).build();
+        labels.put("later", "x");
+
+        assertThat(options.getDescription()).isEqualTo("Orders");
+        assertThat(options.getLabels()).containsExactly(entry("team", "data"), entry("env", ""));
+        assertThatThrownBy(() -> options.getLabels().put("k", "v"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void rejectsABlankDescription() {
+        assertThatThrownBy(() -> TableCreateOptions.builder().description(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("description must not be blank");
+    }
+
+    @Test
+    void rejectsABlankOrNullLabelKey() {
+        Map<String, String> nullKey = new HashMap<>();
+        nullKey.put(null, "v");
+
+        assertThatThrownBy(() -> TableCreateOptions.builder().labels(Map.of(" ", "v")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("label keys must not be blank");
+        assertThatThrownBy(() -> TableCreateOptions.builder().labels(nullKey))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("label keys must not be blank");
+    }
+
+    @Test
+    void rejectsANullLabelValue() {
+        Map<String, String> labels = new HashMap<>();
+        labels.put("team", null);
+
+        assertThatThrownBy(() -> TableCreateOptions.builder().labels(labels))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("label 'team' must not have a null value");
+    }
+
+    /**
+     * BigQuery's own rules for label keys and values are BigQuery's answer (ADR-0127): an
+     * upper-case key reaches the service rather than being refused here.
+     */
+    @Test
+    void leavesTheLabelGrammarToBigQuery() {
+        assertThat(TableCreateOptions.builder().labels(Map.of("Team", "Data")).build().getLabels())
+                .containsExactly(entry("Team", "Data"));
+    }
+
+    @Test
+    void rejectsTheLabelCdcProvisioningOwns() {
+        assertThatThrownBy(() -> TableCreateOptions.builder().labels(Map.of("flink_gcp_cdc", "x")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(
+                        "label 'flink_gcp_cdc' is reserved for the sink's CDC table provisioning");
     }
 
     @Test
@@ -133,5 +205,50 @@ class TableCreateOptionsTest {
 
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(TableCreateOptions.defaults());
+    }
+
+    /**
+     * An instance serialized before the labels existed restores the field as {@code null}, which
+     * creation and equality must read as "no labels" rather than fail on.
+     */
+    @Test
+    void anInstanceSerializedBeforeLabelsExistedHasNone() throws Exception {
+        TableCreateOptions restored =
+                InstantiationUtil.clone(
+                        TableCreateOptions.builder()
+                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                                .build());
+        Field labels = TableCreateOptions.class.getDeclaredField("labels");
+        labels.setAccessible(true);
+        labels.set(restored, null);
+
+        assertThat(restored.getLabels()).isEmpty();
+        assertThat(restored)
+                .isEqualTo(
+                        TableCreateOptions.builder()
+                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                                .build())
+                .hasSameHashCodeAs(
+                        TableCreateOptions.builder()
+                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                                .build());
+    }
+
+    @Test
+    void theDescriptionAndLabelsTakePartInEquality() {
+        TableCreateOptions described = TableCreateOptions.builder().description("a").build();
+        TableCreateOptions labelled =
+                TableCreateOptions.builder().labels(Map.of("team", "data")).build();
+
+        assertThat(described)
+                .isEqualTo(TableCreateOptions.builder().description("a").build())
+                .isNotEqualTo(TableCreateOptions.builder().description("b").build())
+                .isNotEqualTo(TableCreateOptions.defaults());
+        assertThat(labelled)
+                .isEqualTo(TableCreateOptions.builder().labels(Map.of("team", "data")).build())
+                .hasSameHashCodeAs(
+                        TableCreateOptions.builder().labels(Map.of("team", "data")).build())
+                .isNotEqualTo(TableCreateOptions.defaults());
+        assertThat(labelled.toString()).contains("labels={team=data}");
     }
 }

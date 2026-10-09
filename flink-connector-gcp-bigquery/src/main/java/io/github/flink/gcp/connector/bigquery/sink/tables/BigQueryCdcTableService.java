@@ -53,6 +53,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -159,8 +160,10 @@ class BigQueryCdcTableService implements CdcTableProvisioner.Service {
             CdcTableOptions cdcOptions,
             String provisioningLabel)
             throws IOException {
-        Map<String, String> labels =
-                Collections.singletonMap(CdcTableProvisioner.PROVISIONING_LABEL, provisioningLabel);
+        // The configured labels plus the provisioning label, which TableCreateOptions refuses as a
+        // configured key, so neither can overwrite the other.
+        Map<String, String> labels = new LinkedHashMap<>(createOptions.getLabels());
+        labels.put(CdcTableProvisioner.PROVISIONING_LABEL, provisioningLabel);
         TableInfo tableInfo =
                 BigQueryTableAdmin.buildTableInfo(destination, schema, createOptions, cdcOptions)
                         .toBuilder()

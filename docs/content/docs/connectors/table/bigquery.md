@@ -796,6 +796,11 @@ They do not *authorize* creation: `sink.create-disposition` does, and it default
 `create-if-needed`, so the settings alone configure the table an unconfigured DDL already creates.
 Setting any of them beside an explicit `create-never` is rejected.
 
+`sink.table-create.description` and `sink.table-create.labels` set the created table's description
+and labels; an existing table keeps its own.
+A label BigQuery rejects fails the job when the table is created, not when the DDL is planned.
+Column `COMMENT`s in the DDL do not become BigQuery column descriptions.
+
 A column BigQuery could not use is rejected at plan time rather than at the first record: one the
 table does not declare, a partitioning column that is not `TIMESTAMP`, `TIMESTAMP_LTZ` or `DATE`,
 an `hour` granularity over a `DATE` column (a `DATE` column has day, month and year granularity
@@ -810,6 +815,8 @@ refuse a table BigQuery would have created.
 | `sink.table-create.time-partitioning.field` | String | The `TIMESTAMP`, `TIMESTAMP_LTZ` or `DATE` column to partition on; a `DATE` column takes no `hour` granularity. Left out, the table is partitioned on **ingestion time** — the case `PARTITIONED BY` could not express. Requires the granularity above |
 | `sink.table-create.time-partitioning.expiration` | Duration | `TableCreateOptions.timePartitioningExpiration(...)`. Requires the granularity above |
 | `sink.table-create.clustered-fields` | List&lt;String&gt; | `TableCreateOptions.clusteredFields(...)`, in precedence order; BigQuery takes at most four top-level columns |
+| `sink.table-create.description` | String | `TableCreateOptions.description(...)` |
+| `sink.table-create.labels` | Map | `TableCreateOptions.labels(...)`, written `'key1:value1,key2:value2'`. The key `flink_gcp_cdc` is reserved for CDC table provisioning |
 
 ### Sink tuning — `storage-api-at-least-once`
 
