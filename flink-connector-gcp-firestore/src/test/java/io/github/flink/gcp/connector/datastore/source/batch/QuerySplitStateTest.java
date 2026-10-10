@@ -24,6 +24,7 @@ import com.google.datastore.v1.RunQueryRequest;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Int32Value;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.ScriptedQueryPlanner;
+import io.github.flink.gcp.connector.datastore.source.serializer.EntityMetadata;
 import org.junit.jupiter.api.Test;
 
 import java.util.function.UnaryOperator;
@@ -47,7 +48,8 @@ class QuerySplitStateTest {
     private static FetchedEntity fetched(String name) {
         return new FetchedEntity(
                 Entity.newBuilder(Key.newBuilder("p", "K", name).build()).build(),
-                ByteString.copyFromUtf8("after-" + name));
+                ByteString.copyFromUtf8("after-" + name),
+                new EntityMetadata(1L, READ_TIME, READ_TIME, READ_TIME));
     }
 
     @Test

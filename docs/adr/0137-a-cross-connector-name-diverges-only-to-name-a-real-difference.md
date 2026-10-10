@@ -164,8 +164,9 @@ same `of(project, …)` shape in the same role, was the one outlier; it is renam
 instant (`scan.snapshot-time` — a different concept, not a divergent spelling of the same
 one). The read-time key of a point-in-time read takes each vendor's word under the SDK-seam rule
 above — BigQuery's `scan.snapshot-time` (`snapshot_time`), Spanner's
-`scan.timestamp-bound.read-timestamp`, Firestore's `scan.read-time` (`readTime`; [ADR-0179]) — so
-those three are one concept spelled the vendor's way, not a divergence to align.
+`scan.timestamp-bound.read-timestamp`, Firestore's `scan.read-time` (`readTime`; [ADR-0179]),
+and Datastore mode's `scan.read-time` (`read_time`; [ADR-0184]) — so those are one concept
+spelled the vendor's way, not a divergence to align.
 
 ## Alternatives declined
 
@@ -670,3 +671,4 @@ classifier, so one classifier serves both families and a family word would be th
 [ADR-0117]: 0117-metric-tables-are-held-bidirectionally-to-connector-inventories.md
 [ADR-0140]: 0140-bigquery-serialization-apis-use-flinks-schema-vocabulary.md
 [ADR-0179]: 0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md
+[ADR-0184]: 0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md

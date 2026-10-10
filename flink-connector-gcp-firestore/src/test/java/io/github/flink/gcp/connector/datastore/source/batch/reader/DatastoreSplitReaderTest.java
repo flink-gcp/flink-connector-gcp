@@ -94,6 +94,41 @@ class DatastoreSplitReaderTest {
     }
 
     @Test
+    void eachEntityCarriesItsResultsVersionAndTimesAndTheSplitsReadTime() throws IOException {
+        DatastoreSplitReader reader = reader(new ScriptedQueryPageReader(SEVEN), 10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(split("0"))));
+
+        RecordsWithSplitIds<FetchedEntity> batch = reader.fetch();
+        batch.nextSplit();
+        FetchedEntity first = batch.nextRecordFromSplit();
+        FetchedEntity second = batch.nextRecordFromSplit();
+
+        assertThat(first.getMetadata().getVersion()).isEqualTo(1L);
+        assertThat(first.getMetadata().getCreateTime())
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(1000, 0));
+        assertThat(first.getMetadata().getUpdateTime())
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(2000, 0));
+        assertThat(first.getMetadata().getReadTime()).isEqualTo(READ_TIME);
+        assertThat(second.getMetadata().getVersion()).isEqualTo(2L);
+        assertThat(second.getMetadata().getUpdateTime())
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(2001, 0));
+    }
+
+    @Test
+    void aResultWithoutTimesCarriesNoneRatherThanTheEpoch() throws IOException {
+        DatastoreSplitReader reader = reader(new ScriptedQueryPageReader(SEVEN).withoutTimes(), 10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(split("0"))));
+
+        RecordsWithSplitIds<FetchedEntity> batch = reader.fetch();
+        batch.nextSplit();
+        FetchedEntity first = batch.nextRecordFromSplit();
+
+        assertThat(first.getMetadata().getCreateTime()).isNull();
+        assertThat(first.getMetadata().getUpdateTime()).isNull();
+        assertThat(first.getMetadata().getReadTime()).isEqualTo(READ_TIME);
+    }
+
+    @Test
     void readsASplitInPagesEachStartedWhereTheLastEnded() throws IOException {
         ScriptedQueryPageReader pages = new ScriptedQueryPageReader(SEVEN);
         DatastoreSplitReader reader = reader(pages, 3);

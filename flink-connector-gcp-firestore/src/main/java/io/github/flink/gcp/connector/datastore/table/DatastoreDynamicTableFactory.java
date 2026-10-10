@@ -21,7 +21,9 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -32,6 +34,7 @@ import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.table.sink.DatastoreDynamicSink;
 import io.github.flink.gcp.connector.datastore.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.datastore.table.source.DatastoreDynamicSource;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -39,15 +42,16 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Creates the {@code datastore} table sink from a SQL DDL: the entities of one kind in one
- * namespace of a database in Datastore mode, a row per entity, the PRIMARY KEY column as the key's
- * name or id.
+ * Creates the {@code datastore} table source and sink from a SQL DDL: the entities of one kind in
+ * one namespace of a database in Datastore mode, a row per entity, the PRIMARY KEY column as the
+ * key's name or id.
  *
  * <p>Every check that needs only the {@code WITH} clause and the schema runs here, so a mistake is
  * reported when the statement is planned, in the option keys the DDL spells.
  */
 @Internal
-public final class DatastoreDynamicTableFactory implements DynamicTableSinkFactory {
+public final class DatastoreDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     /** The {@code connector} value that selects this factory. */
     public static final String IDENTIFIER = "datastore";
@@ -71,6 +75,10 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
                         DatastoreConnectorOptions.NAMESPACE,
                         DatastoreConnectorOptions.EMULATOR_ENDPOINT,
                         DatastoreConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
+                        DatastoreConnectorOptions.TYPE_MISMATCH_POLICY,
+                        DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
+                        DatastoreConnectorOptions.SCAN_READ_TIME,
+                        DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
                         DatastoreConnectorOptions.SINK_UNINDEXED_COLUMNS,
                         DatastoreConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         DatastoreConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
@@ -81,7 +89,8 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
                         DatastoreConnectorOptions.SINK_THROTTLING_ENABLED,
                         DatastoreConnectorOptions.SINK_THROTTLING_PARALLELISM,
                         DatastoreConnectorOptions.SINK_ID_ALLOCATION_BATCH_SIZE,
-                        FactoryUtil.SINK_PARALLELISM));
+                        FactoryUtil.SINK_PARALLELISM,
+                        FactoryUtil.SOURCE_PARALLELISM));
     }
 
     @Override
@@ -90,15 +99,9 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
         DatabaseDestination database = database(config);
         String namespace = namespace(config);
         String kind = kind(config);
-        DatastoreTableSchema schema =
-                DatastoreTableSchema.of(
-                        (RowType) context.getPhysicalRowDataType().getLogicalType(),
-                        context.getPrimaryKeyIndexes(),
-                        config.getOptional(DatastoreConnectorOptions.SINK_UNINDEXED_COLUMNS)
-                                .orElse(Collections.emptyList()));
 
         return DatastoreDynamicSink.builder()
-                .schema(schema)
+                .schema(schema(context, config))
                 .database(database)
                 .namespace(namespace)
                 .kind(kind)
@@ -110,12 +113,42 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
                         config.getOptional(DatastoreConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
-                .build(
-                        DatastoreTableLineage.of(
-                                context.getObjectIdentifier().asSummaryString(),
-                                database,
-                                namespace,
-                                kind));
+                .build(lineage(context, database, namespace, kind));
+    }
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        ReadableConfig config = validatedOptions(context);
+        DatabaseDestination database = database(config);
+        String namespace = namespace(config);
+        String kind = kind(config);
+        return new DatastoreDynamicSource(
+                schema(context, config),
+                database,
+                namespace,
+                kind,
+                DatastoreScanConfig.from(config),
+                config.get(DatastoreConnectorOptions.TYPE_MISMATCH_POLICY),
+                context.getPhysicalRowDataType(),
+                config.getOptional(DatastoreConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                config.getOptional(DatastoreConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
+                lineage(context, database, namespace, kind));
+    }
+
+    /** The table's schema, checked once for either direction. */
+    private static DatastoreTableSchema schema(Context context, ReadableConfig config) {
+        return DatastoreTableSchema.of(
+                (RowType) context.getPhysicalRowDataType().getLogicalType(),
+                context.getPrimaryKeyIndexes(),
+                config.getOptional(DatastoreConnectorOptions.SINK_UNINDEXED_COLUMNS)
+                        .orElse(Collections.emptyList()));
+    }
+
+    private static DatastoreTableLineage lineage(
+            Context context, DatabaseDestination database, String namespace, String kind) {
+        return DatastoreTableLineage.of(
+                context.getObjectIdentifier().asSummaryString(), database, namespace, kind);
     }
 
     /**
@@ -160,7 +193,8 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
     /**
      * The database, each component checked under the option key that supplied it. The project is
      * also checked against the client library's grammar, which every key the sink builds is held
-     * to: a project it refuses would fail every record.
+     * to: a project it refuses would fail every record. The scan applies the same check, so one DDL
+     * is accepted or refused alike in either direction.
      */
     private static DatabaseDestination database(ReadableConfig config) {
         String project = config.get(DatastoreConnectorOptions.PROJECT);
@@ -180,7 +214,8 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
     /**
      * The namespace, empty for the default one. A configured namespace is held to the client
      * library's grammar, which every key the sink builds is checked against, and may not be one
-     * Datastore reserves: either would fail every record.
+     * Datastore reserves: either would fail every record. The scan applies the same checks, as
+     * {@link #database(ReadableConfig)} does.
      */
     private static String namespace(ReadableConfig config) {
         String namespace = config.getOptional(DatastoreConnectorOptions.NAMESPACE).orElse(null);
@@ -202,9 +237,13 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
     }
 
     /**
-     * The kind, which may not be blank, one Datastore reserves, or longer than it stores: each
-     * would fail every record. The client library checks only that a kind is not empty, so these
-     * are the service's rules, stated once in {@link DatastoreTableSchema}.
+     * The kind, which may not be blank, one Datastore reserves, or longer than it stores. A write
+     * to any of them would fail every record, and the scan applies the same checks, so one DDL is
+     * accepted or refused alike in either direction. A reserved kind is Datastore's own statistics
+     * or metadata: the emulator answers the {@code __kind__} metadata query without the cursor
+     * every entity the scan reads must carry, and no statistics kind was measured, so the scan
+     * refuses them too. The client library checks only that a kind is not empty, so these are the
+     * service's rules, stated once in {@link DatastoreTableSchema}.
      */
     private static String kind(ReadableConfig config) {
         String kind = config.get(DatastoreConnectorOptions.KIND);
@@ -232,9 +271,9 @@ public final class DatastoreDynamicTableFactory implements DynamicTableSinkFacto
                     "'"
                             + value
                             + "' has the form '__…__', with at least one character between the"
-                            + " underscores, which Datastore reserves: a "
+                            + " underscores, which Datastore reserves for a "
                             + what
-                            + " like it is read-only.");
+                            + " of its own; the table connector neither writes nor reads one.");
         }
     }
 

@@ -270,6 +270,26 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **A kind's lineage identity comes from `datastore.DatastoreLineage.kind`**, which the source and
   the table sink both call, so the two report the same `datastore-kind` resource.
 
+
+## Datastore-mode Table API scan (`docs/adr/0184`, scan section)
+
+- **Options**: `scan.partition.max-partitions` (→ `splitCount`), `scan.read-time`,
+  `scan.max-rows-per-fetch`, and `type-mismatch-policy`, its own enum in `datastore.table`
+  because the roots share only base.
+- **No projection reaches the service** (owner, 2026-10-10): a Datastore projection query drops
+  entities without an indexed value of every projected property and repeats array values; the
+  scan reads whole entities and converts only produced columns. Do not "optimize" this into a
+  projection query.
+- **Metadata** `key-name`/`key-id`/`version`/`create-time`/`update-time`/`read-time` reach the
+  deserializer through the `@Internal` `EntityMetadata` and
+  `DatastoreEntityMetadataDeserializationSchema` path (ADR-0177 revision); the public SPI is
+  unchanged. `key-id` is how a key-less table reads its allocated ids.
+- **Key column**: STRING ← key name, BIGINT ← key id; the other form, and a key with a parent,
+  fail the read under either policy. A kind with mixed key forms or child entities is read by a
+  key-less table via the metadata.
+- **Reserved kinds stay refused for the scan too**: the emulator's `__kind__` metadata query
+  answers without per-entity cursors, which the reader requires.
+
 ## Testing
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image

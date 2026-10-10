@@ -108,6 +108,20 @@ class FirestoreToRowDataConverterTest {
     }
 
     @Test
+    void aStringOrBytesReadWholeWhateverLengthTheColumnDeclares() throws Exception {
+        assertThat(strict(DataTypes.VARCHAR(3)).convert("abcdef"))
+                .isEqualTo(StringData.fromString("abcdef"));
+        assertThat(strict(DataTypes.CHAR(4)).convert("ab"))
+                .as("not padded")
+                .isEqualTo(StringData.fromString("ab"));
+        assertThat(
+                        (byte[])
+                                strict(DataTypes.BINARY(2))
+                                        .convert(Blob.fromBytes(new byte[] {1, 2, 3})))
+                .containsExactly(1, 2, 3);
+    }
+
+    @Test
     void anIntegerReadsIntoADoubleOnlyWhenItIsExact() throws Exception {
         FirestoreToRowDataConverter doubles = strict(DataTypes.DOUBLE());
 
@@ -115,14 +129,14 @@ class FirestoreToRowDataConverterTest {
         assertThat(doubles.convert(-(1L << 53))).isEqualTo((double) -(1L << 53));
         assertThatThrownBy(() -> doubles.convert((1L << 53) + 1))
                 .isInstanceOf(FirestoreToRowDataConverter.Mismatch.class)
-                .hasMessageContaining("which a DOUBLE cannot represent exactly");
+                .hasMessageContaining("beyond the 2^53 in magnitude");
         assertThatThrownBy(() -> doubles.convert(-(1L << 53) - 1))
                 .isInstanceOf(FirestoreToRowDataConverter.Mismatch.class)
-                .hasMessageContaining("which a DOUBLE cannot represent exactly");
+                .hasMessageContaining("beyond the 2^53 in magnitude");
         // Math.abs(Long.MIN_VALUE) is negative, so the bound is two comparisons.
         assertThatThrownBy(() -> doubles.convert(Long.MIN_VALUE))
                 .isInstanceOf(FirestoreToRowDataConverter.Mismatch.class)
-                .hasMessageContaining("which a DOUBLE cannot represent exactly");
+                .hasMessageContaining("beyond the 2^53 in magnitude");
     }
 
     @Test
@@ -277,6 +291,7 @@ class FirestoreToRowDataConverterTest {
                                                 List.of())
                                         .convert(null))
                 .isInstanceOf(FirestoreToRowDataConverter.Mismatch.class)
-                .hasMessageContaining("a NOT NULL field holds null or is missing");
+                .hasMessageContaining(
+                        "is missing or holds null, but the table declares it NOT NULL");
     }
 }

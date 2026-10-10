@@ -19,9 +19,10 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-10-03 (client library facts read in google-cloud-datastore and datastore-v1-proto-client 3.7.0
   and google-cloud-core 2.77.0 through libraries-bom 26.90.0; emulator behavior measured 2026-10-03
-  against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run)
-- Issues: [#1543], [#355], [#1546]
-- Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`); base (`lineage.internal`)
+  against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by
+  [#1652] (query-result metadata for the table scan)
+- Issues: [#1543], [#355], [#1546], [#1652]
+- Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
 ## Context
@@ -73,6 +74,10 @@ Measured against the emulator:
 - **The planner's split call is a protected seam**, as `ClientQueryPlanner.partitions` is for the Native-mode source: the emulator samples no keys, so the emulator tests replace it with ranges they choose and read them for real. The statistics estimate, the GQL fallback and the read-time probe are package-private functions of the RPC object, which unit tests drive through a hand-written fake.
 - **A kind is reported as a `datastore-kind` lineage resource** when the job's configuration names it: a `kind(...)`, or a `query(...)` naming one kind. The namespace is `datastore://{project}/{database}` followed by `/{namespace}` outside the default namespace, and the name is the kind; the namespace sits in the canonical namespace because a kind may contain `/` and a namespace may not. A GQL query reports none, because the service parses it only at planning. ADR-0160 records the kind.
 
+### Query-result metadata for the table scan ([#1652], 2026-10-10)
+
+The reader now keeps what each `EntityResult` carries beside the entity, its `version`, `create_time` and `update_time`, with the split's read time, as an `@Internal` `EntityMetadata` on the fetched entity. The emitter hands it to a deserializer implementing the `@Internal` `DatastoreEntityMetadataDeserializationSchema`, which the `datastore` table scan does to fill its metadata columns (ADR-0184); every other deserializer receives the entity alone, as before. The public SPI is unchanged.
+
 ## Consequences
 
 - A planning call reaches the service over HTTP as well as gRPC, so a network policy that admits only one of them to the JobManager breaks a split read. The readers are gRPC only.
@@ -100,3 +105,4 @@ Measured against the emulator:
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355
 [#1543]: https://github.com/flink-gcp/flink-connector-gcp/issues/1543
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
+[#1652]: https://github.com/flink-gcp/flink-connector-gcp/issues/1652
