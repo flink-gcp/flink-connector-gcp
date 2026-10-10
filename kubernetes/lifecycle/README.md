@@ -46,11 +46,10 @@ Because the set is closed under imports, the runner computes that delivery pin f
 Adding a module the entrypoint reaches includes it in both the delivery and its pin automatically; a module nothing delivered imports is in neither, and enters both as soon as a delivered module imports it.
 The rendered-payload test runs the projected directory, which catches a module missing at import time; a module reached only by a deferred import inside a function is delivered by the walk but not exercised there.
 The Pod's command is fixed by this manifest, and `bundle.POD_COMMANDS` names it, because the CLI resolves a command to its module through a computed import that no walk can follow.
-Every command but `supervisor` and the offline analyses reads the repository from `repository.ROOT`, which the CLI sets from `--repository`; the CLI no longer imports the modules those commands use, and the cluster client and root plans live in `lifecycle`, their only caller, so nothing delivered reaches `bootstrap`, `lifecycle` or `schemas`.
+Every command but `supervisor` and the offline analyses reads the repository from `repository.ROOT`, which the CLI sets from `--repository`; the CLI does not import the modules those commands use, and the cluster client and root plans live in `lifecycle`, their only caller, so nothing delivered reaches `bootstrap`, `lifecycle` or `schemas`.
 The 32-cell fixture keeps UTF-8 ConfigMap data below 768 KiB, reserving 256 KiB below the [Kubernetes data ceiling](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/apis/core/validation/validation.go); it also keeps the serialized JSON below 1 MiB.
 The data budget counts values as Kubernetes does, excluding the extra quoting and escaping in JSON.
-Adding the Pub/Sub handoff module exceeded the former 768 KiB serialized-JSON guard: the fixture measured 737,522 data bytes and 789,286 JSON bytes.
-That prompted this change to separate data headroom from JSON overhead; the wire-form guard is now 1 MiB, while the data reserve remains 256 KiB below the API limit.
+Data headroom and JSON overhead are guarded separately, because JSON quoting and escaping can push the wire form over a 768 KiB guard the data stays under: with the Pub/Sub handoff module the fixture measured 737,522 data bytes and 789,286 JSON bytes.
 Third-party dependencies remain preinstalled in the pinned image; package source changes need no image rebuild or startup installation.
 
 | File | Responsibility |
@@ -71,12 +70,16 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
 | `flink_tier3/bigquery/plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
-| `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after an external quiescence barrier |
+| `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after the quiescence barrier |
 | `flink_tier3/bigquery/handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
 | `flink_tier3/bigquery/exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
 | `flink_tier3/approval_bundle.py` | The approved-checkout check, approval embedding and ConfigMap size limit that every approval-bound service delivery shares |
 | `flink_tier3/bigquery/bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
 | `flink_tier3/bigquery/resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
+| `flink_tier3/bigquery/actors.py`, `bigquery/auth.py` | The authenticated BigQuery runner and supervisor the production entrypoints run, and their OAuth session |
+| `flink_tier3/bigquery/quiesce.py` | The supervisor's quiescence barrier: re-lists writer-capable objects in the application namespace and refuses while any of this run's remains |
+| `flink_tier3/bigquery/observe.py`, `bigquery/verdict.py` | Sampling the deployed sink through the job's REST service, and whether a run is a usable measurement |
+| `flink_tier3/bigquery/analyze.py` | Offline recomputation of a deployed BigQuery run's verdict from its exported evidence |
 | `flink_tier3/pubsub/resources.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
 | `flink_tier3/pubsub/plan.py` | Offline, unapproved Pub/Sub trial, reviewed trial files, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
 | `flink_tier3/pubsub/bundle.py` | Approval-bound Pub/Sub delivery and complete re-render verification; no authentication or admission |
@@ -88,10 +91,9 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program; dispatch still refuses before the lock |
 
 The policy file is part of the reviewed revision, with no runtime override path.
-The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.
 The workload remains the [source-backed generic smoke application](../apps/smoke/README.md).
-Live execution and recovery behavior still require the separately approved [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).
+The separately approved [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran this application through one savepoint upgrade and one JobManager failover on 2026-09-17, in [run 35169364218](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35169364218); its [closing comment](https://github.com/flink-gcp/flink-connector-gcp/issues/1311#issuecomment-5715015774) records the final receipt's success and idle.
 Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
@@ -147,7 +149,7 @@ The Operator uses its tracked normal-capacity template.
 `tier3-system` is sized for a third Pod of the Operator's shape, and nothing runs in it.
 A preempted Pod holds its quota until it finishes terminating, so without that slot the Deployment's own replacement is refused.
 The Spot namespaces get no such slot on purpose, for a reason of cost rather than of detection: a replacement TaskManager of the largest approved class would nearly double what the session quota enforces.
-What a replacement costs the measurement is scenario-specific; for a Cloud Tasks cell the restart that accompanies it already invalidates the cell, and for a smoke run an owned replacement that restores the same lineage can now finish successfully.
+What a replacement costs the measurement is scenario-specific; for a Cloud Tasks cell the restart that accompanies it already invalidates the cell, and for a smoke run an owned replacement that restores the same lineage can finish successfully.
 
 | Budget | Ceiling or stop condition |
 | --- | --- |
@@ -215,7 +217,7 @@ The JobManager also runs on normal capacity while the TaskManagers stay on Spot,
 
 A Pod that went away between the inventory listing and its log read has that read retired and recorded as `retired-pod-log-unavailable`; a 404 for a Pod that is still there, under the same UID and without a deletion timestamp, still fails the run.
 Deciding that needs a second read of the Pod, so a transient status on that read is recorded as `pod-presence-unavailable` and tolerated for two consecutive polls rather than being read as proof the Pod is alive; the third fails the run, as does a refusal that answers about the caller rather than about the Pod.
-That tolerance is what lets a preempted Pod be replaced mid-run, and it is also why an application Pod deleted from outside the run is no longer detected by the log read alone.
+That tolerance is what lets a preempted Pod be replaced mid-run, and it is also why an application Pod deleted from outside the run is not detected by the log read alone.
 Ordinary smoke success requires the job to finish, smoke progress to establish its lineage, and at least one completed checkpoint to have been observed through the UID-owned REST service.
 Progress from another run/phase or a changed lineage fails the run, including an unexpected fresh start following disruption.
 Failure, cancellation, resource/evidence limits or the test deadline enters cleanup.
@@ -225,7 +227,7 @@ In ordinary smoke, a transient checkpoint-proxy error also starts cleanup, inclu
 
 The reviewed policy fixes 12,000 deterministic sequence records at ten records per second, one savepoint upgrade and one JM Pod deletion, with no automatic repetition.
 These inputs require about 20 minutes of uninterrupted processing.
-The resource, storage and telemetry ceilings above are unchanged; this is a correctness exercise, not a performance sample.
+The resource, storage and telemetry ceilings above apply; this is a correctness exercise, not a performance sample.
 
 | Stage | Required evidence and deadline |
 | --- | --- |
@@ -270,7 +272,7 @@ An interrupted or insufficiently observed trial is never reported as steady-stat
 
 Before approving dispatch, verify the three applied infrastructure roots and their empty refreshed plans, the idle Helm release, workload KSA/GSA binding and state-bucket grant, and live image retention through expiry plus 24 hours.
 Do not merge infrastructure changes while the run holds the shared lock.
-This implementation prepares [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311); it supplies no GKE execution result by itself.
+The [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran this procedure, under its then four-Pod approval, on 2026-09-17; a later change to this procedure supplies no GKE execution result by itself.
 
 ## Cloud Tasks session
 
@@ -368,7 +370,7 @@ The GCS SDK's optional background bucket-metadata reads are disabled to preserve
 Kubernetes and GCS use the SDK transports with explicit timeouts and disabled proxy/redirect forwarding.
 GCS receives a standard `AuthorizedSession` through the SDK's `_http` constructor hook because its public Client options do not expose those session settings.
 There are no custom pool wrappers or response-buffer rewrites.
-Generic API responses are no longer capped at 8 MiB; a large response from managed GKE or GCS can therefore consume more memory.
+Generic API responses are not capped at 8 MiB; a large response from managed GKE or GCS can therefore consume more than 8 MiB of memory.
 Kubernetes inventories still request 500 items per page and stop above 1,000 items per resource kind and namespace; GCS inventories retain their operation-specific count ceilings.
 Pod log requests retain their separate byte limits.
 Uploads disable SDK checksum-triggered automatic deletion; explicit lifecycle deletes always carry an observed generation.
@@ -498,7 +500,7 @@ A cell carries a steady-state result only when the supervisor's outcome for it w
 The acceptance items about metric discovery and task-name shape ask only that the cell's evidence was exported and matches its marker, because neither reads a rate or a window.
 Calibration acceptance is reported once per campaign and Flink line, because the 1.20.4 session repeats `k01` to `k04` under the same identifiers.
 The analyzer's rules are part of the package `runtime_sha256` covers, so the approval still pins the protocol document and the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set that `delivery_sha256` pins.
-Synthetic validation establishes the control logic; actual WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing remain measurements for the approved #1311 exercise.
+Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs such as the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) can show.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
 

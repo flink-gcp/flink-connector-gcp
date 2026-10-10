@@ -102,5 +102,5 @@ The [successful smoke publication](https://github.com/flink-gcp/flink-connector-
 A GAR read confirmed the digest that [pins.cue](../../images/pins.cue) selected until the Cloud Tasks measurement publication republished the smoke image from a later commit; both committed phases consume whichever digest that pin names, without command-line tags.
 
 This preparation leaves the Operator at zero replicas and both namespaces' Pod/PVC quotas at zero.
-[Issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310) supplies admission, expiry/failure supervision and cleanup; [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) supplies separately approved GKE execution.
+[Issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310) supplies admission, expiry/failure supervision and cleanup; [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) supplied the separately approved GKE execution on 2026-09-17.
 Neither consuming all input nor a bucket lifecycle rule terminates the Kubernetes resources.

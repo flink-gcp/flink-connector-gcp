@@ -370,7 +370,7 @@ class BigQueryHandoff:
         return value["released"] is True and value["inflight"] is None
 
     def cleanup(self, quiesce, *, deadline):
-        """Require runner release plus the caller's external workload barrier."""
+        """Require runner release plus the caller's workload barrier."""
         self._role("supervisor")
         self.stop()
 

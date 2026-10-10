@@ -66,7 +66,7 @@ why:
 | `test` action (`fmt`, `validate`, check-providers, tflint) | on | Runs in the plan job, after init, under the App token — which is what makes it usable: a fix commit pushed with `GITHUB_TOKEN` would not retrigger CI, so the branch would sit behind checks that ran before the fix. A fixable finding is pushed and the step then fails the run; the push starts the next one. Two rounds when tflint and `fmt` both have work, because tflint throws before `fmt` runs. When the App token is unavailable, the plan job runs checking-only validate, fmt and TFLint commands instead; authentication and init must still succeed |
 | `trivy` inside the `test` action | off | The original bucket-only scan reported five findings. A Trivy 0.74.0 scan on 2026-09-11 with the Tier-3 foundation reports eleven: CMEK on three buckets (LOW), access logging on three (MEDIUM), versioning on two temporary buckets (MEDIUM), two subnet flow-logging checks (LOW/MEDIUM), and master authorized networks on GKE (HIGH). Bucket and flow-log dispositions retain the existing cost policy: no extra key management, log storage or retained temporary-data versions. The GKE finding checks IP authorized networks, while this cluster disables IP endpoints and uses its IAM-authenticated DNS endpoint; adding an IP allowlist would not control that endpoint. tfaction fails on any finding, so the scan remains non-gating. These are configuration findings, not a runtime reachability measurement |
 | `tflint` inside the `test` action | on | Clean against this configuration today, and `fix: true` lets it push the correction rather than only report it. It applies the bundled `terraform` ruleset to the selected root's `.tf` files; no plugins are configured. It also puts a PR-controlled plugin loader in a step holding a write token (ADR-0121 records why that is acceptable). Pinned in `mise.toml`, run in the plan job by tfaction or its checking-only fallback as a plain PATH command |
-| `drift_detection` | off (default) | Declined 2026-08-16, no longer for want of a token: it wants three more workflows and apply-job changes, and this configuration changes rarely enough that the detection interval would not repay that surface |
+| `drift_detection` | off (default) | Declined 2026-08-16, not for want of a token: it wants three more workflows and apply-job changes, and this configuration changes rarely enough that the detection interval would not repay that surface |
 
 ## Security model
 
@@ -179,7 +179,7 @@ Cluster deletion protection prevents accidental removal; deliberate decommission
 
 ### Cloud Tasks lifecycle control
 
-The [lifecycle grants](flink-gcp/cloudtasks-lifecycle.tf) explicitly select the existing runner and supervisor identities for the later Cloud Tasks benchmark admission path.
+The [lifecycle grants](flink-gcp/cloudtasks-lifecycle.tf) explicitly select the existing runner and supervisor identities for the Cloud Tasks session admission path.
 Adding a different identity to the shared lifecycle registry does not extend these grants.
 Both receive custom roles with `cloudtasks.queues.get/pause/delete` and `cloudtasks.tasks.get/list`; only the runner also receives `cloudtasks.queues.create`.
 These roles omit queue resume/update/purge/IAM changes and task creation/deletion/run/fullView.
@@ -188,7 +188,7 @@ The [lifecycle runtime](../kubernetes/lifecycle/README.md#cloud-tasks-session) t
 
 Each identity also receives Object Viewer on `flink-gcp-cloudtasks-benchmark` and Object User conditional on object names under `runs/`.
 Listing and reads cover the whole bucket; writes and deletes cover every run prefix, not just the current run.
-The existing benchmark worker's editor grant is unchanged.
+The existing benchmark worker keeps its editor grant.
 The apply identity receives project-wide `roles/iam.roleAdmin`, and custom-role creation depends on that binding.
 This permits administration of project custom roles beyond these two names; it does not grant Role Admin to either lifecycle identity.
 
@@ -202,7 +202,9 @@ No queue, workload or paid measurement is admitted by these grants; execution st
 
 [Issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312) uses the existing Flink 2.2.1 and Operator 1.15.0 baseline.
 Its [GCP foundation](flink-gcp/tier3-bigquery.tf) creates the persistent `flink_gcp_tier3_bigquery` dataset and `flink-gcp-tier3-bigquery` state bucket in `us-central1`, plus the `tier3-bigquery` workload account.
-The dataset is empty between trials and has a 24-hour default table expiration; the runner must still delete each trial's tables and verify their absence.
+The dataset is empty between trials and has a 24-hour default table expiration.
+The supervisor's cleanup deletes each trial's tables and verifies their absence.
+A hand repair that must delete a trial's tables uses credentials that hold `bigquery.tables.delete`, such as an owner's; impersonating the runner cannot do so directly, although the runner, as a trusted Operator administrator, can still reach the supervisor's identity through a `tier3-system` Job.
 Dataset destruction is protected and does not delete contents automatically.
 The state bucket uses Standard storage, uniform access, public-access prevention, no object versioning or soft delete, and a one-day lifecycle for `runs/` objects.
 The Kubernetes identity `tier3-bigquery/bigquery` may impersonate the workload account.
@@ -212,8 +214,8 @@ Dataset-scoped custom roles separate the three actors:
 | Actor | Dataset permissions |
 | --- | --- |
 | Workload | `bigquery.tables.get/updateData`: read table metadata and append to pre-created tables |
-| Runner | `bigquery.datasets.get`, `bigquery.tables.create/get/getData/list/delete`: check the dataset, admit tables, validate and clean up |
-| Supervisor | The runner's dataset permissions except `bigquery.tables.create` |
+| Runner | `bigquery.datasets.get`, `bigquery.tables.create/get/getData/list`: check the dataset, admit and validate tables |
+| Supervisor | `bigquery.datasets.get`, `bigquery.tables.get/getData/list/delete`: check the dataset, validate tables and delete them in cleanup |
 
 The workload receives no table-creation, table-deletion or IAM-administration grant, and no grant to read table data.
 The runtime must use `CREATE_NEVER` with an explicit location and pre-created matching schemas.
@@ -264,7 +266,7 @@ An object lifecycle rule cannot stop a running job.
 
 The GSA trusts only `tier3-pubsub/pubsub` through GKE Workload Identity.
 The existing runner and supervisor receive bucket-wide object reads/listing plus `roles/storage.objectUser` restricted to the `runs/` object prefix for cleanup.
-These permissions allow the later lifecycle implementation to inspect and remove state without borrowing the workload identity or receiving bucket administration.
+These permissions allow the lifecycle implementation to inspect and remove state without borrowing the workload identity or receiving bucket administration.
 Run ownership checks still belong to that implementation; a prefix grant does not identify which run the caller may clean.
 
 This stage changes only the GCP root and defines eight resource instances: one GSA, one bucket, the workload bucket grant, the KSA impersonation grant, and two state-access grants for each lifecycle identity.
@@ -274,7 +276,7 @@ If the apply fails, review the fresh plan in the recovery draft PR opened by tfa
 
 The [Pub/Sub bootstrap stage](tier3-bootstrap/README.md#pubsub-recovery-foundation) adds the namespace/KSA, installer and job RBAC, lifecycle access and zero idle quotas after the GCP foundation is verified.
 The [bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan; separate reads verified the Pub/Sub identity, observed zero quotas, empty inventory and runner access.
-The common helper now inspects all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) adds `tier3-pubsub` to its watch set.
+The common helper inspects all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) adds `tier3-pubsub` to its watch set.
 The initial foundation deferred Pub/Sub topic/subscription grants; the lifecycle authority below follows the concrete application and owned resource design.
 The initial eight-resource stage introduced no Pub/Sub data or resource-administration permissions.
 Application image publication, ownership-aware service cleanup and run admission have since landed, as the [Pub/Sub runbook](../kubernetes/apps/pubsub/README.md) describes.
