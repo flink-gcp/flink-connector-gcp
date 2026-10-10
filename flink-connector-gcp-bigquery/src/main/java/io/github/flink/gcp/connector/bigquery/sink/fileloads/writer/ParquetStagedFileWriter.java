@@ -54,6 +54,7 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
     private final CountingOutputStream countingStream;
     private final ParquetWriter<GenericRecord> parquetWriter;
     private long rowCount;
+    private long lastRowGroupBytes;
 
     ParquetStagedFileWriter(
             String flinkJobId,
@@ -97,17 +98,14 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
      * Sizes the row group from the roll threshold, which is not a tuning choice but a correctness
      * one.
      *
-     * <p>Parquet buffers a whole row group before anything reaches the stream, so with its own
-     * default of 128 MiB the written byte count that {@link #bytesWritten()} reports — and that the
-     * writer rolls on — would stay at zero until the file is closed. A 16 MiB threshold would then
-     * never fire and every file would run to end of input.
+     * <p>Parquet buffers a whole row group before anything reaches the stream, and {@link
+     * #isFull(long)} decides only at row-group boundaries, so with Parquet's own default of 128 MiB
+     * no row group would flush before the file is closed. A 16 MiB threshold would then never fire
+     * and every file would run to end of input.
      *
-     * <p>The threshold counts compressed output while a row group is measured against buffered,
-     * uncompressed data, so using it directly makes the row group hold rather less compressed data
-     * than the threshold and a file therefore closes after two or three of them. That is
-     * deliberately coarser than Avro's 64,000-byte block, and it is affordable because row-group
-     * count was measured not to affect load duration: 1, 3, 5 and 11 groups per 32 MiB file loaded
-     * in 7.5-8.0 s (#285).
+     * <p>A row group is coarser than Avro's 64,000-byte block, which is affordable because
+     * row-group count was measured not to affect load duration: 1, 3, 5 and 11 groups per 32 MiB
+     * file loaded in 7.5-8.0 s (#285).
      */
     private static long rowGroupSize(long maxStagingFileBytes) {
         return maxStagingFileBytes;
@@ -131,13 +129,33 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
 
     @Override
     public void append(GenericRecord record) throws IOException {
+        long before = countingStream.getCount();
         parquetWriter.write(record);
+        // Nothing but a row-group flush reaches the stream after the magic written on open.
+        long flushed = countingStream.getCount() - before;
+        if (flushed > 0) {
+            lastRowGroupBytes = flushed;
+        }
         rowCount++;
     }
 
+    /**
+     * Full at the row-group boundary expected to be nearest the threshold: once the bytes written
+     * are within half the last row group of it, so that another group of that size would land
+     * further away. Only an expectation: a next group larger than the last, from rows that compress
+     * worse, can carry the file further past the threshold.
+     *
+     * <p>The byte count alone does not work. Parquet flushes a row group when its estimate of the
+     * buffered size nears the threshold, preferring under to over, and the estimate counts each
+     * column's open page uncompressed. One incompressible column therefore usually flushes groups
+     * just under the threshold, which a byte-count roll does not fire on, so files took a second
+     * group and closed at about twice the threshold (#1704); many compressible columns flush groups
+     * a fraction of it, which only accumulate towards it.
+     */
     @Override
-    public long bytesWritten() {
-        return countingStream.getCount();
+    public boolean isFull(long maxStagingFileBytes) {
+        return lastRowGroupBytes > 0
+                && countingStream.getCount() + lastRowGroupBytes / 2 >= maxStagingFileBytes;
     }
 
     @Override
