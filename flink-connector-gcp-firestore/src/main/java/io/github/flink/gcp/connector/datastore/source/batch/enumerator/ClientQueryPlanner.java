@@ -70,7 +70,8 @@ import java.util.List;
  *       query that already ends in a {@code LIMIT} or an {@code OFFSET} clause refuses the appended
  *       clause with {@code INVALID_ARGUMENT}; it is then run as written and the answer's query, its
  *       own limit included, is taken. That reads and bills its first batch. A query the parse turns
- *       into a nearest-neighbour search is refused, as the builder refuses one given directly.
+ *       into a nearest-neighbour search or a query of a metadata kind is refused, as the builder
+ *       refuses one given directly.
  *   <li><b>The read time.</b> A one-entity probe of the query: at the configured read time, so a
  *       time outside the service's window fails here rather than on every reader, or with no read
  *       time, and the batch's read time is taken. That is the service's clock, not this process's,
@@ -144,14 +145,6 @@ public class ClientQueryPlanner implements QueryPlanner {
                 config.getQuery() != null
                         ? config.getQuery()
                         : parseGql(rpc, base, config.getGqlQuery());
-        String unreadable = SplittableQueries.whyNotReadable(query);
-        if (unreadable != null) {
-            // Only a GQL query reaches this; the builder refuses the other shapes.
-            throw new IOException(
-                    "The source cannot read the query the GQL query parsed into: "
-                            + unreadable
-                            + ".");
-        }
         RunQueryRequest request = base.toBuilder().setQuery(query).build();
         Timestamp readTime = readTime(rpc, request, config.getReadTime());
 
@@ -215,16 +208,32 @@ public class ClientQueryPlanner implements QueryPlanner {
     }
 
     /**
-     * Has the service parse a GQL query into the query it stands for.
+     * Has the service parse a GQL query into the query it stands for, and refuses a parsed query
+     * the source cannot read ({@link SplittableQueries#whyNotReadable(Query)}). The builder refuses
+     * such a query given directly; a GQL query is known only once it is parsed here.
      *
      * @param rpc the client's RPC object
      * @param base the request naming the database and namespace, without a query
      * @param gql the GQL query
      * @return the parsed query
-     * @throws IOException if the service refuses or fails to parse it
+     * @throws IOException if the service refuses or fails to parse it, or it parses into a query
+     *     the source cannot read
      */
     @VisibleForTesting
     static Query parseGql(DatastoreRpc rpc, RunQueryRequest base, @Nullable String gql)
+            throws IOException {
+        Query query = parse(rpc, base, gql);
+        String unreadable = SplittableQueries.whyNotReadable(query);
+        if (unreadable != null) {
+            throw new IOException(
+                    "The source cannot read the query the GQL query parsed into: "
+                            + unreadable
+                            + ".");
+        }
+        return query;
+    }
+
+    private static Query parse(DatastoreRpc rpc, RunQueryRequest base, @Nullable String gql)
             throws IOException {
         Preconditions.checkNotNull(gql, "a configuration without a query carries a GQL query");
         try {

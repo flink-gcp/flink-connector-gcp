@@ -27,6 +27,8 @@ import com.google.datastore.v1.Query;
 
 import javax.annotation.Nullable;
 
+import java.util.Set;
+
 /**
  * Decides whether a query can be cut into key ranges, and builds the query a kind scan reads.
  *
@@ -42,6 +44,16 @@ import javax.annotation.Nullable;
  */
 @Internal
 public final class SplittableQueries {
+
+    /**
+     * The metadata kinds. Google's documentation says their entities are generated dynamically,
+     * based on the database's current state. On the emulator, a query of {@code __kind__} or {@code
+     * __namespace__} answers without the per-entity and end cursors the source pages and resumes
+     * by, and one of {@code __property__} returned nothing; the service's answer is unmeasured
+     * (#1546).
+     */
+    private static final Set<String> METADATA_KINDS =
+            Set.of("__namespace__", "__kind__", "__property__");
 
     private SplittableQueries() {}
 
@@ -72,7 +84,8 @@ public final class SplittableQueries {
      *
      * <p>A nearest-neighbour search is refused: the service applies a query's cursor and limit
      * before the search, so the page limit and the resume cursor every read sets would change which
-     * entities it finds, and it reports tied distances in no stable order across requests.
+     * entities it finds, and it reports tied distances in no stable order across requests. A query
+     * of a metadata kind is refused for the reason {@link #whyKindNotReadable(String)} gives.
      *
      * @param query the query
      * @return the reason, phrased to follow "the source cannot read the query because", or {@code
@@ -81,9 +94,42 @@ public final class SplittableQueries {
     @Nullable
     public static String whyNotReadable(Query query) {
         Preconditions.checkNotNull(query, "query must not be null");
-        return query.hasFindNearest()
-                ? "it is a nearest-neighbour search, whose results the source's paging and resume"
-                        + " cursors would change"
+        if (query.hasFindNearest()) {
+            return "it is a nearest-neighbour search, whose results the source's paging and resume"
+                    + " cursors would change";
+        }
+        for (KindExpression kind : query.getKindList()) {
+            String reason = whyKindNotReadable(kind.getName());
+            if (reason != null) {
+                return reason;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns why the source cannot read a kind, or {@code null} when it can.
+     *
+     * <p>The metadata kinds {@code __namespace__}, {@code __kind__} and {@code __property__} are
+     * refused. Google's documentation says their entities are generated dynamically, based on the
+     * database's current state, so a result need not be a snapshot at the read time that a
+     * restarted read could page through or replay. On the emulator, a query of {@code __kind__} or
+     * {@code __namespace__} answers without the per-entity and end cursors the source pages and
+     * resumes by, although {@code query.proto} documents a cursor on every query result, and one of
+     * {@code __property__} returned nothing; the service's answer is unmeasured (#1546, {@code
+     * docs/adr/0177}). The statistics kinds, such as {@code __Stat_Kind__}, are not refused.
+     *
+     * @param kind the kind
+     * @return the reason, phrased to follow "the source cannot read the kind because", or {@code
+     *     null}
+     */
+    @Nullable
+    public static String whyKindNotReadable(String kind) {
+        Preconditions.checkNotNull(kind, "kind must not be null");
+        return METADATA_KINDS.contains(kind)
+                ? kind
+                        + " is a metadata kind, which the source can neither page through nor"
+                        + " resume after a failure; read metadata with the client library instead"
                 : null;
     }
 

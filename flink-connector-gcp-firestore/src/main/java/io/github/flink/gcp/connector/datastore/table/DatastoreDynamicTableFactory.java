@@ -249,10 +249,10 @@ public final class DatastoreDynamicTableFactory
      * The kind, which may not be blank, one Datastore reserves, or longer than it stores. A write
      * to any of them would fail every record, and the scan applies the same checks, so one DDL is
      * accepted or refused alike in either direction. A reserved kind is Datastore's own statistics
-     * or metadata: the emulator answers the {@code __kind__} metadata query without the cursor
-     * every entity the scan reads must carry, and no statistics kind was measured, so the scan
-     * refuses them too. The client library checks only that a kind is not empty, so these are the
-     * service's rules, stated once in {@link DatastoreTableSchema}.
+     * or metadata: the source the scan reads through refuses a metadata kind itself, and no read of
+     * a statistics kind has been measured against the service, so the scan refuses them all. The
+     * client library checks only that a kind is not empty, so these are the service's rules, stated
+     * once in {@link DatastoreTableSchema}.
      */
     private static String kind(ReadableConfig config) {
         String kind = config.get(DatastoreConnectorOptions.KIND);

@@ -523,6 +523,12 @@ The splitter itself refuses only an ordering, the `<`, `<=`, `>` and `>=` filter
 Projections are read as the query states them.
 A nearest-neighbour search (`find_nearest`) is refused when the source is built: the service applies a query's cursor and limit before the search, so the page limit and the resume cursor every read sets would change which entities it finds.
 
+The metadata kinds `__namespace__`, `__kind__` and `__property__` are refused too, by `kind(...)` and `query(...)` when they are called, with a message naming the kind.
+Google documents that their entities are "generated dynamically, based on the current state of your database", so a result need not be the snapshot at the read time that the source pages through and resumes in.
+On the emulator, a query of `__kind__` or `__namespace__` also answers without the cursors the source pages and resumes by, unlike what `query.proto` documents for a query result, and one of `__property__` returned nothing; how the service answers is unmeasured ([#1546]({{< param BookRepo >}}/issues/1546)).
+Read metadata with the client library instead, as Google's [metadata queries](https://cloud.google.com/datastore/docs/concepts/metadataqueries) page describes.
+The statistics kinds, such as `__Stat_Kind__` and `__Stat_Total__`, are stored entities and are not refused; the emulator keeps none, so how the service answers a read of one is unmeasured ([#1546]({{< param BookRepo >}}/issues/1546)).
+
 {{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-query" >}}
 
 A query that needs an index the database does not have fails the job when the read is planned, because the planner reads one entity of it first, and the error then carries the service's answer.
@@ -531,7 +537,7 @@ A key range adds a `__key__` inequality to the query, which for a projection may
 A **GQL query** is parsed by the service when the read is planned, and the source then reads the query it was parsed into, by the same rules.
 Literals are allowed and bindings are not.
 To parse it without reading an entity, the source asks for the query with `LIMIT 0` appended; a GQL query that already ends in a `LIMIT` or an `OFFSET` clause cannot take another, so the source parses it by running it as written, which reads and bills its first batch of entities once more.
-A GQL query the service refuses fails the job when the read is planned, with the query's text in the message, and so does one that parses into a nearest-neighbour search.
+A GQL query the service refuses fails the job when the read is planned, with the query's text in the message, and so does one that parses into a nearest-neighbour search or a query of a metadata kind.
 
 {{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-gql" >}}
 
@@ -625,9 +631,9 @@ Where the two disagree, the service decides.
 | Any Datastore-mode database id is served | A database that was never created answered a lookup and an update alike, so the lookup that tells a missing entity from a missing database before a `NOT_FOUND` is routed is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | Datastore-mode request size is not enforced | A commit of about 10.5 MiB was applied, so `maxBatchBytes` is untested against a real refusal until the gated suite covers it |
 | Old read times are answered | A read time two hours old was answered, in both modes, where the service keeps versions for one hour without point-in-time recovery. The read-time window is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
-| `__scatter__` sampling finds no keys | The splitter's sampling query answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| `__scatter__` sampling finds no keys | The splitter's sampling query of a kind the source reads answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | No statistics | `__Stat_Total__` and `__Stat_Kind__` are empty, and so are a namespace's `__Stat_Ns_Total__` and `__Stat_Ns_Kind__`, so the split-count estimate always takes its lower bound against the emulator. Unit tests cover the estimate from statistics shaped as the service documents them; the estimate from real statistics belongs to the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
-| An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch that returned entities does carry its end cursor |
+| An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch of a kind the source reads that returned entities does carry its end cursor |
 
 ## Scope and provenance
 

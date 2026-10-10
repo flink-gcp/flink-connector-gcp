@@ -104,13 +104,22 @@ public class DatastoreSourceBuilder<T> {
      * cut into key ranges, read in parallel. Set exactly one of this, {@link #query(Query)} and
      * {@link #gqlQuery(String)}.
      *
+     * <p>The metadata kinds {@code __namespace__}, {@code __kind__} and {@code __property__} are
+     * refused. Google documents their entities as generated dynamically from the database's current
+     * state, so a result need not be the snapshot at the read time that the source pages through
+     * and resumes in, and on the emulator a query of {@code __kind__} or {@code __namespace__}
+     * answers without the cursors the source pages and resumes by. Read metadata with the client
+     * library instead. The statistics kinds, such as {@code __Stat_Kind__}, are not refused.
+     *
      * @param kind the kind, for example {@code Task}
      * @return this builder
-     * @throws IllegalArgumentException if the kind is blank
+     * @throws IllegalArgumentException if the kind is blank or a metadata kind
      */
     public DatastoreSourceBuilder<T> kind(String kind) {
         Preconditions.checkNotNull(kind, "kind must not be null");
         Preconditions.checkArgument(!kind.isBlank(), "kind must not be blank");
+        String reason = SplittableQueries.whyKindNotReadable(kind);
+        Preconditions.checkArgument(reason == null, "The source cannot read the kind: %s.", reason);
         this.kind = kind;
         return this;
     }
@@ -127,7 +136,8 @@ public class DatastoreSourceBuilder<T> {
      * {@code OR}, or a filter with another operator or of no type, or one naming no kind or
      * several. Projections are read as the query states them. A nearest-neighbour search ({@code
      * find_nearest}) is refused: the service applies a cursor and a limit before the search, so the
-     * source's paging would change what it finds.
+     * source's paging would change what it finds. A query of a metadata kind is refused, as {@link
+     * #kind(String)} refuses one.
      *
      * <p>This is {@code com.google.datastore.v1.Query}, not the client library's {@code
      * com.google.cloud.datastore.Query}, whose conversion to this form is not public. The {@code
@@ -137,7 +147,8 @@ public class DatastoreSourceBuilder<T> {
      *
      * @param query the query
      * @return this builder
-     * @throws IllegalArgumentException if the query is a nearest-neighbour search
+     * @throws IllegalArgumentException if the query is a nearest-neighbour search or names a
+     *     metadata kind
      */
     public DatastoreSourceBuilder<T> query(Query query) {
         Preconditions.checkNotNull(query, "query must not be null");
@@ -153,11 +164,12 @@ public class DatastoreSourceBuilder<T> {
      * this, {@link #kind(String)} and {@link #query(Query)}.
      *
      * <p>The service parses the query when the source plans the read, and the source reads the
-     * query it parsed into, by the rules {@link #query(Query)} states. Literals are allowed;
-     * bindings are not. To parse it without reading any entity, the source asks for the query with
-     * {@code LIMIT 0} appended; a query that already ends in a {@code LIMIT} or an {@code OFFSET}
-     * clause cannot take that clause, so the source parses it by running it as written, which reads
-     * and bills its first batch of entities once more.
+     * query it parsed into, by the rules {@link #query(Query)} states, so a query of a metadata
+     * kind or a nearest-neighbour search fails the job when the read is planned. Literals are
+     * allowed; bindings are not. To parse it without reading any entity, the source asks for the
+     * query with {@code LIMIT 0} appended; a query that already ends in a {@code LIMIT} or an
+     * {@code OFFSET} clause cannot take that clause, so the source parses it by running it as
+     * written, which reads and bills its first batch of entities once more.
      *
      * @param gqlQuery the GQL query, for example {@code SELECT * FROM Task WHERE done = false}
      * @return this builder

@@ -24,6 +24,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.EntityQuery;
@@ -46,6 +47,8 @@ import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityDeserializationSchema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -357,6 +360,26 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
                                                         .splitCount(4)))
                 .hasStackTraceContaining("Failed to plan the Datastore read")
                 .hasStackTraceContaining("because it orders its results");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"__kind__", "__namespace__"})
+    void refusesAGqlQueryOfAMetadataKindWhenItPlans(String metadataKind) {
+        // Without the refusal, the reader fails on the first metadata entity, which the emulator
+        // answers without a cursor: seed a kind in a namespace so that both kinds have one.
+        seed(uniqueKind(), "tenant", 1);
+
+        assertThatThrownBy(() -> read(builder -> builder.gqlQuery("SELECT * FROM " + metadataKind)))
+                .hasStackTraceContaining("Failed to plan the Datastore read")
+                .hasStackTraceContaining(
+                        "The source cannot read the query the GQL query parsed into: "
+                                + metadataKind
+                                + " is a metadata kind")
+                .hasStackTraceContaining("read metadata with the client library instead")
+                .satisfies(
+                        failure ->
+                                assertThat(ExceptionUtils.stringifyException(failure))
+                                        .doesNotContain("cursor must not be empty"));
     }
 
     @Test
