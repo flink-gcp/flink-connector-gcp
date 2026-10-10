@@ -62,6 +62,8 @@ class FirestoreTableSchemaTest {
                         DataTypes.FIELD("ts", DataTypes.TIMESTAMP_LTZ(9)),
                         DataTypes.FIELD("tags", DataTypes.ARRAY(DataTypes.STRING())),
                         DataTypes.FIELD(
+                                "matrix", DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.BIGINT()))),
+                        DataTypes.FIELD(
                                 "attrs", DataTypes.MAP(DataTypes.STRING(), DataTypes.BIGINT())),
                         DataTypes.FIELD(
                                 "nested",
@@ -94,7 +96,6 @@ class FirestoreTableSchemaTest {
                 DataTypes.TIME(),
                 DataTypes.TIMESTAMP(3),
                 DataTypes.MULTISET(DataTypes.STRING()),
-                DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.STRING())),
                 DataTypes.MAP(DataTypes.BIGINT(), DataTypes.STRING()),
                 DataTypes.ROW(DataTypes.FIELD("inner", DataTypes.INT())));
     }

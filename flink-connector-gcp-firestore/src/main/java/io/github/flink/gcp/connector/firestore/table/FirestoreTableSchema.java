@@ -205,11 +205,10 @@ public final class FirestoreTableSchema implements Serializable {
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 return;
             case ARRAY:
+                // An array directly inside an array is mapped too: Google's documentation refuses
+                // one in a Standard-edition database, but the service stored one when measured
+                // (FirestoreTableRealGcpITCase), and an Enterprise-edition database allows it.
                 LogicalType element = ((ArrayType) type).getElementType();
-                if (element.is(LogicalTypeRoot.ARRAY)) {
-                    throw unsupported(
-                            path, type, "Firestore does not store an array directly in an array.");
-                }
                 check(path, element, geoPoints, references, consumed, seen, ambiguous);
                 return;
             case MAP:

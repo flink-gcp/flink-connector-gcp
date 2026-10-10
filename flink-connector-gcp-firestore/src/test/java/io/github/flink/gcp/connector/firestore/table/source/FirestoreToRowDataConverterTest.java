@@ -85,6 +85,15 @@ class FirestoreToRowDataConverterTest {
             assertThat(strict(DataTypes.ARRAY(DataTypes.BIGINT())).convert(Arrays.asList(1L, null)))
                     .isEqualTo(new GenericArrayData(new Object[] {1L, null}));
             assertThat(
+                            strict(DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.BIGINT())))
+                                    .convert(List.of(List.of(1L, 2L), List.of())))
+                    .isEqualTo(
+                            new GenericArrayData(
+                                    new Object[] {
+                                        new GenericArrayData(new Object[] {1L, 2L}),
+                                        new GenericArrayData(new Object[0])
+                                    }));
+            assertThat(
                             strict(DataTypes.MAP(DataTypes.STRING(), DataTypes.BIGINT()))
                                     .convert(Map.of("k", 1L)))
                     .isEqualTo(new GenericMapData(Map.of(StringData.fromString("k"), 1L)));

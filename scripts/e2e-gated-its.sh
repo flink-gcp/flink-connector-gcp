@@ -79,7 +79,7 @@ usage() {
 # mirrors check-gated-tags.py's E2E_GATES, which remains the discovery owner.
 known_gate() {
     case "$1" in
-        BQ_IT_PROJECT|PUBSUB_IT_PROJECT|BIGTABLE_IT_PROJECT|SPANNER_IT_PROJECT|CLOUDTASKS_IT_PROJECT) return 0 ;;
+        BQ_IT_PROJECT|PUBSUB_IT_PROJECT|BIGTABLE_IT_PROJECT|SPANNER_IT_PROJECT|FIRESTORE_IT_PROJECT|CLOUDTASKS_IT_PROJECT) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -180,7 +180,7 @@ run_suite() {
     trap 'cancel_suite 143' TERM
     scripts/e2e-gated-its.sh --require-env
     run_child "${maven[@]}" -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
-    run_child "${maven[@]}" -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
+    run_child "${maven[@]}" -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-spanner,flink-connector-gcp-firestore test-compile
     # The App Engine fixture serves the Cloud Tasks connector alone, so the gate must list exactly
     # one module and it must be that one; anything else is refused rather than run without the
     # fixture or handed to that module.
@@ -196,7 +196,7 @@ run_suite() {
     # A test failure can return the same status as a failed stop. Verify the idle state
     # independently before starting more billed fixtures.
     run_child scripts/appengine-e2e-fixture.sh stop
-    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
+    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT FIRESTORE_IT_PROJECT; do
         modules=$(scripts/e2e-gated-its.sh --modules-for-gate "$gate")
         while read -r module classes; do
             case "$module" in
@@ -239,15 +239,16 @@ case "${1:-}" in
         # every BigQuery class, BQ_IT_GCS_BUCKET additionally gates the
         # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite,
         # BIGTABLE_IT_PROJECT the Bigtable one, SPANNER_IT_PROJECT the Spanner
-        # one and CLOUDTASKS_IT_PROJECT the Cloud Tasks one. Neither Bigtable
-        # nor Spanner needs a companion variable:
-        # unlike the BigQuery dataset and the GCS bucket, nothing persistent is
-        # provisioned for them — each suite creates and deletes an instance of
-        # its own — so there is no resource name to pass in. Cloud Tasks reads
+        # one, FIRESTORE_IT_PROJECT the Firestore one and CLOUDTASKS_IT_PROJECT
+        # the Cloud Tasks one. None of Bigtable, Spanner and Firestore needs a
+        # companion variable: unlike the BigQuery dataset and the GCS bucket,
+        # nothing persistent is provisioned for them — each suite creates and
+        # deletes an instance or a database of its own — so there is no
+        # resource name to pass in. Cloud Tasks reads
         # its service and version from OpenTofu, while the lifecycle wrapper
         # exports the observed instance id only after startup.
         [ "$#" -eq 1 ] || usage
-        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT CLOUDTASKS_IT_PROJECT; do
+        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT FIRESTORE_IT_PROJECT CLOUDTASKS_IT_PROJECT; do
             if [ -z "${!var:-}" ]; then
                 echo "::error::$var is not set, so the gated real-GCP ITCases would silently skip. Locally the variables come from the uncommitted .env at the repository root, which mise loads." >&2
                 exit 1

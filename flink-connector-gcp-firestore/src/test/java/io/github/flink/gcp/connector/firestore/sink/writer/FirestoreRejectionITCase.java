@@ -16,14 +16,11 @@
 
 package io.github.flink.gcp.connector.firestore.sink.writer;
 
-import com.google.api.core.ApiFuture;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.Timestamp;
-import com.google.cloud.firestore.WriteResult;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreEmulatorITCase;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
-import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,8 +30,6 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,21 +53,8 @@ class FirestoreRejectionITCase extends AbstractFirestoreEmulatorITCase {
     @BeforeEach
     void openAccess() throws Exception {
         access =
-                new DefaultFirestoreDatabaseAccessFactory(
-                                database(),
-                                FirestoreWriterOptions.defaults(),
-                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"),
-                                null)
-                        .create(
-                                new BulkWriterRetryPolicy(
-                                        1,
-                                        new BulkWriterRetryPolicy.Observer() {
-                                            @Override
-                                            public void attemptFailed() {}
-
-                                            @Override
-                                            public void retrying() {}
-                                        }));
+                RejectionProbes.open(
+                        database(), EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"));
         collection = uniqueCollection();
         client().document(collection + "/existing").set(Map.of("v", 1L)).get();
     }
@@ -187,39 +169,13 @@ class FirestoreRejectionITCase extends AbstractFirestoreEmulatorITCase {
         return writes;
     }
 
-    /** Sends one write as the only write of its request; returns its status, null if applied. */
     @Nullable
     private StatusCode.Code solo(FirestoreWrite write) throws Exception {
-        ApiFuture<WriteResult> future = access.submit(write);
-        access.sendOutstanding();
-        return outcome(future);
+        return RejectionProbes.solo(access, write);
     }
 
-    /** Sends the writes, and {@code last} if given, as one request; returns their statuses. */
     private List<StatusCode.Code> batch(List<FirestoreWrite> writes, @Nullable FirestoreWrite last)
             throws Exception {
-        List<ApiFuture<WriteResult>> futures = new ArrayList<>();
-        for (FirestoreWrite write : writes) {
-            futures.add(access.submit(write));
-        }
-        if (last != null) {
-            futures.add(access.submit(last));
-        }
-        access.sendOutstanding();
-        List<StatusCode.Code> outcomes = new ArrayList<>();
-        for (ApiFuture<WriteResult> future : futures) {
-            outcomes.add(outcome(future));
-        }
-        return outcomes;
-    }
-
-    @Nullable
-    private static StatusCode.Code outcome(ApiFuture<WriteResult> future) throws Exception {
-        try {
-            future.get(30, TimeUnit.SECONDS);
-            return null;
-        } catch (ExecutionException e) {
-            return FirestoreErrorClassifier.statusCode(e.getCause());
-        }
+        return RejectionProbes.batch(access, writes, last);
     }
 }

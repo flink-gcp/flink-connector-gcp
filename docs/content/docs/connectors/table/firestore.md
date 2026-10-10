@@ -78,7 +78,7 @@ The client library's retry of a create that was applied but whose answer was los
 | `BOOLEAN` | Boolean |
 | `BYTES`, `VARBINARY`, `BINARY` | Bytes |
 | `TIMESTAMP_LTZ(p)` | Timestamp; Firestore keeps microseconds |
-| `ARRAY<T>` | Array; an array directly inside an array is refused, as Firestore stores none |
+| `ARRAY<T>` | Array, including an array directly inside an array, which the service stored in a Standard-edition database although Google's documentation allows one only in Enterprise edition; the emulator refuses one |
 | `ROW<...>` | Map, one entry per field |
 | `MAP<STRING, T>` | Map |
 | `ROW<latitude DOUBLE, longitude DOUBLE>` named by `geo-point-field-paths` | Geographical point |

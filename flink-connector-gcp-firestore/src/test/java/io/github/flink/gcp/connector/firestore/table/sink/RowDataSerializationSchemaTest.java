@@ -137,6 +137,35 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
+    void anArrayOfArraysBecomesAListOfLists() throws IOException {
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                                        DataTypes.FIELD(
+                                                "matrix",
+                                                DataTypes.ARRAY(
+                                                        DataTypes.ARRAY(DataTypes.BIGINT()))))
+                                .getLogicalType();
+        FirestoreWrite write =
+                serializer(
+                                FirestoreTableSchema.of(type, new int[] {0}, List.of(), List.of()),
+                                WriteMode.SET)
+                        .serialize(
+                                GenericRowData.of(
+                                        StringData.fromString("m1"),
+                                        new GenericArrayData(
+                                                new Object[] {
+                                                    new GenericArrayData(new Object[] {1L, 2L}),
+                                                    new GenericArrayData(new Object[0])
+                                                })),
+                                TestContexts.NO_OP);
+
+        assertThat(write.getFields())
+                .isEqualTo(Map.of("matrix", List.of(List.of(1L, 2L), List.of())));
+    }
+
+    @Test
     void theWriteModeChoosesTheOperationAndADeleteNeedsOnlyTheKey() throws IOException {
         FirestoreTableSchema schema = everyTypeSchema(new int[] {0});
 

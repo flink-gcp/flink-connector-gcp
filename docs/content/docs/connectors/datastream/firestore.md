@@ -86,7 +86,10 @@ Every split reads at the same read time, so the job sees the database as it stoo
 Without `readTime(...)`, the source takes the service's own time when it plans the read, rather than the JobManager's clock, which could run ahead of the service's: the service refuses a read time in the future.
 
 The service keeps old versions for one hour, or for seven days when [point-in-time recovery](https://cloud.google.com/firestore/native/docs/pitr) is enabled, and a read time older than an hour must then fall on a whole minute.
-The read time the source takes by default is the service's own, to the microsecond, so it is good for an hour whatever the database's settings: a read that may run, or be restored, later than that needs point-in-time recovery and a `readTime(...)` on a whole minute.
+The read time the source takes by default is the service's own, to the microsecond, so it is good for about an hour whatever the database's settings: a read that may run, or be restored, later than that needs point-in-time recovery and a `readTime(...)` on a whole minute.
+Measured once on 2026-10-10, in both modes, on databases more than an hour old: without point-in-time recovery, a read time about an hour old or older was refused with `FAILED_PRECONDITION` ("The requested 'read_time' is too old."), whole minute or not; with it, such a read time on a whole minute was answered and one with seconds or microseconds was refused with `FAILED_PRECONDITION` ("The requested 'read_time' is not a whole minute.").
+With point-in-time recovery the whole-minute rule began between 59 minutes 33 seconds and 59 minutes 51 seconds back, so a microsecond read time a little under an hour old may already be refused; without it, the refusal began between 59 minutes 43 seconds and 60 minutes 1 second back.
+A read time from before the database was created is refused with `INVALID_ARGUMENT` ("The requested 'read_time' cannot be before database creation time.").
 Rounding the default down to a minute was declined, because it would hide what was written in the minute before the job started.
 A configured read time outside that window fails the job when it plans the read.
 The window keeps moving while the job runs, so a read that takes longer than the window, or a restore from a checkpoint older than it, fails every remaining read with an error naming the split and the read time.
@@ -94,7 +97,7 @@ Such a job has to start over; nothing can resume a snapshot the service no longe
 
 A configured read time is truncated to the microsecond: the API takes only a microsecond-precision read time, so a finer instant could never be read as given, and `Instant.now()` carries nanoseconds on some platforms.
 Truncation picks the latest microsecond at or before the one given.
-That time sees every write made at or before the one given, because the API requires a precondition's update time to be microsecond-aligned, which implies update times are whole microseconds; they are on the emulator, and the service has not been measured.
+That time sees every write made at or before the one given, because the API requires a precondition's update time to be microsecond-aligned, which implies update times are whole microseconds; they are, on the emulator and on the service, where a read at a document's update time sees the write and a read one microsecond earlier does not (measured 2026-10-10).
 
 The plan, and with it the read time, is recorded in the enumerator's checkpoint.
 A job that restarts before any checkpoint has completed plans again, at a new read time unless `readTime(...)` is set, and a sink that already wrote the first attempt's records then holds records of two snapshots.
@@ -198,7 +201,8 @@ A document the source read can therefore hold a value the sink refuses: a subtyp
 A reference read by the source arrives as the library's `DocumentReference`, which the sink refuses too; a pipeline that copies documents writes it back as `FirestoreDocumentReference.of(reference.getPath())`.
 
 Firestore's own limits stay the service's to enforce.
-A document over 1 MiB, a reserved `__name__`-style field or document id, a map nested more than 20 levels deep, or (in a Standard-edition database) an array inside an array is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.
+A document over 1 MiB, a reserved `__name__`-style field or document id, or a map nested more than 20 levels deep is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.
+Google's documentation adds an array inside an array for a Standard-edition database, but the service stored one (measured 2026-10-10, Standard edition), so the sink does not refuse one; the emulator does.
 
 `update` and `delete` also take a `lastUpdateTime` precondition: the write applies only if the document was last updated at exactly that time, and Firestore refuses it with `FAILED_PRECONDITION` otherwise.
 That is the only precondition the client library exposes publicly.
@@ -209,7 +213,8 @@ That is the only precondition the client library exposes publicly.
 Each writer subtask holds one `BulkWriter` and hands it every write.
 The library sends a request once it holds 20 writes (10 once it holds a retried write), or when the writer asks it to.
 It sends on no timer, and a write it retries after a backoff joins whatever batch is open at that moment, so the writer asks on every pass of every wait: at each checkpoint barrier, and whenever its in-flight bounds are full.
-It also asks before the writes since the last request would pass 9 MiB on the wire, because Firestore limits an API request to 10 MiB, and 20 documents of up to 1 MiB each can exceed that.
+It also asks before the writes since the last request would pass 9 MiB on the wire, because Firestore documents a 10 MiB limit on an API request, and 20 documents of up to 1 MiB each can exceed that.
+The service did not enforce that limit when measured: it applied a request of about 10.5 MiB (twelve documents of 900 KiB, 2026-10-10), so the budget is a margin under the documented figure, not a measured ceiling.
 The writer counts a write's size as the protobuf message the library sends for it, masks and preconditions included; Firestore's storage-size formula, the unit of the 1 MiB document limit, can undercount that by half for a document of many small fields.
 A retried write rejoins a later batch outside that count, so a request carrying retries can still pass the limit; the service then refuses it whole, and its writes are confirmed alone, which is slower but loses nothing.
 
@@ -275,7 +280,7 @@ A chain that carries a transient status anywhere is never routed, and the first 
 ### Invalid writes are confirmed alone
 
 The library reports a failure of a whole `BatchWrite` request against every write the request carried, so an `INVALID_ARGUMENT` may describe the request rather than the write.
-Measured against the emulator, one invalid write among five valid ones answered all six with `INVALID_ARGUMENT`.
+Measured against the service, one invalid write among five valid ones answered all six with `INVALID_ARGUMENT`, for each of the shapes above (2026-10-10); the emulator does the same for a reserved field name.
 The writer therefore parks a write refused this way and, before the next record, re-sends each parked write as the only write of its request.
 Only a refusal that repeats alone is routed; a write that succeeds alone is simply applied.
 `parkedWrites` shows the queue, and `writesConfirmedAlone` counts every re-send, including those that turn out to be applied, which is the only trace a request refused as a whole leaves.
@@ -283,12 +288,12 @@ Only a refusal that repeats alone is routed; a write that succeeds alone is simp
 
 ### What does not reach the failure handler, and why
 
-Measured against the emulator, one run, 2026-09-27:
+Measured against the emulator, one run, 2026-09-27, and confirmed row by row against the service, one run, 2026-10-10:
 
 | What the write did | Status | What the sink does |
 |---|---|---|
 | `create` of a document that exists | `ALREADY_EXISTS` | Routed |
-| A document over 1 MiB, a reserved field name or id, nested arrays, a map nested past 20 levels | `INVALID_ARGUMENT` | Confirmed alone, then routed |
+| A document over 1 MiB, a reserved field name or id, a map nested past 20 levels | `INVALID_ARGUMENT` | Confirmed alone, then routed |
 | `update` or `delete` with a stale `lastUpdateTime`, whether or not the document exists | `FAILED_PRECONDITION` | **Fails the job** by default |
 | `update` of a missing document | `NOT_FOUND` | Fails the job |
 | `delete` of a missing document | *applied* | None |
@@ -298,11 +303,11 @@ An `add` whose drawn id names an existing document was measured on 2026-10-10 (o
 `preconditionFailurePolicy(ROUTE_TO_FAILURE_HANDLER)` moves the stale-precondition row into the failure handler, which then decides between failing, dropping and dead-lettering.
 The default is `FAIL_JOB`, because it cannot lose a record: a stream in which every precondition fails says the pipeline reads stale update times, and shedding those records one at a time would hide that behind a green job.
 The policy never covers a `FAILED_PRECONDITION` answering a write without a precondition.
-That status then describes the database rather than the record; a database in Datastore mode is reported to refuse Firestore API writes with it, every write alike (not yet measured; the gated suite, [#1546]({{< param BookRepo >}}/issues/1546), is where it will be).
+That status then describes the database rather than the record; a database in Datastore mode refuses Firestore API writes with it, every write alike (measured 2026-10-10).
 A stream made only of conditional writes to such a database would still have every write routed under the policy, which is one more reason the policy is an opt-in.
 
 `NOT_FOUND` is never routed, although an `update` of a document deleted in the meantime is data.
-The status does not say whether the document or the database is missing, and a job pointed at a database that does not exist can be expected to see it for every write (the emulator cannot show this, and the gated suite will measure it), so routing it would drop every record of such a job.
+The status does not say whether the document or the database is missing, and a job pointed at a database that does not exist sees it for every write, whether the id is well formed or not (measured 2026-10-10; the emulator serves any id), so routing it would drop every record of such a job.
 A stream that can legitimately update documents that may be gone should use `setMerge`, which creates the document instead.
 
 `maxConsecutiveRejections` fails the job once that many confirmed refusals arrive with no write applied between them, after routing each of them.
@@ -619,6 +624,10 @@ Functional coverage runs against the Firestore emulator, the `gcloud emulators f
 The sink tests drive the production writer-creation path, so the client and `BulkWriter` are the real ones, and a MiniCluster job covers checkpoint-driven and end-of-input flushes.
 The source tests read through the production planner and page reader, and a MiniCluster job that fails once after a checkpoint shows a restored split resuming after its last document.
 The endpoint reaches the client through the builder, never through `FIRESTORE_EMULATOR_HOST`.
+
+The gated suite runs the Native-mode sink and source against the service, over application-default credentials, when `FIRESTORE_IT_PROJECT` names a project and only through `just e2e`.
+Each gated class creates a Standard-edition database of its own and deletes it afterwards ([ADR-0185]({{< param BookRepo >}}/blob/main/docs/adr/0185-the-firestore-e2e-suite-creates-an-ephemeral-database-per-gated-class.md)).
+It asserts the rejection table above, the request size and edition findings below, the service's partitioning, the read times it refuses, and the microsecond precision of version times and timestamp values.
 The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and MiniCluster jobs, the source's failing once after a checkpoint as the Native-mode one does; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
 
 ### Emulator deviations
@@ -628,14 +637,14 @@ Where the two disagree, the service decides.
 
 | Deviation | Consequence |
 |---|---|
-| Request size is not enforced | A `BatchWrite` of about 10.5 MiB (twelve documents of 900 KiB) was applied. The writer's 9 MiB request budget is untested against a real refusal until the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) covers it, including whether the service answers an oversized request with `INVALID_ARGUMENT` |
-| Rejection statuses are the emulator's | Both error-handling tables were measured against the emulator only. The gated real-GCP suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is confirmed |
+| An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`; a Standard-edition database on the service stored one |
+| Datastore-mode rejection statuses are the emulator's | The Datastore-mode error-handling table was measured against the emulator only. The gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is confirmed |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |
-| `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)). A scan against the emulator needs a partition count of one |
+| `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite, where a collection group of 3,000 documents came back in all eight partitions asked for and a group of five in fewer. A scan against the emulator needs a partition count of one |
 | Any Datastore-mode database id is served | A database that was never created answered a lookup and an update alike, so the lookup that tells a missing entity from a missing database before a `NOT_FOUND` is routed is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | Datastore-mode request size is not enforced | A commit of about 10.5 MiB was applied, so `maxBatchBytes` is untested against a real refusal until the gated suite covers it |
-| Old read times are answered | A read time two hours old was answered, in both modes, where the service keeps versions for one hour without point-in-time recovery. The read-time window is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| Old read times are answered | A read time two hours old was answered, in both modes, where the service refuses one older than about an hour without point-in-time recovery, or one older than that not on a whole minute with it (see [One snapshot for the whole read](#one-snapshot-for-the-whole-read)). The gated suite cannot reach the window, because a database it creates is younger than an hour; the window was measured once by hand |
 | `__scatter__` sampling finds no keys | The splitter's sampling query of a kind the source reads answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | No statistics | `__Stat_Total__` and `__Stat_Kind__` are empty, and so are a namespace's `__Stat_Ns_Total__` and `__Stat_Ns_Kind__`, so the split-count estimate always takes its lower bound against the emulator. Unit tests cover the estimate from statistics shaped as the service documents them; the estimate from real statistics belongs to the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch of a kind the source reads that returned entities does carry its end cursor |

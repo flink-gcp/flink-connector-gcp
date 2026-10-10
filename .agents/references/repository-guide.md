@@ -103,7 +103,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   Reproducing a red weekly `binary_compat` is what it is for, and run by hand it
   primes `~/.m2` with `io.github.flink-gcp` SNAPSHOTs (the recipe comment has the cleanup line)
 - `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` / `BIGTABLE_IT_PROJECT` /
-  `SPANNER_IT_PROJECT`
+  `SPANNER_IT_PROJECT` / `FIRESTORE_IT_PROJECT`
   variables, **and the only thing that runs them** (#245; ADR-0065 records the per-shell
   incident and the marker mechanics): each gated class also carries `@Tag("gated")`, which the
   root pom excludes from every surefire execution, and this recipe is the opt-in that clears
