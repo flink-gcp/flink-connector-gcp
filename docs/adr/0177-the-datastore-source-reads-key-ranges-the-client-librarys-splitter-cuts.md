@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-10-03 (client library facts read in google-cloud-datastore and datastore-v1-proto-client 3.7.0
   and google-cloud-core 2.77.0 through libraries-bom 26.90.0; emulator behavior measured 2026-10-03
   against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by
-  [#1652] (query-result metadata for the table scan) and by [#1690] (metadata kinds refused)
-- Issues: [#1543], [#355], [#1546], [#1652], [#1690]
+  [#1652] (query-result metadata for the table scan), [#1690] (metadata kinds refused) and
+  [#1689] (a configured read time is truncated to the microsecond)
+- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -107,6 +108,17 @@ Declined or deferred:
 
 The emulator's metadata deviations are recorded here and not in the docs' deviation table, because the source no longer reads a metadata kind.
 
+### A configured read time is truncated to the microsecond ([#1689], 2026-10-10)
+
+`google/datastore/v1/datastore.proto` (proto-google-cloud-datastore-v1 3.7.0) documents `ReadOptions.read_time` as "a microsecond precision timestamp", and neither google-cloud-core's `Timestamp` nor the library's `GrpcDatastoreRpc` truncates one.
+Measured on 2026-10-10 against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run: a read time with sub-microsecond digits is refused with `INVALID_ARGUMENT` ("timestamp cannot have more than microseconds precision"), on the raw `RunQuery`, through `ClientQueryPlanner.readTime`, which wraps it in the read-window message, and through the `datastore` table's `scan.read-time`, which failed the job on the JobManager with that message; the same time in whole microseconds is answered.
+On the emulator, an entity's update time is a whole microsecond W: a read at W − 1 ns to W − 999 ns is refused, at W − 1 µs finds nothing, and at W finds the write.
+Unlike Native mode's `common.proto` (ADR-0173's revision), neither `datastore.proto`'s `Mutation.update_time` nor `query.proto`'s `EntityResult.update_time` states the precision of an update time, and the service was not measured.
+
+The builder now truncates the time to the microsecond, as the Native-mode source's does (ADR-0173's revision, owner's decision, 2026-10-10), on the same read-time contract: the instant given could never be read, and truncation floors it to the latest microsecond at or before it.
+On the emulator the floored time reads exactly the data the time given names; on the service, Datastore mode is unmeasured.
+Refusing such a time in the builder was declined for ADR-0173's reason: the instant given can never be read, flooring reads at the latest microsecond before it, and a refusal would fail an ordinary `Instant.now()` on Linux.
+
 ## Consequences
 
 - A planning call reaches the service over HTTP as well as gRPC, so a network policy that admits only one of them to the JobManager breaks a split read. The readers are gRPC only.
@@ -137,3 +149,4 @@ The emulator's metadata deviations are recorded here and not in the docs' deviat
 [#1652]: https://github.com/flink-gcp/flink-connector-gcp/issues/1652
 [#1690]: https://github.com/flink-gcp/flink-connector-gcp/issues/1690
 [metadata queries]: https://cloud.google.com/datastore/docs/concepts/metadataqueries
+[#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689

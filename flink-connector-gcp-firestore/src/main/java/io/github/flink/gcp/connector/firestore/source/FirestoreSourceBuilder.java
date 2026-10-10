@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.firestore.source.serializer.FirestoreDocume
 import javax.annotation.Nullable;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -220,11 +221,20 @@ public class FirestoreSourceBuilder<T> {
      * good for an hour: a read that may take longer needs point-in-time recovery and a whole-minute
      * time set here.
      *
-     * @param readTime the snapshot time
+     * <p>The time is truncated to the microsecond, because the service accepts only a
+     * microsecond-precision read time, so a finer instant could never be read as given, and an
+     * {@code Instant.now()} can carry nanoseconds. Truncation picks the latest microsecond at or
+     * before the one given. The API requires a precondition's update time to be
+     * microsecond-aligned, which implies update times are whole microseconds, so that time sees
+     * every write made at or before the one given.
+     *
+     * @param readTime the snapshot time, truncated to the microsecond
      * @return this builder
      */
     public FirestoreSourceBuilder<T> readTime(Instant readTime) {
-        this.readTime = Preconditions.checkNotNull(readTime, "readTime must not be null");
+        this.readTime =
+                Preconditions.checkNotNull(readTime, "readTime must not be null")
+                        .truncatedTo(ChronoUnit.MICROS);
         return this;
     }
 

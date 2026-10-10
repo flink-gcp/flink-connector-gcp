@@ -73,6 +73,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   checkpoint that recorded the plan never plans again. The library's `getPartitions` sets no read
   time (the RPC accepts one), which is harmless because its partitions tile the document-name
   space.
+- **Both builders' `readTime` truncate to the microsecond** (#1689, owner's choice over refusing):
+  the service accepts only a microsecond-precision read time, so the instant given could never be
+  read, and flooring picks the latest microsecond at or before it. That it sees the same writes
+  is backed for Native mode by `common.proto`'s "microsecond aligned" `Precondition.update_time`
+  and measured for both modes only on the emulator; Datastore mode's service is unmeasured.
+  Every path, the Table API's `scan.read-time` included, goes through
+  the setter; a new path that builds a read time must truncate too.
 - **Cursors are the library's `startAfter(DocumentSnapshot)`** (`QueryCursors`), for pages and for
   checkpoints alike; a checkpoint also shrinks the `limit` and drops the `offset`. Do not hand-build
   a cursor: the implicit ordering (inequality fields, then `__name__`) is the library's to derive.

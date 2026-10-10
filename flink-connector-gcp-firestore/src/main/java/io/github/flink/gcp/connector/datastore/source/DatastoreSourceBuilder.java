@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntity
 import javax.annotation.Nullable;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 /**
  * Builds a {@link DatastoreSource}.
@@ -240,11 +241,20 @@ public class DatastoreSourceBuilder<T> {
      * good for an hour: a read that may take longer needs point-in-time recovery and a whole-minute
      * time set here.
      *
-     * @param readTime the snapshot time
+     * <p>The time is truncated to the microsecond, because the service accepts only a
+     * microsecond-precision read time, so a finer instant could never be read as given, and an
+     * {@code Instant.now()} can carry nanoseconds. Truncation picks the latest microsecond at or
+     * before the one given. The Datastore API does not document the precision of update times; on
+     * the emulator they are whole microseconds, so there that time sees every write made at or
+     * before the one given.
+     *
+     * @param readTime the snapshot time, truncated to the microsecond
      * @return this builder
      */
     public DatastoreSourceBuilder<T> readTime(Instant readTime) {
-        this.readTime = Preconditions.checkNotNull(readTime, "readTime must not be null");
+        this.readTime =
+                Preconditions.checkNotNull(readTime, "readTime must not be null")
+                        .truncatedTo(ChronoUnit.MICROS);
         return this;
     }
 

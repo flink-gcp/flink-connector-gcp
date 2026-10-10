@@ -38,6 +38,7 @@ import com.google.datastore.v1.PropertyFilter;
 import com.google.datastore.v1.PropertyOrder;
 import com.google.datastore.v1.PropertyReference;
 import com.google.datastore.v1.Query;
+import com.google.datastore.v1.QueryResultBatch;
 import com.google.datastore.v1.RunQueryRequest;
 import com.google.datastore.v1.client.DatastoreHelper;
 import com.google.protobuf.Int32Value;
@@ -136,6 +137,15 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
 
     /** Returns the read time the emulator answers a query with now. */
     private static Timestamp now(String kind) {
+        return queryNow(kind).getReadTime();
+    }
+
+    /** Returns the update time of the kind's first entity, as the emulator answers it now. */
+    private static Timestamp updateTime(String kind) {
+        return queryNow(kind).getEntityResults(0).getUpdateTime();
+    }
+
+    private static QueryResultBatch queryNow(String kind) {
         DatastoreRpc rpc = (DatastoreRpc) client().getOptions().getRpc();
         return rpc.runQuery(
                         RunQueryRequest.newBuilder()
@@ -145,8 +155,7 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
                                                 .setProjectId(PROJECT))
                                 .setQuery(SplittableQueries.ofKind(kind))
                                 .build())
-                .getBatch()
-                .getReadTime();
+                .getBatch();
     }
 
     @Test
@@ -418,6 +427,27 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
                         1);
 
         assertThat(read).containsExactlyInAnyOrder("a=1", "b=1");
+    }
+
+    @Test
+    void readsAtAReadTimeFinerThanAMicrosecond() throws Exception {
+        String kind = uniqueKind();
+        client().put(Entity.newBuilder(key(kind, "a")).set("v", 1).build());
+        Timestamp written = updateTime(kind);
+        client().put(Entity.newBuilder(key(kind, "a")).set("v", 2).build());
+        // The emulator refuses a read time with nanoseconds (the API documents only
+        // microseconds), which an Instant.now() can carry; the builder truncates this one to the
+        // microsecond of the first write.
+        Instant readTime = Instant.ofEpochSecond(written.getSeconds(), written.getNanos() + 999);
+        assertThat(readTime.getNano() % 1_000).isNotZero();
+
+        List<String> read =
+                read(
+                        builder -> builder.kind(kind).readTime(readTime),
+                        new PropertyDeserializer("v"),
+                        1);
+
+        assertThat(read).containsExactly("a=1");
     }
 
     @Test
