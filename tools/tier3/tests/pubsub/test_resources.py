@@ -70,11 +70,13 @@ class FakeHttp:
                 return reply({}, 409)
             if "/subscriptions/" in name:
                 assert json["topic"] in self.resources
-            value = {**copy.deepcopy(json), "state": "ACTIVE"}
-            # The REST service may omit false scalar values and echo empty push config.
+            value = copy.deepcopy(json)
+            # The REST service may omit false scalar values and echo empty push
+            # config; only a subscription reads back a state.
             if "/subscriptions/" in name:
                 value = {k: v for k, v in value.items() if v is not False}
                 value["pushConfig"] = {}
+                value["state"] = "ACTIVE"
             else:
                 value["messageStoragePolicy"].pop("enforceInTransit")
             self.resources[name] = value
@@ -353,6 +355,7 @@ def test_delete_timeout_is_not_retried_or_followed_by_parent_deletion(setup):
         {"deadLetterPolicy": {"deadLetterTopic": "foreign"}},
         {"messageTransforms": [{}]},
         {"state": "STATE_UNSPECIFIED"},
+        {"state": None},
         {"topicMessageRetentionDuration": "600s"},
     ],
 )
@@ -363,6 +366,24 @@ def test_subscription_settings_are_read_back(setup, change):
     http.resources[name].update(change)
     with pytest.raises(Failure):
         resources.inspect()
+
+
+@pytest.mark.parametrize(
+    "state, accepted",
+    [(None, True), ("ACTIVE", True), ("INGESTION_RESOURCE_ERROR", False)],
+)
+def test_a_topic_reads_back_without_a_state_or_active(setup, state, accepted):
+    resources, http, _, _ = setup
+    resources.provision()
+    name = resources.plan.topics()[0]["name"]
+    assert "state" not in http.resources[name]
+    if state is not None:
+        http.resources[name]["state"] = state
+    if accepted:
+        resources.inspect()
+    else:
+        with pytest.raises(Failure, match="not ACTIVE"):
+            resources.inspect()
 
 
 @pytest.mark.parametrize(
@@ -1034,3 +1055,11 @@ def test_every_resource_response_is_closed(setup, status):
     with contextlib.suppress(Failure):
         resources.cleanup_or_confirm_absent()
     assert response.closed
+
+
+def test_a_subscription_without_a_state_is_refused(setup):
+    resources, http, _, _ = setup
+    resources.provision()
+    del http.resources[resources.plan.subscriptions()[0]["name"]]["state"]
+    with pytest.raises(Failure, match="not ACTIVE"):
+        resources.inspect()
