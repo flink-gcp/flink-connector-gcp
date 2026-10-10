@@ -18,10 +18,19 @@
 Every `org.apache.flink` type the main sources import is classified by its
 class-level annotation (@Public / @PublicEvolving / @Experimental / @Internal,
 or none), read from the -sources.jars of the artifacts listed in
-scripts/config/flink-api-tiers.toml at the pom-pinned flink.version. A type on an
-unstable tier — @Internal, @Experimental or unannotated — must have an
-allowlist entry with a reason in that file, and a stale entry (import gone, or
-tier changed) fails too, so the list stays an exact record.
+scripts/config/flink-api-tiers.toml. A type on an unstable tier — @Internal,
+@Experimental or unannotated — must have an allowlist entry with a reason in
+that file, and a stale entry (import gone, or tier changed) fails too, so the
+list stays an exact record.
+
+An import is classified at each of the two versions a published line compiles
+its source root at, and the weakest tier governs (issue #1714): the shared
+src/main/java roots at both pom.xml's flink.version (the 2.x floor) and the 1.x
+LTS pinned by weekly.yaml's FLINK_LTS, java-flink1 at the LTS alone, java-flink2
+at flink.version alone. A Tier-3 job module is built at flink.version, and at
+the LTS too when the config's lts_tier3_modules names it; its roots are read
+only at the versions it is built at. The weekly ceiling and snapshot builds are
+not classified here.
 
 Sources jars, never class files: a class file's constant pool lists every
 annotation referenced anywhere in the class, including on its methods, so
@@ -34,7 +43,8 @@ contribute to the inventory.
 
 Exit codes: 0 clean, 1 policy violation (unlisted type, stale entry, unused
 artifact), 2 infrastructure or config authoring error (download failure,
-unresolvable import, unparseable declaration, malformed allowlist).
+unresolvable import, unparseable declaration, malformed allowlist, an unknown
+source root or version).
 
 Tree-sitter is shared with the repository's other Java-aware checkers.
 """
@@ -85,6 +95,8 @@ RETRY_ATTEMPTS = len(RETRY_DELAYS) + 1
 
 TIERS = ("Public", "PublicEvolving", "Experimental", "Internal")
 UNANNOTATED = "unannotated"
+# Stablest first; across the versions an import is classified at, the last wins.
+STABILITY = (*TIERS, UNANNOTATED)
 # The TOML tables, keyed by the tier name classify() produces.
 ALLOWLISTED = {
     "Internal": "internal",
@@ -115,12 +127,64 @@ def flink_version() -> str:
     return version
 
 
+# release.yaml's LTS step reads the same line with the sed equivalent of this
+# pattern; a test pins that the two still match.
+FLINK_LTS_LINE = re.compile(r"^  FLINK_LTS: '(.*)'$", re.MULTILINE)
+
+
+def lts_version() -> str:
+    """weekly.yaml's FLINK_LTS, the one place the 1.x patch is pinned.
+
+    Read as release.yaml's sed reads it: the first line of that exact shape,
+    no newline translation and no stripping, so a shape one of them rejects
+    the other rejects too.
+    """
+    path = ROOT / ".github" / "workflows" / "weekly.yaml"
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        infra(f"{path.relative_to(ROOT)} could not be read: {error}")
+    match = FLINK_LTS_LINE.search(text)
+    version = match.group(1) if match else ""
+    if not version:
+        infra(
+            f"{path.relative_to(ROOT)} no longer pins FLINK_LTS; this script reads it."
+        )
+    return version
+
+
+def source_versions(
+    source: Path, root_version: str, lts: str, lts_modules: set[str]
+) -> frozenset[str]:
+    """The Flink versions one main source compiles against."""
+    parts = source.relative_to(ROOT).parts
+    tier3 = parts[:2] == ("kubernetes", "apps")
+    # <module>/src/main/<root>/... or kubernetes/apps/<module>/src/main/<root>/...
+    tree = parts[5] if tier3 else parts[3]
+    built = (
+        {root_version} if tier3 and parts[2] not in lts_modules else {root_version, lts}
+    )
+    by_root = {"java": built, "java-flink1": {lts}, "java-flink2": {root_version}}
+    if tree not in by_root:
+        infra(
+            f"{source.relative_to(ROOT)}: no Flink version is known for the source "
+            f"root {tree}; teach source_versions() which versions build it."
+        )
+    versions = by_root[tree] & built
+    if not versions:
+        infra(
+            f"{source.relative_to(ROOT)}: nothing builds the {tree} root of this "
+            f"module; name the module in lts_tier3_modules, or remove the root."
+        )
+    return frozenset(versions)
+
+
 def pinned_versions(root_version: str) -> list[str]:
     """Each Tier-3 job module whose own flink.version differs from the root's.
 
-    Every import is classified at the root pom's version, so a module compiled
-    against another would be audited against the wrong tiers: a type Flink
-    demoted there would pass here.
+    A Tier-3 module's imports are classified at the root pom's version, so a
+    module compiled against another would be audited against the wrong tiers:
+    a type Flink demoted there would pass here.
     """
     mismatched: list[str] = []
     for pom in sorted(ROOT.glob("kubernetes/apps/*/pom.xml")):
@@ -134,10 +198,14 @@ def pinned_versions(root_version: str) -> list[str]:
     return mismatched
 
 
-def collect_imports() -> set[str]:
-    """Distinct concrete Flink imports across java_ast.API_TIER_SOURCE_PATTERNS."""
-    found: set[str] = set()
+def collect_imports(
+    root_version: str, lts: str, lts_modules: set[str]
+) -> dict[str, set[str]]:
+    """Each concrete Flink import across java_ast.API_TIER_SOURCE_PATTERNS,
+    with every Flink version a source importing it compiles against."""
+    found: dict[str, set[str]] = {}
     for source in api_tier_sources(ROOT):
+        versions = source_versions(source, root_version, lts, lts_modules)
         try:
             parsed = JavaSource.parse(source.relative_to(ROOT), source.read_bytes())
         except JavaSyntaxError as error:
@@ -155,7 +223,7 @@ def collect_imports() -> set[str]:
                     "type imports."
                 )
             if imported.startswith("org.apache.flink."):
-                found.add(imported)
+                found.setdefault(imported, set()).update(versions)
     if not found:
         infra(
             f"No org.apache.flink imports found under {ROOT} in "
@@ -194,7 +262,8 @@ def sources_jar(artifact: str, version: str) -> Path:
                 hint = (
                     f" A 404 usually means the artifacts list in "
                     f"{CONFIG.name} names an artifact that does not exist at "
-                    f"this flink.version."
+                    f"{version}; every listed artifact must exist at both the "
+                    f"floor and the LTS."
                     if error.code == 404
                     else ""
                 )
@@ -241,7 +310,7 @@ def build_index(
 
 
 def resolve(
-    fqcn: str, index: dict[str, tuple[str, zipfile.ZipFile]]
+    fqcn: str, index: dict[str, tuple[str, zipfile.ZipFile]], version: str = ""
 ) -> tuple[str, list[str]]:
     """Return (entry path, nested simple names dropped) for an imported type.
 
@@ -256,10 +325,14 @@ def resolve(
         if entry in index:
             return entry, nested
         nested.insert(0, parts.pop())
+    at = f" at {version}" if version else ""
     infra(
-        f"{fqcn} resolves to no .java entry in any configured sources jar. "
+        f"{fqcn} resolves to no .java entry in any configured sources jar{at}. "
         f"Either the type moved between Flink artifacts or a new package "
-        f"family arrived: extend the artifacts list in {CONFIG.name}."
+        f"family arrived: extend the artifacts list in {CONFIG.name}. If "
+        f"nothing builds the importing source at that version, the version "
+        f"mapping is wrong instead: check source_versions() and "
+        f"lts_tier3_modules."
     )
 
 
@@ -304,15 +377,26 @@ def classify(source: str, entry: str, nested: list[str]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
+    prints = parser.add_mutually_exclusive_group()
+    prints.add_argument(
         "--print-flink-version",
         action="store_true",
         help="print pom.xml's flink.version and exit; CI keys the sources-jar "
         "cache on it, and going through this script keeps one owner of the "
         "parsing",
     )
-    if parser.parse_args().print_flink_version:
+    prints.add_argument(
+        "--print-lts-version",
+        action="store_true",
+        help="print weekly.yaml's FLINK_LTS and exit; CI keys the sources-jar "
+        "cache on it beside flink.version",
+    )
+    arguments = parser.parse_args()
+    if arguments.print_flink_version:
         print(flink_version())
+        return 0
+    if arguments.print_lts_version:
+        print(lts_version())
         return 0
 
     with CONFIG.open("rb") as handle:
@@ -322,7 +406,7 @@ def main() -> int:
             infra(f"{CONFIG.name} is not valid TOML: {error}")
     # A typo'd table name would otherwise sit ignored while its types get
     # reported as unlisted — fail on the typo itself, which is the fixable end.
-    unknown = set(config) - {"artifacts", *ALLOWLISTED.values()}
+    unknown = set(config) - {"artifacts", "lts_tier3_modules", *ALLOWLISTED.values()}
     if unknown:
         infra(f"{CONFIG.name} has unknown top-level entries: {sorted(unknown)}.")
     if not isinstance(config.get("artifacts"), list) or not config["artifacts"]:
@@ -334,32 +418,74 @@ def main() -> int:
                     f"{CONFIG.name}: [{table}] entry {fqcn} needs a table with a "
                     f"reason. The reason is the point of the allowlist; write one."
                 )
+    lts_modules = config.get("lts_tier3_modules", [])
+    if not isinstance(lts_modules, list) or not all(
+        isinstance(name, str) for name in lts_modules
+    ):
+        infra(f"{CONFIG.name}: lts_tier3_modules must be a list of module names.")
+    # Matched against the module directory names themselves, not resolved as a
+    # path: "cloudtasks/" would find the directory and then never equal the
+    # name source_versions() compares, silently dropping the LTS.
+    tier3_modules = {
+        path.name
+        for path in ROOT.glob("kubernetes/apps/*")
+        if (path / "src" / "main").is_dir()
+    }
+    for name in lts_modules:
+        if name not in tier3_modules:
+            infra(
+                f"{CONFIG.name}: lts_tier3_modules names {name}, but "
+                f"kubernetes/apps/{name} has no main sources. Remove the entry."
+            )
     version = flink_version()
+    lts = lts_version()
     mismatched = pinned_versions(version)
     if mismatched:
         infra(
-            f"{'; '.join(mismatched)}, but this audit classifies every import at "
-            f"pom.xml's {version}. Align the versions, or teach the audit to "
+            f"{'; '.join(mismatched)}, but this audit classifies a Tier-3 "
+            f"module's imports at pom.xml's {version}. Align the versions, or teach the audit to "
             f"classify that module at its own; the artifacts comment in "
             f"{CONFIG.name} records the coupling."
         )
-    index = build_index(config["artifacts"], version)
+    imports = collect_imports(version, lts, set(lts_modules))
+    imported_versions = set().union(*imports.values())
+    versions = [v for v in dict.fromkeys([version, lts]) if v in imported_versions]
+    indexes = {v: build_index(config["artifacts"], v) for v in versions}
+    # The CI cache restores across an FLINK_LTS bump, and an artifact can
+    # leave the list: drop every cached jar this run did not open, so neither
+    # the cache nor target/ keeps dead versions.
+    wanted = {f"{a}-{v}-sources.jar" for a in config["artifacts"] for v in versions}
+    for cached in CACHE.glob("*-sources.jar"):
+        if cached.name not in wanted:
+            cached.unlink()
 
-    by_tier: dict[str, set[str]] = {tier: set() for tier in (*TIERS, UNANNOTATED)}
+    by_tier: dict[str, set[str]] = {tier: set() for tier in STABILITY}
+    # The imports whose tier differs between versions, for the messages.
+    split: dict[str, dict[str, str]] = {}
     used_artifacts: set[str] = set()
-    for fqcn in collect_imports():
-        entry, nested = resolve(fqcn, index)
-        artifact, jar = index[entry]
-        used_artifacts.add(artifact)
-        source = jar.read(entry).decode("utf-8")
-        by_tier[classify(source, entry, nested)].add(fqcn)
+    for fqcn, imported_at in imports.items():
+        tiers: dict[str, str] = {}
+        for v in (v for v in versions if v in imported_at):
+            entry, nested = resolve(fqcn, indexes[v], v)
+            artifact, jar = indexes[v][entry]
+            used_artifacts.add(artifact)
+            tiers[v] = classify(jar.read(entry).decode("utf-8"), entry, nested)
+        by_tier[max(tiers.values(), key=STABILITY.index)].add(fqcn)
+        if len(set(tiers.values())) > 1:
+            split[fqcn] = tiers
+
+    def by_version(fqcn: str) -> str:
+        if fqcn not in split:
+            return ""
+        return " (" + ", ".join(f"{t} at {v}" for v, t in split[fqcn].items()) + ")"
 
     problems: list[str] = []
     for tier, table in ALLOWLISTED.items():
         allowed = set(config.get(table, {}))
         for fqcn in sorted(by_tier[tier] - allowed):
             problems.append(
-                f"{fqcn} is {tier} but has no [{table}] entry in {CONFIG.name}. "
+                f"{fqcn} is {tier}{by_version(fqcn)} but has no [{table}] entry "
+                f"in {CONFIG.name}. "
                 f"Prefer a stable alternative; if unavoidable, add an entry "
                 f"whose reason says why."
             )
@@ -378,16 +504,21 @@ def main() -> int:
     if problems:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
-        fail(f"\nFlink API tier audit failed against {version}.")
+        fail(f"\nFlink API tier audit failed against {' and '.join(versions)}.")
 
     total = sum(len(types) for types in by_tier.values())
-    print(f"{total} distinct org.apache.flink imports, classified against {version}:")
-    for tier in (*TIERS, UNANNOTATED):
+    print(
+        f"{total} distinct org.apache.flink imports, classified against "
+        f"{' and '.join(versions)}:"
+    )
+    for tier in STABILITY:
         label = tier if tier == UNANNOTATED else f"@{tier}"
         print(f"  {label:<16} {len(by_tier[tier]):>3}")
     for tier in ALLOWLISTED:
         for fqcn in sorted(by_tier[tier]):
             print(f"    {tier}: {fqcn}")
+    for fqcn in sorted(split):
+        print(f"    differs by version: {fqcn}{by_version(fqcn)}")
     return 0
 
 
