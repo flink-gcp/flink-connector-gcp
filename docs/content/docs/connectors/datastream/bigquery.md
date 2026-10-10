@@ -1972,8 +1972,8 @@ The following sequence keeps upload, load, and quota tuning separate.
 | `pendingFiles` approaches `maxPendingFiles` | Reduce destination churn or per-checkpoint volume; raise the bound only with heap headroom | Every finished and open file stays in the checkpoint committable set |
 | Size-based rolls push one destination toward 10,000 staged files in a commit | Raise `maxStagingFileBytes` or reduce commit volume | Overflow adds partition loads, temporary tables, and copy jobs |
 | Checkpoints, destination churn, or multiple subtasks produce many files below 8 MiB | Lengthen the checkpoint interval, reduce churn, or reduce sink parallelism as the cause permits | Raising `maxStagingFileBytes` alone cannot prevent these closes |
-| Size-based rolls produce files outside the measured 8–32 MiB band | Move `maxStagingFileBytes` toward the band and remeasure | Smaller is not monotonic; 16 MiB is the default trade-off; Parquet files measured about twice the threshold |
-| One destination clearly exceeds 256 MiB per commit and has no `JSON` column | Measure opt-in Parquet against Avro on the deployment's own rows | Parquet needs provided dependencies; it was slower below the measured 256 MiB step, and for payload-dominated rows it was no faster on either side |
+| Size-based rolls produce files outside the measured 8–32 MiB band | Move `maxStagingFileBytes` toward the band and remeasure | Smaller is not monotonic; 16 MiB is the default trade-off; a Parquet file usually closes within about half a row group of the threshold |
+| One destination clearly exceeds 256 MiB per commit and has no `JSON` column | Measure opt-in Parquet against Avro on the deployment's own rows | Parquet needs provided dependencies; it was slower below the measured 256 MiB step, and for payload-dominated rows it gained little above it |
 | Daily table operations approach their quota | Lengthen the checkpoint interval or use a Storage Write API method | A checkpoint that commits files consumes at least one destination-table modification |
 | Committer time grows with independent destinations | Tune `maxConcurrentDestinations` from its default 8 | Each active destination adds a worker, BigQuery client, and pending jobs |
 
@@ -2255,13 +2255,16 @@ below, all of which should be read before selecting it:
   whenever the provided schema names one, whatever the file contains. A destination whose schema
   has a `JSON` column therefore stages Avro whatever this option says — an automatic correctness
   override, logged once per destination.
-- **It can be several times slower than Avro below 256 MiB of total input per load job.**
+- **It loaded 1.3-3.5x more slowly than Avro below 256 MiB of total input per load job.**
   Measured 2026-08-08: ~150 MiB loaded in 13.4-16.7 s as Parquet against 6.0 s as Avro, ~250 MiB
   in 17.1-23.4 s against 6.7 s, while just above the threshold Parquet drops to 4.7 s. That step
-  sat at 256 MiB regardless of file count or file size, but not regardless of the rows.
-  An in-region re-measurement on 2026-10-10, with one 1 KiB `BYTES` payload per row, found no step
-  and no byte saving: Parquet staged the same bytes as Avro and was not faster on either side of
-  256 MiB, its median load 1.2-1.6x Avro's on two or three loads per cell ([in-region findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0146-fileloads-in-region-tuning-1313.md)).
+  sat at 256 MiB regardless of file count or file size, but its size depends on the rows.
+  Three in-region runs on 2026-10-10, across one 1 KiB `BYTES` column and 32 or 64 string columns
+  per row, put Parquet's median load at 1.3-2.8x Avro's below 256 MiB; above it, measured only for
+  the `BYTES` column, it was 1.2-1.3x in one run and 0.8-0.95x in another, on two to five
+  loads per cell. Parquet staged the same bytes as Avro for the `BYTES` column and about half for 64
+  dictionary-friendly columns, which still loaded more than twice as slowly
+  ([in-region findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0146-fileloads-in-region-tuning-1313.md)).
   A streaming checkpoint's load is normally well under 256 MiB, so **Parquet is a batch choice**:
   reach for it where one destination's per-commit volume clearly clears 256 MiB, and measure it
   against Avro on the deployment's own rows first.
@@ -2269,8 +2272,11 @@ below, all of which should be read before selecting it:
 Parquet's row-group size is taken from `maxStagingFileBytes` rather than left at Parquet's 128 MiB
 default, which would buffer a whole row group before anything reached Cloud Storage and stop the
 roll threshold firing at all. Row-group count was measured not to affect load duration.
-The writer can roll only after a row group is flushed, and Parquet files measured about twice the
-threshold.
+A Parquet file rolls at the row-group boundary it expects to be nearest `maxStagingFileBytes`,
+taking the next row group to be the size of the last. While successive groups are similar, a file
+closes within about half a row group of the threshold: just under it when one row group nearly fills
+it, and after several groups when many compressible columns keep each group small. Rows whose
+compressibility shifts within a file can carry it further past the threshold.
 
 Neither format changes the column mapping: both are written from the same Avro schema, so
 `TableSchemaToAvroConverter`'s rejections — `INTERVAL`, `RANGE` and BigQuery flexible column names —

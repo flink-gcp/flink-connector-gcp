@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0072: Parquet staging is opt-in, batch-shaped, and brings its own dependencies
 
 - Status: Accepted
-- Date: 2026-08-08
-- Issues: [#284] (measurements on [#281] and [#285]), [#1313] (in-region re-measurement)
+- Date: 2026-08-08; revised by [#1704] (2026-10-10)
+- Issues: [#284] (measurements on [#281] and [#285]), [#1313] (in-region re-measurement), [#1704]
+  (one row group per Parquet file)
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 - Evidence: [in-region tuning findings](evidence/0146-fileloads-in-region-tuning-1313.md)
@@ -42,11 +43,11 @@ Four things drove it, all measured 2026-08-08 against real BigQuery unless state
   6.7 s, then 4.7 s at 262 MiB. Verified independent of file count (7-38) and of bytes per file
   (8/16/32 MiB); Avro is flat across the same range. Streaming FILE_LOADS commits one load per
   checkpoint, so most streaming jobs would sit permanently below it — the case [#284]'s own
-  rationale called decisive is where Parquet loses by the largest margin. The step belongs to the
-  measured row shape: an in-region re-measurement on 2026-10-10 ([#1313]), with one 1 KiB `BYTES`
-  column per row and two or three loads per cell, found none: Parquet's median load was 1.2-1.6x
-  Avro's both below and above 256 MiB, with the individual loads overlapping, so it was not faster
-  on either side.
+  rationale called decisive is where Parquet loses by the largest margin. The size of the step
+  depends on the rows: three in-region runs on 2026-10-10 ([#1313], [#1704]), across one 1 KiB
+  `BYTES` column and 32 or 64 string columns per row with two to five loads per cell, put Parquet's
+  median load at 1.3-2.8x Avro's below 256 MiB. Above it, measured only for the rows with one
+  `BYTES` column, the first run found 1.2-1.3x and the second 0.8-0.95x.
 - **The rule that follows cannot be automatic.** The quantity that decides the format is the load
   job's total input, known at *commit* time; the format is fixed at *write* time, and one load job
   cannot mix formats. A per-subtask estimate would let two subtasks disagree for the same
@@ -60,8 +61,9 @@ Four things drove it, all measured 2026-08-08 against real BigQuery unless state
   classpath, which is a coupling no user should get without asking.
 - **What survives.** 0.785x staged bytes, flat across a 64x range of file sizes — the 20% inflation
   at small files reported earlier did not reproduce and is a property of a row shape dominated by
-  dictionary-compressible columns. The ratio is a property of the row shape too: [#1313]'s
-  payload-dominated rows staged the same bytes in both formats on 2026-10-10. And the `JSON`
+  dictionary-compressible columns. The ratio is a property of the row shape too: on 2026-10-10 one
+  1 KiB `BYTES` column staged the same bytes in both formats, 32 random-text columns 1.08x, and 64
+  dictionary-friendly columns 0.52x ([#1313], [#1704]). And the `JSON`
   constraint, which is not a preference: a `PARQUET` load is refused at job-configuration level
   whenever the provided schema names one.
 
@@ -85,12 +87,25 @@ selects it never resolves the class.
 
 **Parquet's row-group size comes from `maxStagingFileBytes`**, and that is correctness rather than
 tuning: Parquet buffers a whole row group before anything reaches the stream, so at its own 128 MiB
-default the written byte count the writer rolls on would stay at zero until close and a 16 MiB
-threshold would never fire. Affordable because row-group count was measured not to affect load
-duration (1/3/5/11 groups per 32 MiB file: 7.5-8.0 s, ADR-0070's run). The roll is therefore only
-as precise as a row group: [#1313]'s Parquet files averaged about 30 MiB at the default 16 MiB,
-about twice the threshold, apparently because a flushed row group falls just short of it and the
-file stays open for a second one.
+default no row group would flush before close, and a 16 MiB threshold, which the writer applies at
+row-group boundaries, would never fire. Affordable because row-group count was measured not to affect load
+duration (1/3/5/11 groups per 32 MiB file: 7.5-8.0 s, ADR-0070's run).
+
+**A Parquet file rolls at the row-group boundary it expects to be nearest the threshold**
+([#1704]): once the bytes written are within half the last row group of `maxStagingFileBytes`. The
+expectation is that the next group will be the size of the last. The byte count alone does not
+work, because Parquet sizes a row group from an estimate that counts each column's open page
+uncompressed, preferring to land under its target. Measured on 2026-10-10 by writing rows through
+the production writer at 16 MiB, a row group was 15.9 MiB for one incompressible 1 KiB column,
+13.6-14.6 MiB for 8 string columns, 8.1-9.6 MiB for 32, and 0.69 MiB for 64 dictionary-friendly
+columns. Rolling on the byte count made every file of the first two shapes take a second group, at
+1.7-2.0x the threshold, which is what [#1313] saw in-region at about 30 MiB; rolling after one
+group would have left the last shape at 0.7 MiB files. The rule closed every shape's files at
+13.6-19.3 MiB, and in-region, across four shapes including the 32- and 64-column ones, the average
+full Parquet file stayed between 14.3 and 16.9 MiB. Rows whose compressibility shifts within a file
+can grow the next group and carry a file further past the threshold: on 2026-10-10, eight files
+each of one `BYTES` column alternating between zero and random payloads closed at up to 1.06x the
+threshold with 2,000-row blocks and 1.20x with 20,000-row blocks, measured locally.
 
 **The converters are shared, so the constraints are too.** Both formats are written from the same
 Avro schema, so `TableSchemaToAvroConverter`'s rejections — `INTERVAL`, `RANGE`, and BigQuery
@@ -105,3 +120,4 @@ is ADR-0018, refined there rather than repeated here.
 [#284]: https://github.com/flink-gcp/flink-connector-gcp/issues/284
 [#285]: https://github.com/flink-gcp/flink-connector-gcp/issues/285
 [#1313]: https://github.com/flink-gcp/flink-connector-gcp/issues/1313
+[#1704]: https://github.com/flink-gcp/flink-connector-gcp/issues/1704

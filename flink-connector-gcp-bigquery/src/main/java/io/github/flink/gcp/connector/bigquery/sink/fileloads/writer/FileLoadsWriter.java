@@ -312,7 +312,7 @@ public final class FileLoadsWriter<T>
         // cannot, since a record has no encoded size of its own: it is compressed into an Avro
         // block or a Parquet row group, and only the finished file has a size to count.
         metrics.recordStaged(metrics.forTable(destination));
-        if (state.file.bytesWritten() >= maxStagingFileBytes) {
+        if (state.file.isFull(maxStagingFileBytes)) {
             finishFile(state);
             destinations.remove(destination);
         }

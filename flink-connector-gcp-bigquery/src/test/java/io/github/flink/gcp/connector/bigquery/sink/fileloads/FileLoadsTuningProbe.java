@@ -105,17 +105,40 @@ final class FileLoadsTuningProbe {
                                     .setMode(TableFieldSchema.Mode.REQUIRED))
                     .build();
 
+    private static final TableSchema WIDE_SCHEMA_32 = wideSchema(32);
+    private static final TableSchema WIDE_SCHEMA_64 = wideSchema(64);
+
     private FileLoadsTuningProbe() {}
 
-    /** How compressible a row's payload is. */
+    private static TableSchema wideSchema(int columns) {
+        TableSchema.Builder schema = TableSchema.newBuilder();
+        for (int c = 0; c < columns; c++) {
+            schema.addFields(
+                    TableFieldSchema.newBuilder()
+                            .setName("c" + c)
+                            .setType(TableFieldSchema.Type.STRING)
+                            .setMode(TableFieldSchema.Mode.REQUIRED));
+        }
+        return schema.build();
+    }
+
+    /**
+     * The row shape. The first two carry one {@code rowBytes} payload; the wide shapes carry string
+     * columns of about 1 KiB in all and ignore {@code rowBytes} except as the size a quota's row
+     * count is computed from.
+     */
     private enum Shape {
         /** Uniformly random bytes, which neither staging format can compress. */
         RANDOM,
         /** Random hexadecimal digits: four bits of entropy per byte, about half compressible. */
-        HEX
+        HEX,
+        /** 32 string columns of 32 random hexadecimal digits each. */
+        WIDE_HEX,
+        /** 64 string columns, each one of 100 values, which dictionary encoding exploits. */
+        WIDE_DICT
     }
 
-    /** Writes {@code id} and a payload derived from it, so a row is reproducible from its id. */
+    /** Writes a row derived from its id alone, so a row is reproducible from its id. */
     private static final class PayloadSerializer extends FixedSchemaProtoSerializer<Long> {
         private static final long serialVersionUID = 1L;
         private static final byte[] HEX_DIGITS =
@@ -131,16 +154,44 @@ final class FileLoadsTuningProbe {
 
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
-            return SCHEMA;
+            switch (shape) {
+                case WIDE_HEX:
+                    return WIDE_SCHEMA_32;
+                case WIDE_DICT:
+                    return WIDE_SCHEMA_64;
+                default:
+                    return SCHEMA;
+            }
         }
 
         @Override
         public ByteString serialize(Long id) {
-            return DynamicMessage.newBuilder(descriptor())
-                    .setField(field("id"), id)
-                    .setField(field("payload"), ByteString.copyFrom(payload(id)))
-                    .build()
-                    .toByteString();
+            DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor());
+            SplittableRandom random = new SplittableRandom(id);
+            switch (shape) {
+                case WIDE_HEX:
+                    for (int c = 0; c < 32; c++) {
+                        row.setField(field("c" + c), hexDigits(random, 32));
+                    }
+                    break;
+                case WIDE_DICT:
+                    for (int c = 0; c < 64; c++) {
+                        row.setField(field("c" + c), "category-value-" + random.nextInt(100));
+                    }
+                    break;
+                default:
+                    row.setField(field("id"), id)
+                            .setField(field("payload"), ByteString.copyFrom(payload(id)));
+            }
+            return row.build().toByteString();
+        }
+
+        private static String hexDigits(SplittableRandom random, int length) {
+            byte[] digits = new byte[length];
+            for (int i = 0; i < length; i++) {
+                digits[i] = HEX_DIGITS[random.nextInt(16)];
+            }
+            return new String(digits, StandardCharsets.US_ASCII);
         }
 
         private byte[] payload(long id) {

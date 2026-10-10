@@ -31,10 +31,11 @@ import java.io.OutputStream;
 /**
  * One open staging file, streaming into the Cloud Storage upload channel it was opened over.
  *
- * <p>Implementations track the row count and a byte count used for size-based rolling and load-job
- * partitioning. That count trails the appended data — by an unflushed Avro block, or by a whole
- * Parquet row group — so a rolled file lands at or slightly above the threshold rather than exactly
- * on it.
+ * <p>Implementations track the row count and the bytes written, which the finished file's
+ * committable carries for load-job partitioning. That count trails the appended data — by an
+ * unflushed Avro block, or by a whole Parquet row group — so each format decides for itself when a
+ * file is full: an Avro file closes at or slightly above the threshold, a Parquet file at the
+ * row-group boundary it expects to be nearest it.
  */
 @Internal
 interface StagedFileWriter {
@@ -79,8 +80,13 @@ interface StagedFileWriter {
     /** Appends one converted row. */
     void append(GenericRecord record) throws IOException;
 
-    /** Returns the bytes handed to the staging stream so far, trailing the appended data. */
-    long bytesWritten();
+    /**
+     * Whether this file should be finished and the next one opened.
+     *
+     * @param maxStagingFileBytes the roll threshold
+     * @return {@code true} when the file is full
+     */
+    boolean isFull(long maxStagingFileBytes);
 
     /**
      * Closes the file — finalizing the staging object — and returns its committable.

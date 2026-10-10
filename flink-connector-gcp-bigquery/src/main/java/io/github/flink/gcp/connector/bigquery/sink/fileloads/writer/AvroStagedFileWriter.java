@@ -108,9 +108,10 @@ final class AvroStagedFileWriter implements StagedFileWriter {
         rowCount++;
     }
 
+    /** Full once the bytes written reach the threshold; they trail the data by one Avro block. */
     @Override
-    public long bytesWritten() {
-        return countingStream.getCount();
+    public boolean isFull(long maxStagingFileBytes) {
+        return countingStream.getCount() >= maxStagingFileBytes;
     }
 
     @Override
