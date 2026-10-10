@@ -152,7 +152,11 @@ The table offers no `insert` or `update` operation: a replay after a restart wou
 
 A table with a PRIMARY KEY consumes an upsert changelog: inserts, updates after and deletes, keyed by the entity key.
 On Flink 2.x a delete may carry the key alone, which is all the sink reads from it.
-On Flink 2.2 and 2.3, Flink's not-null enforcer also checks the other columns of such a delete and fails the job when one of them is `NOT NULL`, a Flink bug fixed in 2.4.0 ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); declare the columns besides the key nullable when the input's deletes carry the key alone.
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect such a delete, whose non-key columns are null.
+Flink's not-null enforcer checks those columns and fails the job when the table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); setting `table.exec.sink.not-null-enforcer` to `DROP`, as the error suggests, drops the delete instead, so the entity is never deleted.
+A projection between the source and the sink also evaluates its expressions over those columns, which can fail the job when the source declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
+Declare the non-key columns nullable, in this table and in the source table, when the input's deletes carry the key alone.
+
 One sink subtask applies the writes to one key in the order it receives them, because it commits one request at a time and never puts a key in a request twice; the [DataStream sink]({{< relref "docs/connectors/datastream/firestore" >}}#how-the-datastore-sink-writes) names the one exception, an attempt that timed out on the client and is applied late.
 The rows of one key reach one subtask when Flink shuffles the input by the PRIMARY KEY, which it does for an upsert changelog it materializes and when the sink's parallelism differs from the input's; an insert-only input carrying several rows per key at the same parallelism is not shuffled unless `table.exec.sink.keyed-shuffle` is `FORCE`, so its rows of one key can be written by different subtasks in either order.
 

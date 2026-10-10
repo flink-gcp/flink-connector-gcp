@@ -195,6 +195,16 @@ stores the changelog mode it was compiled with rather than asking the connector 
 written before this change therefore keeps the pre-upgrade topology, and the job running it keeps
 the pre-upgrade behaviour, until the plan is recompiled.
 
+**On Flink 2.2 and 2.3 a delete carrying the key alone meets two Flink bugs**, both fixed in 2.4.0.
+Such a delete's non-key columns are null. Flink's not-null enforcer checks them and fails the job
+when the table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); setting
+`table.exec.sink.not-null-enforcer` to `DROP`, as the error suggests, drops the delete instead, so
+the row is never deleted. A projection between the source and the sink also evaluates its
+expressions over those columns, which can fail the job when the source declares one of them
+`NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
+Declare the non-key columns nullable, in this table and in the source table, when the input's
+deletes carry the key alone.
+
 **Schema and option rejections happen when a statement is planned, not at `CREATE TABLE`.** Flink
 does not consult a connector while registering a table, so a `CREATE TABLE` naming a column this
 connector cannot encode is accepted and the first `INSERT INTO` over it fails. The message arrives
@@ -1035,6 +1045,20 @@ The source recognizes only this atomic producer protocol:
 - A delete is that full selected-column or selected-family delete without a later selected
   `SetCell` and produces a key-only `DELETE`.
 - Entries for other cells and families produce no row.
+
+A key-only `DELETE` carries `NULL` in every non-key physical column, including one the DDL declares
+`NOT NULL`.
+On Flink 2.x the planner hands such a delete on as it is to a sink that accepts key-only deletes,
+unless the query needs a `ChangelogNormalize`: reading a metadata column, filtering on a non-key
+column and aggregating each do.
+That operator, which Flink 1.20 always keeps, completes each delete from the last row it holds for
+the key and drops the delete of a key the job never saw.
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect a delete handed on as it is: a
+projection evaluates its expressions over the null columns, which can fail the job when this table
+declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)), and
+Flink's not-null enforcer fails the job when the sink table declares one of them `NOT NULL`
+([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)).
+Declare the non-key columns nullable, in this table and in the sink table.
 
 The upsert is emitted as `UPDATE_AFTER`, not an invented `INSERT`.
 A downstream keyed table can materialize the first update it observes as the current value.

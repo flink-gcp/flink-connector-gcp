@@ -188,6 +188,10 @@ A table without a PRIMARY KEY accepts inserts only, and creates one document per
 
 A table with a PRIMARY KEY consumes an upsert changelog: inserts, updates after and, except under `update`, deletes, keyed by the document id.
 On Flink 2.x a delete may carry the key alone, which is all the sink reads from it.
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect such a delete, whose non-key columns are null.
+Flink's not-null enforcer checks those columns and fails the job when the table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); setting `table.exec.sink.not-null-enforcer` to `DROP`, as the error suggests, drops the delete instead, so the document is never deleted.
+A projection between the source and the sink also evaluates its expressions over those columns, which can fail the job when the source declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
+Declare the non-key columns nullable, in this table and in the source table, when the input's deletes carry the key alone.
 
 The sink does not keep the order of two writes to one document.
 It sends writes through the client library's `BulkWriter`, which sends several requests at once and applies the writes of one request in no guaranteed order, so a later change of a key can be applied before an earlier one.
