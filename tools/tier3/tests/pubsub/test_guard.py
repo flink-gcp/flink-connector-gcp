@@ -134,9 +134,9 @@ def test_a_whole_lifecycle_runs_within_every_reserved_bound(chain):
 
 
 def conflicting(chain, monkeypatch, exhaust=lambda: False):
-    """Refuse six writes for the object's mutation rate, then lose four
+    """Refuse six writes for the object's mutation rate, then lose nineteen
     generation races on every control write, the adapter's worst success;
-    when ``exhaust()`` says so, lose all five and let it give up.
+    when ``exhaust()`` says so, lose all twenty and let it give up.
 
     Returns the number of races lost by each update, in order.
     """
@@ -148,7 +148,7 @@ def conflicting(chain, monkeypatch, exhaust=lambda: False):
     def write(name, value, generation=None, **kwargs):
         if name == path and generation not in (None, "0"):
             if current["left"] is None:
-                current["left"] = 5 if exhaust() else 4
+                current["left"] = 20 if exhaust() else 19
                 current["throttle"] = 6
                 lost.append(0)
             if current["throttle"] > 0:
@@ -157,7 +157,7 @@ def conflicting(chain, monkeypatch, exhaust=lambda: False):
             if current["left"] > 0:
                 current["left"] -= 1
                 lost[-1] += 1
-                if lost[-1] == 5:
+                if lost[-1] == 20:
                     current["left"] = None
                 raise ApiError(412, "PUT", name)
             current["left"] = None
@@ -170,11 +170,11 @@ def conflicting(chain, monkeypatch, exhaust=lambda: False):
 def test_control_conflicts_on_every_write_stay_within_the_bounds(chain, monkeypatch):
     lost = conflicting(chain, monkeypatch)
     used = run_lifecycle(chain)
-    assert lost and all(count == 4 for count in lost)
+    assert lost and all(count == 19 for count in lost)
     for method, counts in used.items():
         within(counts, method)
-        # Each update then takes all twelve of its callbacks.
-        assert counts.get("control-UPDATE", 0) % 12 == 0, method
+        # Each update then takes all twenty-seven of its callbacks.
+        assert counts.get("control-UPDATE", 0) % 27 == 0, method
 
 
 def exhausting_finish(handoff, monkeypatch):
@@ -225,10 +225,10 @@ def test_a_failed_publication_s_worst_case_fits_its_bound(settling, monkeypatch)
     chain.service.messages.responses.append(Response({"messageIds": ["a"]}))
     with pytest.raises(Failure, match="response upload lost"):
         runner.publish(0, 0, 1)
-    # Twelve callbacks for each of ten updates; a smaller bound refuses the
-    # last completion attempt, which keeps the marker.
-    assert chain.used("runner")["control-UPDATE"] == 12 * 10
-    assert lost.count(5) == 2
+    # Twenty-seven callbacks for each of ten updates; a smaller bound refuses
+    # the last completion attempt, which keeps the marker.
+    assert chain.used("runner")["control-UPDATE"] == 27 * 10
+    assert lost.count(20) == 2
     assert chain.environment.refresh().evidence_failed
     assert inflight(chain) is None
 
@@ -256,8 +256,8 @@ def test_a_failed_collection_s_worst_case_fits_its_bound(settling, monkeypatch):
         supervisor.collect("one", max_messages=1)
     # Batch, pull, three uploads, acknowledgement, receipt, failure record,
     # stop and three completion attempts.
-    assert chain.used("supervisor")["control-UPDATE"] == 12 * 13
-    assert lost.count(5) == 2
+    assert chain.used("supervisor")["control-UPDATE"] == 27 * 13
+    assert lost.count(20) == 2
     actors = chain.environment.refresh().pubsub["handoff"]["actors"]
     assert actors["supervisor"]["inflight"] is None
 
@@ -274,7 +274,7 @@ def test_a_preparation_failing_at_its_last_update_fits_its_bound(settling, monke
     with pytest.raises(Failure, match="traffic binding lost"):
         runner.prepare()
     within(chain.used("runner"), "prepare")
-    assert lost.count(5) == 2
+    assert lost.count(20) == 2
     assert inflight(chain) is None
     assert chain.environment.refresh().pubsub["stage"] == "prepared"
 
@@ -543,7 +543,7 @@ def test_reclaiming_an_abandoned_runner_fits_its_bound_under_conflicts(
     supervisor.reclaim(lambda snapshot: True)
     within(ready.used("supervisor"), "reclaim")
     assert ready.used("supervisor")["cleanup"] == 26
-    assert all(count == 4 for count in lost)
+    assert all(count == 19 for count in lost)
     assert ready.environment.refresh().pubsub["stage"] == "cleaned"
 
 

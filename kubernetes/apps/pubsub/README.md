@@ -347,7 +347,7 @@ Outside a run the namespace is expected to hold no such object; dispatch does no
 Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub/guard.py) is its `before_operation`.
 The handoff reserves, through the controller's `reserve()`, a method's whole bound before the method starts, and a method called inside another counts against the outer reservation.
 The guard refuses an operation outside a reservation, in a phase the method does not use, or past its bound, before the request is sent.
-Each bound is the helper count measured above plus one control re-read per resource callback and the worst case of the controller's conditional updates: up to twelve callbacks each, for the outer guard and eleven write attempts (four lost generation races, six writes Cloud Storage refuses with 429 for the record's mutation rate, and the one that settles it), and for a process-owned call, its begin update and at worst a stop plus three attempts to clear its marker.
+Each bound is the helper count measured above plus one control re-read per resource callback and the worst case of the controller's conditional updates: up to twenty-seven callbacks each, for the outer guard and twenty-six write attempts (nineteen lost generation races, each followed by a jittered wait, six writes Cloud Storage refuses with 429 for the record's mutation rate, and the one that settles it), and for a process-owned call, its begin update and at worst a stop plus three attempts to clear its marker.
 
 | Method | Phase bounds besides control |
 | --- | --- |

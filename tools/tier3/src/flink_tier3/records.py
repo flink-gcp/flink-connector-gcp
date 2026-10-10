@@ -30,6 +30,8 @@ from .policy import (
     ENVIRONMENT,
     GENERATION_RACES,
     MIB,
+    RACE_BACKOFF_CAP,
+    RACE_BACKOFF_FIRST,
     RATE_LIMIT_BACKOFF,
 )
 from .pubsub.lifecycle import require_pubsub_clean
@@ -40,10 +42,11 @@ def conditional_update(
 ):
     """Read, edit and write back one object, retrying a lost generation race.
 
-    A write refused for the object's mutation rate is retried after a
-    randomized exponential backoff from a fresh read, so the edit and every
-    deadline it checks run again before the write is sent.
+    A write refused for the object's mutation rate, and a lost race, are
+    retried after a randomized exponential backoff from a fresh read, so the
+    edit and every deadline it checks run again before the write is sent.
     """
+    sleep = sleep or time.sleep
     races = throttled = 0
     while True:
         value, generation = read()
@@ -53,7 +56,7 @@ def conditional_update(
             return value
         except ApiError as error:
             if error.status == 429 and throttled < len(RATE_LIMIT_BACKOFF):
-                (sleep or time.sleep)(RATE_LIMIT_BACKOFF[throttled] + random.random())
+                sleep(RATE_LIMIT_BACKOFF[throttled] + random.random())
                 throttled += 1
                 continue
             if error.status not in (409, 412):
@@ -61,6 +64,9 @@ def conditional_update(
             races += 1
             if races == GENERATION_RACES:
                 raise Failure("Concurrent control updates did not settle") from error
+            # Full jitter, so two writers that collided do not collide again.
+            ceiling = min(RACE_BACKOFF_FIRST * 2 ** (races - 1), RACE_BACKOFF_CAP)
+            sleep(random.uniform(0, ceiling))
 
 
 # The documents a run retains directly under its prefix. A fixed roster

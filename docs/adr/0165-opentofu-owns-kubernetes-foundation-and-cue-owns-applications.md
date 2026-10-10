@@ -60,6 +60,7 @@ limitations under the License.
 - Updated: 2026-10-10 (generic exercise evidence recorded; table deletion granted to the supervisor alone)
 - Updated: 2026-10-10 (Pub/Sub dispatch opened, request ceiling dropped and trial estimate)
 - Updated: 2026-10-10 (conditional control updates repeat a write refused for the object's mutation rate)
+- Updated: 2026-10-10 (a lost control-record race waits before re-reading)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md)
 - Modules: opentofu, kubernetes, CI
@@ -236,7 +237,10 @@ Pub/Sub cannot take BigQuery's remedy of fewer writes without a redesign: both a
 A conditional control update now repeats a write refused with 429 after 1, 2, 4, 8, 16 and 32 seconds, each with up to a second of jitter, and gives up on the seventh refusal.
 It repeats the whole update rather than the write: it reads the record again and runs the edit again, so every deadline the edit checks is checked again just before the write is sent.
 A check made outside the edit is not repeated that way, so the runner checks admission again after writing an application or temporary-resource creation intent and before the create, as Cloud Tasks queue admission already did after its intent; together these answer the declined concern for the application and the temporary resources.
-A refused write was not applied, and the four lost generation races an update tolerates are unchanged, so one update now makes at most eleven writes.
+A refused write was not applied.
+The next trial, `ps1361-jm-a5`, then reached its recovery boundary and stopped when the runner, publishing a cohort, lost five generation races in a row: it re-read at once, and the supervisor, collecting output, updated the record for every pull.
+A lost race now waits a random time of up to 0.25 seconds, doubling per race to at most 4 seconds, before the update reads again, and the twentieth lost race gives up, after at most about 64 seconds of waiting.
+One update therefore makes at most twenty-six writes: nineteen lost races, six refused writes and the one that settles it.
 Use native SDK downloads and pools instead of custom response-size wrappers; generic API bodies no longer have an 8 MiB memory cap, while inventory count limits and Pod log byte limits remain.
 A standard authorized session is still injected into GCS to preserve disabled proxies, redirects and rejected-request refresh retries; public Client options do not expose those settings.
 GCS uploads disable the SDK's checksum-triggered automatic deletion path so every deletion remains an explicit generation-checked lifecycle operation.
@@ -749,7 +753,7 @@ The digests alone do not establish that: the runner's bundle re-render already c
 Each actor's production guard reserves a method's whole operation bound before the method starts, refuses an operation outside the reservation, its phases or its bound, and refuses to start a Pub/Sub request within the session's 20-second request budget of its deadline, or one that an approval no longer validating would issue.
 The deadline is the admission deadline, except for message traffic, which belongs to the exercise and defaults to `cleanup_at`.
 The controller and the traffic wrapper consult the guard after their own control I/O, so the deadline is checked immediately before the request rather than before a control read that could outlast it; the request budget covers the response's status and headers, while a streamed body is bounded only by the transport's per-read timeout and the 1 MiB response cap that the resource helper now applies as the message helper already did.
-A bound is the runbook's measured helper count plus the worst case of eleven-attempt conditional control updates and of a call's own markers.
+A bound is the runbook's measured helper count plus the worst case of twenty-six-attempt conditional control updates and of a call's own markers.
 The deadline applies to service requests only: a stop, a released marker or the evidence of a request already sent must still be written after it.
 Admission is to create the application within 900 seconds of the window's start, because it also creates and grants six resources, waits for the grants to take effect for each identity and publishes the first cohort; until [#1581](https://github.com/flink-gcp/flink-connector-gcp/issues/1581) composes admission, the guard enforces that deadline only on the admitting methods' Pub/Sub requests.
 The bounds are per method and held in process; the aggregate request ceiling stays with [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433).
