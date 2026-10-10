@@ -92,6 +92,10 @@ A configured read time outside that window fails the job when it plans the read.
 The window keeps moving while the job runs, so a read that takes longer than the window, or a restore from a checkpoint older than it, fails every remaining read with an error naming the split and the read time.
 Such a job has to start over; nothing can resume a snapshot the service no longer holds.
 
+A configured read time is truncated to the microsecond: the API takes only a microsecond-precision read time, so a finer instant could never be read as given, and `Instant.now()` carries nanoseconds on some platforms.
+Truncation picks the latest microsecond at or before the one given.
+That time sees every write made at or before the one given, because the API requires a precondition's update time to be microsecond-aligned, which implies update times are whole microseconds; they are on the emulator, and the service has not been measured.
+
 The plan, and with it the read time, is recorded in the enumerator's checkpoint.
 A job that restarts before any checkpoint has completed plans again, at a new read time unless `readTime(...)` is set, and a sink that already wrote the first attempt's records then holds records of two snapshots.
 Set `readTime(...)` when that matters.
@@ -541,8 +545,9 @@ A GQL query the service refuses fails the job when the read is planned, with the
 
 {{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-gql" >}}
 
-The snapshot works as the [Native-mode one](#one-snapshot-for-the-whole-read) does: every split reads at one read time, the service's own unless `readTime(...)` sets it, inside the same one-hour or seven-day window, and a job that restarts before its first completed checkpoint plans again, at a new read time unless `readTime(...)` is set.
+The snapshot works as the [Native-mode one](#one-snapshot-for-the-whole-read) does: every split reads at one read time, the service's own unless `readTime(...)` sets it after truncating it to the microsecond; the time lies inside the same one-hour or seven-day window, and a job that restarts before its first completed checkpoint plans again, at a new read time unless `readTime(...)` is set.
 The planner takes the read time from a one-entity probe of the query, which also fails the job at planning when a configured read time lies outside the window.
+The Datastore API does not document the precision of an entity's update time: on the emulator it is a whole microsecond, so there a truncated read time sees every write made at or before the one given, and the service has not been measured.
 
 ### Key ranges and the split count
 

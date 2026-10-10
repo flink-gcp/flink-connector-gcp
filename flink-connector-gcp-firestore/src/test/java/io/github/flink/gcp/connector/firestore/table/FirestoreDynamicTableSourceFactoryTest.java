@@ -320,6 +320,20 @@ class FirestoreDynamicTableSourceFactoryTest {
     }
 
     @Test
+    void aReadTimeFinerThanAMicrosecondReachesTheSourceTruncated() {
+        FirestoreSourceConfig<?> config =
+                config(
+                        runtimeSource(
+                                FactoryMocks.createTableSource(
+                                        KEYED,
+                                        options(
+                                                "scan.read-time",
+                                                "2026-10-10T00:00:00.123456789Z"))));
+
+        assertThat(config.getReadTime()).isEqualTo(Instant.parse("2026-10-10T00:00:00.123456Z"));
+    }
+
+    @Test
     void aReadTimeThatIsNotAnInstantIsRefusedUnderItsKey() {
         assertThatThrownBy(
                         () ->

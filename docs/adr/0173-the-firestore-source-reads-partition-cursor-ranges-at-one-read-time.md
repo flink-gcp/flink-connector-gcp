@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-09-30 (client library facts read in google-cloud-firestore 3.46.0 through
   libraries-bom 26.87.0; emulator behavior measured 2026-09-30 against
   `google-cloud-cli:583.0.0-emulators`, one run; the source ITs re-run 2026-10-03 against
-  `587.0.0-emulators` and unchanged)
-- Issues: [#1541], [#355], [#1546]
+  `587.0.0-emulators` and unchanged); revised 2026-10-10 by [#1689] (a configured read time is
+  truncated to the microsecond)
+- Issues: [#1541], [#355], [#1546], [#1689]
 - Modules: firestore (`source`, `source.batch`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Source
 
@@ -69,6 +70,20 @@ Measured against the emulator:
 - **The plan is recorded in the enumerator's checkpoint**, and a restore from a checkpoint that holds it never plans again. A job that restarts before any checkpoint has completed plans again, at a new read time unless one is configured.
 - **Unit tests mint snapshots through the library's `Internal.snapshotFromProto`** (`TestDocuments`, in this project's test package). It is public, so ADR-0067's vendor-package helper is not engaged; being `@InternalApi`, a `libraries-bom` bump that changes it fails the tests at compile time.
 
+### A configured read time is truncated to the microsecond ([#1689], 2026-10-10)
+
+`readTime` accepted any `Instant`, and the planner passed its nanoseconds on.
+`google/firestore/v1/firestore.proto` (proto-google-cloud-firestore-v1 3.49.0) documents `read_time` as "a microsecond precision timestamp", and nothing between the builder and the wire truncates it: not google-cloud-core's `Timestamp`, nor the library's `ReadTimeTransaction` and `Query`.
+Measured on 2026-10-10 against `google-cloud-cli:587.0.0-emulators`, one run: a read time with sub-microsecond digits is refused with `INVALID_ARGUMENT` ("timestamp cannot have more than microseconds precision"), on the raw `RunQuery`, through `ReadTimeQueries` and through the `firestore` table's `scan.read-time`, which failed the job on the JobManager with the read-window message; the same time in whole microseconds is answered.
+On the emulator, a document's versions sit on whole microseconds: for an update time W, a read at W − 1 ns to W − 999 ns is refused, at W − 1 µs finds nothing, and at W finds the write.
+The service was not measured, but `google/firestore/v1/common.proto` (same artifact) says of `Precondition.update_time` that the "Timestamp must be microsecond aligned", which implies its update times are whole microseconds too.
+`Instant.now()` carries sub-microsecond digits on Linux with JDK 17 (not on macOS with JDK 21), so `readTime(Instant.now().minusSeconds(30))` failed there.
+
+The builder now truncates the time to the microsecond (owner's decision, 2026-10-10).
+The decision rests on the read-time contract, not on how versions are stored: the service accepts only a microsecond-precision read time, so the instant given could never be read, and truncation floors it to the latest microsecond at or before it.
+With update times on whole microseconds, as `common.proto` implies and the emulator shows, the floored time reads exactly the data the time given names.
+The Table API's `scan.read-time` reaches the builder through `OptionSetters` and is truncated there too.
+
 ## Consequences
 
 - A read that outlasts the service's version window, or a restore from a checkpoint older than it, fails every remaining read; the job has to start over with a new read time. The docs state the window.
@@ -87,9 +102,11 @@ Measured against the emulator:
 - **Applying an `offset` in the reader**, by dropping documents client-side. It works, but moves the offset's arithmetic into the paging and resume logic, where planning resolves it once.
 - **Rejecting `limitToLast` queries.** Planned in its wire form, such a query reads the documents it names, offset included, in reverse; the order is documented instead.
 - **Rejecting BSON values in the source.** It would mean decoding every field of every document, and failing the job on data the pipeline cannot change.
+- **Refusing a read time finer than a microsecond in the builder** ([#1689]), with a message naming the precision, and in the Table API the option. It would report the value when the job is built rather than when it is planned, but the value is not wrong: the instant given can never be read, flooring it reads at the latest microsecond before it, and a refusal would fail an ordinary `Instant.now()` on Linux (owner's decision, 2026-10-10).
 - **Falling back to one partition when `PartitionQuery` answers `UNIMPLEMENTED`.** Only the emulator answers so, and a silent fallback would turn a misrouted production job into a one-subtask read.
 
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355
 [#1541]: https://github.com/flink-gcp/flink-connector-gcp/issues/1541
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1589]: https://github.com/flink-gcp/flink-connector-gcp/issues/1589
+[#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689

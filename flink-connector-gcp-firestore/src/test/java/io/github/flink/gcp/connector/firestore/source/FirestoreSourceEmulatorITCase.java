@@ -256,6 +256,33 @@ class FirestoreSourceEmulatorITCase extends AbstractFirestoreEmulatorITCase {
     }
 
     @Test
+    void readsAtAReadTimeFinerThanAMicrosecond() throws Exception {
+        String collection = uniqueCollection();
+        Timestamp written =
+                client().document(collection + "/a")
+                        .set(Map.of("v", 1))
+                        .get(30, TimeUnit.SECONDS)
+                        .getUpdateTime();
+        client().document(collection + "/a").set(Map.of("v", 2)).get(30, TimeUnit.SECONDS);
+        // The emulator refuses a read time with nanoseconds (the API documents only
+        // microseconds), which an Instant.now() can carry; the builder truncates this one to the
+        // microsecond of the first write.
+        Instant readTime = Instant.ofEpochSecond(written.getSeconds(), written.getNanos() + 999);
+        assertThat(readTime.getNano() % 1_000).isNotZero();
+
+        List<String> read =
+                read(
+                        builder ->
+                                builder.collectionGroup(collection)
+                                        .partitionCount(1)
+                                        .readTime(readTime),
+                        new FieldDeserializer("v"),
+                        1);
+
+        assertThat(read).containsExactly("a=1");
+    }
+
+    @Test
     void readsOnlyTheProjectedFields() throws Exception {
         String group = uniqueCollection();
         client().document(group + "/a")

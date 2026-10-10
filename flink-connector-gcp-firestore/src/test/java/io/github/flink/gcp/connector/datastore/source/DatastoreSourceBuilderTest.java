@@ -56,6 +56,26 @@ class DatastoreSourceBuilderTest {
     }
 
     @Test
+    void truncatesTheReadTimeToTheMicrosecond() {
+        // The service accepts only a microsecond-precision read time; flooring picks the latest
+        // readable time at or before the one given.
+        assertThat(readTime("2026-10-10T00:00:00.123456789Z"))
+                .isEqualTo(Instant.parse("2026-10-10T00:00:00.123456Z"));
+        assertThat(readTime("2026-10-10T00:00:00.000000999Z"))
+                .isEqualTo(Instant.parse("2026-10-10T00:00:00Z"));
+        assertThat(readTime("2026-10-10T00:00:00.123456Z"))
+                .isEqualTo(Instant.parse("2026-10-10T00:00:00.123456Z"));
+        assertThat(readTime("2026-10-10T00:01:00Z"))
+                .isEqualTo(Instant.parse("2026-10-10T00:01:00Z"));
+    }
+
+    private static Instant readTime(String configured) {
+        DatastoreSourceConfig<String> config =
+                TestSources.kindConfig(builder -> builder.readTime(Instant.parse(configured)));
+        return config.getReadTime();
+    }
+
+    @Test
     void carriesEveryKnob() {
         Instant readTime = Instant.parse("2026-10-03T00:00:00Z");
         DatastoreSourceConfig<String> config =

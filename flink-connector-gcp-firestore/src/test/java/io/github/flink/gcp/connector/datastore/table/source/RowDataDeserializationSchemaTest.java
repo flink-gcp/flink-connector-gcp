@@ -53,7 +53,8 @@ class RowDataDeserializationSchemaTest {
 
     private static final Timestamp CREATED = Timestamp.ofTimeSecondsAndNanos(100, 1_234_567);
     private static final Timestamp UPDATED = Timestamp.ofTimeSecondsAndNanos(200, 0);
-    // Finer than the metadata's microseconds, as a configured 'scan.read-time' may be.
+    // Finer than the metadata's microseconds, which neither the service's times nor the
+    // builder's truncated read time are: the column still truncates whatever arrives.
     private static final Timestamp READ = Timestamp.ofTimeSecondsAndNanos(300, 999);
     private static final EntityMetadata METADATA = new EntityMetadata(9L, CREATED, UPDATED, READ);
 

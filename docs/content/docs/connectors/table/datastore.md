@@ -119,7 +119,9 @@ A restart replays the same row and fails again, so the remedy is to add the colu
 
 A scan reads every entity of the table's kind in its namespace, as the [Datastore-mode source]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) reads a kind: cut into key ranges read in parallel, at one read time.
 `scan.partition.max-partitions` asks for at most that many key ranges, which the planner otherwise estimates from the kind's statistics, and `scan.read-time` fixes the read time, which is otherwise the service's when the read is planned.
-Datastore takes a read time of microsecond precision within the past hour, or on a whole minute within the past seven days with point-in-time recovery; the read fails when it is planned on the JobManager otherwise, so the instant in the example below is one to replace.
+A `scan.read-time` finer than a microsecond is truncated to it: Datastore takes only a microsecond-precision read time, so a finer instant could never be read as given, and truncation picks the latest microsecond at or before it.
+The Datastore API does not document the precision of an entity's update time: on the emulator it is a whole microsecond, so there the truncated time sees every write made at or before the instant given, and the service has not been measured.
+The read time must lie within the past hour, or on a whole minute within the past seven days with point-in-time recovery; the read fails when it is planned on the JobManager otherwise, so the instant in the example below is one to replace.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="scan" >}}
 
@@ -216,7 +218,7 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each lookup and sink subtask; rejected with `emulator-endpoint` |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
 | `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000` |
-| `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, within the past hour, or a whole minute within seven days with point-in-time recovery |
+| `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the entities one request asks for |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
 | `lookup.async` | `false` | Run the join as Flink's asynchronous lookup, with several reads in flight per subtask |

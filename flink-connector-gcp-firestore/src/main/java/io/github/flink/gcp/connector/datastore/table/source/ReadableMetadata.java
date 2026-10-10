@@ -98,7 +98,10 @@ enum ReadableMetadata {
         if (timestamp == null) {
             throw missing(entityKey);
         }
-        // Truncated to the declared TIMESTAMP_LTZ(6): a configured read time may be finer.
+        // Truncated to the declared TIMESTAMP_LTZ(6). A configured read time is whole
+        // microseconds already, because the source builder truncates it, and the service's times
+        // were whole microseconds on the emulator; this keeps the column within its declared
+        // precision whatever the service returns.
         return DatastoreToRowDataConverter.timestampData(timestamp, 1_000);
     }
 
