@@ -232,7 +232,7 @@ With both the supervisor refuses the oracle read while one of the run's jobs is 
 The dataset bindings cover every table in this dedicated dataset, not one run prefix.
 The runner and supervisor also receive project-wide `bigquery.jobs.create/get/update` so either actor can inspect and cancel an outstanding validation query after the other fails.
 These job permissions can inspect and cancel other principals' jobs in the project; they are not scoped to the dataset or an approved run.
-The later runtime must record exact query IDs before submission, enforce the approved query and byte budget, and limit recovery to those IDs.
+The runtime reserves each query slot's deterministic job ID before submission, holds the approved slot and byte budget, and cleanup cancels only those IDs, as the [resource adapter](../kubernetes/apps/bigquery/README.md#resource-adapter) describes.
 The existing project-wide Role Admin grant lets the apply identity manage these six custom roles.
 
 All three actors can list and read the dedicated state bucket and use Object User under `runs/` and `.inprogress/flink-gcp-tier3-bigquery/runs/`, where the Flink GCS filesystem's recoverable writer stages each upload before composing it into place; the bucket's one-day expiry covers both prefixes.
@@ -242,7 +242,7 @@ The runtime must keep checkpoint, savepoint and HA paths under `runs/`.
 FILE_LOADS stages under `runs/<run-id>/staging/`, inside the conditioned Object User grant and the one-day lifecycle rule.
 Its connector writes and deletes those objects directly, not through the recoverable writer, so they never appear under `.inprogress/`.
 Load jobs read the staged files as the workload through the bucket-wide Object Viewer grant; no `storage.buckets.get` is needed, as the E2E identity's Object Admin-only loads show.
-A separately approved checkpoint write and restore with the pinned Flink GCS filesystem is a follow-up acceptance requirement; these static grants alone do not establish filesystem compatibility, and pilot `bq1312-alo-10-a5` found the staging prefix only when its first checkpoint was refused.
+These static grants alone did not establish filesystem compatibility: pilot `bq1312-alo-10-a5`'s first checkpoint was refused under `.inprogress/`, and once [#1498](https://github.com/flink-gcp/flink-connector-gcp/issues/1498) granted that prefix, the deployed trials wrote and restored checkpoints and savepoints with the pinned Flink GCS filesystem.
 
 The GCP plan should add 19 resources without changing existing resources.
 The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-prerequisites-for-bigquery) precede the bootstrap plan, which imports six objects and adds five job/lifecycle objects.
@@ -250,7 +250,7 @@ The administrator extends the two existing ClusterRoles before that plan; after 
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
 The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed with empty refreshed bootstrap and GCP plans; runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
 That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extends the current scope.
-Application publication, runtime admission and all paid trials require subsequent changes and separate execution approval.
+Application publication and runtime admission are separate from this foundation, and each paid trial dispatch needs its own execution approval.
 
 ### Pub/Sub Tier-3 preparation
 
