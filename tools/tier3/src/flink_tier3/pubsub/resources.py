@@ -146,7 +146,11 @@ def validate_resource(actual, expected):
     if actual is None:
         raise Failure(f"Pub/Sub resource is absent: {expected['name']}")
     _identity(actual, expected)
-    if actual.get("state") != "ACTIVE":
+    # A subscription reads back ACTIVE; a topic without an ingestion source
+    # reads back no state at all, measured on 2026-10-10. A topic's state, if
+    # present, must still be ACTIVE.
+    default = None if "topic" in expected else "ACTIVE"
+    if actual.get("state", default) != "ACTIVE":
         raise Failure("Pub/Sub resource is not ACTIVE")
     if actual.get("messageTransforms"):
         raise Failure("Pub/Sub message transforms are outside the trial")

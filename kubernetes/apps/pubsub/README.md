@@ -195,6 +195,7 @@ The durable controller below maintains separate active run control before provis
 | Retain acknowledged messages, ordering, exactly-once delivery | Disabled |
 
 The service may omit false scalar fields and return integral durations with fractional zeros; readback accepts those representations.
+A subscription reads back `state: ACTIVE`, which readback requires; a topic without an ingestion source reads back no `state` at all, as measured on 2026-10-10, so a topic's state is checked only when present.
 The [subscription API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions) defines these settings; an unset retry policy uses immediate redelivery, and inactivity expiration is not a run deadline.
 Subscriptions can expire after one day without subscriber activity; provision within the approved admission window and revalidate presence and settings immediately before admitting the workload.
 The [topic API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics) defines the persistence policy and optional topic features.
