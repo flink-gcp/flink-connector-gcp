@@ -229,6 +229,47 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   pins each emulator fact the docs' deviation table states; with `DatastoreSourceEmulatorITCase`
   it pins the emulator evidence ADR-0177 records.
 
+## Datastore-mode Table API sink (`docs/adr/0184`)
+
+- **Factory `datastore` (`DatastoreDynamicTableFactory`) is the second line of the module's
+  `Factory` service file**; the uber jar's `FirestoreSqlConnectorPackagingITCase` and
+  `DatastoreSqlConnectorSmokeITCase` hold both factories. The scan (#1652) and lookup (#1653)
+  extend this factory and `DatastoreTableSchema`; the type mapping is their read-back contract.
+- **Every write is `upsert` or `delete`; there is no `sink.write-mode`** (owner, 2026-10-10):
+  `insert`/`update` replays fail the job on every restart under the table's fail-job handler. A
+  keyless table upserts under ids the service allocates (`AllocateIds`, owner 2026-10-10: a
+  guarantee against silently replacing an entity, which random names only made improbable). The
+  guarantee covers allocated ids only, not self-chosen numeric ids in the same kind. The writer
+  allocates and hands its allocator to the serializer through the `@Internal`
+  `KeyAllocatingSerializationSchema`; an allocation failure fails the job (it is the database's,
+  not the record's); the serializer keeps only the answered id. Batch size is the writer option
+  `idAllocationBatchSize` / `sink.id-allocation.batch-size`, default 1,000: measured 2026-10-10,
+  100 per call halved key-less throughput, 1,000 is within 7% of a keyed table, and the real
+  service accepts 20,000 keys per call (no 500 limit). The public SPI still takes complete keys
+  only.
+- **The PRIMARY KEY is one `STRING` (name) or `BIGINT` (id) column.** Kind, namespace, project and
+  property names are checked at planning only for what every write would be refused for
+  (ADR-0127). Project and namespace grammar go through a probe `Key`; the reserved pattern
+  (`__.+__`: the emulator stores the kind `____`) and the 1,500-byte limit live once in
+  `DatastoreTableSchema`. A key name is data and stays the service's.
+- **`sink.unindexed-columns` marks the column and every value nested in it**; an array's elements
+  carry the mark because `entity.proto` forbids it on the array value. The emulator enforces the
+  1,500-byte indexed-string limit, so `DatastoreTableSinkITCase` has a real firing control.
+- **The sink declares key-only deletes (`upsert(true)`) unconditionally.** Flink 2.2/2.3 fail a
+  key-only delete into a table with a `NOT NULL` non-key column (FLINK-40477, fixed in 2.4.0);
+  that is Flink's bug, and asking for full deletes instead drops deletes of keys the job never saw
+  (measured). Owner, 2026-10-10: do not work around it; document nullable columns. No test may
+  assert the failure: the weekly next-Flink build would break on the fix.
+- **Option keys follow ADR-0137**: `sink.buffer-flush.*` (connector-owned buffer),
+  `sink.request-timeout`, `sink.recovery.*`, `sink.throttling.*`. Docs live on their own page,
+  `docs/content/docs/connectors/table/datastore.md`, one page per `connector` identifier.
+- **Names follow the Firestore table package** (`RowDataSerializationSchema`,
+  `WriterOptionsMapper`, `CrossVersionChangelogMode` in `datastore.table.sink`). The changelog shim
+  is a per-package copy, as Spanner, BigQuery and Bigtable keep theirs. The timestamp conversion
+  repeats the Native-mode package's; hoisting it into base is deferred (PR #1677 round one).
+- **A kind's lineage identity comes from `datastore.DatastoreLineage.kind`**, which the source and
+  the table sink both call, so the two report the same `datastore-kind` resource.
+
 ## Testing
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image

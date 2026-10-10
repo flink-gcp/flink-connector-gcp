@@ -25,6 +25,7 @@ import com.google.cloud.datastore.Datastore;
 import com.google.cloud.datastore.DatastoreOptions;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.FullEntity;
+import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.PathElement;
 import com.google.cloud.datastore.spi.v1.DatastoreRpc;
@@ -102,6 +103,12 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
                                 .setDatabaseId(key.getDatabaseId())
                                 .addKeys(toProto(key))
                                 .build());
+    }
+
+    /** Sends one {@code AllocateIds}, which takes the client's single-attempt settings. */
+    @Override
+    public List<Key> allocateIds(List<IncompleteKey> keys) {
+        return datastore.allocateId(keys.toArray(new IncompleteKey[0]));
     }
 
     /**

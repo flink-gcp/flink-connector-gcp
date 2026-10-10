@@ -12,7 +12,9 @@ documented with the connector itself:
 - [`flink-connector-gcp-firestore`](../flink-connector-gcp-firestore/README.md) — the module, and the
   implementation-status tables
 - [SQL connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/firestore/) —
-  the DDL option surface, the type mapping, and how to put this jar on the classpath
+  the DDL option surface, the type mapping, and how to put this jar on the classpath; the jar also
+  carries the [`datastore` connector](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/datastore/)
+  for a database in Datastore mode
 - [DataStream connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/firestore/) —
   delivery guarantees, tuning and error handling
 

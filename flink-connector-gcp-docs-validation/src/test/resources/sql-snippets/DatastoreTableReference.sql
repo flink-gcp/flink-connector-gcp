@@ -1,0 +1,73 @@
+-- Copyright 2026 The flink-gcp authors
+--
+-- Licensed under the Apache License, Version 2.0 (the "License");
+-- you may not use this file except in compliance with the License.
+-- You may obtain a copy of the License at
+--
+--     http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing, software
+-- distributed under the License is distributed on an "AS IS" BASIS,
+-- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-- See the License for the specific language governing permissions and
+-- limitations under the License.
+
+-- tag::overview[]
+CREATE TABLE customers (
+  customer_id STRING NOT NULL,
+  name STRING,
+  tier STRING,
+  updated_at TIMESTAMP_LTZ(6),
+  PRIMARY KEY (customer_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Customer'
+);
+
+INSERT INTO customers SELECT customer_id, name, tier, updated_at FROM staged_customers;
+-- end::overview[]
+
+-- tag::id-key[]
+CREATE TABLE invoices (
+  invoice_id BIGINT NOT NULL,
+  customer STRING,
+  lines ARRAY<ROW<sku STRING, quantity BIGINT>>,
+  PRIMARY KEY (invoice_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'database' = 'billing',
+  'namespace' = 'tenant-a',
+  'kind' = 'Invoice'
+);
+-- end::id-key[]
+
+-- tag::unindexed[]
+CREATE TABLE articles (
+  article_id STRING NOT NULL,
+  title STRING,
+  body STRING,
+  thumbnail BYTES,
+  PRIMARY KEY (article_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Article',
+  'sink.unindexed-columns' = 'body;thumbnail'
+);
+-- end::unindexed[]
+
+-- tag::append[]
+CREATE TABLE page_views (
+  path STRING,
+  visitor STRING,
+  viewed_at TIMESTAMP_LTZ(3)
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'PageView'
+);
+
+INSERT INTO page_views SELECT path, visitor, viewed_at FROM staged_views;
+-- end::append[]

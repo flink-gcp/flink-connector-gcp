@@ -35,10 +35,9 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.datastore.v1.Query;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
-import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
-import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreCredentials;
+import io.github.flink.gcp.connector.datastore.DatastoreLineage;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceConfig;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.DatastoreBatchSplitEnumerator;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.QueryPlanner;
@@ -91,17 +90,9 @@ public final class DatastoreBatchSource<T>
         if (kind == null) {
             return Lineage.source(getBoundedness(), List.of());
         }
-        DatabaseDestination database = config.getDatabase();
         return Lineage.source(
                 getBoundedness(),
-                List.of(
-                        LineageIdentifiers.datastoreKind(
-                                database.getProject(),
-                                database.getDatabaseId().isEmpty()
-                                        ? DatabaseDestination.DEFAULT_DATABASE_NAME
-                                        : database.getDatabaseId(),
-                                config.getNamespace(),
-                                kind)));
+                List.of(DatastoreLineage.kind(config.getDatabase(), config.getNamespace(), kind)));
     }
 
     /** Returns the configuration, for the source's own tests. */

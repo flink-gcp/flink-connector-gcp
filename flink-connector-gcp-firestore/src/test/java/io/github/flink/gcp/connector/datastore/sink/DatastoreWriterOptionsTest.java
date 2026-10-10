@@ -85,6 +85,9 @@ class DatastoreWriterOptionsTest {
                 DatastoreWriterOptions.builder()
                         .maxConsecutiveRejections(DatastoreWriterOptions.UNBOUNDED)
                         .build());
+        variants.put(
+                "idAllocationBatchSize",
+                DatastoreWriterOptions.builder().idAllocationBatchSize(250).build());
 
         List<String> fields = new ArrayList<>();
         for (Field field : DatastoreWriterOptions.class.getDeclaredFields()) {
