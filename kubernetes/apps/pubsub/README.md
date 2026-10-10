@@ -61,7 +61,8 @@ That phase does not locate a savepoint or prove a checkpoint boundary: the super
 The logical input domain and restart count do not bound elapsed execution or billable service operations.
 
 Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
-Deployed recovery acceptance, including deployed trials of the Table entry point, remains on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The deployed recovery trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran on the DataStream entry point, one of each kind, and lost no message; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the verdicts, every attempt and what they leave unobserved.
+The Table entry point has no deployed trial.
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
 ## Offline trial proposal
@@ -274,9 +275,9 @@ The workload uses input metadata/consume and output publish access, with no reso
 An unsupported manifest version is reported explicitly and refused rather than upgraded or adopted; no version 1 live resource execution was performed in the preparation stage.
 
 Synthetic tests exercise resource and policy request grammar, collisions, manifest replacement, etag conflicts, ambiguous and partial writes, settings drift and repeated cleanup without credentials or service calls.
-A composition test uses the production GCS adapter with a fake client to exercise all five generation-read attempts and the guard's separate adapter-call budget.
+A composition test uses the production GCS adapter with a fake client to exercise a read that settles after four lost generation races, and the guard's separate adapter-call budget.
 These resource-helper tests do not establish live API behavior, effective IAM access or deployed cross-actor lifecycle safety.
-Runnable scenario integration in [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) still needs external service/access evidence and separately approved numeric execution ceilings before starting the relay.
+A deployed trial starts the relay only after the access probes have passed and the owner has approved the dispatch, as [approval dispatch](#approval-dispatch) describes.
 
 `Resources.cleanup_or_confirm_absent()` selects strict owned cleanup or absence confirmation through one additional guarded manifest read.
 A present manifest delegates to `cleanup()` and its ownership checks; an absent manifest permits only six guarded name reads, refuses any existing resource, and never authorizes deletion or adoption.
@@ -484,7 +485,7 @@ The record adds the output oracle's account of every collected line, the observa
 A lost boundary completes the trial, and its verdict is `inconclusive` with `replay-unobserved`: the job restored a checkpoint that already covered the replay cohort, so the trial exercised no redelivery, which is the claim a replacement exists to carry.
 A replay under new input message IDs came from a duplicate publication, not from the service redelivering what the source held leased.
 The `after` outcome's `replay_by_new_attempts` counts every replay-cohort input the fault's new attempts had processed by the end, redelivered or republished alike, where recovery counted only the expected ones at its first chance.
-A rescale expects none, because its savepoint acknowledges what it covers; whether the service redelivers some of it anyway, when not every acknowledgement reached it, is unmeasured, so a rescale that saw any is `inconclusive` with `replay-after-savepoint` until the deployed campaign ([#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435)) measures it and decides how to treat it.
+A rescale expects none, because its savepoint acknowledges what it covers; whether the service redelivers some of it anyway, when not every acknowledgement reached it, is unmeasured, so a rescale that saw any is `inconclusive` with `replay-after-savepoint`; the deployed campaign ([#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435)) saw none in one rescale of each direction, as its [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md#redelivery-after-a-savepoint) record, and the rule stays.
 That count stops at completion, which can come before the old subscriber's extended leases expire, so a rescale found `usable` saw no such output by then, not none at all.
 An input published twice may have been processed under both of its IDs before the fault, and a redelivery under either is a redelivery.
 
@@ -643,7 +644,7 @@ The caller still validates the complete application and numeric execution approv
 The resource controller's mandatory guard remains active: credential refresh, guard I/O, control/lock reads, conditional-write retries and logical storage request/time costs need their own total budget.
 Input payload and message-evidence counters do not measure all network bytes or billed Pub/Sub traffic, and `admit_until` does not bound total elapsed execution.
 Synthetic tests cover competing reservations, restart, deadline/stop races, ambiguous outcomes, shared byte exhaustion and receipt preservation.
-CLI admission and runnable fault/recovery orchestration remain disabled pending the remaining work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The lifecycle CLI admits a trial that uses these reservations through [approval dispatch](#approval-dispatch), and the [recovery exercise](#recovery-exercise) drives its traffic.
 
 ## Actor ownership and cleanup handoff
 
@@ -701,7 +702,7 @@ Once the proof is accepted, reclamation releases both actors, preserves each unr
 The complete handoff, traffic reservations and retained invocation identities survive into the final result receipt.
 
 Synthetic tests exercise concurrent claims, stop/release races, lost acknowledgements, partial preparation, conservative failure handling, reclamation refusal and receipt preservation.
-Deployed actor wiring, measured quiescence, full numeric execution approval and fault/recovery trials remain on [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361); CLI admission is still disabled.
+The deployed trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran through these actors and this cleanup; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the outcome.
 
 ## Shared settlement integration
 
@@ -730,7 +731,7 @@ Direct `Records.set_phase(CLEANED)`, `Records.settled()` and `verify_idle()` now
 Records without Pub/Sub state retain their prior behavior.
 Cleanup routes Pub/Sub resources to `tier3-pubsub` and temporary state to `flink-gcp-tier3-pubsub`; existing smoke, Cloud Tasks and BigQuery inventory scopes remain unchanged.
 The production attachments are built by [`pubsub_actors`](#actor-construction-and-operation-bounds), and [admission](#admission-and-effective-access) uses them.
-A successful synthetic cleanup is not a recovery verdict; final Pub/Sub success criteria, full numeric approval, input/fault orchestration and deployed evidence remain under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+A successful synthetic cleanup is not a recovery verdict; the [verdict](#verdict) is.
 
 ## Payload and restoration
 
