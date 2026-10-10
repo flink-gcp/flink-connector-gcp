@@ -340,14 +340,14 @@ def test_invalid_counter_refused(inputs, counter, value):
     [
         ("input_messages", 1999),
         ("input_bytes", 1),
-        # Three cohorts of 333, 333 and 334: four batches each per input, and
-        # seven pulls each for both inputs' output, beside the exercise's one
-        # pull per poll for 2,700 seconds, 180; each pull reserves a whole
+        # Three cohorts of 333, 333 and 334: one publication each per input,
+        # and seven pulls each for both inputs' output, beside the exercise's
+        # one pull per poll for 2,700 seconds, 180; each pull reserves a whole
         # batch of 100, and a nonempty one also acknowledges.
-        ("publish_calls", 23),
+        ("publish_calls", 5),
         ("output_messages", 20099),
         ("pull_calls", 200),
-        ("pubsub_requests", 245),
+        ("pubsub_requests", 227),
     ],
 )
 def test_incomplete_pass_cannot_be_proposed(inputs, counter, value):
@@ -358,10 +358,11 @@ def test_incomplete_pass_cannot_be_proposed(inputs, counter, value):
 
 def test_the_minimum_complete_pass_is_accepted(trial):
     trial["traffic_limits"].update(
-        publish_calls=24, pull_calls=201, pubsub_requests=246, output_messages=20100
+        publish_calls=6, pull_calls=201, pubsub_requests=228, output_messages=20100
     )
     planned = plan.input_plan("proposal-1361", trial)
-    assert planned["publish_calls"] == 24
+    assert planned["publish_calls"] == 6
+    assert (planned["publish_batch_size"], planned["pull_batch_size"]) == (1000, 100)
 
 
 def test_each_cohort_needs_a_separate_output_pull(inputs):

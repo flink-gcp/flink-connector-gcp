@@ -385,7 +385,7 @@ def test_each_output_operation_is_guarded(setup, stage):
         (0, -1, 1),
         (0, 1000, 1),
         (0, 0, 0),
-        (0, 0, 101),
+        (0, 0, 1001),
         (0, 999, 2),
         (0, 0, True),
     ],

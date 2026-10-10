@@ -62,6 +62,7 @@ limitations under the License.
 - Updated: 2026-10-10 (conditional control updates repeat a write refused for the object's mutation rate)
 - Updated: 2026-10-10 (a lost control-record race waits before re-reading)
 - Updated: 2026-10-10 (a restarted control-record read waits too)
+- Updated: 2026-10-10 (Pub/Sub publications carry up to 1,000 messages)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md)
 - Modules: opentofu, kubernetes, CI
@@ -693,7 +694,8 @@ Before enabling runnable Pub/Sub admission, render one unapproved trial with the
 The trial names one entry point and applies it to both manifests.
 Keep JM and active-TM replacement separate, with unchanged manifests at parallelism two; savepoint rescaling changes one to two or two to one and requires restored state in the upgrade phase.
 Freeze the run/nonce, supplied source/image identities, installed runtime digest, exact manifests, service settings and grants.
-Divide each subscription's finite sequence domain into disjoint pre-recovery and post-recovery cohorts, using at most 100 messages per publication.
+Divide each subscription's finite sequence domain into disjoint pre-recovery and post-recovery cohorts, using at most 1,000 messages per publication.
+Refined after Pub/Sub trial `ps1361-tm-a3`, whose runner could not publish the 666-message replay cohort in batches of 100 before the cohort's 90-second deadline: each publication also updates the shared control record several times, about seven seconds a batch under contention, so a publication now carries up to the publish API's 1,000 messages and a cohort takes one per input; a pull still takes at most 100.
 The cohorts define publication intent, not a measured uncheckpointed replay population.
 Three cohorts replace the two, so that the replay population is published as its own cohort, as refined under [#1601](https://github.com/flink-gcp/flink-connector-gcp/issues/1601) below.
 
