@@ -913,12 +913,12 @@ class LoadJobOrchestratorTest {
     @Test
     void partitionRespectsFileCountAndByteLimits() {
         List<FileLoadsCommittable> manyFiles = new ArrayList<>();
-        for (int i = 0; i < CommitPlanner.MAX_FILES_PER_JOB + 1; i++) {
+        for (int i = 0; i < Limits.MAX_FILES_PER_JOB + 1; i++) {
             manyFiles.add(file(T1, String.format("f%05d", i), 1));
         }
         List<List<FileLoadsCommittable>> byCount = CommitPlanner.partition(manyFiles);
         assertThat(byCount).hasSize(2);
-        assertThat(byCount.get(0)).hasSize(CommitPlanner.MAX_FILES_PER_JOB);
+        assertThat(byCount.get(0)).hasSize(Limits.MAX_FILES_PER_JOB);
         assertThat(byCount.get(1)).hasSize(1);
 
         long sixTiB = 6L << 40;
@@ -928,6 +928,14 @@ class LoadJobOrchestratorTest {
         assertThat(byBytes).hasSize(2);
         assertThat(byBytes.get(0)).hasSize(1);
         assertThat(byBytes.get(1)).hasSize(2);
+    }
+
+    @Test
+    void partitionHonoursASmallerFileCountLimit() {
+        List<FileLoadsCommittable> files =
+                List.of(file(T1, "a", 1), file(T1, "b", 1), file(T1, "c", 1));
+
+        assertThat(CommitPlanner.partition(files, 2)).extracting(List::size).containsExactly(2, 1);
     }
 
     @Test

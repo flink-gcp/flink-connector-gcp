@@ -23,6 +23,9 @@ import org.apache.flink.annotation.VisibleForTesting;
 @Internal
 final class Limits {
 
+    /** BigQuery's per-load-job source URI limit. */
+    @VisibleForTesting static final int MAX_FILES_PER_JOB = 10_000;
+
     /** BigQuery's maximum source-table count for one copy job. */
     @VisibleForTesting static final int MAX_SOURCE_TABLES_PER_COPY = 1_200;
 
@@ -43,21 +46,52 @@ final class Limits {
     final int maxLoadJobsPerCommit;
     final int maxCopyJobsPerCommit;
     final int maxSubmissionsPerWave;
+    final int maxFilesPerJob;
 
     Limits(
             int maxSourceTablesPerCopy,
             int maxLoadJobsPerCommit,
             int maxCopyJobsPerCommit,
             int maxSubmissionsPerWave) {
+        this(
+                maxSourceTablesPerCopy,
+                maxLoadJobsPerCommit,
+                maxCopyJobsPerCommit,
+                maxSubmissionsPerWave,
+                MAX_FILES_PER_JOB);
+    }
+
+    private Limits(
+            int maxSourceTablesPerCopy,
+            int maxLoadJobsPerCommit,
+            int maxCopyJobsPerCommit,
+            int maxSubmissionsPerWave,
+            int maxFilesPerJob) {
         if (maxSourceTablesPerCopy < 2
                 || maxLoadJobsPerCommit < 1
                 || maxCopyJobsPerCommit < 1
-                || maxSubmissionsPerWave < 1) {
+                || maxSubmissionsPerWave < 1
+                || maxFilesPerJob < 1) {
             throw new IllegalArgumentException("Planner limits must be positive and fan-out >= 2");
         }
         this.maxSourceTablesPerCopy = maxSourceTablesPerCopy;
         this.maxLoadJobsPerCommit = maxLoadJobsPerCommit;
         this.maxCopyJobsPerCommit = maxCopyJobsPerCommit;
         this.maxSubmissionsPerWave = maxSubmissionsPerWave;
+        this.maxFilesPerJob = maxFilesPerJob;
+    }
+
+    /**
+     * Returns these limits with a smaller per-load-job file count, so a test reaches the
+     * temporary-table path with a handful of staged files.
+     */
+    @VisibleForTesting
+    Limits withMaxFilesPerJob(int maxFilesPerJob) {
+        return new Limits(
+                maxSourceTablesPerCopy,
+                maxLoadJobsPerCommit,
+                maxCopyJobsPerCommit,
+                maxSubmissionsPerWave,
+                maxFilesPerJob);
     }
 }

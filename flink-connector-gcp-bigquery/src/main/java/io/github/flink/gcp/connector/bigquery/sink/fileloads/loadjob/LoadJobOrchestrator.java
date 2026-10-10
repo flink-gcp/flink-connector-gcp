@@ -24,6 +24,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.Schema;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCommitterMetrics;
@@ -67,12 +68,14 @@ import java.util.function.Function;
  * 50,000 pending jobs, or 1,000 pending interactive terminal queries. A copy level remains a
  * barrier before a job that reads its tables is submitted.
  *
- * <p><b>Retries.</b> Because the plan is a function of the committables alone, a retried run
- * submits the same job ids and the {@link LoadJobRunner} re-attaches instead of double-loading. On
- * destination execution failure, temporary tables and staged files are deliberately left in place
- * for the retry. After every destination succeeds, temporary-table cleanup begins and can be
- * partial if interrupted; staged files are deleted only after that cleanup completes normally.
- * Orphans rely on the temporary dataset's expiration and the staging bucket's lifecycle rule.
+ * <p><b>Retries.</b> Because the plan is a function of the committables alone, and of the
+ * destination's layout for a destination whose temporary tables need it, a retried run submits the
+ * same job ids and the {@link LoadJobRunner} re-attaches instead of double-loading. On destination
+ * execution failure, temporary tables and staged files are deliberately left in place for the
+ * retry. After every destination succeeds, temporary-table cleanup begins and can be partial if
+ * interrupted; staged files are deleted only after that cleanup completes normally. Orphans rely on
+ * their own table expiration when laid out, otherwise on the temporary dataset's default table
+ * expiration, and on the staging bucket's lifecycle rule.
  */
 @Internal
 public final class LoadJobOrchestrator {
@@ -213,13 +216,7 @@ public final class LoadJobOrchestrator {
             runPhase(
                     plan.destinations,
                     (destination, worker, stop) ->
-                            destination.reconciledSchema =
-                                    new FileLoadsSchemaReconciler(
-                                                    config,
-                                                    options,
-                                                    worker.tableAdmin,
-                                                    userCallbackLock)
-                                            .finalTableSchema(destination.destination));
+                            reconcile(destination, worker.tableAdmin, worker.runner));
             runJobStage(
                     plan.destinations,
                     destination -> destination.loads,
@@ -464,6 +461,38 @@ public final class LoadJobOrchestrator {
         executor.runAllSerialWithinCommit(tasks, work);
     }
 
+    /**
+     * Reconciles one destination, then lays out its temporary tables from what it read, and
+     * prepares them.
+     */
+    private void reconcile(
+            DestinationCommitPlan destination, TableAdmin tableAdmin, LoadJobRunner runner)
+            throws IOException {
+        FileLoadsSchemaReconciler.ReconciledTable reconciled =
+                new FileLoadsSchemaReconciler(config, options, tableAdmin, userCallbackLock)
+                        .reconcile(destination.destination);
+        destination.reconciledSchema = reconciled.schema;
+        destination.layOutTempTables(
+                reconciled.layout,
+                new DestinationCommitPlan.TempTables() {
+                    @Override
+                    public boolean copySucceeded(PlannedCopy copy) throws IOException {
+                        return runner.copySucceeded(copy.jobId, copy.spec);
+                    }
+
+                    @Override
+                    public long prepare(TableDestination table) throws IOException {
+                        // Created ahead of the jobs that fill it, with an expiration a load
+                        // cannot set (ADR-0183).
+                        return tableAdmin.prepareTemporaryTable(
+                                table,
+                                reconciled.schema,
+                                reconciled.layout,
+                                options.getTempTableExpiration());
+                    }
+                });
+    }
+
     private void submitLoad(LoadJobRunner runner, PlannedLoad load, Schema schema)
             throws IOException {
         // Reconciliation completed before this phase; count only when submission is attempted.
@@ -477,7 +506,8 @@ public final class LoadJobOrchestrator {
                         load.createDisposition,
                         load.writeDisposition,
                         load.schemaUpdateOptions,
-                        load.format));
+                        load.format,
+                        load.tempTableLayout));
     }
 
     private static void submitCopy(LoadJobRunner runner, PlannedCopy copy) throws IOException {

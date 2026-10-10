@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.tables;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
@@ -27,11 +28,14 @@ import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 import java.io.IOException;
+import java.time.Duration;
 
 /**
  * Administers destination tables: creation for {@link
  * io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED} and schema
- * reads/updates for schema evolution.
+ * reads/updates for schema evolution, and the {@code FILE_LOADS} temporary tables laid out for a
+ * partitioned or clustered destination, which are created here rather than by the jobs that fill
+ * them so they share the creation retry {@link RetryingTableAdmin} gives.
  *
  * <p>Abstracts the BigQuery REST client so writer logic is unit-testable.
  */
@@ -87,6 +91,31 @@ public interface TableAdmin {
             CdcTableOptions cdcOptions,
             CreateDisposition createDisposition,
             CdcTableReconciliationPolicy reconciliationPolicy)
+            throws IOException;
+
+    /**
+     * Creates a {@code FILE_LOADS} temporary table that a copy will write into its destination, or
+     * extends the expiration of one that exists, and returns which incarnation of the table this
+     * is.
+     *
+     * <p>The table takes {@code layout}, its time partitioning with {@link
+     * TableLayout#getTemporaryTimePartitioning()}, and a table expiration {@code expiration} from
+     * now. A load cannot set a table's expiration, and a partitioned table does not take its
+     * dataset's default table expiration when the dataset also sets a default partition expiration,
+     * so the temporary table is created ahead of the job that fills it (ADR-0183).
+     *
+     * @param table the temporary table
+     * @param schema its schema
+     * @param layout its partitioning and clustering
+     * @param expiration how long from now the table lives, unless a later call extends it
+     * @return the table's creation time in epoch milliseconds, which changes only when the table is
+     *     created anew, for example after it expired
+     * @throws RetriableTableAdminException if repeating the call can succeed, such as a
+     *     rate-limited creation or extension
+     * @throws IOException if the table can be neither created nor extended
+     */
+    long prepareTemporaryTable(
+            TableDestination table, Schema schema, TableLayout layout, Duration expiration)
             throws IOException;
 
     /**

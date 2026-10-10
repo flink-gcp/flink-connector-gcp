@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +40,8 @@ import java.io.IOException;
 
 /**
  * The live-table half of one {@code FILE_LOADS} commit: reconciles each destination table and
- * returns the schema every load of that commit carries.
+ * returns the schema every load of that commit carries, with the table's partitioning and
+ * clustering read in the same pass.
  *
  * <p>The {@code FILE_LOADS} counterpart of {@code StorageWriteSchemaReconciler}, which the two
  * Storage Write API writers share. {@code SchemaUnifier} is the common policy across all three;
@@ -86,16 +88,32 @@ final class FileLoadsSchemaReconciler {
         this.schemaReconcileSchedule = options.toSchemaReconcileSchedule();
     }
 
-    /** Reconciles one destination and returns the schema stored in its commit plan. */
-    Schema finalTableSchema(TableDestination destination) throws IOException {
+    /**
+     * Reconciles one destination and returns what its commit plan stores: the schema every load
+     * carries, and the layout of the table as last read, which temporary tables copied into it must
+     * share (ADR-0183).
+     */
+    ReconciledTable reconcile(TableDestination destination) throws IOException {
         return ensureFinalTable(destination);
+    }
+
+    /** The schema and layout one destination's reconciliation settled on. */
+    static final class ReconciledTable {
+
+        final Schema schema;
+        final TableLayout layout;
+
+        ReconciledTable(Schema schema, TableLayout layout) {
+            this.schema = schema;
+            this.layout = layout;
+        }
     }
 
     /**
      * Reconciles the destination table and returns the schema every load of this commit carries —
      * the one decision shared by direct loads and the temp-table path (through {@link
-     * #finalTableSchema}), so the same records cannot succeed or fail depending on partition count.
-     * Creates a missing table under {@code CREATE_IF_NEEDED} with the configured
+     * #reconcile(TableDestination)}), so the same records cannot succeed or fail depending on
+     * partition count. Creates a missing table under {@code CREATE_IF_NEEDED} with the configured
      * partitioning/clustering (fails under {@code CREATE_NEVER}), then re-reads it — creation
      * swallows a lost race, so what exists may not be what was asked for. Under {@code
      * WRITE_TRUNCATE} the load or copy replaces the table's schema wholesale, so the serializer's
@@ -103,9 +121,10 @@ final class FileLoadsSchemaReconciler {
      * table — the live schema wins: it is returned untouched when schema updates are disabled, and
      * unioned with the serializer's when they are enabled (new {@code REQUIRED} columns arrive
      * {@code NULLABLE}, since BigQuery cannot add {@code REQUIRED} columns), retrying lost update
-     * races.
+     * races. The layout returned is the one of the snapshot the schema decision used, so after a
+     * lost creation race it is the winner's.
      */
-    private Schema ensureFinalTable(TableDestination destination) throws IOException {
+    private ReconciledTable ensureFinalTable(TableDestination destination) throws IOException {
         TableSchema desired;
         synchronized (userCallbackLock) {
             desired = config.getTableSchema(destination);
@@ -136,7 +155,8 @@ final class FileLoadsSchemaReconciler {
             }
         }
         if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE) {
-            return StorageSchemaConverter.toBigQuerySchema(desired);
+            return new ReconciledTable(
+                    StorageSchemaConverter.toBigQuerySchema(desired), snapshot.getLayout());
         }
         if (!config.getSchemaUpdateOptions().isEnabled()) {
             try {
@@ -152,7 +172,9 @@ final class FileLoadsSchemaReconciler {
                         destination,
                         e.getMessage());
             }
-            return StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema());
+            return new ReconciledTable(
+                    StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema()),
+                    snapshot.getLayout());
         }
         for (int attempt = 1; attempt <= schemaReconcileSchedule.maxAttempts(); attempt++) {
             SchemaUnifier.UnionResult union =
@@ -160,7 +182,9 @@ final class FileLoadsSchemaReconciler {
                             snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
             if (!union.isChanged()
                     || tableAdmin.updateSchema(destination, snapshot, union.getSchema())) {
-                return StorageSchemaConverter.toBigQuerySchema(union.getSchema());
+                return new ReconciledTable(
+                        StorageSchemaConverter.toBigQuerySchema(union.getSchema()),
+                        snapshot.getLayout());
             }
             Retries.sleep(
                     schemaReconcileSchedule.backoffMs(attempt),

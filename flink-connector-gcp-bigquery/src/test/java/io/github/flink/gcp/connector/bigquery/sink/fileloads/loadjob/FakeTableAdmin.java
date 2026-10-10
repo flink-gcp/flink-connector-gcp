@@ -16,6 +16,9 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
+import com.google.cloud.bigquery.Clustering;
+import com.google.cloud.bigquery.Schema;
+import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
@@ -24,10 +27,13 @@ import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
@@ -37,6 +43,12 @@ import java.util.concurrent.TimeUnit;
 public final class FakeTableAdmin implements TableAdmin {
 
     public final Map<TableDestination, TableSchema> tables = new HashMap<>();
+
+    /**
+     * Layouts of the tables above; a table without an entry is neither partitioned nor clustered.
+     */
+    public final Map<TableDestination, TableLayout> layouts = new HashMap<>();
+
     public final List<TableDestination> created = new ArrayList<>();
     public final Map<TableDestination, TableCreateOptions> createOptions = new HashMap<>();
     public final List<TableDestination> schemaUpdates = new ArrayList<>();
@@ -48,7 +60,9 @@ public final class FakeTableAdmin implements TableAdmin {
     @Override
     public void create(
             TableDestination destination, TableSchema schema, TableCreateOptions options) {
-        tables.putIfAbsent(destination, schema);
+        if (tables.putIfAbsent(destination, schema) == null) {
+            layouts.put(destination, layoutOf(options));
+        }
         created.add(destination);
         createOptions.put(destination, options);
     }
@@ -66,6 +80,29 @@ public final class FakeTableAdmin implements TableAdmin {
         return creationRequested;
     }
 
+    /** Live temporary tables, mapped to the creation time of their current incarnation. */
+    public final Map<TableDestination, Long> temporaryTables = new LinkedHashMap<>();
+
+    /** Every temporary-table preparation, in order, with the layout and expiration it carried. */
+    public final List<TableDestination> preparedTemporaryTables = new ArrayList<>();
+
+    public final List<TableLayout> preparedLayouts = new ArrayList<>();
+    public final List<Schema> preparedSchemas = new ArrayList<>();
+    public final List<Duration> preparedExpirations = new ArrayList<>();
+
+    /** The creation time the next created temporary table takes, less one. */
+    public long clock = 1_000;
+
+    @Override
+    public long prepareTemporaryTable(
+            TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
+        preparedTemporaryTables.add(table);
+        preparedLayouts.add(layout);
+        preparedSchemas.add(schema);
+        preparedExpirations.add(expiration);
+        return temporaryTables.computeIfAbsent(table, unused -> ++clock);
+    }
+
     @Override
     public TableSchemaSnapshot getSchema(TableDestination destination) {
         if (firstSchemaReadBarrier != null && !firstSchemaReadObserved) {
@@ -81,7 +118,30 @@ public final class FakeTableAdmin implements TableAdmin {
         }
         schemaReads++;
         TableSchema schema = tables.get(destination);
-        return schema == null ? null : TableSchemaSnapshot.of(schema, null);
+        return schema == null
+                ? null
+                : TableSchemaSnapshot.of(
+                        schema, null, layouts.getOrDefault(destination, TableLayout.NONE));
+    }
+
+    /** The layout {@code BigQueryTableAdmin} would create a table with from these options. */
+    private static TableLayout layoutOf(TableCreateOptions options) {
+        TimePartitioning partitioning = null;
+        if (options.getTimePartitioningType() != null) {
+            TimePartitioning.Builder builder =
+                    TimePartitioning.newBuilder(
+                            TimePartitioning.Type.valueOf(
+                                    options.getTimePartitioningType().name()));
+            if (options.getTimePartitioningField() != null) {
+                builder.setField(options.getTimePartitioningField());
+            }
+            partitioning = builder.build();
+        }
+        Clustering clustering =
+                options.getClusteredFields().isEmpty()
+                        ? null
+                        : Clustering.newBuilder().setFields(options.getClusteredFields()).build();
+        return TableLayout.of(partitioning, null, clustering);
     }
 
     @Override

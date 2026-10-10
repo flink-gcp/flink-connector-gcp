@@ -114,6 +114,15 @@ public final class StubBigQuery implements BigQuery {
     /** Thrown by the next {@code create(TableInfo)} call, and consumed by it. */
     @Nullable public BigQueryException createTableFailure;
 
+    /**
+     * When set, a successful {@code create(TableInfo)} answers a table created at this time instead
+     * of refusing to answer; a temporary-table preparation reads the creation time.
+     */
+    @Nullable public Long createdTableCreationTime;
+
+    /** When set, {@code update(TableInfo)} answers a table reporting this creation time. */
+    @Nullable public Long updatedTableCreationTime;
+
     /** Thrown by {@code delete} when set. */
     @Nullable public RuntimeException deleteFailure;
 
@@ -465,6 +474,9 @@ public final class StubBigQuery implements BigQuery {
     @Override
     public Table create(TableInfo tableInfo, TableOption... options) {
         createdTables.add(tableInfo);
+        if (createTableFailure == null && createdTableCreationTime != null) {
+            return TestJobs.tableCreatedAt(this, tableInfo.getTableId(), createdTableCreationTime);
+        }
         if (createTableFailure == null) {
             // Deliberately not a return: a successful creation would have to hand back a Table,
             // which the SDK lets nobody construct (docs/adr/0067), and no caller reads the value.
@@ -576,7 +588,10 @@ public final class StubBigQuery implements BigQuery {
             // here would route the test through the backstop's own catch instead — hiding
             // whatever code sits after the call. The caller ignores the value; the mint is
             // TestJobs' (docs/adr/0067).
-            return TestJobs.table(this, tableInfo.getTableId());
+            return updatedTableCreationTime == null
+                    ? TestJobs.table(this, tableInfo.getTableId())
+                    : TestJobs.tableCreatedAt(
+                            this, tableInfo.getTableId(), updatedTableCreationTime);
         }
         BigQueryException failure = updateTableFailure;
         updateTableFailure = null;

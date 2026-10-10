@@ -21,6 +21,8 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.bigquery.JobInfo;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 
 /** Everything one BigQuery copy job needs, decoupled from the client for testability. */
@@ -31,16 +33,27 @@ public final class CopyJobSpec {
     private final TableDestination destination;
     private final JobInfo.CreateDisposition createDisposition;
     private final JobInfo.WriteDisposition writeDisposition;
+    @Nullable private final String equivalentJobId;
 
     CopyJobSpec(
             List<TableDestination> sourceTables,
             TableDestination destination,
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition) {
+        this(sourceTables, destination, createDisposition, writeDisposition, null);
+    }
+
+    CopyJobSpec(
+            List<TableDestination> sourceTables,
+            TableDestination destination,
+            JobInfo.CreateDisposition createDisposition,
+            JobInfo.WriteDisposition writeDisposition,
+            @Nullable String equivalentJobId) {
         this.sourceTables = List.copyOf(sourceTables);
         this.destination = destination;
         this.createDisposition = createDisposition;
         this.writeDisposition = writeDisposition;
+        this.equivalentJobId = equivalentJobId;
     }
 
     /** Returns the temporary tables to copy from. */
@@ -63,6 +76,20 @@ public final class CopyJobSpec {
         return writeDisposition;
     }
 
+    /**
+     * Returns the base id under which an earlier attempt may already have run this same copy, or
+     * {@code null}. A job under that id, or one of its retry ids, that has not failed stands for
+     * this copy, so the runner re-attaches to it instead of copying the rows again.
+     *
+     * <p>Set on the copy into the destination of a commit through temporary tables, whose id
+     * depends on whether the destination's layout made the commit lay its temporary tables out
+     * (ADR-0183); a change of the destination's clustering between attempts can switch it.
+     */
+    @Nullable
+    public String getEquivalentJobId() {
+        return equivalentJobId;
+    }
+
     @Override
     public String toString() {
         return "CopyJobSpec{sourceTables="
@@ -73,6 +100,7 @@ public final class CopyJobSpec {
                 + createDisposition
                 + ", writeDisposition="
                 + writeDisposition
+                + (equivalentJobId != null ? ", equivalentJobId=" + equivalentJobId : "")
                 + "}";
     }
 }

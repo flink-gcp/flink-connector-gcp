@@ -250,6 +250,7 @@ class FileLoadsOptionsTest {
         setBuilderField(oldBuilder, "maxConcurrentDestinations", 0);
         setBuilderField(oldBuilder, "destinationIdleTimeout", null);
         setBuilderField(oldBuilder, "maxSerializedRowBytes", 0L);
+        setBuilderField(oldBuilder, "tempTableExpiration", null);
         FileLoadsOptions restored = oldBuilder.build();
         FileLoadsOptions defaults = base().build();
 
@@ -259,6 +260,7 @@ class FileLoadsOptionsTest {
         assertThat(restored.getMaxConcurrentDestinations()).isEqualTo(8);
         assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
+        assertThat(restored.getTempTableExpiration()).isEqualTo(Duration.ofDays(1));
         assertThat(restored).isEqualTo(defaults).hasSameHashCodeAs(defaults);
         assertThat(restored.toString()).isEqualTo(defaults.toString());
     }
@@ -435,6 +437,35 @@ class FileLoadsOptionsTest {
 
         assertThat(options.getTempDataset()).isEqualTo("temp_dataset");
         assertThat(options.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE_DATA);
+    }
+
+    @Test
+    void tempTableExpirationDefaultsToADayAndKeepsAnOverride() {
+        assertThat(base().build().getTempTableExpiration()).isEqualTo(Duration.ofDays(1));
+        FileLoadsOptions options = base().tempTableExpiration(Duration.ofHours(1)).build();
+
+        assertThat(options.getTempTableExpiration()).isEqualTo(Duration.ofHours(1));
+        assertThat(options).isNotEqualTo(base().build());
+        assertThat(options.toString()).contains("tempTableExpiration=PT1H");
+    }
+
+    @Test
+    void rejectsATempTableExpirationOutsideItsBounds() {
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .tempTableExpiration(Duration.ofMinutes(59)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("tempTableExpiration must be at least 1 hour");
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .tempTableExpiration(
+                                                Duration.ofNanos(Long.MAX_VALUE).plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("tempTableExpiration");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().tempTableExpiration(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test

@@ -53,6 +53,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -193,6 +195,77 @@ public class BigQueryTableAdmin implements TableAdmin {
     }
 
     @Override
+    public long prepareTemporaryTable(
+            TableDestination table, Schema schema, TableLayout layout, Duration expiration)
+            throws IOException {
+        BigQuery bigQuery = client(table);
+        long expirationTime = System.currentTimeMillis() + expiration.toMillis();
+        try {
+            Table created =
+                    bigQuery.create(temporaryTableInfo(table, schema, layout, expirationTime));
+            LOG.info(
+                    "Created temporary BigQuery table {} with layout {}, expiring at {}",
+                    table,
+                    layout,
+                    Instant.ofEpochMilli(expirationTime));
+            return creationTimeOf(table, created);
+        } catch (BigQueryException e) {
+            if (e.getCode() != HTTP_CONFLICT) {
+                throw toFailure(table, e);
+            }
+        }
+        // An earlier attempt of this commit created it: extend it, and report which incarnation it
+        // is. Only the expiration is sent; `tables.patch` leaves every omitted attribute as it is.
+        Table extended;
+        try {
+            extended =
+                    bigQuery.update(
+                            TableInfo.newBuilder(
+                                            toTableId(table),
+                                            StandardTableDefinition.newBuilder().build())
+                                    .setExpirationTime(expirationTime)
+                                    .build());
+        } catch (BigQueryException e) {
+            throw toFailure(
+                    "Failed to extend the expiration of temporary BigQuery table " + table, e);
+        }
+        LOG.info(
+                "Extended temporary BigQuery table {} to expire at {}",
+                table,
+                Instant.ofEpochMilli(expirationTime));
+        return creationTimeOf(table, extended);
+    }
+
+    /** The table {@link #prepareTemporaryTable} creates. */
+    @VisibleForTesting
+    static TableInfo temporaryTableInfo(
+            TableDestination table, Schema schema, TableLayout layout, long expirationTime) {
+        StandardTableDefinition.Builder definition =
+                StandardTableDefinition.newBuilder().setSchema(schema);
+        if (layout.getTemporaryTimePartitioning() != null) {
+            definition.setTimePartitioning(layout.getTemporaryTimePartitioning());
+        }
+        if (layout.getRangePartitioning() != null) {
+            definition.setRangePartitioning(layout.getRangePartitioning());
+        }
+        if (layout.getClustering() != null) {
+            definition.setClustering(layout.getClustering());
+        }
+        return TableInfo.newBuilder(toTableId(table), definition.build())
+                .setExpirationTime(expirationTime)
+                .build();
+    }
+
+    private static long creationTimeOf(TableDestination table, @Nullable Table resource)
+            throws IOException {
+        if (resource == null || resource.getCreationTime() == null) {
+            throw new IOException(
+                    "BigQuery returned no creation time for temporary table " + table);
+        }
+        return resource.getCreationTime();
+    }
+
+    @Override
     public boolean ensureCdcTable(
             TableDestination destination,
             TableSchema schema,
@@ -220,7 +293,10 @@ public class BigQueryTableAdmin implements TableAdmin {
      */
     @VisibleForTesting
     static IOException toFailure(TableDestination destination, BigQueryException e) {
-        String message = "Failed to create BigQuery table " + destination;
+        return toFailure("Failed to create BigQuery table " + destination, e);
+    }
+
+    private static IOException toFailure(String message, BigQueryException e) {
         return isRetriable(e)
                 ? new RetriableTableAdminException(message, e)
                 : new IOException(message, e);

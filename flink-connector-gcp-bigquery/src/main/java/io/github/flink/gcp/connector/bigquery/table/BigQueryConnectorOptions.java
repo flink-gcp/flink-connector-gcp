@@ -828,7 +828,8 @@ public final class BigQueryConnectorOptions {
     /**
      * The dataset holding temporary tables when a load is too large for one job or replacement rows
      * span staging formats. Point it at a dedicated dataset with a default table expiration to
-     * collect the temporary tables a hard failure orphans.
+     * collect the temporary tables a hard failure orphans, apart from those laid out for a column-
+     * or range-partitioned or clustered destination, which carry their own expiration.
      */
     public static final ConfigOption<String> SINK_FILE_LOADS_TEMP_DATASET =
             ConfigOptions.key("sink.file-loads.temp-dataset")
@@ -838,7 +839,24 @@ public final class BigQueryConnectorOptions {
                             "The dataset holding temporary tables when a load is too large for one"
                                     + " job or replacement rows span staging formats. Point it at"
                                     + " a dedicated dataset with a default table expiration to"
-                                    + " collect the temporary tables a hard failure orphans.");
+                                    + " collect the temporary tables a hard failure orphans, apart"
+                                    + " from those laid out for a column- or range-partitioned or"
+                                    + " clustered destination, which carry their own expiration.");
+
+    /**
+     * How long a temporary table laid out for a column- or range-partitioned or clustered
+     * destination lives after a commit attempt creates or extends it. A table that expires before a
+     * retry is created and filled anew.
+     */
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_TEMP_TABLE_EXPIRATION =
+            ConfigOptions.key("sink.file-loads.temp-table-expiration")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a temporary table laid out for a column- or range-partitioned or"
+                                    + " clustered destination lives after a commit attempt creates"
+                                    + " or extends it. A table that expires before a retry is"
+                                    + " created and filled anew.");
 
     /**
      * How loaded rows land in a table that already holds data. Streaming execution accepts

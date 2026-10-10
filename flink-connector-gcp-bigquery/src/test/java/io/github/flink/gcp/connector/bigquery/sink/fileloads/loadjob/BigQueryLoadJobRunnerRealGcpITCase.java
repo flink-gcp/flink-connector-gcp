@@ -185,10 +185,9 @@ class BigQueryLoadJobRunnerRealGcpITCase {
      * final table the commit created with its {@code TableCreateOptions}. The created table keeps
      * its description and labels once the copy replaces its rows.
      *
-     * <p>Unpartitioned and unclustered on purpose: measured on 2026-10-09, BigQuery refuses this
-     * copy into a column-partitioned table ("Failed to copy Non partitioned table to Column
-     * partitioned table: not supported") and into a clustered one ("incompatible clustering
-     * fields"), under {@code WRITE_APPEND} as well, because the temporary tables carry neither.
+     * <p>Unpartitioned and unclustered on purpose: a partitioned or clustered destination needs
+     * temporary tables with its layout, which {@code BigQueryFileLoadsTempTableLayoutRealGcpITCase}
+     * covers through the whole commit (ADR-0183).
      */
     @Test
     void truncatingFinalCopyKeepsTheCreatedTablesDescriptionAndLabels() throws Exception {

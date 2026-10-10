@@ -84,8 +84,23 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
         }
     }
 
+    /**
+     * Base ids of copies a previous attempt completed successfully, which {@link #copySucceeded}
+     * reports.
+     */
+    public final Set<String> copiesThatSucceeded = new HashSet<>();
+
+    @Override
+    public boolean copySucceeded(String jobId, CopyJobSpec spec) {
+        events.add("copy-succeeded?:" + jobId);
+        return copiesThatSucceeded.contains(jobId)
+                || (spec.getEquivalentJobId() != null
+                        && copiesThatSucceeded.contains(spec.getEquivalentJobId()));
+    }
+
     @Override
     public void deleteTable(TableDestination table) {
+        events.add("delete:" + table.toTablePath());
         deletedTables.add(table);
     }
 }
