@@ -21,8 +21,9 @@ limitations under the License.
   and google-cloud-core 2.77.0 through libraries-bom 26.90.0; emulator behavior measured 2026-10-03
   against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by
   [#1652] (query-result metadata for the table scan), [#1690] (metadata kinds refused) and
-  [#1689] (a configured read time is truncated to the microsecond)
-- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689]
+  [#1689] (a configured read time is truncated to the microsecond), and 2026-10-11 by [#1707]
+  (the service's answers; a projection of properties read as one split)
+- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -96,7 +97,7 @@ Google's [metadata queries] page says the metadata entities are "generated dynam
 Every kind a query names is checked; a query naming no kind is read as before.
 The message names the kind, says that the source can neither page through it nor resume it after a failure, and says to read metadata with the client library instead; it states no cursor fact, because the service's answer was not measured.
 This is ADR-0127's third shape for the failure observed on the emulator: without the check the job failed after it had started, in the reader, with a message that named neither the kind nor the setter.
-How the service answers a metadata query is unmeasured, so the refusal also rests on the documented dynamic generation.
+How the service answers a metadata query was unmeasured then, so the refusal also rests on the documented dynamic generation; [#1707] measured it since (below).
 The statistics kinds (`__Stat_*__`) are not refused: they are stored entities, the source's own split estimate reads them, and nothing measured shows a read of one failing.
 Whether the service answers a metadata query with cursors was not measured; the refusal does not rest on it alone, because a result generated from the current state need not be the snapshot at the read time that the source promises (ADR-0173).
 Of the alternatives below, only resuming by key waits on that measurement; replaying a split is declined whatever it shows.
@@ -116,17 +117,32 @@ On the emulator, an entity's update time is a whole microsecond W: a read at W �
 Unlike Native mode's `common.proto` (ADR-0173's revision), neither `datastore.proto`'s `Mutation.update_time` nor `query.proto`'s `EntityResult.update_time` states the precision of an update time, and the service was not measured.
 
 The builder now truncates the time to the microsecond, as the Native-mode source's does (ADR-0173's revision, owner's decision, 2026-10-10), on the same read-time contract: the instant given could never be read, and truncation floors it to the latest microsecond at or before it.
-On the emulator the floored time reads exactly the data the time given names; on the service, Datastore mode is unmeasured.
+On the emulator the floored time reads exactly the data the time given names; on the service, Datastore mode was unmeasured then, and [#1707] measured it since (below).
 Refusing such a time in the builder was declined for ADR-0173's reason: the instant given can never be read, flooring reads at the latest microsecond before it, and a refusal would fail an ordinary `Instant.now()` on Linux.
+
+### Measured against the service ([#1707], 2026-10-11)
+
+`DatastoreSourceRealGcpITCase` and `DatastoreQueryRealGcpITCase` measured the source's premises in a Datastore-mode database (one run, Standard edition, google-cloud-datastore and datastore-v1-proto-client 3.7.0):
+
+- **Sampling.** The splitter, given the database in its partition over application-default credentials, cut a kind of 3,000 entities into all eight ranges asked for, and a read with `splitCount(8)` returned every entity once. An equality filter and a keys-only projection split the same way.
+- **Key order.** The service orders key names by their UTF-8 bytes: `a！` (U+FF01) before `a😀` (U+1F600), which Java's string order puts the other way round. `KeyRanges`' re-sort stands.
+- **A projection of properties cannot take a key range.** The projection alone is served by the built-in indexes, but with `__key__ >=` and `<` ANDed on, the service answered `FAILED_PRECONDITION: no matching index found` and recommended a composite index of `__key__` and the projected property. A read with `splitCount(4)` failed that way, and one with `splitCount(1)` read every entity. This Context had already named the consequence: such a projection is unsplittable, rather than documented with `splitCount(1)` as the workaround. `SplittableQueries.whyNotSplittable` now says so for any projection other than keys-only, and `splitCount(...)` on one is refused at build like any other unsplittable query.
+- **Projection results.** A projected timestamp comes back as an integer of microseconds and a blob as a string, both with meaning 18, as on the emulator, and every projected result carries its key. Projecting two properties at once needs a composite index too.
+- **GQL.** `… LIMIT 0` appended to a query ending in `LIMIT` or `OFFSET` is refused with `INVALID_ARGUMENT`. Without either, the query comes back parsed with a zero limit and no entity.
+- **Paging.** An offset-only batch carries a skipped cursor, which the emulator omits. A batch of twelve entities of 512 KiB came back short of its limit of twelve, `NOT_FINISHED`, with an end cursor.
+- **A missing index** fails planning with `FAILED_PRECONDITION`, and the message names the recommended index.
+- **Read times and versions.** Datastore mode answers like Native mode. A read time from before the database existed, or in the future, is refused with `INVALID_ARGUMENT`, and so is one finer than a microsecond. An entity's update time is a whole microsecond: a lookup at it finds the entity, and one a microsecond earlier does not. So the floored read time reads the data the time given names. A timestamp value is floored too, and an equality filter carrying the unfloored value matches it, unlike in Native mode.
+- **Metadata kinds.** `__kind__`, `__namespace__` and `__property__` all answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest. `__kind__` honoured the read time and was scoped to the namespace. The refusal above stands on the documented dynamic generation alone until [#1717] decides whether to lift it.
+- **Statistics** stay unmeasured: a database created within the run has none.
 
 ## Consequences
 
 - A planning call reaches the service over HTTP as well as gRPC, so a network policy that admits only one of them to the JobManager breaks a split read. The readers are gRPC only.
 - A page call runs for up to the 50-second retry budget and does not answer an interrupt; a reader that closes meanwhile waits for its fetcher up to `source.reader.close.timeout`, after which the call fails against the closed client.
-- A projection whose key ranges need an index the whole query does not is unmeasured ([#1546]); `splitCount(1)` reads it as one split.
+- A projection of properties is read by one subtask whatever the parallelism, because its key ranges need a composite index the query alone does not (measured above).
 - A query the source does not split is read by one subtask, whatever the parallelism; the plan's log line names the reason.
 - Planning costs a probe read, two statistics reads when the split count is estimated, the splitter's sampling, and for a GQL query a parse that reads its first batch when it ends in its own `LIMIT` or `OFFSET`.
-- The emulator exercises neither the sampling nor the statistics; split counts against the service, the statistics estimate and the read-time window belong to the gated suite ([#1546]).
+- The emulator exercises neither the sampling nor the statistics; the gated suite measures the service's split counts, while the statistics estimate stays covered by unit tests only, and the read-time window was measured once by hand (ADR-0185).
 - A restart before the first completed checkpoint reads at a new read time unless `readTime` is configured, as for the Native-mode source.
 - A query that orders by, or filters with an inequality on, a list-valued property can return an entity more than once across pages and restores, each repeat counting toward its `limit`: the service removes the duplicates such a property produces only within one request ([limitations of cursors](https://cloud.google.com/datastore/docs/concepts/queries#limitations_of_cursors)). The source passes repeats on and the docs say so (owner's decision, 2026-10-03); removing them would mean checkpointing every key a split has emitted.
 - A projection result without a key, which the API allows and the emulator has not returned, fails the read with a message naming it, because the deserializer contract is an `Entity`, which always has a key (owner's decision, 2026-10-03). Widening the contract to a keyless type was declined for a case not observed; the gated suite ([#1546]) measures it.
@@ -150,3 +166,5 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 [#1690]: https://github.com/flink-gcp/flink-connector-gcp/issues/1690
 [metadata queries]: https://cloud.google.com/datastore/docs/concepts/metadataqueries
 [#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689
+[#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
+[#1717]: https://github.com/flink-gcp/flink-connector-gcp/issues/1717

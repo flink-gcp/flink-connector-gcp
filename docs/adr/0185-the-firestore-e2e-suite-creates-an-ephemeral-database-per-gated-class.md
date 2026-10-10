@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0185: The Firestore E2E suite creates an ephemeral database per gated class
 
 - Status: Accepted
-- Date: 2026-10-10
-- Issues: [#1546], [#1705], [#1706]
+- Date: 2026-10-10; revised 2026-10-11 by [#1707] (the Datastore-mode harness)
+- Issues: [#1546], [#1705], [#1706], [#1707]
 - Modules: firestore (tests), `opentofu/`, `scripts/`
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Testing; the
   `just e2e` entry of `.agents/references/repository-guide.md` § Build
@@ -32,9 +32,10 @@ resource to name. What is Firestore's own:
 
 - **A database, not an instance, and both modes from one harness.** `EphemeralDatabases` creates
   a database of either mode through the Admin API in `us-central1`, with delete protection and
-  point-in-time recovery off. It is public, and takes the mode as a parameter, so that the
-  Datastore-mode harness of [#1707] can share its naming and its sweep from the other package root. A class that needs a second database, such as a Datastore-mode one to write
-  to through the Firestore API, creates it through the same helper and deletes it with its own.
+  point-in-time recovery off. It is public, and takes the mode as a parameter, because the
+  Datastore-mode harness (`AbstractDatastoreRealGcpITCase`, [#1707]) shares its naming and its sweep
+  from the other package root. A class that needs a second database, such as one of the other mode
+  to address through the wrong API, creates it through the same helper and deletes it with its own.
 - **Only the acceptance of a delete is awaited, then the database's absence.** The Admin API's
   delete is a long-running operation, and the client library stops polling one after five minutes
   and cancels its future. The operation of a database that held about 11 MiB had not finished by

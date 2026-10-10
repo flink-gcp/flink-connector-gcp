@@ -421,6 +421,7 @@ Property values are the client library's own value types, and the service enforc
 
 Each writer subtask buffers writes and applies them in one non-transactional `Commit` at a time, waiting for each before it sends the next.
 It commits the buffer at every checkpoint barrier, when the next write would take it past `maxBatchMutations` (500 by default) or `maxBatchBytes` (9,000,000 bytes by default, against the documented 10 MiB request limit), and before a write to a key the buffer already holds.
+The service applied a commit of about 10.5 MiB when measured (2026-10-11), as it applied a Native-mode request of that size, so the budget is a margin under the documented figure rather than under a refusal anyone has seen.
 The size is the request's protobuf size on the wire: each mutation's, which the client library computes for an entity, plus the request's project, database and mode fields.
 A commit names each key at most once, which the Datastore API requires of a non-transactional commit, and that rule has a useful side effect: the writes of one subtask to one key are applied in the order the serializer returned them, including across retries.
 The one exception is a commit that timed out on the client: the writer retries it and moves on, and the service may still apply the abandoned attempt after a later commit to the same key.
@@ -437,10 +438,10 @@ A failed non-transactional commit "may not apply as all or none", in the service
 | Operation | Same write replayed |
 |---|---|
 | `upsert`, `delete` | Idempotent for that write |
-| `insert` | Refused with `ALREADY_EXISTS`, routed to the failure handler |
+| `insert` | Applied when the key already holds exactly the entity the insert writes; otherwise refused with `ALREADY_EXISTS` and routed to the failure handler |
 | `update` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler |
 
-Under the default `FailureHandler.failJob()`, a stream of `insert` writes, or of `update` writes followed by deletes of the same keys, fails again on every restart whose replay reaches a write already applied.
+Under the default `FailureHandler.failJob()`, a stream of `update` writes followed by deletes of the same keys fails again on every restart whose replay reaches a write already applied, and so does a stream of `insert` writes whose entity for a key differs between the write and its replay.
 `upsert` is the operation for a stream that needs neither failure.
 There is no exactly-once mode, for the reasons the Native-mode section gives.
 
@@ -453,25 +454,31 @@ A write that succeeds alone is applied; a write refused alone is routed if the s
 
 | What the write did | Status | What the sink does |
 |---|---|---|
-| `insert` of a key that holds an entity | `ALREADY_EXISTS` | Confirmed alone, then routed |
+| `insert` of a key that holds an entity | `ALREADY_EXISTS` | Confirmed alone and looked up: counted as applied when the key holds exactly the entity the insert writes, routed otherwise |
 | `update` of a key that holds none | `NOT_FOUND` | Confirmed alone, checked with a lookup, then routed |
 | An indexed string over 1,500 bytes, an entity over 1 MiB, a reserved kind or property name | `INVALID_ARGUMENT` | Confirmed alone, then routed |
 | `delete` of a key that holds none | *applied* | None |
 | `ALREADY_EXISTS` or `NOT_FOUND` for any other operation, and every other status | | **Fails the job** |
 
-Measured against the emulator, 2026-10-03: the refusals in this table applied none of the other writes of their commit, except an entity over 1 MiB, before which the commit had already applied the writes ahead of it in the request; the client library orders a request by operation (inserts, updates, upserts, deletes), not as the writes arrived.
-That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `update` and `delete` absorb, and which an `insert` answers with a routed `ALREADY_EXISTS`.
+Measured against the service, 2026-10-11: a commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applied every other write it carried, wherever the refused write sat in the request, while a commit refused with `INVALID_ARGUMENT` for any shape in the table applied none.
+The emulator applies none in the first case, and in the second it applies the writes ahead of an entity over 1 MiB; the client library orders a request by operation (inserts, updates, upserts, deletes), not as the writes arrived.
+That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `update` and `delete` absorb.
+An `insert` the commit already applied answers its re-send with `ALREADY_EXISTS`, so before routing that refusal the writer looks the key up, and counts the insert as applied when the key holds exactly the entity it writes, every property value and index flag alike.
+A retried commit that had in fact been applied, and the replay of an identical insert, look the same to the writer and are counted as applied too; an insert whose key holds a different entity is routed, and so is one whose lookup still fails after the recovery budget's retries, with the lookup's failure attached.
+Neither outcome counts toward `maxConsecutiveRejections`, as a replay's answers do not.
+A timestamp finer than a microsecond is stored floored, so an insert carrying one never matches what it wrote and is routed as before.
 
 `NOT_FOUND` is routed only after a lookup of the same key is answered.
 The status alone does not say whether the entity or the database is missing, and a job pointed at a missing database could otherwise drop every update it makes.
 A lookup of a missing entity is an ordinary answer, while a missing database refuses the lookup as it refused the update, so a refused lookup fails the job instead.
-That rests on the service's behavior, which the emulator cannot show, because it serves any database id; the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is measured.
+Measured against the service, 2026-10-11: a database that does not exist, and a malformed id such as `Bad_Id`, refuse the update and the lookup alike with `NOT_FOUND`; the emulator serves any database id.
 
-Confirming costs one commit per write of the refused commit, sequentially on the task thread, and `mutationsConfirmedAlone` counts them.
+Confirming costs one commit per write of the refused commit, sequentially on the task thread, plus one lookup for each insert refused alone with `ALREADY_EXISTS`; `mutationsConfirmedAlone` counts the commits.
 `maxConsecutiveRejections` (100 by default) fails the job once that many confirmed `INVALID_ARGUMENT` refusals, or keys addressing another database, arrive with no write applied between them, after routing each of them; a dropping or dead-lettering handler is where it matters.
 A key addressing another database counts because it is what the service would refuse with `INVALID_ARGUMENT`, and a sink whose every key names the wrong database is a configuration error.
 `ALREADY_EXISTS` and `NOT_FOUND` do not count toward it, because they are what a restart's replay answers.
-A transient status anywhere in a failure's cause chain is never routed, and a failure of the request itself, such as `PERMISSION_DENIED`, or the `FAILED_PRECONDITION` a database in Native mode is reported to answer (not yet measured; [#1546]({{< param BookRepo >}}/issues/1546)), fails the job.
+A transient status anywhere in a failure's cause chain is never routed, and a failure of the request itself, such as `PERMISSION_DENIED`, fails the job.
+A database in Native mode does not refuse the Datastore API: measured on 2026-10-11, one applied a commit and answered a lookup and a query, and the entity was then readable through the Firestore API as a document.
 
 `FailedMutation.getPayloadBytes()` is the Java-serialized `DatastoreMutation`; reading it back takes an `ObjectInputStream` with this connector and the Datastore client library on the classpath.
 A handler that wants the mutation itself should take `FailureHandler<FailedMutation>` and read `getMutation()`; the bytes exist for the cross-connector dead-letter queue, which sees only the shared `FailedElement` view.
@@ -527,37 +534,38 @@ A **kind** reads every entity of one kind, cut into key ranges read in parallel.
 A **query** is the Datastore API's protobuf `com.google.datastore.v1.Query`, the form the service and the client library's query splitter take; the client library's own `com.google.cloud.datastore.Query` is not accepted, because its conversion to this form is not public API.
 The `DatastoreHelper` class the example uses to build a filter comes from `com.google.datastore.v1.client`, in the `datastore-v1-proto-client` library that the Datastore client library brings.
 The source cuts a query into key ranges only when it names exactly one kind and filters only with equality (`EQUAL`) and ancestor (`HAS_ANCESTOR`) filters, combined with `AND`, because each range is the query with `__key__ >= start AND __key__ < end` added to it.
-A query with an ordering, a `limit`, an `offset`, a cursor, a `DISTINCT ON`, an `OR`, or a filter with another operator or of no type, or one naming no kind or several, is read as one split, by one subtask, which the JobManager logs with the reason.
+A query with an ordering, a `limit`, an `offset`, a cursor, a `DISTINCT ON`, an `OR`, a projection of properties, or a filter with another operator or of no type, or one naming no kind or several, is read as one split, by one subtask, which the JobManager logs with the reason.
 The splitter itself refuses only an ordering, the `<`, `<=`, `>` and `>=` filters, a filter of no type, and a query not naming one kind; the source refuses the rest too, because `limit`, `offset` and cursors are positions in the whole result rather than in a key range, `!=` and `NOT_IN` are inequalities that a second inequality on `__key__` would meet, and `IN` and `OR` are disjunctions the key range would have to distribute over.
-Projections are read as the query states them.
+A projection of properties is read whole because the service refused it in key ranges when measured: a key range ANDed onto such a projection needs a composite index of `__key__` and the projected property, which the projection alone does not, so splitting it would fail where reading it whole succeeds.
+A keys-only projection is split like a kind, and `splitCount(...)` on a projection of properties is refused when the source is built.
 A nearest-neighbour search (`find_nearest`) is refused when the source is built: the service applies a query's cursor and limit before the search, so the page limit and the resume cursor every read sets would change which entities it finds.
 
 The metadata kinds `__namespace__`, `__kind__` and `__property__` are refused too, by `kind(...)` and `query(...)` when they are called, with a message naming the kind.
 Google documents that their entities are "generated dynamically, based on the current state of your database", so a result need not be the snapshot at the read time that the source pages through and resumes in.
-On the emulator, a query of `__kind__` or `__namespace__` also answers without the cursors the source pages and resumes by, unlike what `query.proto` documents for a query result, and one of `__property__` returned nothing; how the service answers is unmeasured ([#1546]({{< param BookRepo >}}/issues/1546)).
+On the emulator, a query of `__kind__` or `__namespace__` also answers without the cursors the source pages and resumes by, and one of `__property__` returned nothing.
+The service carries a cursor on every result and an end cursor for all three, honours the read time for `__kind__` and scopes it to the namespace (measured 2026-10-11); whether the source should read these kinds is [#1717]({{< param BookRepo >}}/issues/1717).
 Read metadata with the client library instead, as Google's [metadata queries](https://cloud.google.com/datastore/docs/concepts/metadataqueries) page describes.
 The statistics kinds, such as `__Stat_Kind__` and `__Stat_Total__`, are stored entities and are not refused; the emulator keeps none, so how the service answers a read of one is unmeasured ([#1546]({{< param BookRepo >}}/issues/1546)).
 
 {{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-query" >}}
 
-A query that needs an index the database does not have fails the job when the read is planned, because the planner reads one entity of it first, and the error then carries the service's answer.
-A key range adds a `__key__` inequality to the query, which for a projection may need an index the whole query does not; that is not measured yet ([#1546]({{< param BookRepo >}}/issues/1546)), and a projection that fails that way can be read as one split by giving it `splitCount(1)`.
+A query that needs an index the database does not have fails the job when the read is planned, because the planner reads one entity of it first, and the error then carries the service's answer, which names the index it recommends.
 
 A **GQL query** is parsed by the service when the read is planned, and the source then reads the query it was parsed into, by the same rules.
 Literals are allowed and bindings are not.
-To parse it without reading an entity, the source asks for the query with `LIMIT 0` appended; a GQL query that already ends in a `LIMIT` or an `OFFSET` clause cannot take another, so the source parses it by running it as written, which reads and bills its first batch of entities once more.
+To parse it without reading an entity, the source asks for the query with `LIMIT 0` appended; a GQL query that already ends in a `LIMIT` or an `OFFSET` clause cannot take another (the service refuses it with `INVALID_ARGUMENT`), so the source parses it by running it as written, which reads and bills its first batch of entities once more.
 A GQL query the service refuses fails the job when the read is planned, with the query's text in the message, and so does one that parses into a nearest-neighbour search or a query of a metadata kind.
 
 {{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-gql" >}}
 
 The snapshot works as the [Native-mode one](#one-snapshot-for-the-whole-read) does: every split reads at one read time, the service's own unless `readTime(...)` sets it after truncating it to the microsecond; the time lies inside the same one-hour or seven-day window, and a job that restarts before its first completed checkpoint plans again, at a new read time unless `readTime(...)` is set.
 The planner takes the read time from a one-entity probe of the query, which also fails the job at planning when a configured read time lies outside the window.
-The Datastore API does not document the precision of an entity's update time: on the emulator it is a whole microsecond, so there a truncated read time sees every write made at or before the one given, and the service has not been measured.
+The Datastore API does not document the precision of an entity's update time; on the emulator and on the service it is a whole microsecond (measured 2026-10-11), so a truncated read time sees every write made at or before the one given.
 
 ### Key ranges and the split count
 
 A kind, or a query that can be split, is cut by the client library's `QuerySplitter`, which samples the kind's keys through the `__scatter__` property, 32 for each boundary, and picks the range boundaries among them.
-The splitter sorts what it samples by comparing kind names and key names as Java strings, while the service sorts them by their UTF-8 bytes, and the two orders differ for a name holding a character above U+FFFF beside one holding a character from U+E000 to U+FFFF.
+The splitter sorts what it samples by comparing kind names and key names as Java strings, while the service sorts them by their UTF-8 bytes (measured 2026-10-11: `a！` before `a😀`), and the two orders differ for a name holding a character above U+FFFF beside one holding a character from U+E000 to U+FFFF.
 The source therefore lays the splitter's ranges out again in the service's order, so that they still cover each key once.
 
 `splitCount(...)` sets how many ranges to ask for, at most 50,000; it is an upper bound, because a small kind yields fewer sampled keys.
@@ -597,8 +605,8 @@ The reasoning and the declined alternatives are in [ADR-0177]({{< param BookRepo
 
 A `DatastoreEntityDeserializationSchema` turns each entity into zero or more records.
 It receives the client library's `Entity`, whose key names it, namespace included, and which holds only the projected properties when the query projects some.
-A projection returns a timestamp as an integer of microseconds and a blob as a string, both marked as index values (measured against the emulator, 2026-10-03).
-The API also allows a projection result without a key, which an `Entity` cannot hold; the source fails the job on one with a message saying so (none has been observed against the emulator, and the service is measured in [#1546]({{< param BookRepo >}}/issues/1546)).
+A projection returns a timestamp as an integer of microseconds and a blob as a string, both marked as index values (measured against the emulator, 2026-10-03, and the service, 2026-10-11).
+The API also allows a projection result without a key, which an `Entity` cannot hold; the source fails the job on one with a message saying so (none has been observed against the emulator or the service).
 For a query that projects, the reader replaces those two with the timestamp and the blob they stand for before the deserializer sees the entity, by the rules the client library's own projection results read them back with, so `getTimestamp` and `getBlob` answer on a projected property as on a whole entity; `getLong` and `getString` no longer answer on them.
 
 {{< java-snippet file="DatastoreConnectorSourceDeserializer.java" tag="datastore-connector-source-deserializer" >}}
@@ -629,6 +637,7 @@ The gated suite runs the Native-mode sink and source against the service, over a
 Each gated class creates a Standard-edition database of its own and deletes it afterwards ([ADR-0185]({{< param BookRepo >}}/blob/main/docs/adr/0185-the-firestore-e2e-suite-creates-an-ephemeral-database-per-gated-class.md)).
 It asserts the rejection table above, the request size and edition findings below, the service's partitioning, the read times it refuses, and the microsecond precision of version times and timestamp values.
 The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and MiniCluster jobs, the source's failing once after a checkpoint as the Native-mode one does; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
+The gated suite covers Datastore mode as well, each class in a Datastore-mode database of its own: the refusal table above and what a refused commit applies, the writer's confirmation pass against it, the splitter's sampling, the key order, which query shapes the source can split, and the raw answers the source relies on.
 
 ### Emulator deviations
 
@@ -638,16 +647,16 @@ Where the two disagree, the service decides.
 | Deviation | Consequence |
 |---|---|
 | An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`; a Standard-edition database on the service stored one |
-| Datastore-mode rejection statuses are the emulator's | The Datastore-mode error-handling table was measured against the emulator only. The gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) is where it is confirmed |
+| A refused Datastore-mode commit applies nothing | A commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applies none of its other writes, where the service applies all of them; one refused with `INVALID_ARGUMENT` applies the writes ahead of an entity over 1 MiB, where the service applies none. The writer's handling of the service's behavior is exercised only by the gated suite |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |
 | `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite, where a collection group of 3,000 documents came back in all eight partitions asked for and a group of five in fewer. A scan against the emulator needs a partition count of one |
-| Any Datastore-mode database id is served | A database that was never created answered a lookup and an update alike, so the lookup that tells a missing entity from a missing database before a `NOT_FOUND` is routed is exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
-| Datastore-mode request size is not enforced | A commit of about 10.5 MiB was applied, so `maxBatchBytes` is untested against a real refusal until the gated suite covers it |
+| Any Datastore-mode database id is served | A database that was never created answered a lookup and an update alike, where the service refuses both with `NOT_FOUND`, so the lookup that tells a missing entity from a missing database before a `NOT_FOUND` is routed is exercised only by the gated suite |
 | Old read times are answered | A read time two hours old was answered, in both modes, where the service refuses one older than about an hour without point-in-time recovery, or one older than that not on a whole minute with it (see [One snapshot for the whole read](#one-snapshot-for-the-whole-read)). The gated suite cannot reach the window, because a database it creates is younger than an hour; the window was measured once by hand |
-| `__scatter__` sampling finds no keys | The splitter's sampling query of a kind the source reads answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
+| `__scatter__` sampling finds no keys | The splitter's sampling query of a kind the source reads answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite, where a kind of 3,000 entities came back in all eight ranges asked for |
 | No statistics | `__Stat_Total__` and `__Stat_Kind__` are empty, and so are a namespace's `__Stat_Ns_Total__` and `__Stat_Ns_Kind__`, so the split-count estimate always takes its lower bound against the emulator. Unit tests cover the estimate from statistics shaped as the service documents them; the estimate from real statistics belongs to the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
-| An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch of a kind the source reads that returned entities does carry its end cursor |
+| An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch of a kind the source reads that returned entities does carry its end cursor. The service carries the skipped cursor |
+| Metadata queries carry no cursor | `__kind__` and `__namespace__` answer without a per-result or an end cursor, and `__property__` with nothing, where the service carries both cursors for all three ([#1717]({{< param BookRepo >}}/issues/1717)) |
 
 ## Scope and provenance
 

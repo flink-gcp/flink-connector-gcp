@@ -38,6 +38,8 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.lang.reflect.Field;
@@ -672,9 +674,9 @@ class DatastoreWriterTest {
     }
 
     @Test
-    void anInsertAppliedByACommitWhoseAnswerWasLostIsRoutedOnItsRetry() throws Exception {
-        // The documented cost of at-least-once: the retry of a commit that was in fact applied
-        // answers ALREADY_EXISTS, and the insert reaches the handler although it was written.
+    void anInsertAppliedByACommitWhoseAnswerWasLostIsCountedAsAppliedOnItsRetry() throws Exception {
+        // The retry of a commit that was in fact applied answers ALREADY_EXISTS; a lookup finds the
+        // entity the insert wrote, so the record is not routed.
         DatastoreMutation insert = DatastoreMutation.insert(entity("i", 1));
         access.applyThenFailNextCommit(StatusCode.Code.DEADLINE_EXCEEDED)
                 .refuse(key("i"), StatusCode.Code.ALREADY_EXISTS);
@@ -683,15 +685,17 @@ class DatastoreWriterTest {
         writer.flush(false);
 
         assertThat(access.applied()).containsEntry(key("i"), insert);
-        assertThat(handler.routed).extracting(FailedMutation::getMutation).containsExactly(insert);
+        assertThat(handler.routed).isEmpty();
+        assertThat(access.lookups()).containsExactly(key("i"));
         assertThat(errorClass("DEADLINE_EXCEEDED")).isEqualTo(1);
-        assertThat(errorClass("ALREADY_EXISTS")).isEqualTo(1);
     }
 
     @Test
-    void anInsertAPartlyAppliedCommitAlreadyWroteIsRoutedWhenItIsConfirmed() throws Exception {
+    void anInsertAPartlyAppliedCommitAlreadyWroteIsCountedAsAppliedWhenItIsConfirmed()
+            throws Exception {
         // The emulator applied the writes ahead of an oversized entity before refusing the commit;
-        // the confirmation pass re-sends them all, and an insert among them meets itself.
+        // the confirmation pass re-sends them all, and an insert among them meets itself, which a
+        // lookup tells from a key that held another entity.
         DatastoreMutation insert = DatastoreMutation.insert(entity("i", 1));
         access.applyWritesBeforeARefusal().refuse(key("big"), StatusCode.Code.INVALID_ARGUMENT);
         DatastoreWriter<DatastoreMutation> writer =
@@ -707,8 +711,128 @@ class DatastoreWriterTest {
         assertThat(access.applied()).containsEntry(key("i"), insert);
         assertThat(handler.routed)
                 .extracting(f -> f.getMutation().getKey().getName())
-                .containsExactly("i", "big");
-        assertThat(handler.routed.get(0).getErrorMessage()).contains("ALREADY_EXISTS");
+                .containsExactly("big");
+    }
+
+    @Test
+    void theInsertsAServiceAppliedBesideARefusedOneAreNotRouted() throws Exception {
+        // The service applies every write of a commit but the one it refuses with ALREADY_EXISTS
+        // (measured 2026-10-11), so each new insert meets itself in the confirmation pass.
+        access.servesLikeTheService().store(entity("dup", 0));
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        DatastoreMutation first = DatastoreMutation.insert(entity("new1", 1));
+        DatastoreMutation duplicate = DatastoreMutation.insert(entity("dup", 2));
+        DatastoreMutation second = DatastoreMutation.insert(entity("new2", 3));
+        writer.write(first, TestContexts.NO_OP);
+        writer.write(duplicate, TestContexts.NO_OP);
+        writer.write(second, TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed)
+                .extracting(FailedMutation::getMutation)
+                .containsExactly(duplicate);
+        assertThat(access.applied())
+                .containsEntry(key("new1"), first)
+                .containsEntry(key("new2"), second);
+        assertThat(access.applied().get(key("dup")).getEntity()).isEqualTo(entity("dup", 0));
+    }
+
+    @Test
+    void anInsertWhoseKeyHoldsTheSameEntityIsCountedAsApplied() throws Exception {
+        // A replay after a restart: the key already holds what the insert writes.
+        access.servesLikeTheService().store(entity("i", 1));
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        writer.write(DatastoreMutation.insert(entity("i", 1)), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed).isEmpty();
+    }
+
+    @Test
+    void anInsertIsRoutedWhenTheLookupAfterItsRefusalIsRefused() throws Exception {
+        access.servesLikeTheService()
+                .store(entity("i", 1))
+                .failNextLookups(StatusCode.Code.PERMISSION_DENIED);
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        DatastoreMutation insert = DatastoreMutation.insert(entity("i", 1));
+        writer.write(insert, TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.lookups()).containsExactly(key("i"));
+        assertThat(handler.routed).extracting(FailedMutation::getMutation).containsExactly(insert);
+        assertThat(handler.routed.get(0).getCause().getSuppressed())
+                .singleElement()
+                .satisfies(
+                        lookup ->
+                                assertThat(DatastoreErrorClassifier.statusCode(lookup))
+                                        .isEqualTo(StatusCode.Code.PERMISSION_DENIED));
+        assertThat(errorClass("PERMISSION_DENIED")).isEqualTo(1);
+    }
+
+    @Test
+    void aTransientLookupFailureAfterAnInsertsRefusalIsRetried() throws Exception {
+        access.servesLikeTheService()
+                .store(entity("i", 1))
+                .failNextLookups(StatusCode.Code.UNAVAILABLE);
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        writer.write(DatastoreMutation.insert(entity("i", 1)), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.lookups()).containsExactly(key("i"), key("i"));
+        assertThat(handler.routed).isEmpty();
+        assertThat(errorClass("UNAVAILABLE")).isEqualTo(1);
+    }
+
+    @Test
+    void theInsertsAServiceAppliedBesideARefusedUpdateAreNotRouted() throws Exception {
+        // The NOT_FOUND half: a commit refused for an update of a missing key applies the insert
+        // beside it, which then meets itself in the confirmation pass.
+        access.servesLikeTheService();
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        DatastoreMutation insert = DatastoreMutation.insert(entity("new", 1));
+        DatastoreMutation update = DatastoreMutation.update(entity("missing", 2));
+        writer.write(insert, TestContexts.NO_OP);
+        writer.write(update, TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed).extracting(FailedMutation::getMutation).containsExactly(update);
+        assertThat(access.applied()).containsEntry(key("new"), insert);
+    }
+
+    @Test
+    void anInsertCountedAsAppliedLeavesARunOfRejectionsAsItWas() throws Exception {
+        // The key holding the insert's entity is what a replay meets, so it neither resets the
+        // run of rejections nor adds to it.
+        access.servesLikeTheService()
+                .store(entity("dup", 1))
+                .refuse(key("bad1"), StatusCode.Code.INVALID_ARGUMENT)
+                .refuse(key("bad2"), StatusCode.Code.INVALID_ARGUMENT);
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        dropping());
+        writer.write(upsert("bad1"), TestContexts.NO_OP);
+        writer.write(DatastoreMutation.insert(entity("dup", 1)), TestContexts.NO_OP);
+        writer.write(upsert("bad2"), TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)");
+    }
+
+    @Test
+    void theServiceFakeAppliesNoWriteThatIsRefusedItself() throws Exception {
+        // Two duplicates in one commit: the fake must not write the second's entity while refusing
+        // the first, or the second would look applied to the lookup.
+        access.servesLikeTheService().store(entity("dupA", 0)).store(entity("dupB", 0));
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        writer.write(DatastoreMutation.insert(entity("dupA", 1)), TestContexts.NO_OP);
+        writer.write(DatastoreMutation.insert(entity("dupB", 2)), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed)
+                .extracting(f -> f.getMutation().getKey().getName())
+                .containsExactly("dupA", "dupB");
     }
 
     @Test
@@ -1082,8 +1206,9 @@ class DatastoreWriterTest {
         }
 
         @Override
-        public void lookup(Key key) {
-            delegate.lookup(key);
+        @Nullable
+        public Entity lookup(Key key) {
+            return delegate.lookup(key);
         }
 
         @Override
@@ -1117,8 +1242,9 @@ class DatastoreWriterTest {
         }
 
         @Override
-        public void lookup(Key key) {
-            delegate.lookup(key);
+        @Nullable
+        public Entity lookup(Key key) {
+            return delegate.lookup(key);
         }
 
         @Override

@@ -132,10 +132,12 @@ public class DatastoreSourceBuilder<T> {
      * <p>The query is the Datastore API's protobuf message, the form the service and the client
      * library's query splitter take. A query that names exactly one kind and filters only with
      * equality ({@code EQUAL}) and ancestor ({@code HAS_ANCESTOR}) filters, combined with {@code
-     * AND}, is cut into key ranges and read in parallel. Any other query is read as one split: one
-     * with an ordering, a {@code limit}, an {@code offset}, a cursor, a {@code DISTINCT ON}, an
-     * {@code OR}, or a filter with another operator or of no type, or one naming no kind or
-     * several. Projections are read as the query states them. A nearest-neighbour search ({@code
+     * AND}, is cut into key ranges and read in parallel; so is a keys-only projection. Any other
+     * query is read as one split: one with an ordering, a {@code limit}, an {@code offset}, a
+     * cursor, a {@code DISTINCT ON}, an {@code OR}, a projection of properties, or a filter with
+     * another operator or of no type, or one naming no kind or several. A projection of properties
+     * is read whole because the service refuses one in a key range without a composite index of
+     * {@code __key__} and the projected properties. A nearest-neighbour search ({@code
      * find_nearest}) is refused: the service applies a cursor and a limit before the search, so the
      * source's paging would change what it finds. A query of a metadata kind is refused, as {@link
      * #kind(String)} refuses one.
