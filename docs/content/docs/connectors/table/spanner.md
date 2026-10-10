@@ -176,6 +176,7 @@ Change streams are not listed.
 An `OPTIONS` hint turns a catalog table into its change-stream source instead: ``SELECT * FROM `sales.orders` /*+ OPTIONS('scan.mode' = 'change-stream', 'scan.change-stream.name' = 'order_changes', 'scan.change-stream.changelog-mode' = 'upsert') */``.
 Spanner change streams do not watch a generated column outside the primary key, so a table with one refuses the hint when the statement is planned.
 Such a table's change stream is read through a hand-written table that leaves those columns out, as [Change Streams scan behavior](#change-streams-scan-behavior) describes.
+On Flink 2.2 and 2.3 the hint's key-only deletes can meet two Flink bugs ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)) when a non-key column is `NOT NULL`, which a catalog table keeps from Spanner; [Change Streams scan behavior](#change-streams-scan-behavior) describes them and the hand-written table that avoids them.
 
 ### What the catalog leaves out
 
@@ -255,6 +256,13 @@ A declared `PRIMARY KEY` makes the sink an upsert sink.
 `INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
 The key may be composite, but every member must map to a Spanner key type.
 
+On Flink 2.x a delete may carry the key alone, which is all the sink reads from it.
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect such a delete, whose non-key columns are null.
+Flink's not-null enforcer checks those columns and fails the job when the table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); setting `table.exec.sink.not-null-enforcer` to `DROP`, as the error suggests, drops the delete instead, so the row is never deleted.
+A projection between the source and the sink also evaluates its expressions over those columns, which can fail the job when the source declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
+Declare the non-key columns nullable, in this table and in the source table, when the input's deletes carry the key alone.
+A [catalog](#catalog) table carries Spanner's `NOT NULL` over to Flink, so write such an input through a hand-written table that declares those columns nullable.
+
 A field listed in `generated-columns` is left out of every mutation, because Spanner refuses a value for a generated column.
 An upsert lets Spanner compute a generated key column from the columns written, but a delete still names the row by the value the row carries, and the planner keys its upserts by it, so that value must equal the one Spanner computes.
 Rows read from the same table carry it; a value a statement invents does not, and a delete keyed by it removes nothing.
@@ -318,6 +326,11 @@ A table written to may still carry the bounded-scan and lookup options it is als
 `full` accepts only records captured with `NEW_ROW_AND_OLD_VALUES` and emits `INSERT`, adjacent `UPDATE_BEFORE` and `UPDATE_AFTER`, and full `DELETE` rows.
 For an update, the complete new row is copied and each reported old value replaces its new value to reconstruct the before row.
 `upsert` accepts `NEW_ROW` and `NEW_ROW_AND_OLD_VALUES`, requires a declared primary key, and emits `INSERT`, `UPDATE_AFTER`, and key-only `DELETE` rows.
+A key-only `DELETE` carries `NULL` in every non-key physical column, including one the DDL declares `NOT NULL`.
+On Flink 2.x the planner hands such a delete on as it is to a sink that accepts key-only deletes, unless the query needs a `ChangelogNormalize`: reading a metadata column, filtering on a non-key column and aggregating each do.
+That operator, which Flink 1.20 always keeps, completes each delete from the last row it holds for the key and drops the delete of a key the job never saw.
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect a delete handed on as it is: a projection evaluates its expressions over the null columns, which can fail the job when this table declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)), and Flink's not-null enforcer fails the job when the sink table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)).
+Declare the non-key columns nullable, in this table and in the sink table; a catalog table keeps Spanner's `NOT NULL`, so read the stream through a hand-written table instead.
 
 {{< sql-snippet file="flink/SpannerTableReference.sql" tag="change-stream" >}}
 

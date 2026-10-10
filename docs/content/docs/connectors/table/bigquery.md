@@ -294,6 +294,7 @@ A table the catalog resolves behaves as the equivalent hand-written `CREATE TABL
 - **Primary key**: a BigQuery primary key becomes a `PRIMARY KEY ... NOT ENFORCED` whose columns are `NOT NULL`, as a primary key in Flink DDL makes them.
   A key column that holds a `NULL` all the same breaks that declaration, as it would for a hand-written table: BigQuery does not enforce the key.
   An upsert `INSERT INTO` then takes the [CDC](#change-data-capture) path once the statement adds `/*+ OPTIONS('sink.cdc.enabled' = 'true') */`.
+  On Flink 2.2 and 2.3 a `NOT NULL` non-key column, which a `REQUIRED` one becomes, fails an input whose deletes carry the key alone ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)); [CDC](#change-data-capture) describes the hand-written table that avoids it.
 
 A column the connector cannot carry fails the lookup, naming the table, the column path and the BigQuery type; the table never resolves with the column missing.
 Those are `INTERVAL`, a `BIGNUMERIC` without parameters or wider than 38 digits, a `TIMESTAMP` finer than microseconds, and a type the client does not know, such as `FOREIGN`.
@@ -492,6 +493,22 @@ A primary-key change must therefore reach the sink as `DELETE` for the old key f
 `INSERT` or `UPDATE_AFTER` for the new key.
 Delete rows serialize only the declared primary-key fields, so a key-only delete does not need
 values for `REQUIRED` non-key BigQuery columns.
+
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect a key-only delete, whose non-key columns
+are null.
+Flink's not-null enforcer checks those columns and fails the job when the table declares one of them
+`NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); setting
+`table.exec.sink.not-null-enforcer` to `DROP`, as the error suggests, drops the delete instead, so
+the row is never deleted.
+A projection between the source and the sink also evaluates its expressions over those columns,
+which can fail the job when the source declares one of them `NOT NULL`
+([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
+Declare the non-key columns nullable, in this table and in the source table, when the input's
+deletes carry the key alone.
+A nullable declaration does not by itself change an existing `REQUIRED` BigQuery column, which a
+key-only delete needs no value for, but a table the sink creates derives the column as `NULLABLE`.
+A [catalog](#catalog) table carries `REQUIRED` over to Flink as `NOT NULL`, so write such an input
+through a hand-written table that declares those columns nullable.
 
 Sequence metadata is optional.
 When selected, exactly one of these writable metadata columns may appear in the sink DDL:

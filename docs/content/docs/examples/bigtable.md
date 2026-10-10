@@ -368,6 +368,10 @@ That changelog can feed a BigQuery table with the same primary key and CDC enabl
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="selected-cell-bigquery-cdc" >}}
 
+The query reads no metadata column, so on Flink 2.x a key-only `DELETE` reaches the BigQuery sink as it is.
+On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 can fail the job on such a delete when either table declares a non-key column `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
+Both tables here declare `name` and `tier` nullable; the [selected-cell reference]({{< relref "docs/connectors/table/bigtable" >}}#selected-cell-upserts) describes the bugs and when a delete is completed instead.
+
 The checkpoint interval persists the Change Streams position and flushes the BigQuery default
 stream, so it must remain enabled for at-least-once recovery.
 The example selects one source cluster so multi-cluster conflict resolution cannot reorder the selected-cell changelog.

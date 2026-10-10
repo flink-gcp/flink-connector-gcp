@@ -229,7 +229,10 @@ source reader subtask, then insert a watched row from another session:
 The Change Streams DDL and sink DDL remain separate because `scan.mode = 'change-stream'` makes a table source-only.
 The source metadata columns are virtual, while the replica stores their selected values in ordinary physical columns for observability.
 The query widens the Flink `INT` mod number to `BIGINT`, the lossless mapping for a physical Spanner `INT64` column.
-A key-only delete still works because the sink constructs a delete mutation from the primary key and does not write non-key fields.
+The sink deletes a row by its primary key and writes no non-key field for a delete.
+Because the query reads metadata columns, the planner keeps a `ChangelogNormalize` in front of the sink, which completes each delete from the last row it holds for the key.
+A delete of a key the job never saw, such as a row committed before the job started, is therefore dropped rather than applied.
+The same operator keeps out of this job the two Flink 2.2 and 2.3 bugs that affect a delete carrying the key alone ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)); a query that reads only physical columns hands such deletes to the sink, as [Change Streams scan behavior]({{< relref "docs/connectors/table/spanner" >}}#change-streams-scan-behavior) describes.
 
 This is a replica-shaped materialization pattern, not a strict replica guarantee.
 The sink is at-least-once, and `BatchWrite` does not guarantee the application order of successive writes to one key, so the destination is not guaranteed to retain the latest source value.
