@@ -27,6 +27,10 @@ from ..policy import HTTP_TIMEOUT
 from .resources import BASE, MAX_RESPONSE_BYTES, ResourcePlan
 
 MAX_BATCH = 100
+# A publish request carries up to 1,000 messages. Every publication also
+# updates the shared control record several times, so a cohort published in
+# batches of 100 outlasted its deadline on 2026-10-10; a pull stays at 100.
+PUBLISH_BATCH = 1000
 MAX_PAYLOAD_BYTES = 4096
 MAX_ID_BYTES = 1024
 MAX_ACK_ID_BYTES = 4096
@@ -181,7 +185,7 @@ class Messages:
         self._role("runner")
         _integer(input_index, 0, 1, "input index")
         _integer(start, 0, self.records - 1, "sequence start")
-        _integer(count, 1, min(MAX_BATCH, self.records - start), "publish count")
+        _integer(count, 1, min(PUBLISH_BATCH, self.records - start), "publish count")
         topic = self.plan.topics()[input_index]["name"]
         request = {
             "messages": [

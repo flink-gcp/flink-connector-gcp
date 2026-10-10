@@ -22,7 +22,7 @@ import uuid
 from ..common import Failure, json_bytes
 from ..model import Phase
 from ..policy import HTTP_TIMEOUT
-from .messages import COHORTS, MAX_BATCH, cohort_ranges
+from .messages import COHORTS, MAX_BATCH, PUBLISH_BATCH, cohort_ranges
 
 COHORT_FIELDS = {"deadline", "requested_at", "started_at", "published_at"}
 
@@ -474,10 +474,12 @@ class PubSubHandoff:
             self.controller._change(begin)
         end = cohort["start"] + cohort["count"]
         for index in range(2):
-            for start in range(cohort["start"], end, MAX_BATCH):
+            for start in range(cohort["start"], end, PUBLISH_BATCH):
                 if check is not None:
                     check()
-                self.publish(index, start, min(MAX_BATCH, end - start), deadline=until)
+                self.publish(
+                    index, start, min(PUBLISH_BATCH, end - start), deadline=until
+                )
         with self.controller.reserve("mark_cohort"):
             self.controller._change(finish)
 

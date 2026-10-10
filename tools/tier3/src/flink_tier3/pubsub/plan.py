@@ -26,7 +26,7 @@ from ..model import Schedule, _hourly
 from ..policy import GAR, POD_RESOURCES, POLL, PUBSUB_CEILINGS, SHA
 from ..workflow import render
 from .access import probe_spec
-from .messages import MAX_BATCH, cohort_ranges
+from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
 from .resources import ResourcePlan
 from .traffic import COUNTER_CEILINGS, TrafficLimits
 
@@ -179,7 +179,7 @@ def input_plan(run_id, trial):
         len(f"v1|{run_id}|{i}|{n}".encode()) for i in range(2) for n in range(records)
     )
     publish_calls = 2 * sum(
-        (c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
+        (c["count"] + PUBLISH_BATCH - 1) // PUBLISH_BATCH for c in cohorts.values()
     )
     minimum_pulls = sum(
         (2 * c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
@@ -203,7 +203,8 @@ def input_plan(run_id, trial):
         "subscriptions": 2,
         "records_per_subscription": records,
         "cohorts_per_subscription": cohorts,
-        "batch_size": MAX_BATCH,
+        "publish_batch_size": PUBLISH_BATCH,
+        "pull_batch_size": MAX_BATCH,
         "publish_calls": publish_calls,
         "messages": 2 * records,
         "payload_bytes": input_bytes,

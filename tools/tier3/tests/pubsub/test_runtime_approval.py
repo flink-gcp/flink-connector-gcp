@@ -145,7 +145,7 @@ def test_invalid_trial_refused(prepared, key, value):
     [
         ("input_messages", 1999),
         ("input_bytes", 1),
-        ("publish_calls", 19),
+        ("publish_calls", 5),
         ("output_messages", 1999),
         ("pull_calls", 19),
         ("pubsub_requests", 59),

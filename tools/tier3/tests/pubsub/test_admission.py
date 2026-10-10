@@ -262,7 +262,7 @@ def test_admission_runs_the_ordered_preparation_before_the_application(admitting
     # is created last, with its input waiting.
     assert participated < min(publishes) and max(publishes) < application
     cohort = a.environment.approval.pubsub_trial["records_per_subscription"] // 3
-    assert len(publishes) == 2 * -(-cohort // 100)
+    assert len(publishes) == 2 * -(-cohort // 1000)
     cohorts = control.pubsub["cohorts"]
     assert list(cohorts) == ["before_checkpoint"]
     assert cohorts["before_checkpoint"]["requested_at"] is None
@@ -288,7 +288,7 @@ def test_later_cohorts_run_under_the_actors_production_guards(admitting):
     published = a.events.count(("publish", "runner"))
     assert a.sender.serve() == "after_checkpoint"
     cohort = a.environment.approval.pubsub_trial["records_per_subscription"] // 3
-    assert a.events.count(("publish", "runner")) - published == 2 * -(-cohort // 100)
+    assert a.events.count(("publish", "runner")) - published == 2 * -(-cohort // 1000)
     assert a.receiver.cohorts()["after_checkpoint"]["published_at"] is not None
     assert a.sender.serve() is None
 

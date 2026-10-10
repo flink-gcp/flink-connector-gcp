@@ -122,7 +122,7 @@ Each subscription's domain splits into three disjoint, nonempty cohorts at `floo
 | `after_checkpoint` | When the supervisor asks, after a retained completed checkpoint; a replacement trial's replay population |
 | `after_recovery` | When the supervisor asks, after observed recovery |
 
-Each range is published in ascending batches of at most 100, without crossing the range boundary: the first by admission, the others through the [cohort requests](#cohort-requests) below.
+Each range is published in ascending batches of at most 1,000, the publish API's per-request maximum, without crossing the range boundary: the first by admission, the others through the [cohort requests](#cohort-requests) below.
 The output records exact logical messages, payload bytes and required publication calls.
 A cohort range alone does not prove that its messages were processed but not checkpoint-confirmed: the [recovery exercise](#recovery-exercise) times the cohort and proves the boundary.
 
@@ -132,7 +132,7 @@ The input file requires exactly the five fields shown in the example and rejects
 The renderer refuses caps too small for one complete input/output pass; extra pulls, duplicates, ambiguous calls and evidence sizes can exhaust otherwise valid proposals.
 Input bytes exclude service framing; output messages count reserved deliveries, including collector redelivery and empty-pull reservations.
 The [output collector](#output-collector) reserves a whole batch of 100 for every pull, and the [recovery exercise](#recovery-exercise) pulls at least once per 15-second poll, empty or not, until cleanup: 180 pulls in the 2,700 seconds before `cleanup_at`.
-One feasible run therefore needs its minimum pulls plus those 180 in `pull_calls`, 100 output messages for each of them, and requests for every publication, two for each minimum pull and one for each of the 180: for the example, 201 pulls, 20,100 output messages and 246 requests.
+One feasible run therefore needs its minimum pulls plus those 180 in `pull_calls`, 100 output messages for each of them, and requests for every publication, two for each minimum pull and one for each of the 180: for the example, 201 pulls, 20,100 output messages and 228 requests.
 These helper counters exclude connector SDK traffic and resource/control/credential/storage operations, which no ceiling meters: those requests are nearly free, and the trial's cost is bounded by its window and Pod quota, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records.
 
 The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
@@ -541,7 +541,7 @@ Method `PUT` always denotes storage, while `POST` always denotes a Pub/Sub data 
 Use the shared reservation wrapper below when composing these helpers with prepared run control.
 Neither layer connects the CLI, hands off actors or implements the cleanup quiescence barrier.
 
-The runner calls `publish(input_index, start, count)` for one interval of at most 100 logical inputs on one of the two planned input topics.
+The runner calls `publish(input_index, start, count)` for one interval of at most 1,000 logical inputs on one of the two planned input topics.
 It stores the exact request and run/nonce/domain binding in `runs/<run-id>/pubsub/messages/<nonce>/input/<index>/<start>-<count>/intent.json` with generation-match zero before publishing.
 An existing intent refuses that interval, including after a restart, a lost intent-write response or an ambiguous publication response.
 A successful service response is saved as `response.json` before returning its IDs; the [publish API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/publish) binds returned IDs to request order.
@@ -568,7 +568,7 @@ An [empty pull](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/proj
 No API operation or evidence upload is retried by the helper, and no existing evidence is overwritten or removed.
 The caller must preserve intents and evidence through assessment and must not reuse a run's batch paths after deleting them.
 
-Each call admits at most 100 messages, a streamed response of 1 MiB, an output payload of 4096 decoded bytes, a message ID of 1024 UTF-8 bytes and an ACK ID of 4096 UTF-8 bytes.
+A publication admits at most 1,000 messages and a collection at most 100, each with a streamed response of 1 MiB, an output payload of 4096 decoded bytes, a message ID of 1024 UTF-8 bytes and an ACK ID of 4096 UTF-8 bytes.
 These are local collection limits, not Pub/Sub service limits; decoded response JSON and serialized GCS evidence can be larger than the wire representation.
 Budget each publication for two logical GCS writes and one Pub/Sub request, and each nonempty collection for four logical GCS writes and two Pub/Sub requests (an empty collection uses three writes and one request).
 Reserve storage for both the response and the TSV representation, including JSON encoding overhead, and account for every repeated batch and failed attempt.
@@ -583,7 +583,7 @@ The run control's Pub/Sub portion keeps one entry per cohort under `cohorts`, wi
 
 - **`request_cohort(name, deadline=…)`**: the supervisor asks for `after_checkpoint` or `after_recovery`, only once the cohort before it is published, while the run is `RUNNING` and its message traffic is admitted, which lasts until `cleanup_at` rather than the 900-second admission window, and with a deadline after now and no later than `cleanup_at`. Repeating a recorded request with the same deadline changes nothing, even after that deadline or a stop, so a retry after a lost response confirms it; another deadline is refused.
 - **`serve()`**: the runner publishes the first requested cohort that has not started, and returns its name, or `None` when nothing waits. `Runner.settle()` calls it on each poll.
-- **`publish_cohort(name, deadline=…)`**: the runner publishes one cohort to both input topics in batches of at most 100. Admission calls it for `before_checkpoint` with the admission deadline; `serve()` calls it for a requested cohort, which takes no deadline argument and uses the recorded one.
+- **`publish_cohort(name, deadline=…)`**: the runner publishes one cohort to both input topics in batches of at most 1,000. Admission calls it for `before_checkpoint` with the admission deadline; `serve()` calls it for a requested cohort, which takes no deadline argument and uses the recorded one.
 
 A cohort's start is recorded before its first publication request, so `started_at` precedes every message of the cohort, and a cohort that started is never started again.
 A batch that fails stops the run through the handoff's usual failure path, leaving the cohort started but unpublished.
