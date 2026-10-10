@@ -290,6 +290,28 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Reserved kinds stay refused for the scan too**: the emulator's `__kind__` metadata query
   answers without per-entity cursors, which the reader requires.
 
+## Datastore-mode Table API lookup (`docs/adr/0184`, lookup section)
+
+- **Read through the generated `v1.DatastoreClient`, not `Datastore` or `DatastoreRpc`**:
+  `lookupCallable().futureCall()` is the only future-returning `Lookup`; the blocking function
+  waits on it (owner, 2026-10-10). Settings come from `DatastoreClients.lookupSettings`
+  (`EmulatorChannels` plaintext for the emulator). Never `Datastore.get` (unbounded deferral loop,
+  ADR-0175).
+- **A deferred key is a transient read failure** (`DatastoreEntityLookups.DeferredException`)
+  within `lookup.max-retries`, never a miss (owner). `DatastoreLookupErrorClassifier` otherwise
+  mirrors the generated client's `Lookup` retry set, `UNAVAILABLE` and `DEADLINE_EXCEEDED` only
+  (no `INTERNAL`, unlike Native mode); its test compares the two sets.
+- **`DatastoreLookupKeys` skips the read** for NULL, an empty name, id `0`, a name over 1,500
+  bytes or `__.+__`: the emulator refuses a lookup of the empty name, id `0` or the over-long name
+  with `INVALID_ARGUMENT`, and answers `__x__` as missing. A negative id
+  is a real id (measured) and is read.
+- **The request carries a property mask** of the produced columns, each name backquoted with `\`
+  and `` ` `` escaped; `__key__` alone when only key/metadata are read (owner). Unlike a
+  projection query it keeps unindexed values and arrays whole. No read options: strong reads;
+  `scan.read-time` is scan-only and `read-time` is `LookupResponse.read_time` (owner).
+- `DatastoreLookupConfig` is a per-connector copy of the lookup config, as Firestore, Spanner and
+  Bigtable keep theirs.
+
 ## Testing
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image

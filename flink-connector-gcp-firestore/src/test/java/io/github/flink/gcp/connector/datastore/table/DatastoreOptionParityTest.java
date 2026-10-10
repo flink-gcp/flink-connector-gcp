@@ -105,6 +105,7 @@ class DatastoreOptionParityTest {
                         "scan.partition.max-partitions",
                         "scan.read-time",
                         "scan.max-rows-per-fetch",
+                        "lookup.async",
                         "sink.unindexed-columns",
                         "sink.buffer-flush.max-mutations",
                         "sink.buffer-flush.max-size",

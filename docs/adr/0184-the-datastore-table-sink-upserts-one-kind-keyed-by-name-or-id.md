@@ -21,8 +21,8 @@ limitations under the License.
   `google/datastore/v1/entity.proto` of proto-google-cloud-datastore-v1 3.7.0 through
   libraries-bom 26.90.0; emulator behavior measured 2026-10-10 against the pinned
   `google-cloud-cli` emulators image in Datastore mode, one run); revised 2026-10-10 by [#1652]
-  (the scan)
-- Issues: [#1651], [#1652], [#1545], [#355]
+  (the scan) and [#1653] (the lookup)
+- Issues: [#1651], [#1652], [#1653], [#1545], [#355]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`, `datastore.table`, `datastore.table.sink`, `datastore.table.source`, `datastore.source.batch`, `datastore.source.serializer`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/datastore.md`
 
@@ -69,6 +69,19 @@ The Native-mode table connector's choices are ADR-0179, and the DataStream sink 
 - **Lineage**: the scan reports the same `datastore-kind` resource as the sink and the DataStream source, through `Lineage.tableSource`.
 - **The scan refuses a reserved kind, as the sink does.** Such a kind is Datastore's statistics or metadata. The emulator answers the `__kind__` metadata query without the per-entity cursor the reader resumes from, which fails the read with an internal message (measured in review round one, with the refusal lifted for the scan); no statistics kind was measured, as the emulator keeps none. Accepting them later is compatible; [#1690] tracks the DataStream source reading them.
 
+### The lookup ([#1653], 2026-10-10)
+
+[#1653] added the lookup join, in ADR-0179's shape, through the scan's converter, `type-mismatch-policy` and metadata columns. The owner settled the four choices it left open on 2026-10-10, each the recommended one. The client library facts are read in google-cloud-datastore 3.7.0 and `datastore.proto` 3.7.0; the emulator facts were measured once against the pinned emulator in Datastore mode, through the lookup's own client.
+
+- **The addressing key is the PRIMARY KEY**: a `STRING` column names a key and a `BIGINT` one numbers it, a key without a parent of the table's kind in its namespace. A table without a PRIMARY KEY cannot be looked up, as in Native mode. Additional top-level physical scalar equality keys are compared after the read through `base.table.LookupKeyFilter`, as ADR-0179 records for [#1643].
+- **One `Lookup` per key through the generated client** (`com.google.cloud.datastore.v1.DatastoreClient`), whose `lookupCallable().futureCall()` returns a future. The library's `Datastore` and its RPC object only block (`GrpcDatastoreRpc.lookup` calls the same callable's `call()`), and `Datastore.get` re-sends a deferred key with no bound (ADR-0175). The blocking lookup waits on the future the asynchronous one chains on, so both modes send the same request through one client and no executor is needed. The generated client reaches an emulator through base's `EmulatorChannels` over plaintext without credentials, as Pub/Sub, BigQuery and Cloud Tasks do; its settings never read `DATASTORE_EMULATOR_HOST`. The request carries no read options, so the lookup reads strongly, the default `datastore.proto` gives Datastore mode.
+- **A deferral is a read failure the lookup sends again within `lookup.max-retries`**, never an answer: a deferred key was not read, and joining no row would hide an entity that may exist. A key still deferred when the budget runs out fails the join, naming the option. No separate bound or option exists for it, and the re-send is immediate, as for the statuses below, although a deferral reports resource constraints as `RESOURCE_EXHAUSTED` does: a service that defers one key for longer than the budget's immediate re-sends fails the join. The emulator never deferred a key, even among 1,000 in one request, so only the unit tests exercise the path.
+- **A key that can address no entity joins no row without a read**: NULL, an empty name, the id `0`, a name over 1,500 bytes, and a name of the form `__…__`. The emulator refused a lookup of the first three non-NULL ones with `INVALID_ARGUMENT` ("The key path element name is the empty string", "Key path id is invalid. Must not be zero", "longer than 1500 bytes"), and answered `__x__` and `_____` as missing. It stored and found an entity under the id `-5`, so a negative id is read. Unlike the sink, which leaves an invalid key name to the service, a lookup decides a join, and a refused read would fail the job for one stream value.
+- **`lookup.max-retries` adds budget on top of the client library's** (ADR-0095's shape): it reads again after exactly the statuses the generated client retries `Lookup` on, `UNAVAILABLE` and `DEADLINE_EXCEEDED` (`DatastoreStubSettings`, `retry_policy_0_codes`), and after a deferral. `INTERNAL`, which Native mode's `BatchGetDocuments` retries, is not in this set, and neither is `RESOURCE_EXHAUSTED`. `DatastoreLookupErrorClassifierTest` compares the two sets, so a libraries-bom bump that changes the library's fails it.
+- **A lookup asks for the produced columns' properties through `LookupRequest.property_mask`**, the Native-mode field mask's counterpart. Each name is one backquoted top-level path, a backquote or a backslash in it escaped by a backslash; the emulator refused an unquoted name holding a dot, naming its grammar for a quoted path, a backquoted run in which a backslash escapes the next character, and returned names holding a dot, a backquote or a backslash through the quoted form. A join that reads only the key and metadata asks for `__key__` alone, which the emulator answered with the key, the version and the times and no property. The emulator answers a mask with no path the same way (a mutant that sent one survived the emulator tests), but `datastore.proto` says only that an unset mask returns every property, so the lookup names `__key__` rather than rely on an empty mask's reading; a unit test holds the choice. Unlike the projection query the scan declines, the mask returned an unindexed value and an array whole (`DatastoreKindEntityLookupITCase`). The real service's reading of the mask, the key-only form included, is unmeasured until the gated suite ([#1546]) reads it.
+- **`read-time` is the answer's own**: `LookupResponse.read_time`, "the time at which these entities were read or found missing". `scan.read-time` names the scan's snapshot and does not apply, and a `PARTIAL` cache hit returns the row as it was cached. The `@Internal` `EntityMetadata` now takes a nullable read time, so an answer without one fails only a read of `read-time`.
+- **Flink owns the cache**: `NONE` and `PARTIAL`, `FULL` refused, with the same planning checks as ADR-0179. `DatastoreLookupConfig` is the fourth per-connector copy of that class, beside Firestore's, Spanner's and Bigtable's.
+
 ## Consequences
 
 - A Datastore-mode table can be written from SQL without a DataStream program, with the DataStream sink's batching, ramp-up and recovery.
@@ -90,11 +103,17 @@ The Native-mode table connector's choices are ADR-0179, and the DataStream sink 
 - **Reading the metadata through a change to the public `DatastoreEntityDeserializationSchema`**: an `@Internal` subtype carries it without committing the SPI to the query result's shape.
 - **Marking an array value itself as excluded**, which the client library accepts and the service refuses.
 - **Nested paths in `sink.unindexed-columns`.** Excluding a column excludes everything in it, which covers the long-text and blob cases; a path grammar can be added without breaking a table.
+- **A fixed internal bound, or a Datastore-only option, for re-sending a deferred key** ([#1653]). The first is a rule a user cannot see or tune, and the second a knob beside `lookup.max-retries` for an outcome the emulator cannot produce; a deferral is transient like the statuses the budget already covers.
+- **Running the library's blocking `DatastoreRpc.lookup` on a function-owned executor for `lookup.async`, or offering no asynchronous lookup at first** ([#1653]). The executor needs a size, which Flink's async capacity does not give it, and a shutdown on close; the generated client's future needs neither. Dropping `lookup.async` would break parity with the Native-mode table.
+- **Reading whole entities in a lookup, as the scan does** ([#1653]). The scan's reason is the projection query's semantics, which the property mask does not share; reading whole entities would transfer every undeclared property on every lookup.
+- **Applying `scan.read-time` to the lookup** ([#1653]). Datastore keeps versions for an hour, or seven days with point-in-time recovery, so a streaming lookup at a fixed read time fails once the time leaves that window.
+- **Sending a key that addresses no entity to the service** ([#1653]). The emulator refused a lookup of the empty name, the id `0` and an over-long name with `INVALID_ARGUMENT`, which would fail the job for one stream value where no row is the answer.
 - **Checking a key name against the reserved pattern and the length limit in the serializer.** Only the data supplies a key name, so no check can run at planning, and the service refuses either with `INVALID_ARGUMENT`, which the sink confirms and fails the job on; a copy of the rule in the serializer would change only the message.
 
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355
 [#1545]: https://github.com/flink-gcp/flink-connector-gcp/issues/1545
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
+[#1643]: https://github.com/flink-gcp/flink-connector-gcp/issues/1643
 [FLINK-40477]: https://issues.apache.org/jira/browse/FLINK-40477
 [#1651]: https://github.com/flink-gcp/flink-connector-gcp/issues/1651
 [#1652]: https://github.com/flink-gcp/flink-connector-gcp/issues/1652
