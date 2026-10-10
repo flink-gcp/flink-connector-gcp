@@ -2296,12 +2296,11 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
         revision="b" * 40,
         application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         trial={
-            "version": 3,
+            "version": 4,
             "trial": "jm-replacement",
             "entry_point": "datastream",
             "records_per_subscription": 1000,
             "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
-            "total_request_limit": 100000,
         },
     )
     probe = bundle["delivery"]["probe"]
@@ -2356,12 +2355,11 @@ def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_
     monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     pubsub_trial = {
-        "version": 3,
+        "version": 4,
         "trial": trial,
         "entry_point": entry_point,
         "records_per_subscription": 1000,
         "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
-        "total_request_limit": 100000,
     }
     application_image = GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST
     bundle = pubsub_plan.prepare(
@@ -2460,19 +2458,19 @@ def test_pubsub_proposal_from_real_cue(
         "revision": "b" * 40,
         "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         "trial": {
-            "version": 3,
+            "version": 4,
             "trial": trial,
             "entry_point": entry_point,
             "records_per_subscription": records,
             "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
-            "total_request_limit": 100000,
         },
     }
     bundle = pubsub_plan.prepare(**inputs)
     proposal = bundle["proposal"]
     initial, recovery = bundle["application"], bundle["recovery_application"]
     assert proposal["approved"] is False
-    assert proposal["cost"] == {"kind": "unestimated"}
+    assert proposal["cost"]["kind"] == "planning-estimate"
+    assert proposal["cost"]["usd"] == "1.987"
     assert proposal["application_sha256"] == digest(initial)
     assert proposal["recovery_application_sha256"] == digest(recovery)
     assert proposal["supervisor_sha256"] == digest(bundle["delivery"]["supervisor"])

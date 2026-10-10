@@ -280,7 +280,7 @@ The common helper inspects all five namespaces, and the [idle Operator configura
 The initial foundation deferred Pub/Sub topic/subscription grants; the lifecycle authority below follows the concrete application and owned resource design.
 The initial eight-resource stage introduced no Pub/Sub data or resource-administration permissions.
 Application image publication, ownership-aware service cleanup and run admission have since landed, as the [Pub/Sub runbook](../kubernetes/apps/pubsub/README.md) describes.
-Execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) and the preregistered trial numbers ([#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434)) remain open: dispatch refuses a Pub/Sub run before the environment lock until the first lands, and no recovery trial is registered before the second.
+Dispatch runs one of the four reviewed Pub/Sub trials, as the [Pub/Sub runbook](../kubernetes/apps/pubsub/README.md#approval-dispatch) describes.
 This configuration does not create topics/subscriptions or start Kubernetes workloads, and it does not establish live Pub/Sub recovery.
 
 ### Pub/Sub lifecycle authority

@@ -128,7 +128,7 @@ def test_incompatible_approval_refused(prepared, key, value):
         ("records_per_subscription", 2),
         ("records_per_subscription", 10001),
         ("traffic_limits", {}),
-        ("total_request_limit", 29999),
+        ("total_request_limit", 100000),
         ("additional_cost_usd", "10.00"),
         ("unreviewed", 1),
     ],

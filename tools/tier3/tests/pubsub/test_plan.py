@@ -15,6 +15,7 @@
 
 import copy
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -28,12 +29,11 @@ from flink_tier3.pubsub import plan
 @pytest.fixture
 def trial():
     return {
-        "version": 3,
+        "version": 4,
         "trial": "rescale-out",
         "entry_point": "datastream",
         "records_per_subscription": 1000,
         "traffic_limits": dict(plan.COUNTER_CEILINGS),
-        "total_request_limit": 100000,
     }
 
 
@@ -315,9 +315,8 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         ("records_per_subscription", True),
         ("traffic_limits", {}),
         ("traffic_limits", []),
-        ("total_request_limit", 29999),
-        ("total_request_limit", 100001),
-        ("total_request_limit", True),
+        ("version", 3),
+        ("total_request_limit", 100000),
         # Spend is approved from the estimate before dispatch, not proposed here.
         ("additional_cost_usd", "10.00"),
     ],
@@ -534,10 +533,10 @@ def test_the_example_trial_is_the_one_the_tests_use(trial):
     "text",
     [
         "",
-        "version = 3\nversion = 3\n",
+        "version = 4\nversion = 4\n",
         "version = ",
         # JSON is the offline renderer's format, not a reviewed file's.
-        '{"version": 3}',
+        '{"version": 4}',
     ],
 )
 def test_a_reviewed_trial_file_that_does_not_parse_or_validate_is_refused(
@@ -556,6 +555,30 @@ def test_a_missing_reviewed_trial_file_is_refused(tmp_path):
 
 def test_a_reviewed_trial_file_that_is_not_utf8_is_refused(tmp_path):
     path = tmp_path / "trial.toml"
-    path.write_bytes(b"# caf\xe9\nversion = 3\n")
+    path.write_bytes(b"# caf\xe9\nversion = 4\n")
     with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
         plan.load_reviewed_trial(path)
+
+
+def test_the_estimate_charges_the_pod_budget_and_the_reserve():
+    # Seven Pods of 1 vCPU, 2 GiB and 1 GiB for the hour, and the reserve.
+    assert plan.estimate() == Decimal("0.987") + Decimal("1.00")
+
+
+def test_the_estimate_charges_each_slot_at_its_own_shape(monkeypatch):
+    # The policy's Flink and Operator shapes are equal; a distinct one shows
+    # which shape each slot is charged at.
+    shapes = dict(plan.POD_RESOURCES)
+    shapes["operator"] = {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}
+    monkeypatch.setattr(plan, "POD_RESOURCES", shapes)
+    # Three control slots at 0.10 more each.
+    assert plan.estimate() == Decimal("0.987") + 3 * Decimal("0.10") + Decimal("1.00")
+
+
+def test_the_proposal_carries_the_estimate_and_its_basis(inputs, renderer):
+    assert plan.prepare(**inputs)["proposal"]["cost"] == {
+        "kind": "planning-estimate",
+        "usd": "1.987",
+        "reviewed_at": "2026-10-10T00:00:00Z",
+        "other_reserve_usd": "1.00",
+    }

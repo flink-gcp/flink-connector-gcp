@@ -12,21 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Example trial for tests. It exercises the version 4 trial schema, the
-# approval phrase and the approval-bound rendering. It lives outside
-# kubernetes/lifecycle/pubsub-trials/ so that no dispatch can name it: a file
-# there is a runnable trial, and the campaign's four trials are the files there.
+# One of the four recovery trials #1361 runs once each on the DataStream
+# entry point. Its input limits are exactly the input domain, 2,000 messages
+# of at most 128 bytes; the other traffic limits are the helper ceilings.
 
 version = 4
-trial = "rescale-out"
+trial = "tm-replacement"
 entry_point = "datastream"
 records_per_subscription = 1000
 
 [traffic_limits]
 publish_calls = 20000
 pull_calls = 2000
-input_messages = 20000
-input_bytes = 2560000
+input_messages = 2000
+input_bytes = 256000
 output_messages = 200000
 pubsub_requests = 30000
 evidence_bytes = 67108864

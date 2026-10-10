@@ -139,7 +139,7 @@ These identities retain their trusted Operator-administrator boundary described 
 
 This foundation starts no workload and grants no Pub/Sub service permissions.
 Each run's lifecycle creates its topics, subscriptions and their resource-level grants, and deletes them again; the [Pub/Sub runbook](../../kubernetes/apps/pubsub/README.md#run-identity-and-service-resources) describes them with the application and its admission.
-Dispatch still refuses a Pub/Sub run before the environment lock until execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) lands, and no recovery trial is registered before [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434).
+Dispatch runs one of the four reviewed Pub/Sub trials, as the [Pub/Sub runbook](../../kubernetes/apps/pubsub/README.md#approval-dispatch) describes.
 The [namespace apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan.
 Separate namespace/KSA reads and runner-impersonated quota/inventory reads confirmed the applied identity, observed zero quotas and absence of workloads.
 The common helper now includes Pub/Sub in preflight, and the [idle Helm root](../tier3-operator/README.md) adds it to the watch set.

@@ -46,12 +46,11 @@ INTERVAL = 120
 )
 def trial(request):
     return {
-        "version": 3,
+        "version": 4,
         "trial": request.param,
         "entry_point": "datastream",
         "records_per_subscription": RECORDS,
         "traffic_limits": dict(COUNTER_CEILINGS),
-        "total_request_limit": 100000,
     }
 
 
