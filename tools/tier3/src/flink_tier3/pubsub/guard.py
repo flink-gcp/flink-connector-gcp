@@ -18,12 +18,12 @@ from contextlib import contextmanager
 
 from ..common import Failure
 from ..model import validate_approval
-from ..policy import HTTP_TIMEOUT, PUBSUB_ADMISSION
+from ..policy import HTTP_TIMEOUT, PUBSUB_ADMISSION, UPDATE_ATTEMPTS
 from .access import INTERVAL, admission_until
 
 # A conditional control update invokes the guard once before the record
-# adapter and once per write attempt, and the adapter makes at most five.
-CHANGE_CALLBACKS = 6
+# adapter and once per write attempt, and the adapter makes at most eleven.
+CHANGE_CALLBACKS = 1 + UPDATE_ATTEMPTS
 # A process-owned call adds its begin update and, at worst, either three
 # completion attempts or a stop followed by three attempts to release the
 # marker of a settled failure.

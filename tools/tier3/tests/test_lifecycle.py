@@ -505,6 +505,29 @@ def test_cancellation_blocks_every_admission(env):
     assert env[0].calls == []
 
 
+@pytest.mark.parametrize("key", ["application", "config"])
+def test_admission_closing_while_intent_is_written_prevents_the_create(
+    env, monkeypatch, key
+):
+    """A rate-limited intent write backs off, and admission can close meanwhile."""
+    runner = lifecycle(env, cli.runner_api.Runner)
+    intend = runner.env.records.intend
+
+    def slow_intend(*args):
+        result = intend(*args)
+        runner.env.records.request_stop()
+        return result
+
+    monkeypatch.setattr(runner.env.records, "intend", slow_intend)
+    with pytest.raises(rt.Failure, match="stopped"):
+        if key == "application":
+            runner.create_application(app(env))
+        else:
+            runner.create_root("config", obj("ConfigMap", "source", rt.SYSTEM))
+    assert ("create", "FlinkDeployment", False) not in env[0].calls
+    assert ("create", "ConfigMap", False) not in env[0].calls
+
+
 def test_lost_create_response_records_verified_uid(env):
     value = app(env)
     runner = lifecycle(env, cli.runner_api.Runner)

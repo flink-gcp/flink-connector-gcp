@@ -144,6 +144,8 @@ class Runner:
         self.admission_open()
         # Persist the exact creation intent before the non-transactional API call.
         self.env.records.intend("application")
+        # A rate-limited intent write backs off; admission may close meanwhile.
+        self.admission_open()
         try:
             created = self.env.kube.create(application)
         except rt.Failure:
@@ -186,6 +188,7 @@ class Runner:
             intent = {k: value for k, value in manifest.items() if k != "data"}
             intent["data_sha256"] = rt.digest(manifest.get("data", {}))
         self.env.records.intend(key, intent)
+        self.admission_open()
         try:
             self.env.remember(key, self.env.kube.create(manifest))
         except rt.Failure:

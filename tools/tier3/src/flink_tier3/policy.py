@@ -126,6 +126,17 @@ POLL = 15
 HTTP_TIMEOUT = 20
 
 
+# Cloud Storage sustains about one mutation a second on one object and refuses
+# a faster rate with 429 without applying the write. A conditional update
+# retries a lost generation race up to five writes, and a refused write after
+# each of these backoffs, in seconds before jitter.
+GENERATION_RACES = 5
+RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16, 32)
+# The most writes one update makes: four lost races, six refused writes and
+# the attempt that settles it.
+UPDATE_ATTEMPTS = GENERATION_RACES + len(RATE_LIMIT_BACKOFF)
+
+
 PUBSUB_EXERCISE = {
     # Admission's own window and one poll, so that a RUNNING the runner set
     # in its last moment is still seen.
