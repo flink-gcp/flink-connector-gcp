@@ -35,7 +35,7 @@ The root's `upstream.yaml` fixes the archive URL, version and SHA-512.
 Both runners download and verify that archive into `.terraform/operator-chart.tgz`; the resource uses this checkout-relative path and `values.yaml`.
 The helper checks the chart's version and appVersion and renders the same archive before OpenTofu runs.
 The distributed chart defaults to `ghcr.io/apache/flink-kubernetes-operator:79d730b`.
-The idle values select the Operator 1.15.0 GAR digest from the [successful publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704).
+The idle values select the Operator 1.15.0 GAR digest from the [successful publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704); every later publication mirrors the same digest, and the [image runbook](../../kubernetes/images/README.md) records which run created the current GAR version.
 The image verifier requires the Tier-3 GAR Operator repository and a SHA-256 digest, compares chart output with that reference, and compares the live Deployment with the rendered expectation.
 The [seven-day cleanup policy](../../kubernetes/images/README.md#retention-and-acceptance) still requires a fresh image-availability check before Pod admission.
 

@@ -47,6 +47,10 @@ CONNECTOR_JOB = re.compile(
     r"flink-bq-(load|copy|query)-[0-9a-f]{32}(-c[0-9]+)?-[0-9a-f]{16}"
     r"(-[a-z0-9]+)*"
 )
+# A job id's grammar: letters, digits, underscores and dashes, at most 1,024.
+# A listing without `bigquery.jobs.listAll` returns other principals' ids as
+# the literal `<REDACTED>` (measured 2026-10-10), which this refuses.
+JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,1024}")
 # Temporary tables the overflow path names `tmp_<Flink job id>_...`.
 TEMPORARY_TABLE = re.compile(r"tmp_[0-9a-f]{32}_[0-9a-z_]+")
 # Listing ceilings: a bounded number of pages, each of at most this many items.
@@ -415,10 +419,12 @@ class BigQueryResources:
     def unfinished_connector_jobs(self, since):
         """This run's connector jobs that are not DONE, from a listing taken now.
 
-        Needs `bigquery.jobs.list`, which lists every user's jobs with their
-        details redacted, and `bigquery.jobs.get` to read each candidate whole.
-        A listed job whose id is unreadable fails the call rather than being
-        passed over: a redaction that hid it would otherwise read as no job.
+        Needs `bigquery.jobs.list` with `bigquery.jobs.listAll`, which lists
+        every user's jobs unredacted, and `bigquery.jobs.get` to read each
+        candidate whole. Without `listAll` the listing replaces another
+        principal's job id with a placeholder, so a listed job whose id is not
+        a job id fails the call rather than being passed over: a redaction
+        that hid it would otherwise read as no job.
         A connector-shaped job that is listed but cannot then be read counts
         as unfinished for the same reason; it leaves the listing once DONE.
         `since` is a UTC timestamp no later than the run's first submission.
@@ -433,8 +439,12 @@ class BigQueryResources:
         for listed in self._listed("/jobs", "jobs", params):
             reference = listed.get("jobReference") if isinstance(listed, dict) else None
             job_id = reference.get("jobId") if isinstance(reference, dict) else None
-            if not isinstance(job_id, str) or not job_id:
-                raise Failure("A listed BigQuery job has no readable id")
+            if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
+                raise Failure(
+                    "A listed BigQuery job has no readable id; a listing "
+                    "without bigquery.jobs.listAll returns other principals' "
+                    "ids as <REDACTED>"
+                )
             if not CONNECTOR_JOB.fullmatch(job_id):
                 continue
             job = self._call(

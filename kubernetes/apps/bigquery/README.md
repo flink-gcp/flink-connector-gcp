@@ -17,7 +17,8 @@ The Dockerfile places these JARs in `/opt/flink/usrlib/` over the reviewed Flink
 The entry point is `io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob`; the job URI is `local:///opt/flink/usrlib/bigquery-recovery.jar`.
 No dependency download is needed at Pod startup.
 The [manual publication workflow](../../../.github/workflows/tier3-images.yaml) verifies and builds this payload as the `bigquery-recovery` GAR package.
-The [trial publication](../../images/README.md#bigquery-trial-publication) built commit `8bfe56d5154d40b2ccef81f16129ea873ead43a5` with the appender observations, as `sha256:6fd22da4a44de73d2d5c15e3383c2a7b106987731b569bfb0fa73cfdcb4e6c2d`, deletion-eligible from 2026-09-30T14:03:04Z; dispatch names it through `application_digest` and verifies it live, and it is not pinned.
+The [trial publication](../../images/README.md#bigquery-trial-publication) built commit `8bfe56d5154d40b2ccef81f16129ea873ead43a5` with the appender observations for the Storage Write trials, and has since been deleted.
+The [FILE_LOADS trial publication](../../images/README.md#bigquery-file_loads-trial-publication) built commit `ef183e0c63d273e59b05599d064caf79e79dfc22` with the FILE_LOADS mode and records its digest and retention; dispatch names the digest through `application_digest` and verifies it live, and it is not pinned.
 The application CI lane builds the Dockerfile against the same public Flink 2.2.1 digest without publishing or using GCP credentials.
 
 Unit tests cover argument bounds, destination identities, serialized row sizes, Java serialization, input gaps and checkpoint state incompatibility.
@@ -569,7 +570,7 @@ The [production dispatch](#production-dispatch) is that executor, for the checks
 A FILE_LOADS trial adds writes the Pod listing above cannot see: the committer submits load jobs as the workload, and a job keeps running server-side after the Pod that submitted it is gone.
 They carry no labels, and their ids hash the staged files they load, so the supervisor finds them by listing the project's jobs that are pending or running since the run started, then reading each one whose id has the connector's `flink-bq-` shape.
 A load belongs to the run when every source is a staged file under its `runs/<run-id>/staging/` prefix, and a copy or query when it writes one of the run's tables; a load of the run's files into any other table fails the listing.
-The supervisor holds `bigquery.jobs.list` for this, which lists other principals' jobs with their details redacted, and reads each candidate whole through its existing `bigquery.jobs.get`; a listed job whose id it cannot read fails the listing rather than counting as no job, and a connector-shaped job that is listed but cannot then be read counts as unfinished, which it stops being once it is `DONE` and leaves the listing.
+The supervisor holds `bigquery.jobs.list` and `bigquery.jobs.listAll` for this, since without `listAll` the listing replaces every other principal's job id with `<REDACTED>`, the workload's included. It reads each candidate whole through its existing `bigquery.jobs.get`; a listed job whose id is not a job id, such as that placeholder, fails the listing rather than counting as no job, and a connector-shaped job that is listed but cannot then be read counts as unfinished, which it stops being once it is `DONE` and leaves the listing.
 
 Cleanup runs this after the Pod barrier and the query checks, and before any table is deleted: while one of the run's jobs is not `DONE`, the pass returns without deleting, and the ids it waited for stay in the control record, because a job that outlived the workload is a finding.
 The tables are `CREATE_NEVER` destinations, so a load that reached the service only after a table was deleted would fail; the wait is what keeps one that is already running from racing the deletion.
@@ -585,6 +586,7 @@ The receipt carries all of this as the `file_loads` part of its `bigquery` recor
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with four inputs beyond the common ones.
 The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md), and its results, every attempt included, are in the [BigQuery trial findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md).
+The FILE_LOADS trial `fl-10` has its own record, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md).
 
 | Input | Contract |
 | --- | --- |

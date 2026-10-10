@@ -55,8 +55,9 @@ limitations under the License.
 - Updated: 2026-10-04 (uniform lifecycle scenario files and reviewed-trial instructions)
 - Updated: 2026-10-04 (service subpackages and nested source delivery)
 - Updated: 2026-10-04 (Pub/Sub recovery verdict recomputed from exported evidence)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312)
-- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md)
+- Updated: 2026-10-10 (BigQuery FILE_LOADS trial preregistration; unredacted supervisor job listing)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552)
+- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -164,7 +165,7 @@ The first publication completed on 2026-09-13 and supplied the initial Operator,
 The first smoke publication subsequently built main commit `053e23835782059830f871ca53f90fba43efa324` after the workload identity applies and empty refreshed plans; a GAR read confirmed the selected application digest.
 The [SDK publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34844507450) subsequently built main commit `abf35f5a16e50be11432788b602bdf8357f9e8ad` on 2026-09-14.
 A GAR read confirmed its lifecycle-tools digest, which the CUE images package selected until the Cloud Tasks measurement publication; the Operator, Flink and smoke pins remained unchanged by that adoption.
-The [Cloud Tasks measurement publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488) then built main commit `339d0a90675dffee74305cebe021093c6a1f9b4b` on 2026-09-19 UTC and republished the lifecycle-tools and smoke images alongside the measurement applications, so the images package now selects that pair and the Operator and Flink pins remain unchanged.
+The [Cloud Tasks measurement publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488) then built main commit `339d0a90675dffee74305cebe021093c6a1f9b4b` on 2026-09-19 UTC and republished the lifecycle-tools and smoke images alongside the measurement applications, so the images package selected that pair until later publications replaced it, as the [image runbook](../../kubernetes/images/README.md) records each one, and the Operator and Flink pins remained unchanged.
 The idle Helm release retains zero replicas and quotas while adopting the GAR reference.
 Publication records GAR image references without starting workload Pods; it does not establish GKE runtime behavior.
 
@@ -402,7 +403,7 @@ Grant nothing else on that path, each omission for a measured or documented reas
 Staging under `runs/<run-id>/staging/` falls inside the existing conditioned Object User grant and the one-day lifecycle rule.
 The predefined `roles/bigquery.jobUser` was declined, because it adds Dataform repository creation and project listing to the same permission.
 `bigquery.jobs.create` cannot be narrowed to load jobs: the workload can also submit queries, which read no Tier-3 table without `bigquery.tables.getData` but run and bill in the project.
-This grant does not fence load jobs: one keeps writing after the workload's Pods are gone, which the rig's load-job barrier covers, through the supervisor's `bigquery.jobs.list` ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), below).
+This grant does not fence load jobs: one keeps writing after the workload's Pods are gone, which the rig's load-job barrier covers, through the supervisor's `bigquery.jobs.list` and `bigquery.jobs.listAll` ([#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), below).
 
 ### BigQuery recovery application
 
@@ -484,9 +485,11 @@ The workload then needs only project-wide `bigquery.jobs.create` for this mode, 
 
 Refined under [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551): the rig admits one FILE_LOADS trial, `fl-10`, at 10 destinations with the sink inputs at their defaults, under a version 5 approval; its oracle refuses duplicates as EO's does.
 Find the committer's jobs by listing, not by label: the connector labels none, and their ids hash the staged files they load, so the issue's premise that they carry the run's labels measured false.
-The supervisor alone receives project-wide `bigquery.jobs.list` through its own custom role, which lists other principals' jobs redacted, and reads each candidate through the `bigquery.jobs.get` it already held; `bigquery.jobs.listAll` was declined because nothing needs an unredacted listing, and the runner lists no job.
+The supervisor alone receives project-wide `bigquery.jobs.list` and `bigquery.jobs.listAll` through its own custom role, and reads each candidate through the `bigquery.jobs.get` it already held; the runner lists no job.
+`listAll` was first declined on the premise that a redacted listing would keep each job's id or drop it, and [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) measured it false before the first trial: a caller holding `bigquery.jobs.list` alone gets every other principal's job with its id replaced by `<REDACTED>`, which matches no connector pattern, so the workload's own jobs would have read as foreign and both the oracle's check and cleanup's wait would have passed over them, with nothing recorded; a caller that also holds `listAll` gets the real ids.
+A listed id outside the job-id grammar now fails the listing, so losing `listAll` fails closed; losing the whole binding would leave the supervisor listing only its own jobs, which the preregistration's pre-dispatch read-back covers.
 A load is the run's when every source is under its staging prefix, and a copy or query when it writes one of its tables; `_verify_job` still refuses every job but the run's own query slots.
-Cleanup waits for every such job to be `DONE` after the Pod barrier and before deleting a table, deletes any temporary table created in the dataset since the run started, and, with the write that records cleanup, the objects left under the staging prefix before state cleanup deletes them; a failed listing is recorded rather than raised, so it cannot keep the tables alive.
+Cleanup waits for every such job to be `DONE` after the Pod barrier and before deleting a table, deletes any temporary table created in the dataset since the run started, and, with the write that records cleanup, the objects left under the staging prefix before state cleanup deletes them; a failed staging listing is recorded rather than raised, so it cannot keep the tables alive.
 The oracle does not wait: the committer commits synchronously, so a job still running after `FINISHED` contradicts the connector's own account, and waiting would let its rows land and pass; it records the job and fails the run instead.
 The FILE_LOADS committer is a separate vertex, so observation accepts a writer and a committer for that mode, samples the committer's metrics and each sink subtask's checkpoint statistics, and the verdict requires both families in both windows for that mode.
 The issue placed finalization in the subtasks' sync and async durations, which measured false against Flink 2.2.1: the writer closes its staged files in the pre-barrier step, before the synchronous timer starts, so that time shows in the writer's end-to-end duration and the committer's start delay, and the commit's own time is the committer's `lastCommitDurationMillis`.
@@ -1074,11 +1077,12 @@ So no scenario gates execution on cost: approvals carry no `additional_cost_usd`
 Those review dates stay as the recorded basis of an estimate, and `estimated_cost`, `estimated_session_cost` and `bigquery_plan.estimate` stay as the numbers the owner approves.
 This replaces the reviewed trial file and the phrase bound to its cost in the production entrypoints section above, the Pub/Sub proposal's separate cost cap, and the 30-day pricing refusal the approval model applied to every scenario.
 
-A BigQuery trial therefore chooses only what differs between trials, its delivery method and destination count, and dispatch takes it as a workflow choice (`alo-10`, `eo-10`, `alo-50`, `eo-50`) rather than as a reviewed file; the query budget is the scenario's, fixed in code.
+A BigQuery trial therefore chooses only what differs between trials, its delivery method and destination count, and dispatch takes it as a workflow choice (`alo-10`, `eo-10`, `alo-50`, `eo-50`, and `fl-10` since [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)) rather than as a reviewed file; the query budget is the scenario's, fixed in code.
 A reviewed file per dispatch existed chiefly to carry the per-trial cost, and keeping those numbers beside a preregistration record needed a test to hold the two together.
 The proposal also drops the repeated-trial ordinal the recovery application section binds: nothing consumed it, and a repetition is a separate run ID.
 The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, and USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), which the rendered proposal carries.
 The BigQuery campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md).
+The FILE_LOADS trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) has its own, the [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), which also prices what that mode adds outside `bigquery_plan.estimate` — free load jobs and short-lived staged objects, expected to fit the estimate's reserve.
 
 ### BigQuery deployed trial findings
 

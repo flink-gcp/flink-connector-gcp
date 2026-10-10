@@ -150,9 +150,27 @@ Before it ran, the `operator` version `sha256:2c667a1c…` created 2026-09-20T03
 | `bigquery-recovery` | `sha256:6fd22da4a44de73d2d5c15e3383c2a7b106987731b569bfb0fa73cfdcb4e6c2d` | 2026-09-23T14:03:04Z | 2026-09-30T14:03:04Z |
 
 The digests are the ones the `sha-8bfe56d5…` tag resolves to, and `operator` the one its `1.15.0` tag resolves to, read from GAR after the run; the Operator digest is unchanged, so its Helm pin stands.
-[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests; the `bigquery-recovery` digest stays out of it as a dispatch input verified live, like the other scenario packages.
+[pins.cue](pins.cue) adopted the lifecycle-tools and smoke digests until the [BigQuery FILE_LOADS trial publication](#bigquery-file_loads-trial-publication) below; the `bigquery-recovery` digest stays out of it as a dispatch input verified live, like the other scenario packages.
 Dispatch refuses an image unless the trial's window ends a day before eligibility, so the last BigQuery trial window from this publication must end before 2026-09-29T14:02:14Z, and it starts at most 90 minutes earlier.
 The `flink` base mirror kept its 2026-09-20 creation time; a trial does not pull it, and a later build recopies it once cleanup has removed it.
+
+### BigQuery FILE_LOADS trial publication
+
+The [BigQuery FILE_LOADS trial publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/37956928238) built main commit `ef183e0c63d273e59b05599d064caf79e79dfc22` on 2026-10-09 UTC for the `fl-10` trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552); its `bigquery-recovery` image is the first to carry the FILE_LOADS mode.
+Every earlier version had passed its seven-day eligibility and been deleted, so the registry held none when it ran, and the `operator` and `flink` mirrors took fresh creation times without a manual deletion.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78` | 2026-10-09T16:22:01Z | 2026-10-16T16:22:01Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-10-09T16:22:28Z | 2026-10-16T16:22:28Z |
+| `lifecycle-tools` | `sha256:69d4424cc81dae202ee9aa0d1ae68969c7af48622c3b5f545d58b272c5fec71f` | 2026-10-09T16:22:50Z | 2026-10-16T16:22:50Z |
+| `smoke` | `sha256:8e1d7e18fe882b36abb6ceea78240ee4482b2ba4ff708fc3b463f17662fa1f63` | 2026-10-09T16:23:06Z | 2026-10-16T16:23:06Z |
+| `bigquery-recovery` | `sha256:a8d130362f2a3af35262bd63efa64106f6cc3effd677518ad3d4671904f2ea0f` | 2026-10-09T16:23:22Z | 2026-10-16T16:23:22Z |
+
+The digests are the ones the `sha-ef183e0c…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
+[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests and cites this run for the recreated `flink` version; the `bigquery-recovery` digest stays a dispatch input verified live.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so a `fl-10` attempt from this publication must be admitted so that its 90-minute window ends before 2026-10-15T16:22:01Z.
+The same run published Cloud Tasks and Pub/Sub application images from that commit, which nothing adopts.
 
 For a shell or Docker build argument, read a pin with:
 
