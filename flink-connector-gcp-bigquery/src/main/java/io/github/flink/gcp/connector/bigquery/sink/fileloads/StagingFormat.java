@@ -23,11 +23,12 @@ import org.apache.flink.annotation.Public;
  * FILE_LOADS} stages rows in before loading them, set by {@code
  * FileLoadsOptions.Builder#stagingFormat}.
  *
- * <p><b>{@link #AVRO} is the default and the recommended value.</b> {@link #PARQUET} stages fewer
- * bytes and loads a large batch faster, but it is not a straight improvement: it needs dependencies
- * this connector does not ship, it cannot carry a {@code JSON} column at all, and BigQuery loads it
- * several times more slowly below 256 MiB of total input per load job — the regime a streaming
- * checkpoint normally sits in. The docs page sets out all three.
+ * <p><b>{@link #AVRO} is the default and the recommended value.</b> {@link #PARQUET} can stage
+ * fewer bytes and load a large batch faster, depending on the rows, but it is not a straight
+ * improvement: it needs dependencies this connector does not ship, it cannot carry a {@code JSON}
+ * column at all, and BigQuery has loaded it several times more slowly below 256 MiB of total input
+ * per load job — the regime a streaming checkpoint normally sits in. For rows dominated by one
+ * opaque payload it was no faster on either side of 256 MiB. The docs page sets out the details.
  *
  * <p>The format travels in each committable, so a file is always loaded as the format it was
  * actually written in, and load jobs are grouped on it.
@@ -40,7 +41,7 @@ public enum StagingFormat {
 
     /**
      * Parquet files. Opt-in, and worth it mainly for a batch job whose per-destination volume
-     * clears 256 MiB per load job.
+     * clears 256 MiB per load job and whose rows it measurably helps.
      *
      * <p>A destination whose schema names a {@code JSON} column stages {@link #AVRO} whatever this
      * is set to: a {@code PARQUET} load is refused at job-configuration level when the provided
