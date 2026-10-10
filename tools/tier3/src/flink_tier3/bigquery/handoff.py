@@ -336,7 +336,8 @@ class BigQueryHandoff:
         """The supervisor's own read of connector-issued jobs that are not DONE.
 
         A listing, not a call the runner serializes: it creates nothing, and
-        the supervisor holds `bigquery.jobs.list` for it.
+        the supervisor holds `bigquery.jobs.list` and `bigquery.jobs.listAll`
+        for it.
         """
         self._role("supervisor")
         self._check_deadline(deadline)

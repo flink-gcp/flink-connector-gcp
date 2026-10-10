@@ -147,17 +147,18 @@ resource "google_project_iam_member" "tier3_bigquery_jobs" {
 
 # A FILE_LOADS trial's load jobs belong to the workload, and their ids hash
 # the staged files, so the supervisor can find them only by listing. Without
-# bigquery.jobs.list a caller lists only the jobs it created; with it, every
-# principal's jobs, redacted, which bigquery.jobs.get above then reads whole.
-# The supervisor refuses the oracle read while one still runs and waits for
-# each before cleanup deletes a table. bigquery.jobs.listAll would add
-# unredacted listings nothing needs, and the runner lists no job.
+# bigquery.jobs.list a caller lists only the jobs it created. With it alone the
+# listing replaces every other principal's job id with "<REDACTED>" (measured
+# 2026-10-10), the workload's included, so bigquery.jobs.listAll is also
+# needed; bigquery.jobs.get above then reads each candidate whole. The
+# supervisor refuses the oracle read while one still runs and waits for each
+# before cleanup deletes a table. The runner lists no job.
 resource "google_project_iam_custom_role" "tier3_bigquery_supervisor_jobs" {
   project     = local.project_id
   role_id     = "tier3BigQuerySupervisorJobs"
   title       = "Tier-3 BigQuery connector job listing"
   description = "Lists the project's BigQuery jobs to find a Tier-3 trial's connector-issued jobs"
-  permissions = ["bigquery.jobs.list"]
+  permissions = ["bigquery.jobs.list", "bigquery.jobs.listAll"]
   stage       = "GA"
 
   depends_on = [google_project_iam_member.opentofu["roles/iam.roleAdmin"]]

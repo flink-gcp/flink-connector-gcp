@@ -630,7 +630,7 @@ def load(plan, state="RUNNING", destination=0, uris=None, job_id=None, **config)
 
 
 def listed(*jobs, token=None):
-    """The redacted listing `bigquery.jobs.list` returns for another user's jobs."""
+    """The listing `bigquery.jobs.list` with `listAll` returns for other users."""
     value = {
         "jobs": [
             {"jobReference": job["jobReference"], "state": job["status"]["state"]}
@@ -707,9 +707,28 @@ def test_a_listed_job_that_cannot_be_read_counts_as_unfinished(fl_plan):
     ]
 
 
-def test_a_listed_job_whose_id_is_redacted_fails_rather_than_passing(fl_plan):
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"state": "RUNNING", "jobReference": {}},
+        # The shape a listing without `bigquery.jobs.listAll` returned for
+        # another principal's job, measured 2026-10-10: a placeholder id that
+        # no connector pattern matches, so it was passed over as foreign.
+        {
+            "id": "flink-gcp:us-central1.<REDACTED>",
+            "jobReference": {
+                "jobId": "<REDACTED>",
+                "location": "us-central1",
+                "projectId": "flink-gcp",
+            },
+            "state": "RUNNING",
+        },
+    ],
+    ids=["absent", "placeholder"],
+)
+def test_a_listed_job_whose_id_is_redacted_fails_rather_than_passing(fl_plan, item):
     """Read as no job, a hidden id would let cleanup delete under a load."""
-    api, _ = client(fl_plan, {"jobs": [{"state": "RUNNING", "jobReference": {}}]})
+    api, _ = client(fl_plan, {"jobs": [item]})
     with pytest.raises(Failure, match="no readable id"):
         api.unfinished_connector_jobs(NOW)
 
