@@ -81,7 +81,9 @@ def estimate():
     shared free slot pool, and staged objects under the run prefix, each held
     until the commit that loads it: on the order of the trial's 1,800 MiB input
     for under 90 minutes, and some hundreds of writes. The estimate prices
-    neither; it assumes both fit the reserve, which no trial has measured.
+    neither and assumes both fit the reserve; the fl-10 trial ran 190 load jobs
+    on the free pool and staged 380 files, and no trial has read the resulting
+    charges from billing.
     """
     shapes = [
         POD_RESOURCES["operator"],

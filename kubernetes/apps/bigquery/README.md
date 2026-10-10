@@ -75,18 +75,18 @@ FILE_LOADS refuses an interval below its `minCheckpointInterval`, two minutes by
 Writer and buffered-stream options retain their production defaults; this workload does not search capacity or tune those defaults.
 The FILE_LOADS sink appends to the provisioned tables and stages under `gs://flink-gcp-tier3-bigquery/runs/<run-id>/staging`, inside the run prefix that the state IAM condition, the bucket lifecycle rule and cleanup already cover.
 Staged files therefore also count against the run's 1 GiB and 10,000-object state ceilings, which the supervisor's audit checks on every poll and refuses by failing the run.
-At the 1 MiB/s offered rate and the 120-second interval a checkpoint stages roughly 120 MiB before conversion, and its commit deletes those files; a commit backlog of several intervals, or leftovers from failed commits, could reach the byte ceiling, which no trial has measured yet.
+At the 1 MiB/s offered rate and the 120-second interval a checkpoint stages roughly 120 MiB before conversion, and its commit deletes those files; a commit backlog of several intervals, or leftovers from failed commits, could reach the byte ceiling; the `fl-10` trial's [findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) had neither, and record no peak state-prefix size.
 Its five arguments above default to the connector's values.
 The FILE_LOADS sink also names the dataset's location, `us-central1`, so its committer never reads dataset metadata: without a location it looks each destination dataset up to place its load jobs, which would need `bigquery.datasets.get`.
 The Storage Write modes leave the location unset, as before.
 Submitting the load jobs needs project-wide `bigquery.jobs.create`, which the workload identity holds through a custom role added under [issue #1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550); as their creator it can read them without `bigquery.jobs.get`.
-The gated integration test runs under the E2E identity, so it cannot show whether the deployed identity holds that grant.
+The gated integration test runs under the E2E identity; the `fl-10` trial's 190 load jobs, submitted by the deployed workload, show that the deployed identity holds the grant.
 
 The FILE_LOADS sink is not decorated for observation.
 It has no appender, and the connector already reports what a trial reads of it: an INFO line per writer checkpoint with the files staged, one per submitted and completed load job, and one per committed checkpoint with its row count, plus the writer's `filesStaged`, `pendingFiles` and `openDestinations` metrics and the committer's `loadJobsSubmitted`.
 The committer runs on a separate vertex, and only its subtask 0 commits.
 The default Avro staging holds one 4 MiB upload chunk per open destination, about 64 MiB per writer at the default 16 open destinations; Parquet staging also buffers a row group per open file.
-No trial has measured either against these TaskManagers' heap.
+The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap peaking at 474 MiB of 644 MiB, about twice the EO trials', as its [findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) record; the staging buffers' share was not isolated, and Parquet staging has not run on these TaskManagers.
 
 ## Deployment definition
 
@@ -166,9 +166,7 @@ The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubern
 It assumes on-demand query billing and takes no free-tier, Spot or commitment discount.
 The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
 The generated observation plan records three minutes of warm-up, ten minutes each of baseline and post-recovery observation, ten-minute startup/visibility limits and a five-minute limit per recovery.
-These values are proposals, not clocks enforced by a running executor.
-The internal runner/supervisor loops now coordinate provisioning, recovery and final queries as described below.
-Authenticated dispatch, creator/writer fencing, complete evidence accounting and live cleanup acceptance remain required before any paid dispatch.
+[Internal recovery execution](#internal-recovery-execution) describes the clocks the exercise enforces from them, and [production dispatch](#production-dispatch) is the only path that runs it.
 
 ## Table and row identity
 
@@ -520,7 +518,7 @@ State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-t
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
 They do not establish a functioning external quiescence barrier or live service acceptance.
 
-Authenticated approval delivery, measurement collection, complete evidence accounting and writer fencing must be connected before enabling either execution entrypoint.
+Authenticated actors, writer fencing, evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
 The internal loops require a fixed 10 MiB allocation for query artifacts, reducing supervisor receipts to 80 MiB and runner receipts to 8 MiB for these approvals.
 The four allowances are now entries under `[bigquery_ceilings]` rather than literals spread across modules, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
 Those documents — the approval, the application and upgrade manifests, the image receipts, the session file and the final result — are weighed against that last allowance before each write, where previously they were written unweighed and nothing proved the run stayed inside what it was approved to retain.
@@ -586,7 +584,7 @@ The receipt carries all of this as the `file_loads` part of its `bigquery` recor
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with four inputs beyond the common ones.
 The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md), and its results, every attempt included, are in the [BigQuery trial findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md).
-The FILE_LOADS trial `fl-10` has its own record, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md).
+The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md) and the [BigQuery FILE_LOADS trial findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md).
 
 | Input | Contract |
 | --- | --- |
