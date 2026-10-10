@@ -73,9 +73,8 @@ locals {
     runner     = local.tier3_lifecycle_members.runner
     supervisor = local.tier3_lifecycle_members.supervisor
   }
-  tier3_bigquery_observer_permissions = [
+  tier3_bigquery_reader_permissions = [
     "bigquery.datasets.get",
-    "bigquery.tables.delete",
     "bigquery.tables.get",
     "bigquery.tables.getData",
     "bigquery.tables.list",
@@ -89,15 +88,17 @@ locals {
     }
     runner = {
       role_id     = "tier3BigQueryRunner"
-      description = "Creates, reads and deletes Tier-3 tables for admission and recovery"
+      description = "Creates and reads Tier-3 tables for admission and validation"
       member      = local.tier3_bigquery_lifecycle.runner
-      permissions = concat(local.tier3_bigquery_observer_permissions, ["bigquery.tables.create"])
+      # No bigquery.tables.delete: only the supervisor's cleanup deletes a
+      # trial's tables; the runner's settlement never reaches the deleting path.
+      permissions = concat(local.tier3_bigquery_reader_permissions, ["bigquery.tables.create"])
     }
     supervisor = {
       role_id     = "tier3BigQuerySupervisor"
       description = "Reads and deletes Tier-3 tables without creating tables or appending rows"
       member      = local.tier3_bigquery_lifecycle.supervisor
-      permissions = local.tier3_bigquery_observer_permissions
+      permissions = concat(local.tier3_bigquery_reader_permissions, ["bigquery.tables.delete"])
     }
   }
 }

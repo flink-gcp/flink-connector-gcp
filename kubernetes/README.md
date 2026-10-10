@@ -201,8 +201,8 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 sche
 
 ## Bounded execution
 
-The [lifecycle runbook](lifecycle/README.md) defines the explicit dispatch approval, four-Pod resource budget, shared infrastructure lock, supervisor, cleanup and recovery.
-Its implementation is locally validated; live acceptance remains the separately approved #1311 exercise.
+The [lifecycle runbook](lifecycle/README.md) defines the explicit dispatch approval, five-Pod resource budget, shared infrastructure lock, supervisor, cleanup and recovery.
+Its implementation is locally validated, and the separately approved [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) validated its generic recovery path on the cluster on 2026-09-17.
 
 ## Ownership and remaining stages
 
@@ -216,7 +216,7 @@ The bootstrap runbook documents credentials, RBAC, initial administrator permiss
 The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
 The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`.
 All four application namespaces retain zero Pod/PVC quotas until separately approved admission.
-Cloud Tasks workload admission and performance measurements remain later connector work.
+A `cloudtasks` dispatch admits its workload as one [session](lifecycle/README.md#cloud-tasks-session); after calibration sessions on this cluster, the final performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
 
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).

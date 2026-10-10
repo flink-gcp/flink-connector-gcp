@@ -729,7 +729,7 @@ class Cleanup:
             self.env.evidence_failed = True
 
     def finish_bigquery(self, deadline):
-        """After workload teardown, wait for release and the external writer fence."""
+        """After workload teardown, wait for release and the writer fence."""
         if self.env.refresh().bigquery is None:
             return
         if self.bigquery is not None:

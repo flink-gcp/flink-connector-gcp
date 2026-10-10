@@ -381,18 +381,19 @@ The caller still owns the total evidence budget and preservation/export policy.
 A query-result report does not establish final visibility or absence of future writes.
 
 Cleanup first persists the component's stop flag, then requires the caller's quiescence barrier.
-That barrier must stop and join every creator and writer, settle server-side in-flight creation requests and exclude replacement throughout cleanup; merely stopping Flink Pods or setting the flag is insufficient.
-The controller does not implement or independently verify this external barrier.
+By then common cleanup has removed the workload, and the barrier confirms on each pass that none of the run's writer-capable objects remains; merely setting the flag is insufficient.
+The barrier holds only when it is called and cannot observe a Storage Write append already in flight, as [Quiescence barrier](#quiescence-barrier) records; FILE_LOADS cleanup also waits for the [connector-issued jobs](#connector-issued-jobs) created since the run started.
+The controller does not implement or independently verify this barrier.
 After it succeeds, cleanup requests cancellation of every possibly submitted slot and returns incomplete while any job is absent or not `DONE`.
 An absent job after an uncertain submission remains unresolved rather than proving cleanup.
 A slot recorded only as reserved has no submission intent and needs no cancellation.
 Only after these checks does cleanup reconcile lost table receipts from persisted creation intents, delete owned tables and confirm absence.
-It never enumerates or deletes unrecorded table names.
+It never deletes an unrecorded table name except the temporary tables FILE_LOADS cleanup lists and records first, as [Connector-issued jobs](#connector-issued-jobs) describes.
 The supervisor may perform this cleanup without collecting the runner's private query results.
 A completed pass marks only the BigQuery component clean; it does not set run success, remove Kubernetes/GCS state, release the environment lock or declare the environment idle.
 
 Synthetic tests cover conditional-update conflicts, restarts, lost responses, stop races, evidence generations, pending queries and receipt-based cleanup, including composition with the REST adapter.
-They do not establish authenticated handoff, a functioning external barrier or real-service acceptance.
+They do not establish authenticated handoff, a functioning barrier or real-service acceptance.
 
 ### Query requests and runner release
 
@@ -418,7 +419,7 @@ The protocol checks deadlines before admitting each query operation; adapter req
 A conditional record update marks each runner call in flight before it starts.
 Stopping sets the run-global stop flag as well as the BigQuery component flag; release also stops admission for the whole run.
 This closes new requests and calls but does not acknowledge runner release.
-Release is permanent and requires no in-flight or unresolved call; cleanup additionally requires the resource controller's external quiescence barrier and terminal query checks.
+Release is permanent and requires no in-flight or unresolved call; cleanup additionally requires the quiescence barrier and terminal query checks.
 If a creating operation raises, its marker remains unresolved even when some of its work is known to have completed.
 This conservatively blocks release and cleanup, including after a lost response, process failure or partial provisioning interrupted by stop.
 Neither elapsed time nor a replacement process automatically clears the marker; incident recovery remains external work.
@@ -451,17 +452,17 @@ The internal recovery exercise below chooses final-query boundaries and row acce
 
 Common cleanup closes run admission and removes the owned Kubernetes workload before waiting for runner release.
 For failed admission with recorded BigQuery intent, the supervisor first waits for runner release before entering common cleanup, so admission can finish recording any confirmed application creation.
-Release alone does not resolve an unknown creation outcome: settlement still has to reconcile the persisted application intent, and service deletion still requires the external creator/writer barrier.
+Release alone does not resolve an unknown creation outcome: settlement still has to reconcile the persisted application intent, and service deletion still requires the creator/writer barrier.
 Failure to persist the stop request marks evidence incomplete but does not prevent workload teardown.
 The cleanup-phase transition is attempted independently of that stop write.
 If no BigQuery intent was ever recorded, cleanup skips the attached handoff and continues ordinary settlement.
-Once released, it waits for the external quiescence callback to return exactly `true`, then invokes handoff cleanup, which rechecks that same barrier before any service deletion.
+Once released, it waits for the quiescence callback to return exactly `true`, then invokes handoff cleanup, which rechecks that same barrier before any service deletion.
 It waits for terminal queries and table deletion within its cleanup window; a barrier that fails its recheck aborts that pass.
-Observed Pod disappearance is not a substitute for that callback's creator/writer and in-flight service guarantees described above.
+Pod disappearance observed outside that callback is not a substitute for it.
 
 ## Quiescence barrier
 
-[`flink_tier3.bigquery.quiesce`](../../../tools/tier3/src/flink_tier3/bigquery/quiesce.py) builds that callback from the run's own identity, inside the authenticated supervisor factory, so no caller supplies one: a `callable` check cannot tell a proof from a constant, and `lambda: True` satisfied every check the factory previously made.
+[`flink_tier3.bigquery.quiesce`](../../../tools/tier3/src/flink_tier3/bigquery/quiesce.py) builds that callback from the run's own identity, inside the authenticated supervisor factory, so no caller supplies one: a `callable` check, the only check a supplied callback admits, cannot tell a proof from a constant such as `lambda: True`.
 
 On every call it lists the nine kinds that can run or restore a writer, in the application namespace alone rather than through the four-namespace inventory, and refuses while any object owned by this run's application roots is still among them.
 It is scoped on both axes: the supervisor asking the question is itself a Pod under a root in `tier3-system`, so seeding the ownership closure from every root would make it wait for itself, and `observed` is not namespace-scoped, so the namespace filter is load-bearing on its own.
@@ -516,12 +517,11 @@ Provisioning likewise writes every missing create intent in one control write be
 A supervisor that stops before admission completes records its reason as an `admission-stopped` event; that trial's supervisor stopped and left none.
 State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-tier3-bigquery` and `.inprogress/flink-gcp-tier3-bigquery/runs/<run-id>/`, where Flink's GCS writer stages uploads before composing them into place; same-named objects in the smoke or evidence buckets and other BigQuery run prefixes remain outside that operation.
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
-They do not establish a functioning external quiescence barrier or live service acceptance.
+They do not establish a functioning quiescence barrier or live service acceptance.
 
 Authenticated actors, writer fencing, evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
-The internal loops require a fixed 10 MiB allocation for query artifacts, reducing supervisor receipts to 80 MiB and runner receipts to 8 MiB for these approvals.
-The four allowances are now entries under `[bigquery_ceilings]` rather than literals spread across modules, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
-Those documents — the approval, the application and upgrade manifests, the image receipts, the session file and the final result — are weighed against that last allowance before each write, where previously they were written unweighed and nothing proved the run stayed inside what it was approved to retain.
+The four allowances are entries under `[bigquery_ceilings]`, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
+Those documents — the approval, the application and upgrade manifests, the image receipts, the session file and the final result — are weighed against that last allowance before each write, so the run's documents stay inside what it was approved to retain.
 Only the documents directly under the run prefix count against it; the per-actor receipts and the query artifacts live in subdirectories and answer to their own entries.
 The count comes from a fixed roster of those document names rather than from listing the prefix: the prefix also holds every receipt, whose object count reaches the listing's twenty-thousand ceiling long before its byte ceiling, and this accounting runs when the final result is written, so a listing here would fail a run at its last step.
 
@@ -609,9 +609,9 @@ Enabling the scenario does not approve a run.
 
 ## Internal recovery execution
 
-The common `Runner.start()` and `Supervisor.supervise()` paths now support an explicitly attached BigQuery handoff.
-They are internal integration points: the caller must verify the approval-bound bundle, authenticate each actor, retain exclusive environment ownership and provide the external writer/creator quiescence barrier and appropriate HTTP operation deadlines.
-The production dispatch and in-cluster entrypoints reach these paths only through the actor factories, and a bare `Runner` or `Supervisor` without its handoff still refuses; passing these tests does not approve a paid run.
+The common `Runner.start()` and `Supervisor.supervise()` paths support an explicitly attached BigQuery handoff.
+They are internal integration points: the caller must verify the approval-bound bundle, authenticate each actor, retain exclusive environment ownership and provide the writer/creator quiescence barrier and appropriate HTTP operation deadlines.
+The production dispatch and in-cluster entrypoints reach these paths only through the actor factories, and a bare `Runner` or `Supervisor` without its handoff refuses; passing these tests does not approve a paid run.
 A replacement runner must not reconstruct the submitting process's token.
 
 Admission validates the handoff's environment, approved resource plan, query-evidence allocation and absolute query deadline before any mutation.
@@ -650,7 +650,7 @@ In FILE_LOADS mode the supervisor first lists the run's [connector-issued jobs](
 It records the jobs it found as a `bigquery-unfinished-connector-jobs` evidence record and fails the run.
 Invalid routing or EO and FILE_LOADS duplicates abort immediately; ALO duplicates remain reported observations.
 Query errors, slot exhaustion, cancellation or deadline expiry cannot record recovery completion.
-The `complete` recovery record includes both restore proofs and the passing query observation; common cleanup still requires runner release and the external barrier before deleting tables.
+The `complete` recovery record includes both restore proofs and the passing query observation; common cleanup still requires runner release and the quiescence barrier before deleting tables.
 The final receipt retains this recovery record, and its overall BigQuery `success` is the verdict the exercise decided when it completed — not the generic completion flag, which a trial must not be authorized by.
 
 ## Deployed verdict
@@ -681,7 +681,7 @@ Those are the excluded statuses the Cloud Tasks analysis uses and none of them i
 The receipt's `success` is checked in one direction only. It is a conjunction the runner may refuse for reasons of its own, so `false` beside a usable verdict is the runner obeying its rules; `true` beside a verdict that is not usable is the forgery.
 The recomputation uses the rule set as it stands, so evidence re-analyzed after the required families or the sampled windows change can disagree with its own stored verdict for that reason alone; archived evidence is read with the revision that produced it.
 
-Synthetic controller/service tests exercise both Storage Write modes at both destination counts and FILE_LOADS at 10, including a load job that outlives the Pods and one still running when the oracle would read, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved external barrier.
+Synthetic controller/service tests exercise both Storage Write modes at both destination counts and FILE_LOADS at 10, including a load job that outlives the Pods and one still running when the oracle would read, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved quiescence barrier.
 They establish the internal sequencing and refusal behavior, not actual Operator recovery, BigQuery visibility latency or a working writer fence.
 
 ## Authenticated internal actors

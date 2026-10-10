@@ -57,7 +57,8 @@ limitations under the License.
 - Updated: 2026-10-04 (Pub/Sub recovery verdict recomputed from exported evidence)
 - Updated: 2026-10-10 (BigQuery FILE_LOADS trial preregistration; unredacted supervisor job listing)
 - Updated: 2026-10-10 (BigQuery FILE_LOADS deployed trial findings)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552)
+- Updated: 2026-10-10 (generic exercise evidence recorded; table deletion granted to the supervisor alone)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -266,7 +267,7 @@ Evidence failure stops admission and marks failure while paid workload shutdown 
 A cloud outage can prevent verified termination, so resource/time/cost approval is a bounded execution policy rather than a billing cutoff guarantee.
 
 Synthetic tests cover admission refusal, cancellation, lost creation responses, UID replacement, evidence failure, normal/forced and concurrent cleanup, supervisor readiness, lock generations and final receipt requirements.
-The separate #1311 approval and live exercise still owe evidence of actual GKE behavior.
+The separately approved [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) exercise supplied one successful live run of the generic recovery path on 2026-09-17, one savepoint upgrade and one JobManager deletion, as its [closing comment](https://github.com/flink-gcp/flink-connector-gcp/issues/1311#issuecomment-5715015774) records; that run exercised the success path, and the failure paths above remain synthetic apart from the deployed-trial failures the [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md) record.
 
 ### Generic recovery exercise
 
@@ -373,7 +374,7 @@ The dataset remains empty between trials, is protected from destruction, and can
 
 Use dataset-scoped custom roles rather than project-wide BigQuery data roles.
 The writer can read table metadata and append rows, but cannot create tables or query their contents.
-The runner pre-creates matching tables and both lifecycle actors can inspect, query and delete them; the supervisor cannot create tables.
+The runner pre-creates matching tables and both lifecycle actors can inspect and query them; the supervisor cannot create tables, and only the supervisor's role carries table deletion, because only its cleanup path deletes a trial's tables ([#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691)).
 Both lifecycle actors receive project-wide query create/get/update permissions so recovery can inspect and cancel the other actor's outstanding query.
 Those permissions reach other jobs in the project: exact query-ID ownership and query budgets belong to the runtime, not to these IAM bindings.
 State-bucket listing and reads cover the whole bucket, and Object User covers all `runs/` objects.
@@ -459,7 +460,7 @@ Compose the adapter with generation-checked run records before enabling scenario
 Persist each table creation intent before its write, retain creation receipts, and refuse adoption of a table that predates its recorded intent.
 Allocate query slots durably by observation name, retain their deterministic IDs across restarts, and store result artifacts before their generation/hash pointers.
 A stop flag closes subsequent admission but cannot fence an in-flight service request.
-Require an external barrier covering all creator/writer processes and server-side creation requests before cancellation and deletion; this component does not implement that barrier.
+Require the quiescence barrier before cancellation and deletion; this component does not implement it, and the barrier cannot observe a server-side request already in flight, as [BigQuery quiescence barrier](#bigquery-quiescence-barrier) records.
 Pending or unreadable submitted jobs prevent table deletion, and component cleanup does not assert whole-environment idle state.
 Synthetic generation-conflict and restart tests hold these controller contracts; BigQuery approval validation, authenticated actor integration and evidence budget enforcement remain caller work.
 Before wiring the actors, render one unapproved execution proposal from explicit trial inputs.

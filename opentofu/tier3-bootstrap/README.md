@@ -344,7 +344,6 @@ The Operator plan updates its Helm values in place, keeping zero replicas, one c
 That container now explicitly requests and limits 1 CPU, 2 GiB memory and 1 GiB ephemeral storage; the chart and post-apply checks verify those quantities.
 
 After CI apply, require idle inventory and empty refreshed plans for all three roots before developing the dependent lifecycle implementation.
-Actual WIF, supervisor and deletion behavior remains untested until the later stages; static IAM/RBAC configuration is not execution evidence.
+Static IAM/RBAC configuration is not execution evidence; the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) and the later deployed trials exercised the WIF, supervisor and deletion behavior.
 The [lifecycle implementation](../../kubernetes/lifecycle/README.md) enforces one run, up to a 45-minute admission/test window, 15 minutes for cleanup, a $1 additional-cost budget, and 100 MiB of durable evidence per run.
 Its shared cleanup keeps the Operator running until run-object and owned workload deletion completes, then restores the original quotas and zero replicas.
-The separately approved GKE lifecycle/recovery exercise belongs to [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).

@@ -43,11 +43,13 @@ def billed_bytes(result):
 
 
 class BigQueryLifecycle:
-    """Resource controller for a future admitted BigQuery lifecycle actor.
+    """Resource controller for an admitted BigQuery lifecycle actor.
 
     The caller owns budget approval and authenticated actor identity. Cleanup
-    additionally requires an external creator/writer quiescence barrier; this
-    controller's persisted stop flag alone cannot fence an in-flight API call.
+    additionally requires a quiescence callback; in production it is the
+    handoff's barrier, which requires runner release and the writer barrier the
+    supervisor factory supplies. This controller's persisted stop flag alone
+    cannot fence an in-flight API call.
     """
 
     def __init__(self, env, resources, application):
@@ -416,10 +418,12 @@ class BigQueryLifecycle:
     def cleanup(self, quiesce):
         """Converge one cleanup pass, returning False while queries are pending.
 
-        quiesce must stop/join every creator and writer, exclude replacement and
-        return True only after that barrier. It must cover other lifecycle
-        processes and server-side in-flight requests, not just Flink Pods.
-        Uncertain submissions with no readable job remain unresolved.
+        quiesce must return True only once no creator or writer of this run
+        remains. It holds only when called and cannot observe a request already
+        in flight server-side; FILE_LOADS cleanup separately waits for the
+        connector's jobs, and an in-flight Storage Write append stays outside
+        this guarantee. Uncertain submissions with no readable job remain
+        unresolved.
         """
         self.request_stop()
         if quiesce() is not True:
@@ -457,7 +461,7 @@ class BigQueryLifecycle:
                 receipt = saved["receipt"]
                 if receipt is None:
                     # Only this persisted create intent authorizes recovery of
-                    # a lost response, after the external quiescence barrier.
+                    # a lost response, after the quiescence barrier.
                     receipt = self._receipt(destination, current)
                     self._change(
                         lambda value, key=key, receipt=receipt: value["tables"][
