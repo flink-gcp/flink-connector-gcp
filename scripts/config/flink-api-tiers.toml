@@ -39,9 +39,9 @@
 # @PublicEvolving), and the connector's compatibility claims are measured
 # against them by the weekly binary_compat job, not licensed here.
 
-# The org.apache.flink sources jars that own the imported types, resolved at
-# the pom-pinned flink.version (the supported floor). Since the 2.x
-# restructuring most streaming.api.* types this project uses ship in
+# The org.apache.flink sources jars that own the imported types. They are
+# resolved at both the floor and the LTS (below), so every one must exist at
+# both. Since the 2.x restructuring most streaming.api.* types this project uses ship in
 # flink-runtime's sources jar, but the async-operator function types
 # (streaming.api.functions.async.*, which the Bigtable single-row request
 # runtime extends, ADR-0148) stayed in flink-streaming-java; flink-core-api
@@ -55,10 +55,15 @@
 # DataStreamSinkProvider, used by the Pub/Sub table sink's ordering-key route (#143).
 # flink-connector-datagen owns DataGeneratorSource and GeneratorFunction, which of
 # the main sources only the Tier-3 job modules under kubernetes/apps import (#1567).
-# Every import is classified at the root pom's flink.version. The cloudtasks and
-# pubsub jobs inherit it; smoke and bigquery pin their own to the image runtime,
-# and the script exits 2 when a pin differs from the root, because a type Flink
-# demoted at the pinned version would otherwise pass here.
+#
+# Each import is classified at the floor (the pom's flink.version) and at the 1.x
+# LTS (weekly.yaml's FLINK_LTS) where its source root is compiled at them, and
+# the weakest tier governs (#1714; source_versions() in the script holds the
+# per-root map). A failure names the tier at each version, and an entry needed
+# at only one version says so in its reason. The cloudtasks and pubsub Tier-3
+# jobs inherit flink.version; smoke and bigquery pin their own to the image
+# runtime, and the script exits 2 when a pin differs from the root, because a
+# type Flink demoted at the pinned version would pass here.
 artifacts = [
     "flink-annotations",
     "flink-core",
@@ -74,6 +79,13 @@ artifacts = [
     "flink-avro",
     "flink-connector-datagen",
 ]
+
+# The Tier-3 job modules that are also built at the LTS: tier3-images.yaml's
+# cloudtasks_flink_version offers 1.20 and builds it through `just verify-flink`.
+# Every other Tier-3 module is classified at flink.version alone. A name with no
+# kubernetes/apps/<name>/src/main fails the audit; a module listed here that is
+# not really built at the LTS can fail it too, as a type absent at the LTS.
+lts_tier3_modules = ["cloudtasks"]
 
 # ---------------------------------------------------------------------------
 # @Internal — Flink reserves the right to change these in any release.

@@ -48,7 +48,10 @@ env:
   # tests the whole suite against it, selecting the flink1 compat source root
   # (the one-interface seam described at the flink.compat property in pom.xml).
   # Bumping to a new 1.20 patch is an edit here — dependabot does not see
-  # workflow env, the same accepted staleness FLINK_CEILING has.
+  # workflow env, the same accepted staleness FLINK_CEILING has. release.yaml
+  # and scripts/check-flink-api-tiers.py read this line by its exact shape;
+  # the 1.20 options of tier3-images.yaml and tier3-run.yaml are separate
+  # literals to move with it.
   FLINK_LTS: '1.20.4'
 
 jobs:

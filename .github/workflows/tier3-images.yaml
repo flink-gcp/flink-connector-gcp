@@ -26,6 +26,9 @@ on:
         required: true
         type: choice
         default: '2.2.1'
+        # 1.20.4 is weekly.yaml's FLINK_LTS. A module offered at 1.20 here is
+        # also listed in lts_tier3_modules (scripts/config/flink-api-tiers.toml),
+        # so the tier audit reads its imports at that version too.
         options:
           - '2.2.1'
           - '1.20.4'
