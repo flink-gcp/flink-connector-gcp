@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.QueryDocumentSnapshot;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreEmulatorITCase;
 import io.github.flink.gcp.connector.firestore.FirestoreMetricNames;
@@ -143,6 +144,33 @@ class FirestoreWriterITCase extends AbstractFirestoreEmulatorITCase {
         }
 
         assertThat(read(path("doc")).getLong("v")).isEqualTo(2L);
+    }
+
+    @Test
+    void aDrawnIdNamingAnExistingDocumentLeavesItAndCreatesTheRecordUnderANewId() throws Exception {
+        FirestoreWrite taken = FirestoreWrite.add(collection, Map.of("v", "added"));
+        client().document(taken.getDocumentPath()).set(Map.of("v", "existing")).get();
+
+        try (SinkWriter<FirestoreWrite> writer = writer()) {
+            write(writer, taken);
+            write(writer, FirestoreWrite.add(collection, Map.of("v", "other")));
+            writer.flush(false);
+        }
+
+        assertThat(read(taken.getDocumentPath()).getData()).isEqualTo(Map.of("v", "existing"));
+        List<QueryDocumentSnapshot> documents =
+                client().collection(collection).get().get().getDocuments();
+        assertThat(documents)
+                .extracting(d -> d.getString("v"))
+                .containsExactlyInAnyOrder("existing", "added", "other");
+        assertThat(documents)
+                .filteredOn(d -> !d.getReference().getPath().equals(taken.getDocumentPath()))
+                .allSatisfy(d -> assertThat(d.getId()).matches("[A-Za-z0-9]{20}"));
+        assertThat(routed).isEmpty();
+        assertThat(
+                        context.getSinkWriterMetricGroup()
+                                .counterValue(FirestoreMetricNames.IDS_REDRAWN))
+                .isEqualTo(1);
     }
 
     @Test

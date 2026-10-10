@@ -87,10 +87,7 @@ class RowDataSerializationSchemaTest {
 
     private static RowDataSerializationSchema serializer(
             FirestoreTableSchema schema, WriteMode mode) {
-        RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(schema, "users/alice/orders", mode);
-        serializer.open(null);
-        return serializer;
+        return new RowDataSerializationSchema(schema, "users/alice/orders", mode);
     }
 
     private static GenericRowData everyTypeRow(String id) {
@@ -247,16 +244,17 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
-    void withoutAKeyEveryRowIsCreatedUnderAFreshAutoId() throws IOException {
+    void withoutAKeyEveryRowIsAddedUnderAFreshDrawnId() throws IOException {
         RowDataSerializationSchema serializer =
                 serializer(everyTypeSchema(new int[0]), WriteMode.SET);
 
         FirestoreWrite first = serializer.serialize(everyTypeRow("ignored"), TestContexts.NO_OP);
         FirestoreWrite second = serializer.serialize(everyTypeRow("ignored"), TestContexts.NO_OP);
 
-        // A set rather than a create: the same new document, but a retry of a write whose answer
-        // was lost applies again instead of failing with ALREADY_EXISTS.
-        assertThat(first.getOperation()).isEqualTo(FirestoreWrite.Operation.SET);
+        // A create, so a drawn id that names an existing document never replaces it: the writer
+        // draws again.
+        assertThat(first.getOperation()).isEqualTo(FirestoreWrite.Operation.CREATE);
+        assertThat(first.hasDrawnId()).isTrue();
         assertThat(first.getDocumentPath()).matches("users/alice/orders/[A-Za-z0-9]{20}");
         assertThat(second.getDocumentPath()).isNotEqualTo(first.getDocumentPath());
         // Without a key the id column is an ordinary field.
@@ -315,7 +313,6 @@ class RowDataSerializationSchemaTest {
                         everyTypeSchema(new int[] {0}), "users/alice/orders", WriteMode.MERGE);
 
         RowDataSerializationSchema copy = InstantiationUtil.clone(serializer);
-        copy.open(null);
 
         assertThat(copy).isEqualTo(serializer);
         assertThat(copy.serialize(everyTypeRow("o1"), TestContexts.NO_OP).getFields())

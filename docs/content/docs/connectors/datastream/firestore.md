@@ -159,15 +159,22 @@ There is nothing to create either: Firestore creates a collection with its first
 
 ### Operations and field values
 
-A `FirestoreWrite` carries one of five operations.
+A `FirestoreWrite` is built by one of six factories.
 
-| Operation | Effect |
+| Factory | Effect |
 |---|---|
 | `set` | Replaces the document, creating it if it is missing |
 | `setMerge` | Merges the fields into the document, creating it if it is missing; a nested map is merged key by key |
 | `create` | Creates the document; refused with `ALREADY_EXISTS` if it exists |
+| `add` | Creates a new document in a collection under an id the write draws; never replaces an existing document |
 | `update` | Replaces the named top-level fields of an existing document; refused with `NOT_FOUND` if it is missing |
 | `delete` | Deletes the document; deleting a missing document succeeds |
+
+`add` takes a collection path, such as `users/alice/orders`, and draws a document id of 20 letters and digits from a `SecureRandom`, as the client library does for `CollectionReference.add`.
+The write is a `create` of that document, so Firestore refuses it with `ALREADY_EXISTS` rather than replace a document the id happens to name.
+The sink then sends the record again under a new id instead of routing it.
+That refusal also answers the library's retry of a create that was applied but whose answer was lost, and the sink cannot tell the two apart without reading the document, so the retry leaves the record stored twice, under two ids.
+A `set` under an id the serializer draws itself would never be stored twice by a retry, but it replaces whatever document the id names.
 
 Every field name is literal in every operation.
 `a.b` names one top-level field whose name contains a dot, never field `b` inside map `a`, although the client library would read an update's keys as dotted paths.
@@ -224,6 +231,7 @@ Which operation the serializer builds decides whether that matters.
 | `set`, `setMerge` | Idempotent for that write |
 | `delete` | Idempotent, and deleting a missing document succeeds |
 | `create` | Refused with `ALREADY_EXISTS`, routed to the failure handler |
+| `add` | Stored again under a new id: a restart's serializer draws a new id, and the library's retry is refused and sent again under one |
 | `update` | Idempotent, but if the document was deleted in between, Firestore answers `NOT_FOUND`, which fails the job |
 | Any write with `lastUpdateTime` | Refused with `FAILED_PRECONDITION`, because the first application changed the update time; `preconditionFailurePolicy` decides |
 
@@ -244,10 +252,14 @@ Firestore offers a primitive that could support one (a transaction that binds a 
 The client library retries a write itself (see [Retries](#retries)), so a failure that reaches the writer is one the library gave up on.
 The writer sorts those three ways.
 
+**Sent again under a new id**: `ALREADY_EXISTS` for an `add`, which is not the record's failure, because the existing document was left in place.
+`idsRedrawn` counts these re-sends, and neither `numRecordsSendErrors` nor `errorClass` sees them.
+If ten ids drawn for one record are refused in a row, the job fails, because chance does not explain that.
+
 **Routed to the `failedWriteHandler`**, because the service refused this one write and would refuse it again:
 
 - `INVALID_ARGUMENT`, after it is confirmed alone (see below).
-- `ALREADY_EXISTS` for a `create`.
+- `ALREADY_EXISTS` for a `create` whose id the serializer chose.
 - `FAILED_PRECONDITION` for a write carrying a `lastUpdateTime`, only under `preconditionFailurePolicy(ROUTE_TO_FAILURE_HANDLER)`.
 
 **Fails the job**: everything else, including those statuses on any other write, any status the library's retries gave up on, and a failure carrying no status at all.
@@ -276,6 +288,8 @@ Measured against the emulator, one run, 2026-09-27:
 | `update` or `delete` with a stale `lastUpdateTime`, whether or not the document exists | `FAILED_PRECONDITION` | **Fails the job** by default |
 | `update` of a missing document | `NOT_FOUND` | Fails the job |
 | `delete` of a missing document | *applied* | None |
+
+An `add` whose drawn id names an existing document was measured on 2026-10-10 (one run, emulator): the create came back `ALREADY_EXISTS`, the existing document kept its fields, and the record was stored under a new id.
 
 `preconditionFailurePolicy(ROUTE_TO_FAILURE_HANDLER)` moves the stale-precondition row into the failure handler, which then decides between failing, dropping and dead-lettering.
 The default is `FAIL_JOB`, because it cannot lose a record: a stream in which every precondition fails says the pipeline reads stale update times, and shedding those records one at a time would hide that behind a green job.
@@ -353,6 +367,7 @@ Registered on the sink writer's metric group.
 | `recordsSkipped` | counter | Records the serializer returned `null` for |
 | `writesRetried` | counter | Write attempts the client library retried, one per write per retry |
 | `writesConfirmedAlone` | counter | Writes re-sent alone to confirm an `INVALID_ARGUMENT`, whatever the verdict. A rise with no matching `errorClass.INVALID_ARGUMENT.errors` means requests refused as a whole whose writes were fine alone |
+| `idsRedrawn` | counter | `add` writes sent again under a new id after `ALREADY_EXISTS`. Each is either a drawn id that named an existing document, which was left in place, or a retried create that had been applied, which leaves its record stored twice |
 | `bulkWritersReplaced` | counter | Times the writer replaced its `BulkWriter` to clear the library's failed-write slots; each replacement restarts the throttle's ramp-up |
 | `inFlightWrites` | gauge | Writes handed to the client library and not yet answered |
 | `inFlightBytes` | gauge | Their size in the request |

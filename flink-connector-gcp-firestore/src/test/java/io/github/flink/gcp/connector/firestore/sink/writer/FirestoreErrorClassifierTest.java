@@ -39,6 +39,7 @@ class FirestoreErrorClassifierTest {
 
     private static final FirestoreWrite SET = FirestoreWrite.set("c/a", Map.of());
     private static final FirestoreWrite CREATE = FirestoreWrite.create("c/a", Map.of());
+    private static final FirestoreWrite ADD = FirestoreWrite.add("c", Map.of());
     private static final FirestoreWrite CONDITIONAL =
             FirestoreWrite.delete("c/a", Timestamp.ofTimeSecondsAndNanos(1, 0));
 
@@ -53,12 +54,14 @@ class FirestoreErrorClassifierTest {
     @EnumSource(Status.Code.class)
     void onlyTheDocumentedStatusesAreRoutable(Status.Code code) {
         for (PreconditionFailurePolicy policy : PreconditionFailurePolicy.values()) {
-            for (FirestoreWrite write : List.of(SET, CREATE, CONDITIONAL)) {
+            for (FirestoreWrite write : List.of(SET, CREATE, ADD, CONDITIONAL)) {
                 Kind expected;
                 if (code == Status.Code.INVALID_ARGUMENT) {
                     expected = Kind.INVALID;
                 } else if (code == Status.Code.ALREADY_EXISTS && write == CREATE) {
                     expected = Kind.REFUSED;
+                } else if (code == Status.Code.ALREADY_EXISTS && write == ADD) {
+                    expected = Kind.ID_TAKEN;
                 } else if (code == Status.Code.FAILED_PRECONDITION
                         && write == CONDITIONAL
                         && policy == ROUTE_TO_FAILURE_HANDLER) {
@@ -95,6 +98,16 @@ class FirestoreErrorClassifierTest {
                         Status.INTERNAL.withCause(failure(Status.INVALID_ARGUMENT)));
 
         assertThat(FirestoreErrorClassifier.classify(chain, SET, FAIL_JOB)).isEqualTo(Kind.FATAL);
+    }
+
+    @Test
+    void aTransientStatusInTheChainOfADrawnIdRefusalIsFatal() {
+        Throwable chain =
+                new StatusRuntimeException(
+                        Status.ALREADY_EXISTS.withCause(
+                                new StatusRuntimeException(Status.UNAVAILABLE)));
+
+        assertThat(FirestoreErrorClassifier.classify(chain, ADD, FAIL_JOB)).isEqualTo(Kind.FATAL);
     }
 
     @Test

@@ -41,7 +41,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   waits for the solo verdict. Measured on the emulator: `INVALID_ARGUMENT` fans out across the
   request; `ALREADY_EXISTS`, `NOT_FOUND` and `FAILED_PRECONDITION` answer only their write.
 - **Routing**: `INVALID_ARGUMENT` (after solo confirmation); `ALREADY_EXISTS` for `CREATE` only,
-  outside `maxConsecutiveRejections`; `FAILED_PRECONDITION` only for a write carrying
+  outside `maxConsecutiveRejections`, except for an `add` (`hasDrawnId`), which is re-sent under
+  a new id, never routed; `FAILED_PRECONDITION` only for a write carrying
   `lastUpdateTime` and only under `preconditionFailurePolicy(ROUTE_TO_FAILURE_HANDLER)`.
   `NOT_FOUND` is never routed. Both ADR-0042 halves apply.
   `FirestoreErrorClassifierTest` iterates every gRPC code.
@@ -94,8 +95,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Native-mode Table API sink (`docs/adr/0179`)
 
 - **A table is one collection; the PRIMARY KEY (one `STRING` column) is the document id** and is
-  never a field. No key means `SET` under a 20-character `SecureRandom` id (a `CREATE` would fail
-  the job on a library retry). A key that is empty or holds `/` fails the record: it would
+  never a field. No key means `FirestoreWrite.add`: a `CREATE` under a drawn id that the writer
+  re-draws on `ALREADY_EXISTS`, so a row never replaces a document (a lost answer stores it twice;
+  #1680, owner's choice over reading back). A key that is empty or holds `/` fails the record: it would
   silently address another document. `update` declares no deletes (restart loop otherwise).
 - **Types are checked when the statement is planned by `FirestoreTableSchema`**, and the converter
   (`RowDataToFirestoreConverter`) assumes that check ran. Add a type to both, plus the type table

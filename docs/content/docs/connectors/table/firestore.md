@@ -65,7 +65,8 @@ The PRIMARY KEY is the document id.
 It must be one `STRING` column, declared `PRIMARY KEY (...) NOT ENFORCED`, and it is never stored as a field.
 A row whose key is empty or contains `/` fails the job, because the path it would compose names another document, or a document in another collection.
 A table without a PRIMARY KEY writes every row as a new document under an id the connector draws, 20 letters and digits, as the client library does for an added document.
-The write is a `set` rather than a `create`, so a write the client library retries after its answer was lost lands again instead of failing the job as a document that already exists.
+The write is a `create`, so a row never replaces an existing document: if the drawn id names one, Firestore refuses the create, the document keeps its fields, and the sink creates the row again under a new id.
+The client library's retry of a create that was applied but whose answer was lost is refused the same way, and the sink cannot tell the two apart without reading the document, so such a retry stores the row twice.
 
 ### Type mapping
 
@@ -252,7 +253,7 @@ A scan restored from a checkpoint resumes each split just after the last documen
 
 The sink is at-least-once: it waits for every write it has sent at each checkpoint, and a restart replays the records after the last completed one.
 With a PRIMARY KEY, `set`, `merge` and a delete are idempotent, so a replayed row writes the same document again; an `update` replayed after something outside the job deleted the document fails the job, and fails again after each restart until the document exists.
-Without a PRIMARY KEY, a replayed row creates another document under a new id, so a restart can leave duplicates.
+Without a PRIMARY KEY, a replayed row creates another document under a new id, so a restart can leave duplicates, and so can a retried write whose answer was lost; the `idsRedrawn` metric counts the second kind, together with drawn ids that named an existing document.
 See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/firestore" >}}#delivery-guarantee).
 
 ## Design decisions and testing

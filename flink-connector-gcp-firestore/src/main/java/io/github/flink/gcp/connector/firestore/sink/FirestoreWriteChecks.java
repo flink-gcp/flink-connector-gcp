@@ -30,8 +30,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The checks {@link FirestoreWrite} applies when it is built: the document path's grammar and the
- * closed value vocabulary.
+ * The checks {@link FirestoreWrite} applies when it is built: the document or collection path's
+ * grammar and the closed value vocabulary.
  *
  * <p>Both exist for what the sink does with the value, not for what the service might refuse
  * (ADR-0127). The path is parsed here and composed into a document reference, so it is checked
@@ -56,27 +56,54 @@ final class FirestoreWriteChecks {
      */
     static void checkDocumentPath(String documentPath) {
         Preconditions.checkNotNull(documentPath, "documentPath must not be null");
-        String[] segments = documentPath.split("/", -1);
+        int segments = checkSegments("Document", documentPath);
+        if (segments % 2 != 0) {
+            throw new IllegalArgumentException(
+                    "Document path '"
+                            + documentPath
+                            + "' has "
+                            + segments
+                            + " segment(s). A document path alternates collection and document"
+                            + " ids, so it has an even number of segments, for example"
+                            + " 'users/alice'.");
+        }
+    }
+
+    /**
+     * Checks a collection path relative to the documents root: an odd number of {@code /}-separated
+     * segments, none of them empty. The document path an id is appended to must be one {@link
+     * #checkDocumentPath} accepts.
+     */
+    static void checkCollectionPath(String collectionPath) {
+        Preconditions.checkNotNull(collectionPath, "collectionPath must not be null");
+        int segments = checkSegments("Collection", collectionPath);
+        if (segments % 2 == 0) {
+            throw new IllegalArgumentException(
+                    "Collection path '"
+                            + collectionPath
+                            + "' has "
+                            + segments
+                            + " segment(s). A collection path alternates collection and document"
+                            + " ids and ends with a collection id, so it has an odd number of"
+                            + " segments, for example 'users' or 'users/alice/orders'.");
+        }
+    }
+
+    /** Refuses an empty segment in a path, and returns how many segments it has. */
+    private static int checkSegments(String kind, String path) {
+        String[] segments = path.split("/", -1);
         for (String segment : segments) {
             if (segment.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "Document path '"
-                                + documentPath
+                        kind
+                                + " path '"
+                                + path
                                 + "' has an empty segment. A path alternates collection and"
                                 + " document ids separated by single '/' characters, with no"
                                 + " leading or trailing '/'.");
             }
         }
-        if (segments.length % 2 != 0) {
-            throw new IllegalArgumentException(
-                    "Document path '"
-                            + documentPath
-                            + "' has "
-                            + segments.length
-                            + " segment(s). A document path alternates collection and document"
-                            + " ids, so it has an even number of segments, for example"
-                            + " 'users/alice'.");
-        }
+        return segments.length;
     }
 
     /** Checks and copies a document's fields into unmodifiable, serializable collections. */

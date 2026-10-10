@@ -55,6 +55,7 @@ final class FirestoreWriterMetrics {
     private final Counter writesRetried;
     private final Counter bulkWritersReplaced;
     private final Counter writesConfirmedAlone;
+    private final Counter idsRedrawn;
     private final ErrorClassCounters errorClasses;
 
     /**
@@ -74,6 +75,7 @@ final class FirestoreWriterMetrics {
         this.bulkWritersReplaced = metricGroup.counter(FirestoreMetricNames.BULK_WRITERS_REPLACED);
         this.writesConfirmedAlone =
                 metricGroup.counter(FirestoreMetricNames.WRITES_CONFIRMED_ALONE);
+        this.idsRedrawn = metricGroup.counter(FirestoreMetricNames.IDS_REDRAWN);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
 
@@ -115,6 +117,16 @@ final class FirestoreWriterMetrics {
      */
     void writeConfirmedAlone() {
         writesConfirmedAlone.inc();
+    }
+
+    /**
+     * Counts one drawn-id create sent again under a new id after {@code ALREADY_EXISTS}. Each is
+     * either a collision with an existing document, which the create left in place, or a retried
+     * create that had been applied, which leaves its document twice; neither {@code errorClass} nor
+     * {@code numRecordsSendErrors} sees it.
+     */
+    void idRedrawn() {
+        idsRedrawn.inc();
     }
 
     /** Counts one replacement of the client library's {@code BulkWriter}. */
