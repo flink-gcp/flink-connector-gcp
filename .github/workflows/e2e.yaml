@@ -138,6 +138,7 @@ jobs:
           PUBSUB_IT_PROJECT: flink-gcp
           BIGTABLE_IT_PROJECT: flink-gcp
           SPANNER_IT_PROJECT: flink-gcp
+          FIRESTORE_IT_PROJECT: flink-gcp
           CLOUDTASKS_IT_PROJECT: flink-gcp
         run: just e2e
 

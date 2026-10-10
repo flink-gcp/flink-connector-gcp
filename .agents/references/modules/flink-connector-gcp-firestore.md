@@ -38,8 +38,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   vocabulary type to `everyValueType()` or an operation to `everyOperation()`, which both read.
 - **The library reports a request-level status against every write of the request.** That is why
   `INVALID_ARGUMENT` is parked and confirmed alone before routing, and why its `errorClass` count
-  waits for the solo verdict. Measured on the emulator: `INVALID_ARGUMENT` fans out across the
-  request; `ALREADY_EXISTS`, `NOT_FOUND` and `FAILED_PRECONDITION` answer only their write.
+  waits for the solo verdict. Measured on the emulator and on the service (#1706): every
+  `INVALID_ARGUMENT` shape fans out across the request; `ALREADY_EXISTS`, `NOT_FOUND` and
+  `FAILED_PRECONDITION` answer only their write. A missing or malformed database id answers
+  `NOT_FOUND`, and a Datastore-mode database `FAILED_PRECONDITION`, for every write.
 - **Routing**: `INVALID_ARGUMENT` (after solo confirmation); `ALREADY_EXISTS` for `CREATE` only,
   outside `maxConsecutiveRejections`, except for an `add` (`hasDrawnId`), which is re-sent under
   a new id, never routed; `FAILED_PRECONDITION` only for a write carrying
@@ -76,8 +78,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Both builders' `readTime` truncate to the microsecond** (#1689, owner's choice over refusing):
   the service accepts only a microsecond-precision read time, so the instant given could never be
   read, and flooring picks the latest microsecond at or before it. That it sees the same writes
-  is backed for Native mode by `common.proto`'s "microsecond aligned" `Precondition.update_time`
-  and measured for both modes only on the emulator; Datastore mode's service is unmeasured.
+  is backed for Native mode by `common.proto`'s "microsecond aligned" `Precondition.update_time`,
+  measured on the service for Native mode (#1706) and only on the emulator for Datastore mode.
   Every path, the Table API's `scan.read-time` included, goes through
   the setter; a new path that builds a read time must truncate too.
 - **Cursors are the library's `startAfter(DocumentSnapshot)`** (`QueryCursors`), for pages and for
@@ -93,7 +95,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`runAsyncTransaction`, interruptible), and hold clients in `LazyFirestoreClient` (one-way close).
 - The emulator answers `PartitionQuery` with `UNIMPLEMENTED`; emulator tests cut partitions through
   `FixedPartitionsPlannerFactory` (an override of `ClientQueryPlanner.partitions`). Real partition
-  counts and the read-time window belong to the gated suite (#1546).
+  counts are `FirestoreSourceRealGcpITCase`'s. A database younger than an hour refuses an older
+  read time for predating it (`INVALID_ARGUMENT`), so the one-hour and PITR windows were measured
+  once by hand (ADR-0185), not in the suite.
 - Unit tests mint snapshots through the library's `@InternalApi` `Internal.snapshotFromProto`
   (`TestDocuments` in this project's test package), so no vendor-package helper exists here.
 - A user query is planned from its wire form (`Query.fromProto(toProto())`), which is what readers
@@ -334,5 +338,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image
   (`FirestoreEmulatorContainers` in test-utils, pinned with the Bigtable and Pub/Sub classes).
-  It does not enforce the 10 MiB request limit or IAM, and its statuses are not evidence about
-  the service; the real-GCP suite is #1546.
+  It does not enforce IAM, refuses an array inside an array that the service stores, and its
+  statuses are not evidence about the service. Neither it nor the service refused a 10.5 MiB
+  request.
+- The gated suite (`FIRESTORE_IT_PROJECT`, ADR-0185) extends `AbstractFirestoreRealGcpITCase`: one
+  Standard-edition database per class from `EphemeralDatabases`, public so that the
+  Datastore-mode harness (#1707) can share it. Gate annotations stay on the concrete classes. Teardown waits for a delete's acceptance
+  and the database's absence, never for the operation: a database holding data outlived the
+  client's five-minute polling. `scripts/sweep-e2e.sh` deliberately does not sweep databases.

@@ -148,6 +148,14 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- FirestoreAdminClient, with which the gated real-service suite creates and deletes
+                 an ephemeral database per class (#1546). The client library carries no admin
+                 client; the libraries BOM manages this one at the same version. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-firestore-admin</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- FirestoreEmulatorContainer. -->
             <groupId>org.testcontainers</groupId>
             <artifactId>gcloud</artifactId>

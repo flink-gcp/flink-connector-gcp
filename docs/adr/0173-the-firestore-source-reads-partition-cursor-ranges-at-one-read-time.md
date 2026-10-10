@@ -21,8 +21,9 @@ limitations under the License.
   libraries-bom 26.87.0; emulator behavior measured 2026-09-30 against
   `google-cloud-cli:583.0.0-emulators`, one run; the source ITs re-run 2026-10-03 against
   `587.0.0-emulators` and unchanged); revised 2026-10-10 by [#1689] (a configured read time is
-  truncated to the microsecond)
-- Issues: [#1541], [#355], [#1546], [#1689]
+  truncated to the microsecond) and by [#1706] (partitioning and read times measured against the
+  service)
+- Issues: [#1541], [#355], [#1546], [#1689], [#1706]
 - Modules: firestore (`source`, `source.batch`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Source
 
@@ -52,6 +53,13 @@ Measured against the emulator:
 - A read time two hours old is answered, where the service documents a one-hour window without point-in-time recovery.
 - A query's read time comes back on its `QuerySnapshot` whether or not it matched a document.
 
+Measured against the service on 2026-10-10 by `FirestoreSourceRealGcpITCase` (one run, Standard edition):
+
+- `PartitionQuery` cut a collection group of 3,000 documents into all eight partitions asked for, and a scan with `partitionCount(8)` read every document once; a group of five came back in fewer partitions than asked for.
+- A read time in the future is refused with `INVALID_ARGUMENT`, as on the emulator, and a scan of an empty group at the service's own read time reads nothing without failing, so the probe's read time arrives on an empty result too.
+- A read time from before the database existed is refused with `INVALID_ARGUMENT` ("The requested 'read_time' cannot be before database creation time"), so a database younger than an hour cannot show the one-hour window. That window was measured once by hand on databases more than an hour old; the docs page records the result.
+- A `limitToLast` query with an `offset` reads the documents the client library returns, in reverse.
+
 ## Decision
 
 - **A split is a query in its wire form plus the job's read time.** One split type serves both shapes: a scan partition is the collection group, projected, between the partition's two cursors; the arbitrary query is the user's. The split serializer writes the split id and read time in the connector's own format and the query as the length-prefixed protobuf encoding of `google.firestore.v1.RunQueryRequest`. That encoding is the service's published wire contract, not a library's Java serialization, and it is the only complete form of a Firestore query; re-encoding filters, orderings and cursor values field by field would be a second query model to keep in step.
@@ -76,7 +84,7 @@ Measured against the emulator:
 `google/firestore/v1/firestore.proto` (proto-google-cloud-firestore-v1 3.49.0) documents `read_time` as "a microsecond precision timestamp", and nothing between the builder and the wire truncates it: not google-cloud-core's `Timestamp`, nor the library's `ReadTimeTransaction` and `Query`.
 Measured on 2026-10-10 against `google-cloud-cli:587.0.0-emulators`, one run: a read time with sub-microsecond digits is refused with `INVALID_ARGUMENT` ("timestamp cannot have more than microseconds precision"), on the raw `RunQuery`, through `ReadTimeQueries` and through the `firestore` table's `scan.read-time`, which failed the job on the JobManager with the read-window message; the same time in whole microseconds is answered.
 On the emulator, a document's versions sit on whole microseconds: for an update time W, a read at W − 1 ns to W − 999 ns is refused, at W − 1 µs finds nothing, and at W finds the write.
-The service was not measured, but `google/firestore/v1/common.proto` (same artifact) says of `Precondition.update_time` that the "Timestamp must be microsecond aligned", which implies its update times are whole microseconds too.
+`google/firestore/v1/common.proto` (same artifact) says of `Precondition.update_time` that the "Timestamp must be microsecond aligned", which implies its update times are whole microseconds too, and the service bears that out (measured 2026-10-10 by `FirestoreSourceRealGcpITCase`, one run): a write's update time has no sub-microsecond digits, a read-only transaction at it finds the write and one a microsecond earlier does not, and a read time with sub-microsecond digits is refused with `INVALID_ARGUMENT`.
 `Instant.now()` carries sub-microsecond digits on Linux with JDK 17 (not on macOS with JDK 21), so `readTime(Instant.now().minusSeconds(30))` failed there.
 
 The builder now truncates the time to the microsecond (owner's decision, 2026-10-10).
@@ -110,3 +118,4 @@ The Table API's `scan.read-time` reaches the builder through `OptionSetters` and
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1589]: https://github.com/flink-gcp/flink-connector-gcp/issues/1589
 [#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689
+[#1706]: https://github.com/flink-gcp/flink-connector-gcp/issues/1706

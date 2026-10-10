@@ -305,7 +305,7 @@ worktree-env:
     scripts/worktree-env.sh
 
 # The ITCases gated on the BQ_IT_*, PUBSUB_IT_PROJECT, BIGTABLE_IT_PROJECT,
-# SPANNER_IT_PROJECT and CLOUDTASKS_IT_PROJECT
+# SPANNER_IT_PROJECT, FIRESTORE_IT_PROJECT and CLOUDTASKS_IT_PROJECT
 # variables: what they check is exactly what the emulators cannot (see the
 # testing sections of the connector documentation). The E2E workflow
 # (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally
@@ -346,7 +346,10 @@ worktree-env:
 # Engine version, while Bigtable and Spanner create one ephemeral instance per
 # gated class. A killed run is bounded by the scheduled sweep rather than left
 # standing indefinitely; normal Cloud Tasks completion verifies zero running
-# App Engine instances before either of the longer suites begins.
+# App Engine instances before either of the longer suites begins. Firestore
+# creates an ephemeral database per gated class too, but a database bills only
+# for what it stores and the operations run on it, so the scheduled sweep
+# leaves an abandoned one to the next gated Firestore class's own sweep.
 #
 # -Dtest.excluded.groups= is that opt-in (issue #245): the gated classes carry
 # @Tag("gated"), which the root pom excludes from every surefire execution, so

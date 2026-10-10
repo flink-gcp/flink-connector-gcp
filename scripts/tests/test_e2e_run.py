@@ -23,6 +23,9 @@ import time
 import pytest
 from conftest import SCRIPTS
 
+# The connector modules the synthetic tree holds gated classes in, one per E2E gate.
+MODULES = ("cloudtasks", "bigquery", "pubsub", "bigtable", "spanner", "firestore")
+
 
 @pytest.fixture()
 def suite(tmp_path):
@@ -32,8 +35,7 @@ def suite(tmp_path):
         (scripts / name).symlink_to(SCRIPTS / name)
     # The parser imports its shared helpers relative to its real file.
     (tmp_path / ".venv").symlink_to(SCRIPTS.parent / ".venv", target_is_directory=True)
-    modules = ("cloudtasks", "bigquery", "pubsub", "bigtable", "spanner")
-    for module in modules:
+    for module in MODULES:
         gate = "BQ" if module == "bigquery" else module.upper()
         source = (
             tmp_path
@@ -107,6 +109,7 @@ sys.exit(status)
                 "PUBSUB_IT_PROJECT",
                 "BIGTABLE_IT_PROJECT",
                 "SPANNER_IT_PROJECT",
+                "FIRESTORE_IT_PROJECT",
                 "CLOUDTASKS_IT_PROJECT",
             ),
             "synthetic",
@@ -148,7 +151,8 @@ sys.exit(status)
 
 
 @pytest.mark.parametrize(
-    "failed", ["", "cloudtasks", "bigquery", "pubsub", "bigtable", "spanner"]
+    "failed",
+    ["", "cloudtasks", "bigquery", "pubsub", "bigtable", "spanner", "firestore"],
 )
 def test_independent_connectors_run_even_after_a_test_failure(suite, failed):
     result = suite(FAIL=failed)
@@ -163,9 +167,10 @@ def test_independent_connectors_run_even_after_a_test_failure(suite, failed):
         "pubsub",
         "bigtable",
         "spanner",
+        "firestore",
     ]
     results = suite.results()
-    assert len(results) == 5
+    assert len(results) == 6
     assert sum(row["status"] == "FAILED" for row in results) == bool(failed)
 
 
@@ -179,7 +184,7 @@ def test_unconfirmed_idle_fixture_prevents_later_billed_suites(suite):
         "cloudtasks",
         "fixture-stop",
     ]
-    assert sum(row["status"] == "NOT_RUN" for row in suite.results()) == 4
+    assert sum(row["status"] == "NOT_RUN" for row in suite.results()) == 5
 
 
 @pytest.mark.parametrize("phase", ["install", "compile"])
@@ -216,7 +221,7 @@ def test_termination_reaches_active_child_and_finalizes_reports(suite):
         assert process.returncode == 143
         assert (suite.root / "child-stopped").exists()
         assert "bigtable" not in suite.calls()
-        assert sum(row["status"] == "NOT_RUN" for row in suite.results()) == 3
+        assert sum(row["status"] == "NOT_RUN" for row in suite.results()) == 4
     finally:
         child_pid = suite.root / "child-pid"
         if child_pid.exists() and not (suite.root / "child-stopped").exists():
@@ -238,6 +243,21 @@ def surefire_calls(argv):
     )
 
 
+def test_the_shared_build_compiles_every_module_holding_gated_classes(suite):
+    # The runner compiles the connector modules once, by a list it names, before it runs any of
+    # them; a module missing from that list has its gated classes run uncompiled, which no other
+    # test here notices, because the synthetic Maven writes the reports either way.
+    assert suite().returncode == 0
+    (compile_call,) = [
+        call
+        for call in suite.argv()
+        if "test-compile" in call and "surefire:test@integration-tests" not in call
+    ]
+    assert set(option(compile_call, "-pl").split(",")) == {
+        f"flink-connector-gcp-{module}" for module in MODULES
+    }
+
+
 def option(call, name):
     return call[call.index(name) + 1]
 
@@ -252,6 +272,7 @@ def test_each_module_receives_only_its_own_classes(suite):
         ("flink-connector-gcp-bigquery", "-Dtest=BigqueryITCase"),
         ("flink-connector-gcp-bigtable", "-Dtest=BigtableITCase"),
         ("flink-connector-gcp-cloudtasks", "-Dtest=CloudtasksITCase"),
+        ("flink-connector-gcp-firestore", "-Dtest=FirestoreITCase"),
         ("flink-connector-gcp-pubsub", "-Dtest=PubsubITCase"),
         ("flink-connector-gcp-spanner", "-Dtest=SpannerITCase"),
         ("kubernetes/apps/bigquery", "-Dtest=AppITCase"),
