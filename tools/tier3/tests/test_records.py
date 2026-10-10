@@ -65,24 +65,34 @@ def test_rate_limiting_that_does_not_end_fails_after_six_backoffs():
     assert store.value == {"count": 0} and store.writes == 7
 
 
-def test_a_lost_generation_race_rereads_without_waiting():
+def test_a_lost_generation_race_rereads_after_a_jittered_wait():
     store, sleeps = Store(412, 409, 412), []
     assert update(store, sleeps) == {"count": 1}
-    assert sleeps == [] and store.writes == 4
+    assert store.writes == 4 and len(sleeps) == 3
+    # Full jitter under a ceiling that doubles from a quarter second.
+    assert all(0 <= delay <= ceiling for delay, ceiling in zip(sleeps, (0.25, 0.5, 1)))
 
 
-def test_five_lost_races_do_not_settle():
-    store, sleeps = Store(*[412] * 5), []
+def test_race_waits_stop_doubling_at_four_seconds():
+    store, sleeps = Store(*[412] * 19), []
+    assert update(store, sleeps) == {"count": 1}
+    assert store.writes == 20 and len(sleeps) == 19
+    assert max(sleeps) <= 4
+
+
+def test_twenty_lost_races_do_not_settle():
+    store, sleeps = Store(*[412] * 20), []
     with pytest.raises(Failure, match="Concurrent control updates did not settle"):
         update(store, sleeps)
-    assert store.writes == 5 and sleeps == []
+    # No wait follows the race that gives up.
+    assert store.writes == 20 and len(sleeps) == 19
 
 
-def test_an_update_makes_at_most_eleven_writes():
-    store, sleeps = Store(*[412] * 4, *[429] * 6, 412), []
+def test_an_update_makes_at_most_twenty_six_writes():
+    store, sleeps = Store(*[412] * 19, *[429] * 6, 412), []
     with pytest.raises(Failure, match="did not settle"):
         update(store, sleeps)
-    assert store.writes == 11 and len(sleeps) == 6
+    assert store.writes == 26 and len(sleeps) == 25
 
 
 @pytest.mark.parametrize("status", [403, 500, 503])

@@ -128,12 +128,18 @@ HTTP_TIMEOUT = 20
 
 # Cloud Storage sustains about one mutation a second on one object and refuses
 # a faster rate with 429 without applying the write. A conditional update
-# retries a lost generation race up to five writes, and a refused write after
-# each of these backoffs, in seconds before jitter.
-GENERATION_RACES = 5
+# retries a refused write after each of these backoffs, in seconds before
+# jitter.
 RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16, 32)
-# The most writes one update makes: four lost races, six refused writes and
-# the attempt that settles it.
+# A lost generation race is retried after a random wait of up to 0.25 seconds,
+# doubling per race to at most 4: a Pub/Sub supervisor collecting output
+# updates the record for every pull, and a runner that re-read at once lost
+# five races in a row to it on 2026-10-10. The twentieth lost race gives up,
+# after at most about 64 seconds of waiting.
+GENERATION_RACES = 20
+RACE_BACKOFF_FIRST, RACE_BACKOFF_CAP = 0.25, 4
+# The most writes one update makes: nineteen lost races, six refused writes
+# and the attempt that settles it.
 UPDATE_ATTEMPTS = GENERATION_RACES + len(RATE_LIMIT_BACKOFF)
 
 
