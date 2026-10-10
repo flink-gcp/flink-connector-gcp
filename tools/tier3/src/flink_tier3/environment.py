@@ -76,7 +76,6 @@ class Environment:
 
     def admission_open(self):
         self.namespaces()
-        validate_approval(self.approval.to_dict(), self.clock())
         control = self.refresh()
         if (
             self.stopping
@@ -87,6 +86,9 @@ class Environment:
         ):
             raise Failure("Run admission has been stopped")
         self.assert_owner()
+        # Last: the control and lock reads above can wait out generation
+        # races, and the admission they approve must still be in its window.
+        validate_approval(self.approval.to_dict(), self.clock())
 
     def require_running(self, message):
         """Refuse a mutation unless this run is still admitted and owned."""

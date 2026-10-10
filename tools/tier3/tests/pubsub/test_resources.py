@@ -572,7 +572,9 @@ def test_guard_budgets_composite_production_storage_read(setup):
         remaining -= cost
         guarded.append((phase, method, name))
 
-    operations = Resources(http, Storage(Client()), plan, reserve)
+    operations = Resources(
+        http, Storage(Client(), sleep=lambda seconds: None), plan, reserve
+    )
     assert len(operations.cleanup()) == 6
     assert requests_made == ["metadata", "download"] * 5
     assert len(guarded) == 7
