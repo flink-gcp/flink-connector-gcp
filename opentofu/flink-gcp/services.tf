@@ -38,11 +38,16 @@ resource "google_project_service" "this" {
     "bigtableadmin.googleapis.com",
     "cloudbuild.googleapis.com",
     "cloudtasks.googleapis.com",
-    # Firestore's Native-mode data plane and the database administration of
-    # both modes. First needed by a probe of the service's value checks
-    # (#1589), whose databases are created and deleted by hand; the E2E suite
-    # (#1546) creates its own. Datastore-mode reads and writes go through
-    # datastore.googleapis.com instead, which that suite adds when it needs it.
+    # Two services, because a Firestore database in Datastore mode is read and
+    # written through a different API: datastore.googleapis.com serves that
+    # mode's data plane, and firestore.googleapis.com serves Native mode's
+    # together with the database administration of both. The E2E suite (#1546)
+    # creates an ephemeral database of each mode and works in it. The Datastore
+    # API was already on before this list named it, most likely enabled when
+    # App Engine created the project's (default) Datastore-mode database, so
+    # adding it here changes nothing in the project. The Firestore API was first
+    # needed by a probe of the service's value checks (#1589).
+    "datastore.googleapis.com",
     "firestore.googleapis.com",
     "pubsub.googleapis.com",
     # One service, not two as Bigtable needs: Spanner's instance and database
