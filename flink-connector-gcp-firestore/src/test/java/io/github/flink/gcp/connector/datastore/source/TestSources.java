@@ -16,8 +16,13 @@
 
 package io.github.flink.gcp.connector.datastore.source;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Collector;
 
 import com.google.cloud.datastore.Entity;
@@ -27,6 +32,8 @@ import io.github.flink.gcp.connector.datastore.source.batch.enumerator.QueryPlan
 import io.github.flink.gcp.connector.datastore.source.batch.reader.QueryPageReader;
 import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityDeserializationSchema;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.UnaryOperator;
 
 /** Builds sources and reaches the builder's test seams, for the source's tests. */
@@ -60,6 +67,26 @@ public final class TestSources {
     public static DatastoreSourceConfig<String> kindConfig(
             UnaryOperator<DatastoreSourceBuilder<String>> customizer) {
         return source(builder -> customizer.apply(builder.kind("Task"))).getConfig();
+    }
+
+    /**
+     * Runs the source in a local job of the given parallelism and returns every record it emits.
+     *
+     * @param source the source to read
+     * @param parallelism the job's parallelism
+     * @return the records, in the order the job delivered them
+     */
+    public static <T> List<T> collect(Source<T, ?, ?> source, int parallelism) throws Exception {
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.createLocalEnvironment(new Configuration());
+        env.setParallelism(parallelism);
+        List<T> records = new ArrayList<>();
+        try (CloseableIterator<T> collected =
+                env.fromSource(source, WatermarkStrategy.noWatermarks(), "datastore")
+                        .executeAndCollect()) {
+            collected.forEachRemaining(records::add);
+        }
+        return records;
     }
 
     /** Replaces the builder's planner factory, which is package-private. */

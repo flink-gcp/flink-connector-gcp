@@ -21,8 +21,9 @@ limitations under the License.
   libraries-bom 26.87.0 and found unchanged in 3.7.0 through 26.90.0; emulator behavior measured
   2026-10-03 against
   `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by [#1651]
-  (writer-side id allocation for the table sink)
-- Issues: [#1542], [#355], [#1546], [#1651]
+  (writer-side id allocation for the table sink) and 2026-10-11 by [#1707] (the service's answers,
+  and an insert a refused commit already wrote)
+- Issues: [#1542], [#355], [#1546], [#1651], [#1707]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -91,17 +92,37 @@ The owner settled three names on 2026-10-03 under ADR-0137, departing from the i
 
 The public types enter at `@PublicEvolving` (ADR-0170).
 
+### What the service applies of a refused commit ([#1707], 2026-10-11)
+
+`DatastoreRejectionRealGcpITCase` measured the table above against the service (one run, Standard edition, google-cloud-datastore 3.7.0). Every status holds, and so does the lookup discriminator: a database that does not exist, and a malformed id (`Bad_Id`), refuse the update and the lookup alike with `NOT_FOUND`. Three things differ from the emulator.
+
+- **A commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applies every other write it carries**, wherever the refused write sits in the request (four positions, and one refusal among twenty upserts). The emulator applies none of them.
+- **A commit refused with `INVALID_ARGUMENT` applies none of its writes**, the entity over 1 MiB included, where the emulator applied the write ahead of it.
+- **A commit of about 10.5 MiB is applied**, as on the emulator, so `maxBatchBytes` rests on the documented limit rather than on a refusal anyone has seen.
+
+The first broke the confirmation pass for inserts. A commit holding one insert of an existing key and several new ones was refused, the service wrote the new ones, and their re-sends then answered `ALREADY_EXISTS` and were routed as duplicates although they were written. The emulator never showed it, and the unit tests' fake modelled the emulator. The writer now looks the key up before routing an insert's `ALREADY_EXISTS`, through the same one-call `Lookup` the `NOT_FOUND` discriminator uses, now returning the entity it finds. It counts the insert as applied when the key holds exactly the entity the insert writes, every property value and index flag alike (the owner asked for the fix in this change, 2026-10-11).
+
+- That also counts as applied a retried commit that had in fact been applied, and a replay of an identical insert after a restart. Both were routed before, as the documented cost of at-least-once; now the key holds what the record asked for, and routing it would report a write that succeeded.
+- An insert whose key holds a different entity is routed as before. The lookup is retried on a transient status within the recovery budget, like the `NOT_FOUND` lookup. One that still fails routes the insert with the lookup's failure attached as suppressed; a stored entity the client library cannot read (an array inside an array) is answered as no entity and routes it with nothing attached, the decoding failure logged at DEBUG. Either way a failed lookup costs no more than the routing it replaces.
+- Neither outcome counts toward `maxConsecutiveRejections`, and a match does not reset the run either, because a replay's identical insert reaches the same branch.
+- A timestamp finer than a microsecond is stored floored, so an insert carrying one never matches and is routed as before.
+- Declined: sending inserts one per commit, which would cost a request per insert to avoid a refusal that is rare outside a replay, and reading the refused key out of the error message, whose wording is not an API.
+
+`DatastoreWriterRealGcpITCase` drives the writer against the service through such a commit, and the fake behind `DatastoreWriterTest` gained the service's semantics. Removing the lookup fails both.
+
+A database in Native mode does not answer the Datastore API with `FAILED_PRECONDITION`, as the first cut's classifier Javadoc had it reported: it applied a commit and answered a lookup and a query, and the entity was then a document to the Firestore API.
+
 ### Id allocation for the table sink ([#1651], 2026-10-10)
 
 The writer gained one internal capability: it allocates ids (`AllocateIds`), `idAllocationBatchSize` at a time (a writer option, 1,000 by default; ADR-0184 records the measurement), through its own client, credentials, single-attempt deadline and recovery budget, retrying a transient failure as it retries a commit, and hands that allocator to a serializer implementing the `@Internal` `KeyAllocatingSerializationSchema` when the writer is created. The Datastore-mode table sink uses it for a table without a PRIMARY KEY (ADR-0184). The public SPI is unchanged: `DatastoreMutation` still takes complete keys only, and a user serializer that wants service ids allocates them before the sink, as the Decision's complete-key rule requires. An allocation the service refuses, a spent budget, a short answer or an interrupted backoff fails the job whatever the failure handler, as a commit the budget cannot finish does: it is the database's failure, not the record's.
 
 ## Consequences
 
-- A refused commit costs one solo commit per write, sequentially on the task thread, plus one lookup per update refused with `NOT_FOUND`; `mutationsConfirmedAlone` counts each mutation re-sent alone, once; retries of those solo commits count in `batchesSent`.
+- A refused commit costs one solo commit per write, sequentially on the task thread, plus one lookup per update refused with `NOT_FOUND` and per insert refused with `ALREADY_EXISTS`; `mutationsConfirmedAlone` counts each mutation re-sent alone, once; retries of those solo commits count in `batchesSent`.
 - With the defaults, one commit can take about a minute of backoff against fast transient refusals, and about eleven minutes when every attempt times out, before the job fails, and each solo re-send has a budget of its own, so a confirmation pass can exceed Flink's default checkpoint timeout under a sustained outage; the docs say to size them together.
 - The lookup needs `datastore.entities.get`, which `roles/datastore.user` carries.
 - `errorClass` counts the transient failures the writer recovered from, as on the Spanner sink (ADR-0076), because the writer sees its own retries.
-- The request-size limit, the lookup discriminator and the statuses above are emulator evidence only; [#1546] measures them against the service.
+- The request-size limit, the lookup discriminator and the statuses above were emulator evidence when this was decided; the revision above records the service's answers.
 
 ## Alternatives declined
 
@@ -117,3 +138,4 @@ The writer gained one internal capability: it allocates ids (`AllocateIds`), `id
 [#1542]: https://github.com/flink-gcp/flink-connector-gcp/issues/1542
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1651]: https://github.com/flink-gcp/flink-connector-gcp/issues/1651
+[#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707

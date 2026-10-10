@@ -30,8 +30,13 @@ import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.PathElement;
 import com.google.cloud.datastore.spi.v1.DatastoreRpc;
 import com.google.datastore.v1.LookupRequest;
+import com.google.datastore.v1.LookupResponse;
 import com.google.datastore.v1.PartitionId;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -47,6 +52,8 @@ import java.util.List;
  */
 @Internal
 final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DatastoreServiceAdapter.class);
 
     private final Datastore datastore;
 
@@ -94,15 +101,29 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
      * opens nothing.
      */
     @Override
-    public void lookup(Key key) {
+    @Nullable
+    public Entity lookup(Key key) {
         DatastoreOptions options = datastore.getOptions();
-        ((DatastoreRpc) options.getRpc())
-                .lookup(
-                        LookupRequest.newBuilder()
-                                .setProjectId(key.getProjectId())
-                                .setDatabaseId(key.getDatabaseId())
-                                .addKeys(toProto(key))
-                                .build());
+        LookupResponse response =
+                ((DatastoreRpc) options.getRpc())
+                        .lookup(
+                                LookupRequest.newBuilder()
+                                        .setProjectId(key.getProjectId())
+                                        .setDatabaseId(key.getDatabaseId())
+                                        .addKeys(toProto(key))
+                                        .build());
+        if (response.getFoundCount() == 0) {
+            return null;
+        }
+        try {
+            return Entity.fromPb(response.getFound(0).getEntity());
+        } catch (RuntimeException e) {
+            // A value the client library cannot read, such as an array inside an array, which the
+            // service stores: the lookup was still answered, which is all a caller confirming the
+            // database asks.
+            LOG.debug("The entity stored under {} cannot be read by the client library.", key, e);
+            return null;
+        }
     }
 
     /** Sends one {@code AllocateIds}, which takes the client's single-attempt settings. */

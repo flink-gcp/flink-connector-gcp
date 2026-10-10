@@ -69,9 +69,32 @@ class SplittableQueriesTest {
                                                                 PropertyFilter.Operator
                                                                         .HAS_ANCESTOR))
                                                 .build()))
-                        .addProjection(
+                        .build();
+
+        assertThat(SplittableQueries.whyNotSplittable(query)).isNull();
+    }
+
+    @Test
+    void aProjectionOfPropertiesIsReadAsOneSplit() {
+        Query query =
+                task().addProjection(
                                 com.google.datastore.v1.Projection.newBuilder()
                                         .setProperty(PropertyReference.newBuilder().setName("a")))
+                        .build();
+
+        assertThat(SplittableQueries.whyNotSplittable(query))
+                .isEqualTo(
+                        "it projects properties, and a key range ANDed onto such a projection"
+                                + " needs a composite index the query alone does not");
+    }
+
+    @Test
+    void aKeysOnlyProjectionCanBeSplit() {
+        Query query =
+                task().addProjection(
+                                com.google.datastore.v1.Projection.newBuilder()
+                                        .setProperty(
+                                                PropertyReference.newBuilder().setName("__key__")))
                         .build();
 
         assertThat(SplittableQueries.whyNotSplittable(query)).isNull();

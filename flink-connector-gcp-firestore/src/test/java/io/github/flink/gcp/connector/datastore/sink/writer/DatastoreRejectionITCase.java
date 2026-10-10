@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.datastore.sink.writer;
 
-import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.StringValue;
@@ -28,9 +27,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import javax.annotation.Nullable;
-
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -238,12 +234,8 @@ class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     private static DatastoreDatabaseAccess open(DatabaseDestination database) throws Exception {
-        return new DefaultDatastoreDatabaseAccessFactory(
-                        database,
-                        Duration.ofSeconds(30),
-                        EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"),
-                        null)
-                .create();
+        return RejectionProbes.open(
+                database, EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"));
     }
 
     private String code(DatastoreMutation... writes) {
@@ -251,14 +243,7 @@ class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     private static String outcome(DatastoreDatabaseAccess access, DatastoreMutation... writes) {
-        try {
-            access.commit(List.of(writes));
-            return "applied";
-        } catch (RuntimeException e) {
-            @Nullable StatusCode.Code code = DatastoreErrorClassifier.statusCode(e);
-            // A failure without a status keeps its own description, so an assertion names it.
-            return code != null ? code.name() : "no status: " + e;
-        }
+        return RejectionProbes.outcome(access, writes);
     }
 
     private Entity entity(String name) {

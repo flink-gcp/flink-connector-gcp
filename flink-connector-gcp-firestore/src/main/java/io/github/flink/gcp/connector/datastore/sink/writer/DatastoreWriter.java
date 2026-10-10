@@ -22,6 +22,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import com.google.api.gax.rpc.StatusCode;
+import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
@@ -94,9 +95,12 @@ import java.util.Set;
  * INVALID_ARGUMENT}, {@code ALREADY_EXISTS} when the commit holds an insert, {@code NOT_FOUND} when
  * it holds an update — is re-sent one write at a time, and only a refusal that repeats alone, for
  * an operation that can earn it, reaches the failure handler (ADR-0045's shape). The rest of the
- * commit is applied by those solo commits. A {@code NOT_FOUND} is routed only once a lookup of the
- * same key has been answered, which a missing database refuses as it refused the update. See {@link
- * DatastoreErrorClassifier} for what fails the job instead.
+ * commit is applied by those solo commits. The service applies every other write of a commit it
+ * refuses with {@code ALREADY_EXISTS} or {@code NOT_FOUND}, so an insert the refused commit wrote
+ * answers its own re-send with {@code ALREADY_EXISTS}; such an insert is counted as applied when a
+ * lookup finds its key holding exactly the entity it writes. A {@code NOT_FOUND} is routed only
+ * once a lookup of the same key has been answered, which a missing database refuses as it refused
+ * the update. See {@link DatastoreErrorClassifier} for what fails the job instead.
  *
  * @param <T> type of the records written by the sink
  */
@@ -429,9 +433,14 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         if (operation == earnerOf(code)) {
             if (code == StatusCode.Code.NOT_FOUND) {
                 confirmDatabaseAnswers(pending, failure);
+            } else if (storedAsWritten(pending, failure)) {
+                // Like the replay answers below, this leaves a run of rejections as it was: the
+                // write may have been the refused commit's, or a replay's.
+                return;
             }
-            // Neither counts toward the bound: both are what a restart's replay answers — a
-            // replayed insert, and a replayed update of an entity the stream deleted afterwards.
+            // Neither counts toward the bound: both are what a restart's replay answers — an
+            // insert of a key holding another entity, and a replayed update of an entity the
+            // stream deleted afterwards.
             reject(pending, code, failure, false);
             return;
         }
@@ -451,6 +460,39 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                                         + " is missing or unreachable."
                                 : ""),
                 failure);
+    }
+
+    /**
+     * Returns whether the key of an insert refused with {@code ALREADY_EXISTS} holds exactly the
+     * entity the insert writes, every property value and index flag alike. The lookup is retried on
+     * a transient status within the recovery budget, as a commit is; a lookup that still fails is
+     * added to the refusal as suppressed, and the insert is routed.
+     */
+    private boolean storedAsWritten(PendingMutation pending, RuntimeException refusal)
+            throws IOException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                @Nullable Entity stored = access.lookup(pending.write.getKey());
+                return stored != null
+                        && stored.getProperties().equals(pending.write.getEntity().getProperties());
+            } catch (RuntimeException e) {
+                metrics.writeFailure(DatastoreErrorClassifier.statusCode(e));
+                if (DatastoreErrorClassifier.classify(e) != DatastoreErrorClassifier.Kind.TRANSIENT
+                        || attempt >= retrySchedule.maxAttempts()) {
+                    LOG.warn(
+                            "A lookup of {} failed after its insert was refused with"
+                                    + " ALREADY_EXISTS, so the sink cannot tell whether the key"
+                                    + " holds the entity the insert writes, and routes it.",
+                            pending.write.getKey(),
+                            e);
+                    refusal.addSuppressed(e);
+                    return false;
+                }
+                Retries.sleep(
+                        retrySchedule.backoffMs(attempt),
+                        "Interrupted while backing off before retrying a Datastore lookup.");
+            }
+        }
     }
 
     /**

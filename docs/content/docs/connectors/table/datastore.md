@@ -78,7 +78,7 @@ The sink writes keys without ancestors, which are deferred until a use asks for 
 | `BOOLEAN` | Boolean |
 | `BYTES`, `VARBINARY`, `BINARY` | Blob |
 | `TIMESTAMP_LTZ(p)` | Timestamp from year 1 to 9999; Datastore keeps microseconds and rounds a finer value down |
-| `ARRAY<T>` | Array; an array directly inside an array is refused, as Datastore stores none |
+| `ARRAY<T>` | Array; an array directly inside an array is refused, because the client library neither builds nor reads one, although the service stored one sent as a raw commit |
 | `ROW<...>` | Embedded entity without a key, one property per field |
 
 Every other Flink type is refused when the statement is planned, naming the field: write an `INT` as a `BIGINT` and a `FLOAT` as a `DOUBLE`.
@@ -120,7 +120,7 @@ A restart replays the same row and fails again, so the remedy is to add the colu
 A scan reads every entity of the table's kind in its namespace, as the [Datastore-mode source]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) reads a kind: cut into key ranges read in parallel, at one read time.
 `scan.partition.max-partitions` asks for at most that many key ranges, which the planner otherwise estimates from the kind's statistics, and `scan.read-time` fixes the read time, which is otherwise the service's when the read is planned.
 A `scan.read-time` finer than a microsecond is truncated to it: Datastore takes only a microsecond-precision read time, so a finer instant could never be read as given, and truncation picks the latest microsecond at or before it.
-The Datastore API does not document the precision of an entity's update time: on the emulator it is a whole microsecond, so there the truncated time sees every write made at or before the instant given, and the service has not been measured.
+The Datastore API does not document the precision of an entity's update time; on the emulator and on the service it is a whole microsecond, so the truncated time sees every write made at or before the instant given.
 The read time must lie within the past hour, or on a whole minute within the past seven days with point-in-time recovery; the read fails when it is planned on the JobManager otherwise, so the instant in the example below is one to replace.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="scan" >}}
