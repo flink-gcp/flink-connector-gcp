@@ -18,8 +18,14 @@ package io.github.flink.gcp.connector.firestore.sql;
 
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackagingITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
+import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Asserts the shape of this module's uber-jar. The checks are the shared ones; what is this
@@ -53,5 +59,24 @@ class FirestoreSqlConnectorPackagingITCase extends AbstractSqlConnectorPackaging
     @Override
     protected int minimumBundledArtifacts() {
         return UberJar.MINIMUM_BUNDLED_ARTIFACTS;
+    }
+
+    /**
+     * The shared check names one factory; the jar's SPI file carries a second, Datastore mode's,
+     * which the shade plugin must keep beside the first rather than overwrite.
+     */
+    @Test
+    void sqlCanDiscoverTheDatastoreFactoryToo() throws Exception {
+        try (JarFile jar = new JarFile(UberJar.SHADED.path().toFile())) {
+            JarEntry services =
+                    jar.getJarEntry("META-INF/services/org.apache.flink.table.factories.Factory");
+            assertThat(services).isNotNull();
+            assertThat(
+                            new String(
+                                    jar.getInputStream(services).readAllBytes(),
+                                    StandardCharsets.UTF_8))
+                    .contains(UberJar.FACTORY_CLASS)
+                    .contains(UberJar.DATASTORE_FACTORY_CLASS);
+        }
     }
 }

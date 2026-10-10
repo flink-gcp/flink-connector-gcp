@@ -743,7 +743,41 @@ public class DocumentationSqlPlanTest {
                                         + "proc_time AS PROCTIME()) WITH ("
                                         + "'connector' = 'datagen', "
                                         + "'number-of-rows' = '1')"),
-                        snippet("flink/FirestoreTableReference.sql", "lookup")));
+                        snippet("flink/FirestoreTableReference.sql", "lookup")),
+                scenario(
+                        "Datastore table reference overview",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_customers AS "
+                                        + "SELECT 'c-1001' AS customer_id, "
+                                        + "'Alice' AS name, "
+                                        + "'gold' AS tier, "
+                                        + "CAST('2026-01-01 00:00:00.000000' "
+                                        + "AS TIMESTAMP_LTZ(6)) AS updated_at"),
+                        snippet("flink/DatastoreTableReference.sql", "overview")),
+                // The id-key and unindexed regions declare a table and stop; the follow-up
+                // insert is what reaches the factory, which checks the key type, the namespace
+                // and the unindexed columns against the schema.
+                scenario(
+                        "Datastore table reference numeric id key",
+                        withFollowup(
+                                "flink/DatastoreTableReference.sql",
+                                "id-key",
+                                "INSERT INTO invoices SELECT CAST(1001 AS BIGINT), 'c-1001',"
+                                        + " ARRAY[ROW('sku-1', CAST(2 AS BIGINT))];")),
+                scenario(
+                        "Datastore table reference unindexed columns",
+                        withFollowup(
+                                "flink/DatastoreTableReference.sql",
+                                "unindexed",
+                                "INSERT INTO articles SELECT 'a-1', 'Title', 'Body', X'0102';")),
+                scenario(
+                        "Datastore table reference append-only table",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_views AS "
+                                        + "SELECT '/home' AS path, 'v-1' AS visitor, "
+                                        + "CAST('2026-01-01 00:00:00.000' "
+                                        + "AS TIMESTAMP_LTZ(3)) AS viewed_at"),
+                        snippet("flink/DatastoreTableReference.sql", "append")));
     }
 
     private static Scenario scenario(String name, ValidationStep... steps) {

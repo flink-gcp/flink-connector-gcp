@@ -29,6 +29,10 @@ final class UberJar {
     static final String FACTORY_CLASS =
             "io.github.flink.gcp.connector.firestore.table.FirestoreDynamicTableFactory";
 
+    /** The module's second factory, Datastore mode's, registered in the same SPI file. */
+    static final String DATASTORE_FACTORY_CLASS =
+            "io.github.flink.gcp.connector.datastore.table.DatastoreDynamicTableFactory";
+
     /**
      * A floor below which a parsed artifact list is assumed to be a parsing failure rather than a
      * real bundle; the tree holds about 90 today. Set a little below that: it exists to catch "the

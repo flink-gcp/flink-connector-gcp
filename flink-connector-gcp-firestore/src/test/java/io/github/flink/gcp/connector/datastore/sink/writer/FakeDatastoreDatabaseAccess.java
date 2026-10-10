@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.DatastoreException;
+import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
@@ -57,6 +58,10 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     private final Map<Key, DatastoreMutation> applied = new LinkedHashMap<>();
     private final List<DatastoreMutation> appliedInOrder = new ArrayList<>();
     private final List<Key> lookups = new ArrayList<>();
+    private final Deque<StatusCode.Code> nextAllocationFailures = new ArrayDeque<>();
+    private final List<Integer> allocations = new ArrayList<>();
+    private long nextId = 1;
+    private boolean answersShort;
     private int closeCalls;
     private boolean appliesWritesBeforeARefusal;
 
@@ -149,6 +154,40 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         if (scripted != null) {
             throw failure(scripted);
         }
+    }
+
+    /** Fails the next id allocations, one per code. */
+    FakeDatastoreDatabaseAccess failNextAllocations(StatusCode.Code... codes) {
+        for (StatusCode.Code code : codes) {
+            nextAllocationFailures.add(code);
+        }
+        return this;
+    }
+
+    /** Answers the next allocations with one key fewer than asked for. */
+    FakeDatastoreDatabaseAccess answerAllocationsShort() {
+        answersShort = true;
+        return this;
+    }
+
+    /** Allocates ids counting up from 1, never handing one out twice, as the service promises. */
+    @Override
+    public List<Key> allocateIds(List<IncompleteKey> keys) {
+        allocations.add(keys.size());
+        StatusCode.Code scripted = nextAllocationFailures.poll();
+        if (scripted != null) {
+            throw failure(scripted);
+        }
+        List<Key> allocated = new ArrayList<>(keys.size());
+        for (IncompleteKey key : keys) {
+            allocated.add(Key.newBuilder(key, nextId++).build());
+        }
+        return answersShort ? allocated.subList(0, allocated.size() - 1) : allocated;
+    }
+
+    /** Every allocation call, as the number of keys it asked for. */
+    List<Integer> allocations() {
+        return allocations;
     }
 
     @Override

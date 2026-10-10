@@ -22,6 +22,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import com.google.api.gax.rpc.StatusCode;
+import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
@@ -33,6 +34,7 @@ import io.github.flink.gcp.connector.datastore.sink.DatastoreSinkConfig;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreWriterOptions;
 import io.github.flink.gcp.connector.datastore.sink.FailedMutation;
 import io.github.flink.gcp.connector.datastore.sink.serializer.DatastoreMutationSerializationSchema;
+import io.github.flink.gcp.connector.datastore.sink.serializer.KeyAllocatingSerializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,6 +43,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -78,6 +81,12 @@ import java.util.Set;
  * second time; that is the at-least-once guarantee, and why the serializer's choice of operation
  * matters.
  *
+ * <p>For a serializer that writes under ids the service allocates ({@link
+ * KeyAllocatingSerializationSchema}), the writer also allocates ids, through the same client and
+ * within the same budget; a {@link #write} can then block in an allocation's backoff. An allocation
+ * the service refuses, or the budget cannot finish, fails the job like such a commit, whatever the
+ * failure handler.
+ *
  * <h2>Per-mutation failures</h2>
  *
  * <p>A commit carries no per-mutation status: a refusal is the request's, and does not say which
@@ -103,6 +112,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
     private final RetrySchedule retrySchedule;
     private final int maxBatchMutations;
     private final long maxBatchBytes;
+    private final int idAllocationBatchSize;
     private final int maxConsecutiveRejections;
 
     /** What a commit takes besides its mutations, counted against {@code maxBatchBytes} too. */
@@ -168,7 +178,8 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                         .recoveryInitialBackoff(options.getRecoveryInitialBackoff())
                         .recoveryMaxBackoff(options.getRecoveryMaxBackoff())
                         .recoveryMaxAttempts(options.getRecoveryMaxAttempts())
-                        .maxConsecutiveRejections(options.getMaxConsecutiveRejections());
+                        .maxConsecutiveRejections(options.getMaxConsecutiveRejections())
+                        .idAllocationBatchSize(options.getIdAllocationBatchSize());
         if (options.getThrottlingParallelism() != null) {
             recheck.throttlingParallelism(options.getThrottlingParallelism());
         }
@@ -177,11 +188,15 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         this.maxBatchMutations = options.getMaxBatchMutations();
         this.maxBatchBytes = options.getMaxBatchBytes();
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
+        this.idAllocationBatchSize = options.getIdAllocationBatchSize();
         this.requestHeaderBytes = MutationSizeEstimator.requestHeaderSize(database);
 
         metrics.bindWriterState(buffer::size, () -> bufferedBytes);
         // Last, so that a failure above leaves nothing open.
         this.access = factory.create();
+        if (serializer instanceof KeyAllocatingSerializationSchema) {
+            ((KeyAllocatingSerializationSchema<?>) serializer).setKeyAllocator(this::allocate);
+        }
         LOG.info("Datastore sink writer opened for {}.", database);
     }
 
@@ -205,6 +220,12 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         try {
             write = serializer.serialize(element, context);
         } catch (Exception e) {
+            AllocationFailure allocation = allocationFailureIn(e);
+            if (allocation != null) {
+                // The database refused or could not answer an id allocation: that is the
+                // request's failure, as a commit's would be, not this record's.
+                throw allocation;
+            }
             // The record never became a write, so there is nothing to send and nothing to
             // classify — it goes straight to the handler.
             route(null, "Failed to serialize the record into a Datastore write.", e);
@@ -468,6 +489,85 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                         retrySchedule.backoffMs(attempt),
                         "Interrupted while backing off before retrying a Datastore lookup.");
             }
+        }
+    }
+
+    /**
+     * Allocates keys for a serializer that writes under service-allocated ids, retrying a transient
+     * failure within the recovery budget, as a commit is retried.
+     *
+     * @throws AllocationFailure if the service refuses the allocation, the budget is spent, the
+     *     answer is short, or the backoff is interrupted; {@link #write} fails the job on it
+     */
+    private List<Key> allocate(IncompleteKey key) throws AllocationFailure {
+        int count = idAllocationBatchSize;
+        List<IncompleteKey> keys = Collections.nCopies(count, key);
+        for (int attempt = 1; ; attempt++) {
+            try {
+                List<Key> allocated = access.allocateIds(keys);
+                if (allocated.size() != count) {
+                    throw new AllocationFailure(
+                            "Datastore allocated "
+                                    + allocated.size()
+                                    + " ids for "
+                                    + count
+                                    + " keys of kind "
+                                    + key.getKind()
+                                    + " in "
+                                    + database
+                                    + ".",
+                            null);
+                }
+                return allocated;
+            } catch (RuntimeException e) {
+                StatusCode.Code code = DatastoreErrorClassifier.statusCode(e);
+                metrics.writeFailure(code);
+                if (DatastoreErrorClassifier.classify(e) != DatastoreErrorClassifier.Kind.TRANSIENT
+                        || attempt >= retrySchedule.maxAttempts()) {
+                    throw new AllocationFailure(
+                            "Datastore failed to allocate ids for kind "
+                                    + key.getKind()
+                                    + " in "
+                                    + database
+                                    + " after "
+                                    + attempt
+                                    + " attempt(s), with "
+                                    + describe(code)
+                                    + ".",
+                            e);
+                }
+                try {
+                    Retries.sleep(
+                            retrySchedule.backoffMs(attempt),
+                            "Interrupted while backing off before retrying a Datastore id"
+                                    + " allocation.");
+                } catch (IOException interrupted) {
+                    throw new AllocationFailure(interrupted.getMessage(), interrupted);
+                }
+            }
+        }
+    }
+
+    /** Returns the allocation failure in a serializer's failure's cause chain, if there is one. */
+    @Nullable
+    private static AllocationFailure allocationFailureIn(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause()) {
+            if (t instanceof AllocationFailure) {
+                return (AllocationFailure) t;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * An id allocation the writer could not complete. It fails the job whatever the failure handler
+     * is, as a commit the recovery budget cannot finish does: it says nothing about the record.
+     */
+    static final class AllocationFailure extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        AllocationFailure(String message, @Nullable Throwable cause) {
+            super(message, cause);
         }
     }
 

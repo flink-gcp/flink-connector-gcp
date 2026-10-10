@@ -29,7 +29,7 @@ A table with a PRIMARY KEY writes its rows under their key as the document id; a
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="overview" >}}
 
 A scan reads the collection as a bounded snapshot, and a lookup join reads one document of it by id.
-The Datastore-mode table connector is [#1545]({{< param BookRepo >}}/issues/1545).
+A database in Datastore mode uses the [`datastore` connector]({{< relref "docs/connectors/table/datastore" >}}) instead.
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
 It is not on Maven Central yet: the release that first publishes the Firestore connector is tracked by [#1547]({{< param BookRepo >}}/issues/1547), and until then the jar is built from source as [Development]({{< relref "docs/development" >}}) describes.

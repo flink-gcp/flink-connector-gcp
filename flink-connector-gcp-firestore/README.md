@@ -11,7 +11,7 @@ the client library's query splitter and write one in non-transactional commits.
 |---|---|
 | SinkV2 at-least-once sink over `BulkWriter`; `FirestoreWrite` serialization SPI | Implemented ([#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540)) |
 | Per-write failure policy (the shared `FailureHandler` SPI), with solo confirmation of `INVALID_ARGUMENT` and opt-in routing of failed preconditions | Implemented ([#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540)) |
-| Emulator integration tests | Implemented ([#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541), [#1542](https://github.com/flink-gcp/flink-connector-gcp/issues/1542), [#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543)) |
+| Emulator integration tests | Implemented ([#1540](https://github.com/flink-gcp/flink-connector-gcp/issues/1540), [#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541), [#1542](https://github.com/flink-gcp/flink-connector-gcp/issues/1542), [#1543](https://github.com/flink-gcp/flink-connector-gcp/issues/1543), [#1651](https://github.com/flink-gcp/flink-connector-gcp/issues/1651)) |
 | DataStream bounded source (`PartitionQuery` cursor ranges or one query, at one read time; resume by cursor) | Implemented ([#1541](https://github.com/flink-gcp/flink-connector-gcp/issues/1541)) |
 | Datastore-mode at-least-once sink over non-transactional commits; `DatastoreMutation` serialization SPI; ramp-up throttling | Implemented ([#1542](https://github.com/flink-gcp/flink-connector-gcp/issues/1542)) |
 | Datastore-mode per-write failure policy, confirming a refused commit one write at a time | Implemented ([#1542](https://github.com/flink-gcp/flink-connector-gcp/issues/1542)) |
@@ -19,7 +19,8 @@ the client library's query splitter and write one in non-transactional commits.
 | Table API / SQL sink for Native mode (one collection keyed by document id; `set`, `merge` and `update` write modes; geo-point and reference markers) and the relocated SQL uber-jar | Implemented ([#1607](https://github.com/flink-gcp/flink-connector-gcp/issues/1607)) |
 | Table API / SQL bounded scan for Native mode (one collection or a collection group; projection pushdown; readable metadata; `type-mismatch-policy`) | Implemented ([#1608](https://github.com/flink-gcp/flink-connector-gcp/issues/1608)) |
 | Table API / SQL lookup for Native mode (by document id; blocking or asynchronous; `NONE` or `PARTIAL` cache) | Implemented ([#1609](https://github.com/flink-gcp/flink-connector-gcp/issues/1609)) |
-| Table API / SQL for Datastore mode | Planned ([#1545](https://github.com/flink-gcp/flink-connector-gcp/issues/1545)) |
+| Table API / SQL sink for Datastore mode (`datastore`; upsert by key name or id, unindexed columns) | Implemented ([#1651](https://github.com/flink-gcp/flink-connector-gcp/issues/1651)) |
+| Table API / SQL scan and lookup for Datastore mode | Planned ([#1652](https://github.com/flink-gcp/flink-connector-gcp/issues/1652), [#1653](https://github.com/flink-gcp/flink-connector-gcp/issues/1653)) |
 | Gated real-GCP integration tests | Planned ([#1546](https://github.com/flink-gcp/flink-connector-gcp/issues/1546)) |
 | Opt-in per-document submission order | Planned ([#1556](https://github.com/flink-gcp/flink-connector-gcp/issues/1556)) |
 | Change-stream source (the Firestore APIs have no change-stream read; reopen conditions recorded on the issue) | Declined ([#355](https://github.com/flink-gcp/flink-connector-gcp/issues/355)) |

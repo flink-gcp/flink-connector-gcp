@@ -18,13 +18,14 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
 import java.util.List;
 
 /**
- * The two calls the writer makes against a database in Datastore mode, as a seam a test can fake
+ * The three calls the writer makes against a database in Datastore mode, as a seam a test can fake
  * without the client library's thirty-method interface.
  *
  * <p>Each call is one attempt: the production access opens its client with retries off, because the
@@ -55,6 +56,14 @@ public interface DatastoreDatabaseAccess extends AutoCloseable {
      * @param key the key
      */
     void lookup(Key key);
+
+    /**
+     * Allocates one id per incomplete key in one {@code AllocateIds} call.
+     *
+     * @param keys the incomplete keys, at least one
+     * @return the complete keys, in the same order
+     */
+    List<Key> allocateIds(List<IncompleteKey> keys);
 
     /**
      * Releases the client. Idempotent.

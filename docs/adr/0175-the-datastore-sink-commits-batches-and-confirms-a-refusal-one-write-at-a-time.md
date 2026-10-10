@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-10-03 (client library facts read in google-cloud-datastore 3.4.0 through
   libraries-bom 26.87.0 and found unchanged in 3.7.0 through 26.90.0; emulator behavior measured
   2026-10-03 against
-  `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run)
-- Issues: [#1542], [#355], [#1546]
+  `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by [#1651]
+  (writer-side id allocation for the table sink)
+- Issues: [#1542], [#355], [#1546], [#1651]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -90,6 +91,10 @@ The owner settled three names on 2026-10-03 under ADR-0137, departing from the i
 
 The public types enter at `@PublicEvolving` (ADR-0170).
 
+### Id allocation for the table sink ([#1651], 2026-10-10)
+
+The writer gained one internal capability: it allocates ids (`AllocateIds`), `idAllocationBatchSize` at a time (a writer option, 1,000 by default; ADR-0184 records the measurement), through its own client, credentials, single-attempt deadline and recovery budget, retrying a transient failure as it retries a commit, and hands that allocator to a serializer implementing the `@Internal` `KeyAllocatingSerializationSchema` when the writer is created. The Datastore-mode table sink uses it for a table without a PRIMARY KEY (ADR-0184). The public SPI is unchanged: `DatastoreMutation` still takes complete keys only, and a user serializer that wants service ids allocates them before the sink, as the Decision's complete-key rule requires. An allocation the service refuses, a spent budget, a short answer or an interrupted backoff fails the job whatever the failure handler, as a commit the budget cannot finish does: it is the database's failure, not the record's.
+
 ## Consequences
 
 - A refused commit costs one solo commit per write, sequentially on the task thread, plus one lookup per update refused with `NOT_FOUND`; `mutationsConfirmedAlone` counts each mutation re-sent alone, once; retries of those solo commits count in `batchesSent`.
@@ -111,3 +116,4 @@ The public types enter at `@PublicEvolving` (ADR-0170).
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355
 [#1542]: https://github.com/flink-gcp/flink-connector-gcp/issues/1542
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
+[#1651]: https://github.com/flink-gcp/flink-connector-gcp/issues/1651

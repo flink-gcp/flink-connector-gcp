@@ -41,7 +41,7 @@ public final class DefaultDatastoreDatabaseAccessFactory implements DatastoreDat
      * Creates the factory.
      *
      * @param database the database to write to
-     * @param requestTimeout the bound on each call, the commit and the lookup alike
+     * @param requestTimeout the bound on each call: a commit, a lookup or an id allocation
      * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
      * @param credentials credentials loaded from a configured key file, or {@code null} for ADC
      */

@@ -16,19 +16,24 @@
 
 package io.github.flink.gcp.connector.datastore.sink.writer;
 
+import org.apache.flink.api.connector.sink2.SinkWriter;
+
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreMetricNames;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreCommitSink;
+import io.github.flink.gcp.connector.datastore.sink.DatastoreKeyAllocator;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreSink;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreSinkConfig;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreWriterOptions;
 import io.github.flink.gcp.connector.datastore.sink.FailedMutation;
 import io.github.flink.gcp.connector.datastore.sink.serializer.DatastoreMutationSerializationSchema;
+import io.github.flink.gcp.connector.datastore.sink.serializer.KeyAllocatingSerializationSchema;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
@@ -110,6 +115,158 @@ class DatastoreWriterTest {
         assertThat(handler.routed.get(0).getCause()).hasMessage("unparseable");
         assertThat(metrics.counterValue(TestSinkWriterMetricGroup.NUM_RECORDS_SEND_ERRORS))
                 .isEqualTo(1);
+    }
+
+    // --- service-allocated keys ---
+
+    /** Upserts each record under the first key of a batch it allocates for it. */
+    private static final class AllocatingSerializer
+            implements KeyAllocatingSerializationSchema<String> {
+        private static final long serialVersionUID = 1L;
+        private transient DatastoreKeyAllocator allocator;
+
+        @Override
+        public void setKeyAllocator(DatastoreKeyAllocator allocator) {
+            this.allocator = allocator;
+        }
+
+        @Override
+        public DatastoreMutation serialize(String element, SinkWriter.Context context)
+                throws IOException {
+            Key key = allocator.allocate(IncompleteKey.newBuilder(PROJECT, KIND).build()).get(0);
+            return DatastoreMutation.upsert(Entity.newBuilder(key).set("v", element).build());
+        }
+    }
+
+    @Test
+    void aKeyAllocatingSerializerAllocatesThroughTheWritersAccess() throws Exception {
+        DatastoreWriter<String> writer =
+                writer(
+                        new AllocatingSerializer(),
+                        DatastoreWriterOptions.builder().idAllocationBatchSize(3).build(),
+                        handler);
+        writer.write("a", TestContexts.NO_OP);
+        writer.write("b", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // Each call asks for the configured batch.
+        assertThat(access.allocations()).containsExactly(3, 3);
+        assertThat(access.applied().keySet())
+                .extracting(Key::getId)
+                .containsExactlyInAnyOrder(1L, 4L);
+        assertThat(handler.routed).isEmpty();
+    }
+
+    @Test
+    void theDefaultAllocationBatchIsAThousandIds() throws Exception {
+        DatastoreWriter<String> writer =
+                writer(new AllocatingSerializer(), DatastoreWriterOptions.defaults(), handler);
+        writer.write("a", TestContexts.NO_OP);
+
+        assertThat(access.allocations()).containsExactly(1000);
+    }
+
+    @Test
+    void aTransientAllocationFailureIsRetriedWithinTheRecoveryBudget() throws Exception {
+        access.failNextAllocations(StatusCode.Code.UNAVAILABLE, StatusCode.Code.DEADLINE_EXCEEDED);
+        DatastoreWriter<String> writer =
+                writer(new AllocatingSerializer(), fastRetries(3), handler);
+        writer.write("a", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.allocations()).hasSize(3);
+        assertThat(access.applied()).hasSize(1);
+        assertThat(handler.routed).isEmpty();
+        assertThat(errorClass("UNAVAILABLE")).isEqualTo(1);
+        assertThat(errorClass("DEADLINE_EXCEEDED")).isEqualTo(1);
+    }
+
+    @Test
+    void anAllocationTheBudgetCannotFinishFailsTheJobWithoutRoutingTheRecord() throws Exception {
+        access.failNextAllocations(StatusCode.Code.UNAVAILABLE, StatusCode.Code.UNAVAILABLE);
+        DatastoreWriter<String> writer =
+                writer(new AllocatingSerializer(), fastRetries(2), handler);
+
+        assertThatThrownBy(() -> writer.write("a", TestContexts.NO_OP))
+                .isInstanceOf(DatastoreWriter.AllocationFailure.class)
+                .hasMessageContaining("after 2 attempt(s)");
+        assertThat(access.allocations()).hasSize(2);
+        assertThat(access.requests()).isEmpty();
+        assertThat(handler.routed).isEmpty();
+    }
+
+    @Test
+    void aRefusedAllocationFailsTheJobAtOnce() throws Exception {
+        access.failNextAllocations(StatusCode.Code.PERMISSION_DENIED);
+        DatastoreWriter<String> writer =
+                writer(new AllocatingSerializer(), fastRetries(3), handler);
+
+        assertThatThrownBy(() -> writer.write("a", TestContexts.NO_OP))
+                .isInstanceOf(DatastoreWriter.AllocationFailure.class)
+                .hasMessageContaining("after 1 attempt(s)")
+                .hasMessageContaining("PERMISSION_DENIED");
+        assertThat(handler.routed).isEmpty();
+        assertThat(errorClass("PERMISSION_DENIED")).isEqualTo(1);
+    }
+
+    @Test
+    void anAllocationFailureAWrappingSerializerRethrowsStillFailsTheJob() throws Exception {
+        access.failNextAllocations(StatusCode.Code.PERMISSION_DENIED);
+        AllocatingSerializer inner = new AllocatingSerializer();
+        KeyAllocatingSerializationSchema<String> wrapping =
+                new KeyAllocatingSerializationSchema<>() {
+                    @Override
+                    public void setKeyAllocator(DatastoreKeyAllocator allocator) {
+                        inner.setKeyAllocator(allocator);
+                    }
+
+                    @Override
+                    public DatastoreMutation serialize(String element, SinkWriter.Context context)
+                            throws IOException {
+                        try {
+                            return inner.serialize(element, context);
+                        } catch (IOException e) {
+                            throw new IOException("wrapped", e);
+                        }
+                    }
+                };
+        DatastoreWriter<String> writer = writer(wrapping, fastRetries(3), handler);
+
+        assertThatThrownBy(() -> writer.write("a", TestContexts.NO_OP))
+                .isInstanceOf(DatastoreWriter.AllocationFailure.class);
+        assertThat(handler.routed).isEmpty();
+    }
+
+    @Test
+    void aShortAllocationAnswerFailsTheJob() throws Exception {
+        access.answerAllocationsShort();
+        DatastoreWriter<String> writer =
+                writer(
+                        new AllocatingSerializer(),
+                        DatastoreWriterOptions.builder().idAllocationBatchSize(3).build(),
+                        handler);
+
+        assertThatThrownBy(() -> writer.write("a", TestContexts.NO_OP))
+                .isInstanceOf(DatastoreWriter.AllocationFailure.class)
+                .hasMessageContaining("allocated 2 ids for 3 keys");
+        assertThat(handler.routed).isEmpty();
+    }
+
+    @Test
+    void anInterruptDuringTheAllocationBackoffFailsTheJobAndKeepsTheFlag() throws Exception {
+        access.failNextAllocations(StatusCode.Code.UNAVAILABLE);
+        DatastoreWriter<String> writer =
+                writer(new AllocatingSerializer(), fastRetries(3), handler);
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> writer.write("a", TestContexts.NO_OP))
+                    .isInstanceOf(DatastoreWriter.AllocationFailure.class)
+                    .hasMessageContaining("Interrupted");
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(handler.routed).isEmpty();
     }
 
     @Test
@@ -930,6 +1087,11 @@ class DatastoreWriterTest {
         }
 
         @Override
+        public List<Key> allocateIds(List<IncompleteKey> keys) {
+            throw new UnsupportedOperationException("This test allocates no ids.");
+        }
+
+        @Override
         public void close() {
             delegate.close();
         }
@@ -957,6 +1119,11 @@ class DatastoreWriterTest {
         @Override
         public void lookup(Key key) {
             delegate.lookup(key);
+        }
+
+        @Override
+        public List<Key> allocateIds(List<IncompleteKey> keys) {
+            throw new UnsupportedOperationException("This test allocates no ids.");
         }
 
         @Override

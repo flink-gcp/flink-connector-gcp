@@ -13,3 +13,4 @@
 # limitations under the License.
 
 io.github.flink.gcp.connector.firestore.table.FirestoreDynamicTableFactory
+io.github.flink.gcp.connector.datastore.table.DatastoreDynamicTableFactory

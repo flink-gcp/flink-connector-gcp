@@ -92,6 +92,12 @@ public final class DatastoreWriterOptions implements Serializable {
      */
     public static final int DEFAULT_MAX_CONSECUTIVE_REJECTIONS = 100;
 
+    /**
+     * The default {@link Builder#idAllocationBatchSize(int)}: the measured point past which one
+     * {@code AllocateIds} call grows with its size rather than with the round trip.
+     */
+    public static final int DEFAULT_ID_ALLOCATION_BATCH_SIZE = 1000;
+
     /** {@link Builder#maxConsecutiveRejections(int)} value under which the bound never fires. */
     public static final int UNBOUNDED = -1;
 
@@ -108,6 +114,7 @@ public final class DatastoreWriterOptions implements Serializable {
     private final boolean throttlingEnabled;
     @Nullable private final Integer throttlingParallelism;
     private final int maxConsecutiveRejections;
+    private final int idAllocationBatchSize;
 
     private DatastoreWriterOptions(Builder builder) {
         this.maxBatchMutations = builder.maxBatchMutations;
@@ -119,6 +126,7 @@ public final class DatastoreWriterOptions implements Serializable {
         this.throttlingEnabled = builder.throttlingEnabled;
         this.throttlingParallelism = builder.throttlingParallelism;
         this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
+        this.idAllocationBatchSize = builder.idAllocationBatchSize;
     }
 
     /**
@@ -134,8 +142,8 @@ public final class DatastoreWriterOptions implements Serializable {
      * Returns the default options: commits of at most {@value #DEFAULT_MAX_BATCH_MUTATIONS}
      * mutations and 9,000,000 bytes, a 60 s timeout for each commit, a recovery budget of 500 ms
      * doubling to 10 s over at most 10 attempts, ramp-up throttling shared across the sink's
-     * parallelism, and {@value #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed
-     * rejections under a dropping policy.
+     * parallelism, {@value #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections
+     * under a dropping policy, and {@value #DEFAULT_ID_ALLOCATION_BATCH_SIZE} ids per allocation.
      *
      * @return the default options
      */
@@ -192,6 +200,11 @@ public final class DatastoreWriterOptions implements Serializable {
         return maxConsecutiveRejections;
     }
 
+    /** Returns how many ids one {@code AllocateIds} call allocates. */
+    public int getIdAllocationBatchSize() {
+        return idAllocationBatchSize;
+    }
+
     /**
      * Returns the retry schedule the {@code recovery*} knobs describe. Jittered: every subtask
      * writing to a database that has just become unavailable retries on the same schedule, so
@@ -220,6 +233,7 @@ public final class DatastoreWriterOptions implements Serializable {
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && throttlingEnabled == that.throttlingEnabled
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
+                && idAllocationBatchSize == that.idAllocationBatchSize
                 && requestTimeout.equals(that.requestTimeout)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
@@ -237,7 +251,8 @@ public final class DatastoreWriterOptions implements Serializable {
                 recoveryMaxAttempts,
                 throttlingEnabled,
                 throttlingParallelism,
-                maxConsecutiveRejections);
+                maxConsecutiveRejections,
+                idAllocationBatchSize);
     }
 
     @Override
@@ -260,6 +275,8 @@ public final class DatastoreWriterOptions implements Serializable {
                 + throttlingParallelism
                 + ", maxConsecutiveRejections="
                 + maxConsecutiveRejections
+                + ", idAllocationBatchSize="
+                + idAllocationBatchSize
                 + "}";
     }
 
@@ -276,6 +293,7 @@ public final class DatastoreWriterOptions implements Serializable {
         private boolean throttlingEnabled = true;
         @Nullable private Integer throttlingParallelism;
         private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
+        private int idAllocationBatchSize = DEFAULT_ID_ALLOCATION_BATCH_SIZE;
 
         private Builder() {}
 
@@ -442,6 +460,29 @@ public final class DatastoreWriterOptions implements Serializable {
                     "maxConsecutiveRejections must be positive or -1 (unbounded), was %s",
                     maxConsecutiveRejections);
             this.maxConsecutiveRejections = maxConsecutiveRejections;
+            return this;
+        }
+
+        /**
+         * Sets how many ids one {@code AllocateIds} call allocates, for a serializer that writes
+         * under ids the service allocates (the {@code datastore} table sink's tables without a
+         * PRIMARY KEY). Defaults to {@value #DEFAULT_ID_ALLOCATION_BATCH_SIZE}.
+         *
+         * <p>Each sink subtask allocates this many ids at a time and draws them in order; ids it
+         * holds when it stops are never written, which costs nothing. Datastore documents no limit
+         * on the keys of one call; a call of 20,000 was measured to succeed. Past about a thousand
+         * a call takes longer in proportion to its size, and a larger batch only delays the first
+         * write.
+         *
+         * @param idAllocationBatchSize the ids per call, positive
+         * @return this builder
+         */
+        public Builder idAllocationBatchSize(int idAllocationBatchSize) {
+            Preconditions.checkArgument(
+                    idAllocationBatchSize > 0,
+                    "idAllocationBatchSize must be positive, was %s",
+                    idAllocationBatchSize);
+            this.idAllocationBatchSize = idAllocationBatchSize;
             return this;
         }
 
