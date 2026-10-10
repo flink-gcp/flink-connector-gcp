@@ -210,7 +210,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   order/limit/offset/cursor/`DISTINCT ON`, filters only `EQUAL` and `HAS_ANCESTOR` under `AND`,
   none of no type. Anything else is one split. `SplittableQueriesTest` iterates every operator.
   A nearest-neighbour search is refused outright (`whyNotReadable`): paging would change what it
-  finds.
+  finds. So are the metadata kinds `__namespace__`, `__kind__` and `__property__`
+  (`whyKindNotReadable`, exact names; #1690, owner's decision 2026-10-10): the source can neither
+  page through nor resume their results. Google documents them as "generated dynamically, based on
+  the current state of your database"; on the emulator `__kind__` and `__namespace__` answer without
+  per-entity or end cursors (`__property__` returned nothing); the service's answer is unmeasured
+  (#1546). `kind(...)` and `query(...)` refuse at build, a GQL query in
+  `ClientQueryPlanner.parseGql`. Statistics kinds (`__Stat_*__`) stay readable. Key-based resume
+  is deferred and a split replayed from its beginning declined (ADR-0177 revision); read the
+  revision before adding either.
 - **The estimated split count is Beam's (`entity_bytes`/64 MiB, 12..50,000) with the parallelism
   as a further floor.** Statistics failures fail planning; absent statistics take the floor.
 - **Projected index values are read back** (`ProjectedValues`, owner's decision 2026-10-03):
@@ -289,8 +297,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Key column**: STRING ← key name, BIGINT ← key id; the other form, and a key with a parent,
   fail the read under either policy. A kind with mixed key forms or child entities is read by a
   key-less table via the metadata.
-- **Reserved kinds stay refused for the scan too**: the emulator's `__kind__` metadata query
-  answers without per-entity cursors, which the reader requires.
+- **Reserved kinds stay refused for the scan too**: the source itself refuses the metadata kinds
+  (#1690, ADR-0177 revision), and a statistics kind stays refused until the gated suite (#1546)
+  has measured a read of one against the service.
 
 ## Datastore-mode Table API lookup (`docs/adr/0184`, lookup section)
 

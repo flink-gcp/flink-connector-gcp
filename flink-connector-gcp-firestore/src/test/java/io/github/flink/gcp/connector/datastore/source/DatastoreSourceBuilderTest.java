@@ -24,6 +24,8 @@ import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.DefaultQueryPlannerFactory;
 import io.github.flink.gcp.connector.datastore.source.batch.reader.ClientQueryPageReader;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.function.UnaryOperator;
@@ -172,6 +174,38 @@ class DatastoreSourceBuilderTest {
         assertThatThrownBy(() -> DatastoreSource.<String>builder().query(nearest))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("nearest-neighbour search");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"__namespace__", "__kind__", "__property__"})
+    void refusesAMetadataKindAsAKindOrAsAQuery(String kind) {
+        assertThatThrownBy(() -> DatastoreSource.<String>builder().kind(kind))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageStartingWith(
+                        "The source cannot read the kind: " + kind + " is a metadata kind")
+                .hasMessageContaining(
+                        "which the source can neither page through nor resume after a failure")
+                .hasMessageEndingWith("read metadata with the client library instead.");
+        assertThatThrownBy(
+                        () ->
+                                DatastoreSource.<String>builder()
+                                        .query(SplittableQueries.ofKind(kind)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageStartingWith(
+                        "The source cannot read the query: " + kind + " is a metadata kind")
+                .hasMessageEndingWith("read metadata with the client library instead.");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"__Stat_Kind__", "__Stat_Total__", "Task"})
+    void acceptsAStatisticsKindAsAnyOtherKind(String kind) {
+        assertThat(TestSources.source(builder -> builder.kind(kind)).getConfig().getQuery())
+                .isEqualTo(SplittableQueries.ofKind(kind));
+        assertThat(
+                        TestSources.source(builder -> builder.query(SplittableQueries.ofKind(kind)))
+                                .getConfig()
+                                .getQuery())
+                .isEqualTo(SplittableQueries.ofKind(kind));
     }
 
     @Test

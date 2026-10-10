@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-10-03 (client library facts read in google-cloud-datastore and datastore-v1-proto-client 3.7.0
   and google-cloud-core 2.77.0 through libraries-bom 26.90.0; emulator behavior measured 2026-10-03
   against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by
-  [#1652] (query-result metadata for the table scan)
-- Issues: [#1543], [#355], [#1546], [#1652]
+  [#1652] (query-result metadata for the table scan) and by [#1690] (metadata kinds refused)
+- Issues: [#1543], [#355], [#1546], [#1652], [#1690]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -78,6 +78,35 @@ Measured against the emulator:
 
 The reader now keeps what each `EntityResult` carries beside the entity, its `version`, `create_time` and `update_time`, with the split's read time, as an `@Internal` `EntityMetadata` on the fetched entity. The emitter hands it to a deserializer implementing the `@Internal` `DatastoreEntityMetadataDeserializationSchema`, which the `datastore` table scan does to fill its metadata columns (ADR-0184); every other deserializer receives the entity alone, as before. The public SPI is unchanged.
 
+### Metadata kinds are refused ([#1690], 2026-10-10)
+
+Nothing refused a metadata kind, and on the emulator reading one failed after the job had started.
+Measured on 2026-10-10 against the pinned emulator in Datastore mode, one run:
+
+- In the default namespace, reading `__kind__` through `kind(...)`, `query(...)` or `gqlQuery(...)`, and `__namespace__` through `kind(...)` or `gqlQuery(...)`, failed in the split reader with `IllegalArgumentException: cursor must not be empty`, thrown where the reader keeps the cursor after each entity. The message named neither the kind nor what to do instead. `kind("__kind__")` in the namespace `tenant` failed instead with `INVALID_ARGUMENT: The query namespace is 'tenant' but __key__ filter namespace is ''`, because the splitter's key ranges carried the default namespace.
+- At the `RunQuery` level, the results of a `__kind__` or `__namespace__` query carry no per-entity cursor, and the batch carries no end cursor, so neither a page nor a checkpoint can continue from one. That departs from `query.proto` (3.7.0), which documents `EntityResult.cursor` as set whenever the result is part of a `QueryResultBatch`, so the service may well return cursors. The results also carry no version, create time or update time.
+- `__property__` returned nothing. `__Stat_Kind__` and `__Stat_Total__` returned nothing too and read without an error.
+- `__kind__` ignored the request's namespace and its read time, and the splitter's `__scatter__` sampling of `__kind__` returned every kind rather than none.
+- Continuing a metadata query with `__key__ >` the last key read, one entity per page at the read time, read `__kind__` and `__namespace__` whole.
+
+Google's [metadata queries] page says the metadata entities are "generated dynamically, based on the current state of your database".
+
+**The source refuses the metadata kinds `__namespace__`, `__kind__` and `__property__`** (owner's decision, 2026-10-10), matched by exact name: `kind(...)` and `query(...)` when they are given one, and a GQL query when the planner has parsed it, since only then is its kind known.
+Every kind a query names is checked; a query naming no kind is read as before.
+The message names the kind, says that the source can neither page through it nor resume it after a failure, and says to read metadata with the client library instead; it states no cursor fact, because the service's answer was not measured.
+This is ADR-0127's third shape for the failure observed on the emulator: without the check the job failed after it had started, in the reader, with a message that named neither the kind nor the setter.
+How the service answers a metadata query is unmeasured, so the refusal also rests on the documented dynamic generation.
+The statistics kinds (`__Stat_*__`) are not refused: they are stored entities, the source's own split estimate reads them, and nothing measured shows a read of one failing.
+Whether the service answers a metadata query with cursors was not measured; the refusal does not rest on it alone, because a result generated from the current state need not be the snapshot at the read time that the source promises (ADR-0173).
+Of the alternatives below, only resuming by key waits on that measurement; replaying a split is declined whatever it shows.
+
+Declined or deferred:
+
+- **One split replayed from its beginning after a failure** ([#1690]'s second option). A restore after a checkpoint taken mid-split would emit again every row the checkpoint had already passed, and the result is generated anew from the database's current state, which the emulator does not even pin to the read time, so the replay need not return the same rows. Declined.
+- **Resuming a metadata query by key**, with `__key__ >` the last key emitted in place of a cursor. It read `__kind__` and `__namespace__` whole on the emulator, but it adds a second resume mode beside the cursor, and it needs the service measured first: whether its metadata results carry cursors after all, whether it honours the read time, how the namespace scopes them, and whether `__property__`'s ancestor filter combines with a key range. Deferred until someone needs it.
+
+The emulator's metadata deviations are recorded here and not in the docs' deviation table, because the source no longer reads a metadata kind.
+
 ## Consequences
 
 - A planning call reaches the service over HTTP as well as gRPC, so a network policy that admits only one of them to the JobManager breaks a split read. The readers are gRPC only.
@@ -106,3 +135,5 @@ The reader now keeps what each `EntityResult` carries beside the entity, its `ve
 [#1543]: https://github.com/flink-gcp/flink-connector-gcp/issues/1543
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1652]: https://github.com/flink-gcp/flink-connector-gcp/issues/1652
+[#1690]: https://github.com/flink-gcp/flink-connector-gcp/issues/1690
+[metadata queries]: https://cloud.google.com/datastore/docs/concepts/metadataqueries

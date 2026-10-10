@@ -20,9 +20,11 @@ import com.google.cloud.Timestamp;
 import com.google.datastore.v1.Entity;
 import com.google.datastore.v1.EntityResult;
 import com.google.datastore.v1.Filter;
+import com.google.datastore.v1.FindNearest;
 import com.google.datastore.v1.PartitionId;
 import com.google.datastore.v1.PropertyFilter;
 import com.google.datastore.v1.PropertyOrder;
+import com.google.datastore.v1.PropertyReference;
 import com.google.datastore.v1.Query;
 import com.google.datastore.v1.QueryResultBatch;
 import com.google.datastore.v1.RunQueryRequest;
@@ -124,6 +126,98 @@ class ClientQueryPlannerTest {
                 .extracting(request -> request.getGqlQuery().getQueryString())
                 .containsExactly(
                         "SELECT * FROM Task LIMIT 5 LIMIT 0", "SELECT * FROM Task LIMIT 5");
+    }
+
+    @Test
+    void refusesAGqlQueryThatParsesIntoAMetadataKind() {
+        FakeDatastoreRpc rpc =
+                new FakeDatastoreRpc(
+                        request ->
+                                RunQueryResponse.newBuilder()
+                                        .setQuery(
+                                                SplittableQueries.ofKind("__kind__").toBuilder()
+                                                        .setLimit(Int32Value.of(0)))
+                                        .setBatch(QueryResultBatch.getDefaultInstance())
+                                        .build());
+
+        assertThatThrownBy(
+                        () -> ClientQueryPlanner.parseGql(rpc, base(""), "SELECT * FROM __kind__"))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "The source cannot read the query the GQL query parsed into: __kind__ is a"
+                                + " metadata kind, which the source can neither page through nor"
+                                + " resume after a failure; read metadata with the client library"
+                                + " instead.");
+        assertThat(rpc.requests())
+                .as("parseGql sends the parse request and nothing after it")
+                .singleElement()
+                .extracting(request -> request.getGqlQuery().getQueryString())
+                .isEqualTo("SELECT * FROM __kind__ LIMIT 0");
+    }
+
+    @Test
+    void refusesAMetadataKindParsedByRunningTheQueryAsWritten() {
+        FakeDatastoreRpc rpc =
+                new FakeDatastoreRpc(
+                        request -> {
+                            if (request.getGqlQuery().getQueryString().endsWith("LIMIT 0")) {
+                                throw Status.INVALID_ARGUMENT
+                                        .withDescription("syntax error")
+                                        .asRuntimeException();
+                            }
+                            return RunQueryResponse.newBuilder()
+                                    .setQuery(
+                                            SplittableQueries.ofKind("__kind__").toBuilder()
+                                                    .setLimit(Int32Value.of(5)))
+                                    .setBatch(QueryResultBatch.getDefaultInstance())
+                                    .build();
+                        });
+
+        assertThatThrownBy(
+                        () ->
+                                ClientQueryPlanner.parseGql(
+                                        rpc, base(""), "SELECT * FROM __kind__ LIMIT 5"))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "The source cannot read the query the GQL query parsed into: __kind__ is a"
+                                + " metadata kind, which the source can neither page through nor"
+                                + " resume after a failure; read metadata with the client library"
+                                + " instead.");
+        assertThat(rpc.requests())
+                .extracting(request -> request.getGqlQuery().getQueryString())
+                .containsExactly(
+                        "SELECT * FROM __kind__ LIMIT 5 LIMIT 0", "SELECT * FROM __kind__ LIMIT 5");
+    }
+
+    @Test
+    void refusesAGqlQueryThatParsesIntoANearestNeighbourSearch() {
+        Query parsed =
+                SplittableQueries.ofKind("Task").toBuilder()
+                        .setLimit(Int32Value.of(0))
+                        .setFindNearest(
+                                FindNearest.newBuilder()
+                                        .setVectorProperty(
+                                                PropertyReference.newBuilder().setName("embedding"))
+                                        .setDistanceMeasure(FindNearest.DistanceMeasure.EUCLIDEAN)
+                                        .setLimit(Int32Value.of(3)))
+                        .build();
+        // The fake answers as a parse into a nearest-neighbour search would; the text only names
+        // the request.
+        FakeDatastoreRpc rpc =
+                new FakeDatastoreRpc(
+                        request ->
+                                RunQueryResponse.newBuilder()
+                                        .setQuery(parsed)
+                                        .setBatch(QueryResultBatch.getDefaultInstance())
+                                        .build());
+
+        assertThatThrownBy(() -> ClientQueryPlanner.parseGql(rpc, base(""), "SELECT * FROM Task"))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "The source cannot read the query the GQL query parsed into: it is a"
+                                + " nearest-neighbour search, whose results the source's paging"
+                                + " and resume cursors would change.");
+        assertThat(rpc.requests()).hasSize(1);
     }
 
     @Test

@@ -30,6 +30,7 @@ import com.google.protobuf.Int32Value;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.EnumSet;
 import java.util.Set;
@@ -182,6 +183,46 @@ class SplittableQueriesTest {
                                 task().setFindNearest(FindNearest.newBuilder()).build()))
                 .startsWith("it is a nearest-neighbour search");
         assertThat(SplittableQueries.whyNotReadable(task().build())).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"__namespace__", "__kind__", "__property__"})
+    void aMetadataKindCannotBeReadAtAll(String kind) {
+        String reason = SplittableQueries.whyKindNotReadable(kind);
+
+        assertThat(reason)
+                .startsWith(kind + " is a metadata kind")
+                .contains("which the source can neither page through nor resume after a failure")
+                .endsWith("read metadata with the client library instead");
+        assertThat(SplittableQueries.whyNotReadable(SplittableQueries.ofKind(kind)))
+                .isEqualTo(reason);
+        // The service takes at most one kind, but the rule does not depend on its position.
+        assertThat(
+                        SplittableQueries.whyNotReadable(
+                                task().addKind(KindExpression.newBuilder().setName(kind)).build()))
+                .isEqualTo(reason);
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "__Stat_Kind__",
+                "__Stat_Total__",
+                "__Stat_Ns_Kind__",
+                "__KIND__",
+                "__kind",
+                "kind",
+                "__kind___",
+                "Task"
+            })
+    void anyOtherKindCanBeRead(String kind) {
+        assertThat(SplittableQueries.whyKindNotReadable(kind)).isNull();
+        assertThat(SplittableQueries.whyNotReadable(SplittableQueries.ofKind(kind))).isNull();
+    }
+
+    @Test
+    void aQueryOfNoKindCanBeRead() {
+        assertThat(SplittableQueries.whyNotReadable(Query.getDefaultInstance())).isNull();
     }
 
     @Test
