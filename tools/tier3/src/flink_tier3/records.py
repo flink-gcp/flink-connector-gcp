@@ -17,28 +17,50 @@
 from __future__ import annotations
 
 import copy
+import random
 import time
 import uuid
 
 from .bigquery.handoff import require_bigquery_clean
 from .common import ApiError, Failure, Superseded, json_bytes, utc
 from .model import Phase, RunRecord, open_for_replacement
-from .policy import BIGQUERY_CEILINGS, CLOUDTASKS_CEILINGS, ENVIRONMENT, MIB
+from .policy import (
+    BIGQUERY_CEILINGS,
+    CLOUDTASKS_CEILINGS,
+    ENVIRONMENT,
+    GENERATION_RACES,
+    MIB,
+    RATE_LIMIT_BACKOFF,
+)
 from .pubsub.lifecycle import require_pubsub_clean
 
 
-def conditional_update(store, path, read, edit, serialize=lambda value: value):
-    """Read, edit and write back one object, retrying a lost generation race."""
-    for _ in range(5):
+def conditional_update(
+    store, path, read, edit, serialize=lambda value: value, sleep=None
+):
+    """Read, edit and write back one object, retrying a lost generation race.
+
+    A write refused for the object's mutation rate is retried after a
+    randomized exponential backoff from a fresh read, so the edit and every
+    deadline it checks run again before the write is sent.
+    """
+    races = throttled = 0
+    while True:
         value, generation = read()
         edit(value)
         try:
             store.write(path, serialize(value), generation)
             return value
         except ApiError as error:
+            if error.status == 429 and throttled < len(RATE_LIMIT_BACKOFF):
+                (sleep or time.sleep)(RATE_LIMIT_BACKOFF[throttled] + random.random())
+                throttled += 1
+                continue
             if error.status not in (409, 412):
                 raise
-    raise Failure("Concurrent control updates did not settle")
+            races += 1
+            if races == GENERATION_RACES:
+                raise Failure("Concurrent control updates did not settle") from error
 
 
 # The documents a run retains directly under its prefix. A fixed roster

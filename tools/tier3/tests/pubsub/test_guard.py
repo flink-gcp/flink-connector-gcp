@@ -14,6 +14,7 @@
 # limitations under the License.
 """Per-method operation bounds reserved before each Pub/Sub lifecycle method."""
 
+import time
 from dataclasses import replace
 
 import pytest
@@ -133,19 +134,26 @@ def test_a_whole_lifecycle_runs_within_every_reserved_bound(chain):
 
 
 def conflicting(chain, monkeypatch, exhaust=lambda: False):
-    """Lose four generation races on every control write, the adapter's worst
-    success; when ``exhaust()`` says so, lose all five and let it give up.
+    """Refuse six writes for the object's mutation rate, then lose four
+    generation races on every control write, the adapter's worst success;
+    when ``exhaust()`` says so, lose all five and let it give up.
 
     Returns the number of races lost by each update, in order.
     """
     store, path = chain.environment.store, chain.environment.records.path
     original, lost, current = store.write, [], {"left": None}
+    backoffs = []
+    monkeypatch.setattr(time, "sleep", backoffs.append)
 
     def write(name, value, generation=None, **kwargs):
         if name == path and generation not in (None, "0"):
             if current["left"] is None:
                 current["left"] = 5 if exhaust() else 4
+                current["throttle"] = 6
                 lost.append(0)
+            if current["throttle"] > 0:
+                current["throttle"] -= 1
+                raise ApiError(429, "PUT", name)
             if current["left"] > 0:
                 current["left"] -= 1
                 lost[-1] += 1
@@ -165,8 +173,8 @@ def test_control_conflicts_on_every_write_stay_within_the_bounds(chain, monkeypa
     assert lost and all(count == 4 for count in lost)
     for method, counts in used.items():
         within(counts, method)
-        # Each update then takes all six of its callbacks.
-        assert counts.get("control-UPDATE", 0) % 6 == 0, method
+        # Each update then takes all twelve of its callbacks.
+        assert counts.get("control-UPDATE", 0) % 12 == 0, method
 
 
 def exhausting_finish(handoff, monkeypatch):
@@ -217,9 +225,9 @@ def test_a_failed_publication_s_worst_case_fits_its_bound(settling, monkeypatch)
     chain.service.messages.responses.append(Response({"messageIds": ["a"]}))
     with pytest.raises(Failure, match="response upload lost"):
         runner.publish(0, 0, 1)
-    # Six callbacks for each of ten updates; a smaller bound refuses the last
-    # completion attempt, which keeps the marker.
-    assert chain.used("runner")["control-UPDATE"] == 6 * 10
+    # Twelve callbacks for each of ten updates; a smaller bound refuses the
+    # last completion attempt, which keeps the marker.
+    assert chain.used("runner")["control-UPDATE"] == 12 * 10
     assert lost.count(5) == 2
     assert chain.environment.refresh().evidence_failed
     assert inflight(chain) is None
@@ -248,7 +256,7 @@ def test_a_failed_collection_s_worst_case_fits_its_bound(settling, monkeypatch):
         supervisor.collect("one", max_messages=1)
     # Batch, pull, three uploads, acknowledgement, receipt, failure record,
     # stop and three completion attempts.
-    assert chain.used("supervisor")["control-UPDATE"] == 6 * 13
+    assert chain.used("supervisor")["control-UPDATE"] == 12 * 13
     assert lost.count(5) == 2
     actors = chain.environment.refresh().pubsub["handoff"]["actors"]
     assert actors["supervisor"]["inflight"] is None
