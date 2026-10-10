@@ -56,8 +56,9 @@ limitations under the License.
 - Updated: 2026-10-04 (service subpackages and nested source delivery)
 - Updated: 2026-10-04 (Pub/Sub recovery verdict recomputed from exported evidence)
 - Updated: 2026-10-10 (BigQuery FILE_LOADS trial preregistration; unredacted supervisor job listing)
+- Updated: 2026-10-10 (BigQuery FILE_LOADS deployed trial findings)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552)
-- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md)
+- Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
@@ -1095,6 +1096,14 @@ The regional `SSD_TOTAL_GB` quota is also a precondition: an upgrade needs repla
 An approval written before this change still carries the removed ceiling, and a BigQuery one the old trial schema, so the model refuses it and recovery could not settle it; the change is therefore merged only while no run holds the environment lock, rather than carrying a reader for a shape no future run writes.
 Keep everything that stops and cleans up a run, which is where a failure costs more than the run: the environment lock, idle and cleanup verification, recovery, the three empty plans and image retention.
 Declined: keeping a USD 10 scenario ceiling as a backstop, because the owner already approves the estimate itself, and a second number beside it only decides which approved runs the rig refuses; and keeping the pricing refusal as a freshness prompt, because it turned a stale rate table into a dispatch deadline without anyone checking the rates.
+
+### BigQuery FILE_LOADS deployed trial findings
+
+The one preregistered FILE_LOADS trial, `fl-10`, reached a `usable` verdict on its first attempt on 2026-10-10, as the [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md) record: across a savepoint upgrade and a JobManager failover the query oracle found every one of 1,843,200 sequences exactly once in its own table, and the run left no unfinished job, temporary table or staged object.
+The failover landed inside a commit whose load jobs had finished server-side, and the restored committer completed it by re-attaching to them, as the upgrade's restored committer re-attached to the savepoint commit's jobs; nothing was resubmitted.
+That is what this trial establishes for the correctness half of [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313); no load job was still running at either recovery, and [#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685) owns that case.
+The writer's end-to-end checkpoint duration exceeded its barrier delay and synchronous and asynchronous parts by 1.2–3.1 s, an upper bound on finalization, and the commits a sample caught took 5.3–11.5 s of a 120-second interval; finalization concurrency, staging-file size and the format comparison remain with [#1553](https://github.com/flink-gcp/flink-connector-gcp/issues/1553) and [#1554](https://github.com/flink-gcp/flink-connector-gcp/issues/1554).
+The attempt's receipt says `success: false`, because the supervisor's evidence-failure flag was set during cleanup for a cause nothing retained; it was accepted under the preregistration, whose receipt and `just tier3-analyze` agree on `usable`, and [#1683](https://github.com/flink-gcp/flink-connector-gcp/issues/1683) is filed to retain such a cause.
 
 ### A run may check out a chosen rig commit
 

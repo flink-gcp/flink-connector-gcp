@@ -2659,7 +2659,7 @@ retry itself; it names the stream, the attempt and the backoff.
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `loadJobsSubmitted` | counter | BigQuery load jobs submitted by this committer |
+| `loadJobsSubmitted` | counter | BigQuery load-job submissions this committer attempted, including one that found its job already existing and re-attached to it, as after a restore |
 | `queuedCommitDestinations` | gauge | destination actions in the current commit phase that have not started; zero between commit attempts |
 | `activeCommitDestinations` | gauge | destination actions executing in the current commit attempt; bounded by `maxConcurrentDestinations` and cleared when the coordinator returns. Updates from workers belonging to an ended attempt are ignored |
 | `currentCommitDurationMillis` | gauge | elapsed milliseconds of the current non-empty commit attempt; zero while idle |
@@ -2971,7 +2971,12 @@ JobManager failover happen under load. On 2026-09-25 both `STORAGE_API_AT_LEAST_
 oracle found every expected sequence exactly once and in its own table. The
 [findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-trial-findings-1312.md)
 record every attempt and the memory, GC, back-pressure, checkpoint and writer metrics each run
-reported. Those figures were taken at one fixed input rate, one run per configuration; they
+reported. On 2026-10-10 `FILE_LOADS` at 10 destinations passed the same two recoveries with the
+same result; its JobManager failover interrupted a commit, and the restored committer completed
+it by re-attaching to the load jobs already submitted rather than loading the files again. Its
+[findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md)
+record the finalization and commit timings. A failover while a load job is still running has not
+been exercised. Those figures were taken at one fixed input rate, one run per configuration; they
 describe these runs, not a throughput limit or a sizing target.
 
 ## Scope and provenance
