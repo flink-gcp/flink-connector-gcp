@@ -102,6 +102,7 @@ A scan reads each column from the top-level field of its name, and the PRIMARY K
 A field the document does not have reads as NULL, as does a field that holds null.
 An integer reads into a `DOUBLE` column only when the `DOUBLE` represents it exactly, up to `2^53` in magnitude; a 32-bit BSON integer reads only into a `BIGINT`, and a table sink writes it back as a 64-bit integer.
 A timestamp reads at the column's precision, truncated.
+A string or bytes read whole, whatever length a `CHAR`, `VARCHAR`, `BINARY` or `VARBINARY` column declares: the scan neither checks the length nor pads a fixed-length value, so declare `STRING` and `BYTES` for values of any length.
 A reference reads as its document path into a column `reference-field-paths` names, and a geographical point into a ROW `geo-point-field-paths` names.
 
 A collection has no schema, so a document can hold, under a column's name, a value of another type: a string where the column is `BIGINT`, a reference where the column is an unmarked `STRING`, a reference into another database, or a value outside the mapping such as bytes of a BSON subtype, a vector or one of the BSON value types an Enterprise-edition database stores.

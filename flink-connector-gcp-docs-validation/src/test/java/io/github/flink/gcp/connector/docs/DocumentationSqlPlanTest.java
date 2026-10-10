@@ -777,7 +777,13 @@ public class DocumentationSqlPlanTest {
                                         + "SELECT '/home' AS path, 'v-1' AS visitor, "
                                         + "CAST('2026-01-01 00:00:00.000' "
                                         + "AS TIMESTAMP_LTZ(3)) AS viewed_at"),
-                        snippet("flink/DatastoreTableReference.sql", "append")));
+                        snippet("flink/DatastoreTableReference.sql", "append")),
+                scenario(
+                        "Datastore table reference scan",
+                        snippet("flink/DatastoreTableReference.sql", "scan")),
+                scenario(
+                        "Datastore table reference key-less read",
+                        snippet("flink/DatastoreTableReference.sql", "key-less-read")));
     }
 
     private static Scenario scenario(String name, ValidationStep... steps) {

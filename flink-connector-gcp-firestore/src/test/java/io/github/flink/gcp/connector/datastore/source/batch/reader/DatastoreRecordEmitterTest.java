@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.datastore.source.batch.reader;
 
+import org.apache.flink.api.common.functions.util.ListCollector;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.util.Collector;
@@ -29,11 +30,14 @@ import io.github.flink.gcp.connector.datastore.source.batch.QuerySplit;
 import io.github.flink.gcp.connector.datastore.source.batch.QuerySplitState;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.ScriptedQueryPlanner;
 import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityDeserializationSchema;
+import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityMetadataDeserializationSchema;
+import io.github.flink.gcp.connector.datastore.source.serializer.EntityMetadata;
 import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,14 +56,54 @@ class DatastoreRecordEmitterTest {
                 new QuerySplit("0", ScriptedQueryPlanner.request("K"), READ_TIME));
     }
 
+    private static final EntityMetadata METADATA =
+            new EntityMetadata(7L, READ_TIME, READ_TIME, READ_TIME);
+
     private static FetchedEntity entity(String name) {
         return new FetchedEntity(
                 Entity.newBuilder(Key.newBuilder("p", "K", name).build()).build(),
-                ScriptedQueryPageReader.cursorAfter(name));
+                ScriptedQueryPageReader.cursorAfter(name),
+                METADATA);
     }
 
     private DatastoreRecordEmitter<String> emitter(Deserializer deserializer) {
         return new DatastoreRecordEmitter<>(deserializer, metrics.metrics());
+    }
+
+    /** Emits the entity's name with the version its metadata carries. */
+    private static final class MetadataDeserializer
+            implements DatastoreEntityMetadataDeserializationSchema<String> {
+        @Override
+        public void deserialize(Entity entity, EntityMetadata metadata, Collector<String> out) {
+            out.collect(entity.getKey().getName() + "@" + metadata.getVersion());
+        }
+
+        @Override
+        public TypeInformation<String> getProducedType() {
+            return Types.STRING;
+        }
+    }
+
+    @Test
+    void aMetadataDeserializerReadsTheEntityWithItsMetadata() throws Exception {
+        CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
+
+        new DatastoreRecordEmitter<>(new MetadataDeserializer(), metrics.metrics())
+                .emitRecord(entity("a"), output, state());
+
+        assertThat(output.records()).containsExactly("a@7");
+    }
+
+    @Test
+    void aMetadataDeserializerCalledWithoutTheMetadataRefuses() {
+        assertThatThrownBy(
+                        () ->
+                                new MetadataDeserializer()
+                                        .deserialize(
+                                                entity("a").getEntity(),
+                                                new ListCollector<>(new ArrayList<>())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("only the Datastore source's reader supplies");
     }
 
     @Test

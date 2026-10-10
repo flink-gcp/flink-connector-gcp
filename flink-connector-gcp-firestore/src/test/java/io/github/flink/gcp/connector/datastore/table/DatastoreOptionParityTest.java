@@ -20,6 +20,7 @@ import org.apache.flink.configuration.ConfigOption;
 
 import io.github.flink.gcp.connector.datastore.sink.DatastoreSinkBuilder;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreWriterOptions;
+import io.github.flink.gcp.connector.datastore.source.DatastoreSourceBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -100,6 +101,10 @@ class DatastoreOptionParityTest {
                         "namespace",
                         "emulator-endpoint",
                         "service-account-key-file",
+                        "type-mismatch-policy",
+                        "scan.partition.max-partitions",
+                        "scan.read-time",
+                        "scan.max-rows-per-fetch",
                         "sink.unindexed-columns",
                         "sink.buffer-flush.max-mutations",
                         "sink.buffer-flush.max-size",
@@ -117,6 +122,37 @@ class DatastoreOptionParityTest {
                         .collect(Collectors.toSet());
         factory.optionalOptions().stream().map(ConfigOption::key).forEach(accepted::add);
         assertThat(accepted).containsAll(declaredKeys());
+    }
+
+    @Test
+    void everySourceBuilderSetterIsMappedOrSuppliedByTheTableLayer() {
+        assertThat(publicSettersOf(DatastoreSourceBuilder.class))
+                .containsExactlyInAnyOrder(
+                        "database",
+                        "deserializer",
+                        "kind",
+                        "query",
+                        "gqlQuery",
+                        "namespace",
+                        "splitCount",
+                        "readTime",
+                        "pageSize",
+                        "serviceAccountKeyFile",
+                        "emulatorEndpoint");
+
+        // database is assembled from project and database, deserializer from the physical schema,
+        // the metadata and type-mismatch-policy, kind and namespace map one option each. A query
+        // or GQL query has no option: the table is the whole kind, and filters are not pushed
+        // down. The other five map one option each: the three scan.* options below,
+        // service-account-key-file and emulator-endpoint.
+        assertThat(declaredKeys())
+                .contains(
+                        "kind",
+                        "namespace",
+                        "type-mismatch-policy",
+                        "scan.partition.max-partitions",
+                        "scan.read-time",
+                        "scan.max-rows-per-fetch");
     }
 
     private static Set<String> declaredKeys() {

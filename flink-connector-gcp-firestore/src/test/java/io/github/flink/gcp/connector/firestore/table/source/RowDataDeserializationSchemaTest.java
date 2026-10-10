@@ -169,7 +169,8 @@ class RowDataDeserializationSchemaTest {
                 assertThatThrownBy(() -> read(deserializer, doc))
                         .as("%s", policy)
                         .isInstanceOf(IOException.class)
-                        .hasMessageContaining("a NOT NULL field holds null or is missing")
+                        .hasMessageContaining(
+                                "is missing or holds null, but the table declares it NOT NULL")
                         .hasMessageContaining("The column 'must' is NOT NULL, so no policy")
                         .hasMessageNotContaining("'type-mismatch-policy' = 'null'");
             }

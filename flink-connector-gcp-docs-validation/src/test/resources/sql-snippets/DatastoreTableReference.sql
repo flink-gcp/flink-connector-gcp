@@ -71,3 +71,38 @@ CREATE TABLE page_views (
 
 INSERT INTO page_views SELECT path, visitor, viewed_at FROM staged_views;
 -- end::append[]
+
+-- tag::scan[]
+CREATE TABLE customer_snapshot (
+  customer_id STRING NOT NULL,
+  name STRING,
+  tier STRING,
+  updated_at TIMESTAMP_LTZ(6),
+  version BIGINT NOT NULL METADATA VIRTUAL,
+  read_at TIMESTAMP_LTZ(6) NOT NULL METADATA FROM 'read-time' VIRTUAL,
+  PRIMARY KEY (customer_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Customer',
+  'scan.read-time' = '2026-10-04T00:00:00Z',
+  'type-mismatch-policy' = 'null'
+);
+
+SELECT tier, COUNT(*) AS customers FROM customer_snapshot GROUP BY tier;
+-- end::scan[]
+
+-- tag::key-less-read[]
+CREATE TABLE page_view_log (
+  path STRING,
+  visitor STRING,
+  viewed_at TIMESTAMP_LTZ(3),
+  view_id BIGINT METADATA FROM 'key-id' VIRTUAL
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'PageView'
+);
+
+SELECT view_id, path, viewed_at FROM page_view_log;
+-- end::key-less-read[]

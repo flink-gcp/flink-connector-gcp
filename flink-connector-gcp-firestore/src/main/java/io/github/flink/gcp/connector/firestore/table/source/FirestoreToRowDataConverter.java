@@ -49,9 +49,12 @@ import java.util.Map;
  * TypeMismatchPolicy#NULL} the innermost nullable field around it reads as NULL; under {@link
  * TypeMismatchPolicy#FAIL}, or when no field around it is nullable, the read fails naming the
  * field. Only these values are read: a string, a reference into a marked STRING (as its path), an
- * integer or a 32-bit BSON integer into BIGINT, a floating-point number or an integer it represents
- * exactly into DOUBLE, a boolean, bytes of subtype 0, a timestamp (truncated to the column's
- * precision), an array, a map into a MAP or a ROW, and a geographical point into a marked ROW.
+ * integer or a 32-bit BSON integer into BIGINT, a floating-point number or an integer of at most
+ * 2^53 in magnitude into DOUBLE, a boolean, bytes of subtype 0, a timestamp (truncated to the
+ * column's precision), an array, a map into a MAP or a ROW, and a geographical point into a marked
+ * ROW. A string or bytes are read whole: the length a CHAR, VARCHAR, BINARY or VARBINARY column
+ * declares is neither checked nor padded to, as the Spanner table reads a STRING whatever its
+ * declared length.
  */
 @Internal
 abstract class FirestoreToRowDataConverter implements Serializable {
@@ -86,7 +89,8 @@ abstract class FirestoreToRowDataConverter implements Serializable {
     final Object convert(Object value) throws Mismatch {
         if (value == null) {
             if (!nullable) {
-                throw new Mismatch(path, "a NOT NULL field holds null or is missing");
+                throw new Mismatch(
+                        path, "is missing or holds null, but the table declares it NOT NULL");
             }
             return null;
         }
@@ -301,7 +305,8 @@ abstract class FirestoreToRowDataConverter implements Serializable {
                         path,
                         "holds the integer "
                                 + integer
-                                + ", which a DOUBLE cannot represent exactly");
+                                + ", beyond the 2^53 in magnitude up to which a DOUBLE represents"
+                                + " every integer exactly");
             }
             throw mismatch(value, "a floating-point number");
         }

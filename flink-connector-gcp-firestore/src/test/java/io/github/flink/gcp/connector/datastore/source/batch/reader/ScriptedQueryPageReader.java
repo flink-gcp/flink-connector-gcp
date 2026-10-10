@@ -60,6 +60,7 @@ final class ScriptedQueryPageReader implements QueryPageReader {
     private int overfill;
     private boolean skippedCursorOnly;
     private boolean emptyFirstBatch;
+    private boolean withoutTimes;
     @Nullable private QueryResultBatch fixedAnswer;
     private int closeCalls;
 
@@ -98,6 +99,12 @@ final class ScriptedQueryPageReader implements QueryPageReader {
      */
     ScriptedQueryPageReader emptyFirstBatch() {
         this.emptyFirstBatch = true;
+        return this;
+    }
+
+    /** Answers entity results without their create and update times. */
+    ScriptedQueryPageReader withoutTimes() {
+        this.withoutTimes = true;
         return this;
     }
 
@@ -165,10 +172,19 @@ final class ScriptedQueryPageReader implements QueryPageReader {
         int answered = Math.max(0, Math.min(Math.min(limit, batchCap), last - from));
         int to = Math.min(last, from + answered + overfill);
         for (int i = from; i < to; i++) {
-            batch.addEntityResults(
+            EntityResult.Builder result =
                     EntityResult.newBuilder()
                             .setEntity(entity(database, names.get(i)))
-                            .setCursor(cursorAfter(names.get(i))));
+                            .setCursor(cursorAfter(names.get(i)))
+                            // The version and times count up with the name's position.
+                            .setVersion(i + 1);
+            if (!withoutTimes) {
+                result.setCreateTime(
+                                com.google.protobuf.Timestamp.newBuilder().setSeconds(1000 + i))
+                        .setUpdateTime(
+                                com.google.protobuf.Timestamp.newBuilder().setSeconds(2000 + i));
+            }
+            batch.addEntityResults(result);
         }
         if (to > from) {
             batch.setEndCursor(cursorAfter(names.get(to - 1)));

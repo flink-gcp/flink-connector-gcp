@@ -22,13 +22,13 @@ limitations under the License.
 
 # Datastore-mode SQL connector
 
-The `datastore` connector writes Table API and SQL rows as the entities of one kind, in one namespace of a Firestore database in Datastore mode, through `flink-connector-gcp-firestore`.
-It maps onto the [Datastore-mode DataStream sink]({{< relref "docs/connectors/datastream/firestore" >}}#datastore-mode), so batching, recovery, ramp-up, delivery, metrics and failure behavior remain the same.
+The `datastore` connector reads and writes Table API and SQL rows as the entities of one kind, in one namespace of a Firestore database in Datastore mode, through `flink-connector-gcp-firestore`.
+It maps onto the [Datastore-mode DataStream source and sink]({{< relref "docs/connectors/datastream/firestore" >}}#datastore-mode), so splitting, snapshot, paging, recovery, batching, ramp-up, delivery, metrics and failure behavior remain the same.
 A table with a PRIMARY KEY writes each row under that key's name or numeric id; a table without one writes every row as a new entity.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="overview" >}}
 
-The connector is a sink only for now: a scan is [#1652]({{< param BookRepo >}}/issues/1652) and a lookup join [#1653]({{< param BookRepo >}}/issues/1653).
+A scan reads the kind as a bounded snapshot; a lookup join is [#1653]({{< param BookRepo >}}/issues/1653).
 A database in Native mode uses the [`firestore` connector]({{< relref "docs/connectors/table/firestore" >}}) instead.
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
@@ -36,24 +36,26 @@ The same jar carries the `firestore` and `datastore` connectors; the [Firestore 
 
 ## Lineage
 
-The Table sink reports its configured kind in the `gcp` facet of one logical SQL dataset, named by the table's catalog identifier.
+The Table source and sink report their configured kind in the `gcp` facet of one logical SQL dataset, named by the table's catalog identifier.
 The kind is a `datastore-kind` resource: namespace `datastore://{project}/{database}`, with the default database spelled `(default)`, followed by `/{namespace}` outside the default namespace, and the kind as its name.
 This is the resource the [Datastore-mode source]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) reports for the same kind.
 See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and what Flink 1.20 and 2.x each deliver.
 
 ## Credentials
 
-`service-account-key-file` selects one service-account JSON key for the sink, read by each sink subtask on its TaskManager, so mount the same path in every container.
-Without it and without `emulator-endpoint`, the sink uses Application Default Credentials, and the identity needs the role the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) name.
+`service-account-key-file` selects one service-account JSON key for the scan and the sink.
+The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, while each sink subtask reads it on its TaskManager, so mount the same path in every container.
+Without it and without `emulator-endpoint`, both use Application Default Credentials, and the identity needs the role the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) name.
 The option is mutually exclusive with `emulator-endpoint`, because the emulator channel carries no credentials.
-Only `emulator-endpoint` reaches an emulator, one started with `--database-mode=datastore-mode`: the sink always gives its client a host, so `DATASTORE_EMULATOR_HOST` is never read.
+Only `emulator-endpoint` reaches an emulator, one started with `--database-mode=datastore-mode`: the scan and the sink always give their clients a host, so `DATASTORE_EMULATOR_HOST` is never read.
 
 ## Keys and type mapping
 
 A table names one kind with `kind`, in the namespace `namespace` names or in the default namespace without it.
 Each row is one entity, and each column other than the PRIMARY KEY is one property of the entity, named exactly as the column is.
-A kind or a namespace that every write would be refused for is refused when the statement is planned: one of the form `__…__` with at least one character between the underscores, such as `__Stat_Kind__`, which the emulator refuses as reserved; a kind longer than 1,500 bytes; and a namespace outside the client library's grammar of at most 100 letters, digits, `.`, `_` and `-`.
+A kind or a namespace that every write would be refused for is refused when the statement is planned, for a scan as well as the sink: one of the form `__…__` with at least one character between the underscores, such as `__Stat_Kind__`, which the emulator refuses as reserved; a kind longer than 1,500 bytes; and a namespace outside the client library's grammar of at most 100 letters, digits, `.`, `_` and `-`.
 So are a column or `ROW` field with such a name or one longer than 1,500 bytes, wherever it is declared, and a `project` outside the client library's grammar for a project id.
+A reserved kind holds Datastore's own statistics or metadata, and the scan refuses it too: the emulator answers the `__kind__` metadata query without the per-entity cursor the scan resumes from, and reading a statistics kind has not been measured; [#1690]({{< param BookRepo >}}/issues/1690) tracks reading them.
 A blank `kind` or `namespace` is refused too; leave `namespace` out for the default namespace.
 Datastore's documentation reserves every kind beginning with `__`, which the emulator does not enforce, so such a kind is left to the service.
 
@@ -61,7 +63,7 @@ The PRIMARY KEY is the entity key's last path element, declared `PRIMARY KEY (..
 A `STRING` key column is the key's name and a `BIGINT` one its numeric id; it is never stored as a property.
 A row whose key is an empty name or the id `0` fails the job, because neither addresses an entity, and so does a name the service refuses: one of the form `__…__` or longer than 1,500 bytes.
 The key column is `NOT NULL`, so Flink's not-null enforcer handles a NULL key before the sink sees it, failing the job or, under `table.exec.sink.not-null-enforcer = 'DROP'`, dropping the row.
-Keys have no ancestors, which are deferred until a use asks for them.
+The sink writes keys without ancestors, which are deferred until a use asks for them; [Reading values back](#reading-values-back) says how a scan meets a key that has one.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="id-key" >}}
 
@@ -80,6 +82,22 @@ Every other Flink type is refused when the statement is planned, naming the fiel
 `DECIMAL`, `DATE` and `MAP` have no mapping, and neither do a geographical point or a key value.
 A SQL `NULL` is written as a Datastore null value, so the property exists and holds null.
 
+### Reading values back
+
+A scan reads each column from the top-level property of its name, and the PRIMARY KEY column from the entity's key: a `STRING` key column from the key's name and a `BIGINT` one from its numeric id.
+An entity whose key has the other form fails the read whatever the policy below, because the key column is `NOT NULL`, and it does so whether or not the query reads the key column; a kind that holds both forms is read by a table without a PRIMARY KEY, through the `key-name` and `key-id` metadata.
+A scan of a kind also returns the kind's entities whose keys have a parent, and the key column holds only the last path element, so children of two parents could read as one key, which the planner trusts to be unique.
+Such an entity fails the read of a table with a PRIMARY KEY, also when the query does not read the key column, which the planner prunes from a `GROUP BY` over the key; a table without one reads it, and its `key-name` and `key-id` name the last path element alone.
+A property the entity does not have reads as NULL, as does a property that holds null, and so does a field the embedded entity of a `ROW` column lacks.
+An integer reads into a `DOUBLE` column only when the `DOUBLE` represents it exactly, up to `2^53` in magnitude, and a timestamp reads at the column's precision, truncated.
+A string or blob reads whole, whatever length a `CHAR`, `VARCHAR`, `BINARY` or `VARBINARY` column declares: the scan neither checks the length nor pads a fixed-length value, so declare `STRING` and `BYTES` for values of any length.
+
+A kind has no schema, so an entity can hold, under a column's name, a value of another type: a string where the column is `BIGINT`, or a value outside the mapping, such as a geographical point or a key.
+`type-mismatch-policy` decides what such a value does.
+Under `fail` the read fails, naming the entity's key and the property's path in the schema.
+Under `null` the innermost nullable field around the value reads as NULL instead; a `NOT NULL` field cannot, so the nearest nullable field around it does.
+A `NOT NULL` column has no nullable field around it, so a mismatched or missing value there fails the read under either policy.
+
 ## Unindexed columns
 
 Datastore indexes every property value unless the value is excluded, and it refuses an indexed string or blob longer than 1,500 bytes.
@@ -93,6 +111,38 @@ An `ARRAY` column's elements are each excluded, because Datastore refuses the ex
 A column the table does not declare, a nested path such as `meta.note`, and the PRIMARY KEY are refused when the statement is planned.
 Without the option, a value over the limit is refused by the service with `INVALID_ARGUMENT`, which fails the job, naming the entity's key and the property.
 A restart replays the same row and fails again, so the remedy is to add the column to `sink.unindexed-columns` or to change the data.
+
+## Source
+
+A scan reads every entity of the table's kind in its namespace, as the [Datastore-mode source]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) reads a kind: cut into key ranges read in parallel, at one read time.
+`scan.partition.max-partitions` asks for at most that many key ranges, which the planner otherwise estimates from the kind's statistics, and `scan.read-time` fixes the read time, which is otherwise the service's when the read is planned.
+Datastore takes a read time of microsecond precision within the past hour, or on a whole minute within the past seven days with point-in-time recovery; the read fails when it is planned on the JobManager otherwise, so the instant in the example below is one to replace.
+
+{{< sql-snippet file="flink/DatastoreTableReference.sql" tag="scan" >}}
+
+A scan reads whole entities and converts only the columns it produces.
+A column projection is not sent to the service as a Datastore projection query, because such a query returns only the entities that hold an indexed value of every projected property, and one result per value of an array property: a column written through `sink.unindexed-columns` would read as no row at all.
+Filters are not pushed down either.
+
+A scan can read six metadata columns:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `key-name` | `STRING` | The key's name, NULL when the key has a numeric id |
+| `key-id` | `BIGINT` | The key's numeric id, NULL when the key has a name |
+| `version` | `BIGINT NOT NULL` | The entity's version, which grows with every change to the entity |
+| `create-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the entity was created |
+| `update-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the entity was last changed |
+| `read-time` | `TIMESTAMP_LTZ(6) NOT NULL` | The time the entity was read at, the scan's one read time |
+
+Each time is truncated to microseconds, the type's precision.
+A query result carries the version and both times of every entity it returns, and the read fails, naming the entity's key and the metadata, if a result lacks one that a column reads.
+
+A table without a PRIMARY KEY reads the ids the service allocated for its rows through `key-id`:
+
+{{< sql-snippet file="flink/DatastoreTableReference.sql" tag="key-less-read" >}}
+
+The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) describes the read-time window, the split count's estimate, paging and recovery.
 
 ## Sink
 
@@ -124,7 +174,12 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `kind` | **required** | The kind of the table's entities |
 | `namespace` | *unset ⇒ the default namespace* | The namespace of the table's entities |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started in Datastore mode; setting it also stops credential discovery |
-| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by each sink subtask; rejected with `emulator-endpoint` |
+| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each sink subtask; rejected with `emulator-endpoint` |
+| `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
+| `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000` |
+| `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, within the past hour, or a whole minute within seven days with point-in-time recovery |
+| `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the entities one request asks for |
+| `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
 | `sink.unindexed-columns` | empty | Semicolon-separated top-level columns written excluded from indexes, with every value nested in them |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations`: the mutations in one commit |
 | `sink.buffer-flush.max-size` | `9000000 bytes` | Maps to `maxBatchBytes`: the protobuf size of one commit request, at most `10 mb` |
@@ -137,10 +192,12 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `sink.throttling.parallelism` | *unset ⇒ the sink's parallelism* | Maps to `throttlingParallelism`: how many subtasks share the ramp-up's starting 500 operations per second |
 | `sink.parallelism` | *unset ⇒ the input's parallelism* | Flink's standard sink parallelism override |
 
-The [configuration reference]({{< relref "docs/reference/firestore" >}}#datastorewriteroptions) explains each writer option, and a refusal of a `sink.*` value names the option key the `WITH` clause spells.
+The [configuration reference]({{< relref "docs/reference/firestore" >}}#datastorewriteroptions) explains each writer option, and a refusal of a `sink.*` or `scan.*` value names the option key the `WITH` clause spells.
 The pair `sink.recovery.initial-backoff` and `sink.recovery.max-backoff` is checked over the values the writer would use, so setting one compares it with the other's default.
 
 ## Delivery guarantee
+
+A scan restored from a checkpoint resumes each split just after the last entity it passed, at the same read time; a job that restarts before its first checkpoint plans again, at a new read time unless `scan.read-time` is set.
 
 The sink is at-least-once: it commits everything it holds at each checkpoint, and a restart replays the records after the last completed one.
 With a PRIMARY KEY, an `upsert` and a `delete` are idempotent, so a replayed row writes the same entity again.
@@ -151,4 +208,5 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 
 The table mapping and the declined alternatives are recorded in [ADR-0184]({{< param BookRepo >}}/blob/main/docs/adr/0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md).
 The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
+They also read every type back through a SQL scan with its metadata, read the allocated ids of a table without a PRIMARY KEY, fail and read as NULL a mismatched value under each policy, keep every entity under a column projection, and read at a configured read time.
 The uber-jar's tests write through its relocated classes.

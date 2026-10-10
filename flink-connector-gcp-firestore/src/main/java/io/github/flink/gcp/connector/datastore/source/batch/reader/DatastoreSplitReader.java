@@ -25,6 +25,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.Timestamp;
 import com.google.cloud.datastore.Entity;
 import com.google.datastore.v1.EntityResult;
 import com.google.datastore.v1.Query;
@@ -36,6 +37,7 @@ import com.google.protobuf.Int32Value;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.source.batch.FetchedEntity;
 import io.github.flink.gcp.connector.datastore.source.batch.QuerySplit;
+import io.github.flink.gcp.connector.datastore.source.serializer.EntityMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -163,7 +165,16 @@ public class DatastoreSplitReader implements SplitReader<FetchedEntity, QuerySpl
                             split.projected
                                     ? ProjectedValues.toEntity(result.getEntity())
                                     : Entity.fromPb(result.getEntity()),
-                            result.getCursor()));
+                            result.getCursor(),
+                            new EntityMetadata(
+                                    result.getVersion(),
+                                    result.hasCreateTime()
+                                            ? Timestamp.fromProto(result.getCreateTime())
+                                            : null,
+                                    result.hasUpdateTime()
+                                            ? Timestamp.fromProto(result.getUpdateTime())
+                                            : null,
+                                    split.split.getReadTime())));
         }
         boolean finished = split.advance(page);
         if (finished) {

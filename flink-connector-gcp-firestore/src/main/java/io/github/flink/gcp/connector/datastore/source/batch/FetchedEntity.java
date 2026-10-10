@@ -21,10 +21,11 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.datastore.Entity;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.datastore.source.serializer.EntityMetadata;
 
 /**
  * An entity the split reader handed to the task thread, with the cursor the service returned after
- * it.
+ * it and what the query result carried beside it.
  *
  * <p>The cursor travels with the entity because a checkpoint turns it into a resume point: a query
  * started at that cursor continues with the entity after this one. The service sets a cursor on
@@ -35,17 +36,20 @@ public final class FetchedEntity {
 
     private final Entity entity;
     private final ByteString cursor;
+    private final EntityMetadata metadata;
 
     /**
-     * Creates the pair.
+     * Creates the triple.
      *
      * @param entity the entity read
      * @param cursor the cursor after the entity, as the service returned it
+     * @param metadata the entity's version and times, as its query result carried them
      */
-    public FetchedEntity(Entity entity, ByteString cursor) {
+    public FetchedEntity(Entity entity, ByteString cursor, EntityMetadata metadata) {
         this.entity = Preconditions.checkNotNull(entity, "entity must not be null");
         this.cursor = Preconditions.checkNotNull(cursor, "cursor must not be null");
         Preconditions.checkArgument(!cursor.isEmpty(), "cursor must not be empty");
+        this.metadata = Preconditions.checkNotNull(metadata, "metadata must not be null");
     }
 
     /** Returns the entity read. */
@@ -56,5 +60,10 @@ public final class FetchedEntity {
     /** Returns the cursor after the entity. */
     public ByteString getCursor() {
         return cursor;
+    }
+
+    /** Returns the entity's version and times, as its query result carried them. */
+    public EntityMetadata getMetadata() {
+        return metadata;
     }
 }

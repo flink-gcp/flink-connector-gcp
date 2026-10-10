@@ -25,6 +25,9 @@ import io.github.flink.gcp.connector.base.source.SynchronousDeserializationColle
 import io.github.flink.gcp.connector.datastore.source.batch.FetchedEntity;
 import io.github.flink.gcp.connector.datastore.source.batch.QuerySplitState;
 import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityDeserializationSchema;
+import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityMetadataDeserializationSchema;
+
+import javax.annotation.Nullable;
 
 /**
  * Deserializes each entity and records that the split has passed it.
@@ -37,6 +40,12 @@ import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntity
 public class DatastoreRecordEmitter<T> implements RecordEmitter<FetchedEntity, T, QuerySplitState> {
 
     private final DatastoreEntityDeserializationSchema<T> deserializer;
+
+    /**
+     * The deserializer again where it reads the metadata too, resolved once rather than per entity.
+     */
+    @Nullable private final DatastoreEntityMetadataDeserializationSchema<T> metadataDeserializer;
+
     private final DatastoreSourceReaderMetrics metrics;
 
     /**
@@ -50,6 +59,10 @@ public class DatastoreRecordEmitter<T> implements RecordEmitter<FetchedEntity, T
             DatastoreSourceReaderMetrics metrics) {
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
+        this.metadataDeserializer =
+                deserializer instanceof DatastoreEntityMetadataDeserializationSchema
+                        ? (DatastoreEntityMetadataDeserializationSchema<T>) deserializer
+                        : null;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
     }
 
@@ -58,7 +71,15 @@ public class DatastoreRecordEmitter<T> implements RecordEmitter<FetchedEntity, T
             throws Exception {
         long emittedCount =
                 SynchronousDeserializationCollector.<T, Exception>deserialize(
-                        output::collect, out -> deserializer.deserialize(entity.getEntity(), out));
+                        output::collect,
+                        out -> {
+                            if (metadataDeserializer != null) {
+                                metadataDeserializer.deserialize(
+                                        entity.getEntity(), entity.getMetadata(), out);
+                            } else {
+                                deserializer.deserialize(entity.getEntity(), out);
+                            }
+                        });
         if (emittedCount == 0) {
             metrics.recordSkipped();
         }

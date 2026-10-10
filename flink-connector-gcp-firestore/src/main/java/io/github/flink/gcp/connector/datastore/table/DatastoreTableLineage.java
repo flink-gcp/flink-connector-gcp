@@ -17,10 +17,14 @@
 package io.github.flink.gcp.connector.datastore.table;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SourceSplit;
 
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
 import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSink;
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreLineage;
 
@@ -30,7 +34,7 @@ import java.util.Objects;
 
 /**
  * The physical identity of a {@code datastore} table, carried from the factory to the runtime
- * provider it wraps (ADR-0160): the kind the table names, in its namespace and database, reported
+ * providers it wraps (ADR-0160): the kind the table names, in its namespace and database, reported
  * under the table's catalog name.
  */
 @Internal
@@ -61,6 +65,22 @@ public final class DatastoreTableLineage implements Serializable {
             String logicalName, DatabaseDestination database, String namespace, String kind) {
         return new DatastoreTableLineage(
                 logicalName, DatastoreLineage.kind(database, namespace, kind));
+    }
+
+    /**
+     * Wraps a source so that it reports this table's lineage, keeping its runtime operations and
+     * produced type.
+     *
+     * @param source the source
+     * @param type the produced type
+     * @param <T> the produced type
+     * @param <S> the split type
+     * @param <E> the enumerator checkpoint type
+     * @return the wrapped source
+     */
+    public <T, S extends SourceSplit, E> Source<T, S, E> source(
+            Source<T, S, E> source, TypeInformation<T> type) {
+        return TableLineageSource.of(source, type, logicalName, namespace, resources);
     }
 
     /**

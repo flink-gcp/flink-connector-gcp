@@ -28,8 +28,10 @@ import java.util.List;
  * The {@code WITH} options of the {@code datastore} table connector.
  *
  * <p>A mapped option is declared without a default: its default lives on the connector's own
- * builder and is applied by not calling the setter. No description restates a default: the
- * reference and table docs pages carry each default, and a test rejects the restatement.
+ * builder and is applied by not calling the setter. A test records the exception, the table-owned
+ * {@code type-mismatch-policy} the factory reads with {@code get()}. No description restates a
+ * default: the reference and table docs pages carry each default, and a test rejects the
+ * restatement.
  */
 @PublicEvolving
 public final class DatastoreConnectorOptions {
@@ -83,6 +85,40 @@ public final class DatastoreConnectorOptions {
                     .withDescription(
                             "The service-account JSON key-file path available to each runtime"
                                     + " process.");
+
+    /**
+     * What a read does with a stored value whose type does not match its column: 'fail' the read,
+     * or read the field as 'null'.
+     */
+    public static final ConfigOption<TypeMismatchPolicy> TYPE_MISMATCH_POLICY =
+            ConfigOptions.key("type-mismatch-policy")
+                    .enumType(TypeMismatchPolicy.class)
+                    .defaultValue(TypeMismatchPolicy.FAIL)
+                    .withDescription(
+                            "What a read does with a stored value whose type does not match its"
+                                    + " column: 'fail' the read, or read the field as 'null'.");
+
+    /** The desired maximum number of key ranges a scan is split into. */
+    public static final ConfigOption<Integer> SCAN_PARTITION_MAX_PARTITIONS =
+            ConfigOptions.key("scan.partition.max-partitions")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The desired maximum number of key ranges a scan is split into.");
+
+    /** An ISO-8601 instant at which every split of the scan reads. */
+    public static final ConfigOption<String> SCAN_READ_TIME =
+            ConfigOptions.key("scan.read-time")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("An ISO-8601 instant at which every split of the scan reads.");
+
+    /** How many entities one request of the scan asks for. */
+    public static final ConfigOption<Integer> SCAN_MAX_ROWS_PER_FETCH =
+            ConfigOptions.key("scan.max-rows-per-fetch")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("How many entities one request of the scan asks for.");
 
     /**
      * Top-level columns whose values, with every value nested in them, the sink writes excluded
