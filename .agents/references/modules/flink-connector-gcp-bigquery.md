@@ -253,8 +253,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   zstd-jni** (`docs/adr/0150`): the five artifacts the bundle ships and the set the Avro tests run
   on come from it, never from a version in this pom.
 - **Parquet staging is opt-in and its dependencies are `provided`** (`docs/adr/0072`). Avro is the
-  default and stays it: below **256 MiB of load input** Parquet is 3-5x slower — the regime every
-  streaming checkpoint sits in — and compressed Parquet cannot be written without a Hadoop runtime
+  default and stays it: below **256 MiB of load input** Parquet was 3-5x slower for the row shape
+  ADR-0072 measured — the regime every streaming checkpoint sits in — and no faster on either side
+  for #1313's payload-dominated rows, and compressed Parquet cannot be written without a Hadoop runtime
   ("No Hadoop" was measured false; only `UNCOMPRESSED` escapes, at 1.21x Avro's bytes). The `JSON`
   fallback is automatic and a correctness override, not a preference. Parquet's row-group size
   comes from `maxStagingFileBytes` and **must**: at Parquet's own 128 MiB default nothing reaches

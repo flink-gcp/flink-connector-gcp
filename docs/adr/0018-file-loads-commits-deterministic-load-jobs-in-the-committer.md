@@ -203,8 +203,8 @@ limitations under the License.
   Appends, size rolls, capacity evictions and idle closes remain serial, and one open file gains no
   concurrency.
   The bound comes from real-GCS measurements across 1, 10 and 50 objects on both sides of the
-  client's 4 MiB upload chunk; ADR-0146 keeps the measurements, declined full-upload lanes and GKE
-  Autopilot follow-up.
+  client's 4 MiB upload chunk; ADR-0146 keeps the measurements, declined full-upload lanes and
+  in-region confirmation.
 - **Committer schedules are knobs** ([#198]): `loadJobPoll*` and `schemaReconcile*` on
   `FileLoadsOptions`, mapped by `toLoadJobPollSchedule()` / `toSchemaReconcileSchedule()`. Both
   pass the [#54] workload-versus-service test that kept the default-stream schema-wait schedule

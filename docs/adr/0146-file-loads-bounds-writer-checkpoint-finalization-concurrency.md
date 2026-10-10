@@ -18,10 +18,12 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-30; revised by [#1532] (2026-09-26)
-- Issues: [#1164] (measurement), [#38] (GKE Autopilot follow-up), [#1532] (abandoning the batch
-  after a fatal failure)
+- Issues: [#1164] (measurement), [#38] (follow-up, carried out in-region by [#1313]), [#1532]
+  (abandoning the batch after a fatal failure), [#1313] (in-region confirmation through Flink
+  checkpoints)
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
+- Evidence: [in-region tuning findings](evidence/0146-fileloads-in-region-tuning-1313.md)
 
 ## Context
 
@@ -136,11 +138,25 @@ The sink-parallelism arm was deliberately balanced.
 A real Flink topology can route several hot destinations to one subtask, and a single hot
 destination cannot be split between upload lanes without changing record partitioning.
 The local network path can also magnify fixed Cloud Storage round trips.
-Issue [#38] is the place to repeat the matrix on GKE Autopilot with actual Flink routing, subtask
-metrics, the production `FileLoadsWriter` and `StagedFileFinalizer`, and a region-local network
-path.
-That follow-up can revise the default or reopen full-upload lanes if balanced sink parallelism
-fails to reproduce or writer-local finalization is insufficient under common skew.
+
+### In-region confirmation
+
+[#1313] repeated the comparison on 2026-10-10 through real Flink checkpoints, with the production
+sink, destination routing and load jobs, from a VM in the dataset's region.
+The [in-region tuning findings](evidence/0146-fileloads-in-region-tuning-1313.md) carry every cell.
+Concurrency 8 reduced the writer's checkpoint finalization by 70–76% at 10 destinations and 83–87%
+at 50, for 64 KiB and 5 MiB files alike.
+One close took about 114–136 ms in-region, against 0.4–0.5 s for 32 KiB and 1.2–1.3 s for 5 MiB
+through the production finalizer from the local client, and the serial cost still grows with the
+number of files.
+Eight sink subtasks at concurrency 1, with destinations partitioned across them, finalized 50
+destinations in the same time as one subtask at concurrency 8.
+Neither knob changed the commit, whose load jobs ran in the same time for every writer shape.
+
+The confirmation leaves the decision as it was: the default stays 1, the bound stays 8, and no
+full-upload lane is added.
+It does not cover skewed routing, so a deployment with hot destinations still measures its own
+distribution before choosing between the two levers.
 
 ## Consequences
 
@@ -210,4 +226,5 @@ Upload density alone therefore does not reopen the Avro default or the automatic
 
 [#38]: https://github.com/flink-gcp/flink-connector-gcp/issues/38
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
+[#1313]: https://github.com/flink-gcp/flink-connector-gcp/issues/1313
 [#1532]: https://github.com/flink-gcp/flink-connector-gcp/issues/1532
