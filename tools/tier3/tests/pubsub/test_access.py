@@ -19,6 +19,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import urllib3
 from flink_tier3.bundle import delivered_sources, package_sources
 from flink_tier3.common import Failure
 from flink_tier3.pubsub import probe
@@ -79,7 +80,7 @@ def passing(**change):
         {"event": "attempt", "seen": {n: w["held"] for n, w in expected.items()}},
         {"event": "pulled", "name": NAMES["sub-in-0"]},
         {"event": "pulled", "name": NAMES["sub-in-1"]},
-        {"event": "passed"},
+        {"event": "passed", "requests": {"credential": 4, "pubsub": 8}},
     ]
     for event in events:
         event.update(change.get(event["event"], {}))
@@ -89,6 +90,7 @@ def passing(**change):
 def test_a_passing_log_is_read_into_the_workload_s_access():
     summary = evaluate_workload_log(PLAN, log(*passing()))
     assert summary == {
+        "requests": {"credential": 4, "pubsub": 8},
         "attempts": 1,
         "pull_attempts": 2,
         "granted": sorted([NAMES["out"], NAMES["sub-in-0"], NAMES["sub-in-1"]]),
@@ -116,6 +118,27 @@ def test_a_log_that_does_not_show_the_plan_met_is_refused(events):
         evaluate_workload_log(PLAN, log(*events))
 
 
+@pytest.mark.parametrize(
+    "requests",
+    [
+        None,
+        [],
+        {"pubsub": 529},
+        {"pubsub": 500, "credential": 29},
+        {"pubsub": True},
+        {"pubsub": -1},
+        {"storage": 1},
+    ],
+)
+def test_a_probe_that_did_not_account_for_its_requests_is_refused(requests):
+    events = passing(passed={"requests": requests})
+    with pytest.raises(Failure, match="account for its requests"):
+        evaluate_workload_log(PLAN, log(*events))
+    assert evaluate_workload_log(
+        PLAN, log(*passing(passed={"requests": {"pubsub": 500, "credential": 28}}))
+    )["requests"] == {"credential": 28, "pubsub": 500}
+
+
 def test_an_unparsable_log_is_refused():
     with pytest.raises(Failure, match="malformed"):
         evaluate_workload_log(PLAN, "{not json")
@@ -132,6 +155,9 @@ def test_the_probe_spec_carries_the_plan_and_the_deadline():
     assert spec["expected"] == expectations(PLAN, "workload")
     assert spec["pulls"] == pulls(PLAN, "workload")
     assert spec["deadline"] == 1234.0 and spec["interval"] == 15
+    # 61 rounds of six permission tests and two pulls, and 40 for the
+    # metadata server.
+    assert spec["requests"] == 528
 
 
 def test_the_probe_program_is_self_contained():
@@ -155,10 +181,91 @@ def test_the_supervisor_s_source_pin_covers_the_pub_sub_actors():
         "pubsub/guard.py",
         "pubsub/quiesce.py",
         "pubsub/access.py",
+        "pubsub/meter.py",
         "actor_auth.py",
         "quiesce.py",
     ):
         assert name in delivered, name
+
+
+@pytest.fixture(autouse=True)
+def pool(monkeypatch):
+    """The probe's entrypoint replaces urllib3's pool for its whole process."""
+    monkeypatch.setattr(
+        urllib3.connectionpool.HTTPConnectionPool,
+        "urlopen",
+        urllib3.connectionpool.HTTPConnectionPool.urlopen,
+    )
+
+
+def test_the_probe_counts_its_own_requests_and_refuses_the_rest(monkeypatch):
+    sent = []
+
+    def urlopen(pool, method, url, *args, **kwargs):
+        sent.append(pool.host)
+        return "response"
+
+    monkeypatch.setattr(urllib3.connectionpool.HTTPConnectionPool, "urlopen", urlopen)
+    counts = {}
+    probe.meter(3, counts)
+    pubsub = urllib3.HTTPSConnectionPool("pubsub.googleapis.com")
+    assert pubsub.urlopen("POST", "/v1/x:pull") == "response"
+    urllib3.HTTPConnectionPool("metadata.google.internal").urlopen("GET", "/x")
+    with pytest.raises(probe.Unmetered, match="destination"):
+        urllib3.HTTPSConnectionPool("oauth2.googleapis.com").urlopen("POST", "/")
+    pubsub.urlopen("POST", "/v1/x:pull")
+    with pytest.raises(probe.Unmetered, match="requests"):
+        pubsub.urlopen("POST", "/v1/x:pull")
+    assert counts == {"pubsub": 2, "credential": 1} and len(sent) == 3
+
+
+def test_a_probe_past_its_allowance_reports_what_it_sent_and_fails(monkeypatch, capsys):
+    # The program's own process settings stay out of the test process.
+    monkeypatch.setattr(probe.logging, "disable", lambda _level: None)
+    monkeypatch.setattr(probe.warnings, "simplefilter", lambda _action: None)
+    monkeypatch.setattr(probe, "meter", lambda allowance, counts: None)
+
+    def probing(spec, counts):
+        counts["pubsub"] = spec["requests"]
+        raise probe.Unmetered("requests")
+
+    monkeypatch.setattr(probe, "probe", probing)
+    assert probe.main([json.dumps({"requests": 3})]) == 9
+    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == {
+        "event": "refused",
+        "reason": "requests",
+        "cause": "requests",
+        "requests": {"pubsub": 3},
+    }
+
+
+def test_a_request_refused_inside_the_probe_ends_it_as_unmetered(monkeypatch, capsys):
+    class Credentials:
+        service_account_email = MEMBERS["workload"].split(":", 1)[1]
+
+        def refresh(self, request):
+            pass
+
+    monkeypatch.setattr(probe.logging, "disable", lambda _level: None)
+    monkeypatch.setattr(probe.warnings, "simplefilter", lambda _action: None)
+    monkeypatch.setattr(probe, "meter", lambda allowance, counts: None)
+    monkeypatch.setattr(
+        probe.google.auth, "default", lambda scopes: (Credentials(), "p")
+    )
+    monkeypatch.setattr(probe, "Request", lambda: None)
+
+    def run(spec, session, email, authorize, counts):
+        counts["pubsub"] = 3
+        raise probe.Unmetered("requests")
+
+    monkeypatch.setattr(probe, "run", run)
+    assert probe.main([json.dumps({"requests": 3})]) == 9
+    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == {
+        "event": "refused",
+        "reason": "requests",
+        "cause": "requests",
+        "requests": {"pubsub": 3},
+    }
 
 
 class Session:

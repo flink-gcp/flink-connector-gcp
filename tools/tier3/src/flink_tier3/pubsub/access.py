@@ -32,6 +32,12 @@ MEMBERS = {
 }
 # Seconds between read-only attempts while grants take effect.
 INTERVAL = 15
+# The workload probe's request allowance: a permission test of each of the
+# run's six resources per round and a pull of each of its two subscriptions,
+# one round or pull retry per interval of the admission window, plus the
+# metadata server's ping, project and token requests with their retries.
+ROUNDS = PUBSUB_ADMISSION["startup_seconds"] // INTERVAL + 1
+PROBE_REQUESTS = ROUNDS * (6 + 2) + 40
 
 
 def admission_until(schedule):
@@ -154,6 +160,7 @@ def probe_spec(plan, schedule):
         "pulls": pulls(plan, "workload"),
         "deadline": admission_until(schedule),
         "interval": INTERVAL,
+        "requests": PROBE_REQUESTS,
     }
 
 
@@ -161,9 +168,9 @@ def evaluate_workload_log(plan, text):
     """Re-derive the workload's access from the probe Pod's own observations.
 
     The Pod's exit status is not taken on trust: the log must name the
-    workload identity, end with a pass, and show a last attempt that meets
-    every expectation, and an empty pull of every subscription the workload
-    reads.
+    workload identity, end with a pass that counts the requests the probe
+    sent within its allowance, and show a last attempt that meets every
+    expectation, and an empty pull of every subscription the workload reads.
     """
     try:
         events = [json.loads(line) for line in text.splitlines() if line.strip()]
@@ -190,7 +197,16 @@ def evaluate_workload_log(plan, text):
     pulled = [e.get("name") for e in events if e.get("event") == "pulled"]
     if missing or extra or pulled != pulls(plan, "workload"):
         raise Failure("Pub/Sub workload probe observations do not meet the plan")
+    requests = events[-1].get("requests")
+    if (
+        not isinstance(requests, dict)
+        or not set(requests) <= {"pubsub", "credential"}
+        or any(type(n) is not int or n < 0 for n in requests.values())
+        or sum(requests.values()) > PROBE_REQUESTS
+    ):
+        raise Failure("Pub/Sub workload probe did not account for its requests")
     return {
+        "requests": dict(sorted(requests.items())),
         "attempts": len(attempts),
         "pull_attempts": sum(
             e.get("event") in ("pulled", "pull-refused") for e in events

@@ -30,11 +30,17 @@ import warnings
 
 import google.auth
 import requests
+import urllib3.connectionpool
 from google.auth.transport.requests import Request
 
 BASE = "https://pubsub.googleapis.com/v1/"
 TIMEOUT = 20
 MAX_RESPONSE = 1024 * 1024
+DESTINATIONS = {
+    "pubsub.googleapis.com": "pubsub",
+    "metadata.google.internal": "credential",
+    "169.254.169.254": "credential",
+}
 
 
 def emit(event, **values):
@@ -62,7 +68,33 @@ class Late(Exception):
     """A request could no longer finish before the run's admission deadline."""
 
 
-def run(spec, session, email, authorize, clock=time.time, sleep=time.sleep):
+class Unmetered(Exception):
+    """A request past the probe's allowance, or to another destination."""
+
+
+def meter(allowance, counts):
+    """Count every request this process sends, refusing it before it leaves.
+
+    Every client here sends through urllib3's connection pool, including
+    google-auth's metadata requests and their retries.
+    """
+    original = urllib3.connectionpool.HTTPConnectionPool.urlopen
+
+    def urlopen(pool, method, url, *args, **kwargs):
+        category = DESTINATIONS.get(pool.host)
+        if category is None:
+            raise Unmetered("destination")
+        if sum(counts.values()) >= allowance:
+            raise Unmetered("requests")
+        counts[category] = counts.get(category, 0) + 1
+        return original(pool, method, url, *args, **kwargs)
+
+    urllib3.connectionpool.HTTPConnectionPool.urlopen = urlopen
+
+
+def run(
+    spec, session, email, authorize, clock=time.time, sleep=time.sleep, counts=None
+):
     def send(path, body):
         headers = {}
         # A token refresh happens here, before the check, and nothing replays
@@ -73,14 +105,15 @@ def run(spec, session, email, authorize, clock=time.time, sleep=time.sleep):
             raise Late
         return post(session, path, body, headers)
 
+    counts = {} if counts is None else counts
     try:
-        return _run(spec, send, email, clock, sleep)
+        return _run(spec, send, email, clock, sleep, counts)
     except Late:
         emit("refused", reason="deadline")
         return 8
 
 
-def _run(spec, send, email, clock, sleep):
+def _run(spec, send, email, clock, sleep, counts):
     emit("identity", email=email)
     if email != spec["member"]:
         emit("refused", reason="identity")
@@ -130,7 +163,7 @@ def _run(spec, send, email, clock, sleep):
                 return 6
             emit("pulled", name=subscription)
             break
-    emit("passed", attempts=attempts)
+    emit("passed", attempts=attempts, requests=dict(counts))
     return 0
 
 
@@ -140,6 +173,16 @@ def main(argv):
     logging.disable(logging.CRITICAL)
     warnings.simplefilter("ignore")
     spec = json.loads(argv[0])
+    counts = {}
+    meter(spec["requests"], counts)
+    try:
+        return probe(spec, counts)
+    except Unmetered as error:
+        emit("refused", reason="requests", cause=str(error), requests=counts)
+        return 9
+
+
+def probe(spec, counts):
     credentials, _ = google.auth.default(
         scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
@@ -158,7 +201,9 @@ def main(argv):
     session.get_redirect_target = lambda _response: None
     email = "serviceAccount:" + getattr(credentials, "service_account_email", "")
     try:
-        return run(spec, session, email, authorize)
+        return run(spec, session, email, authorize, counts=counts)
+    except Unmetered:
+        raise
     except Exception as error:  # noqa: BLE001 - every failure is reported
         emit("refused", reason="error", error=type(error).__name__)
         return 7

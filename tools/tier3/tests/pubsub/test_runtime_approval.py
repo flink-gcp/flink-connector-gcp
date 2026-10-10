@@ -76,7 +76,11 @@ def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
     environment, _ = prepared
     value = environment.approval.to_dict()
     value["pubsub_trial"].update(
-        trial=kind, records_per_subscription=records, entry_point=entry_point
+        trial=kind,
+        records_per_subscription=records,
+        entry_point=entry_point,
+        # Ten thousand records need more than the rig's floor at a thousand.
+        total_request_limit=300000,
     )
     approval = Approval.from_dict(value, environment.clock())
     assert Approval.from_dict(approval.to_dict()) == approval

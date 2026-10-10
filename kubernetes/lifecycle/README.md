@@ -86,6 +86,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
 | `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier |
 | `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program; dispatch still refuses before the lock |
+| `flink_tier3/pubsub/meter.py` | Every request a Pub/Sub actor process sends, attributed by destination and charged to the run's durable request ceiling |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 The existing smoke and Cloud Tasks approval phrases and ceiling values remain unchanged.

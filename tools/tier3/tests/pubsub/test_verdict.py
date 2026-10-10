@@ -23,6 +23,7 @@ from flink_tier3.pubsub.verdict import (
     OBSERVED,
     SAMPLED_WINDOWS,
     WINDOWS,
+    request_reasons,
     summarize,
     verdict,
 )
@@ -297,3 +298,40 @@ def test_windows_name_every_stage_before_the_fault_and_after_recovery():
     # Reasons are reported in this order.
     assert SAMPLED_WINDOWS == ("before", "after")
     assert MEASUREMENT_EVENT == "pubsub-measurement"
+
+
+METER = {
+    "version": 1,
+    "limit": 100000,
+    "block": 512,
+    "reserved": 515,
+    "over": 0,
+    "exhausted": False,
+    "incomplete": False,
+    "actors": {"runner:1": {"reserved": 515, "used": {}}},
+}
+
+
+@pytest.mark.parametrize(
+    "change, reasons",
+    [
+        ({}, []),
+        ({"exhausted": True}, ["request-budget-exhausted"]),
+        ({"incomplete": True}, ["request-meter-incomplete"]),
+        # Durable JSON nothing types on the way in: only `false` is false.
+        ({"exhausted": 0}, ["request-meter-malformed"]),
+        ({"limit": 99999}, ["request-meter-malformed"]),
+        ({"reserved": 0}, ["request-meter-malformed"]),
+        ({"actors": {}}, ["request-meter-malformed"]),
+        ({"version": None}, ["request-meter-malformed"]),
+    ],
+)
+def test_the_request_meter_withholds_success_unless_it_counted_inside_the_ceiling(
+    change, reasons
+):
+    assert request_reasons({**METER, **change}, 100000) == reasons
+
+
+@pytest.mark.parametrize("requests", [None, [], "meter"])
+def test_a_missing_request_meter_withholds_success(requests):
+    assert request_reasons(requests, 100000) == ["request-meter-missing"]

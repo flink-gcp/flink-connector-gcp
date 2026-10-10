@@ -221,6 +221,38 @@ def test_each_trial_s_exported_evidence_recomputes_to_its_verdict(exported):
     assert "pubsub runs: usable 1" in analyze.summary_line(report, run_dir)
 
 
+@pytest.mark.parametrize(
+    "change, reason",
+    [
+        (lambda r: r["requests"].update(exhausted=True), "request-budget-exhausted"),
+        (lambda r: r["requests"].update(incomplete=True), "request-meter-incomplete"),
+        (lambda r: r.pop("requests"), "request-meter-missing"),
+        (lambda r: r.update(requests={"exhausted": False}), "request-meter-malformed"),
+        (
+            lambda r: r["requests"].update(reserved=r["requests"]["reserved"] - 1),
+            "request-meter-malformed",
+        ),
+    ],
+)
+def test_a_run_past_its_request_ceiling_recomputes_inconclusive(
+    exported, change, reason
+):
+    run_dir, _ = exported
+
+    def withheld(result):
+        change(result)
+        result["success"] = False
+
+    edit_result(run_dir, withheld)
+    assessed = assess(run_dir)
+    assert (assessed["status"], assessed["problems"]) == (INCONCLUSIVE, [])
+    assert assessed["reasons"] == [reason]
+    # A receipt that claims success beside it overstates the run.
+    edit_result(run_dir, lambda result: result.update(success=True))
+    assert assess(run_dir)["problems"] == ["receipt-success-mismatch"]
+    assert assess(run_dir)["status"] == TAMPERED
+
+
 @pytest.mark.parametrize("trial", ["jm-replacement", "tm-replacement"], indirect=True)
 def test_a_lost_boundary_recomputes_inconclusive(admitting, monkeypatch, tmp_path):
     world = World(admitting, monkeypatch, interval=15)

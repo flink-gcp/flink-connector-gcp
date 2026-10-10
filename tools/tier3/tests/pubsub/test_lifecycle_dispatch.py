@@ -84,10 +84,10 @@ def args(tmp_path, **overrides):
 
 def test_the_phrase_names_the_policy_and_the_trial_ceilings(trial):
     assert cli.pubsub_phrase(trial) == PHRASE
-    trial.update(records_per_subscription=10, total_request_limit=30000)
+    trial.update(records_per_subscription=10, total_request_limit=200000)
     assert cli.pubsub_phrase(trial) == (
         "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, "
-        "10 RECORDS PER SUBSCRIPTION, 30000 REQUESTS"
+        "10 RECORDS PER SUBSCRIPTION, 200000 REQUESTS"
     )
 
 

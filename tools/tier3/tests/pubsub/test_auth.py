@@ -22,6 +22,7 @@ import requests
 from flink_tier3.actor_auth import PRINCIPALS, USERINFO
 from flink_tier3.common import ApiError, Failure, TransportError
 from flink_tier3.pubsub import auth
+from flink_tier3.pubsub.meter import RequestRefused
 from flink_tier3.pubsub.resources import BASE, ResourcePlan, Resources
 from google.oauth2.credentials import Credentials
 
@@ -42,6 +43,18 @@ def test_the_session_verifies_the_actor_before_its_first_request(wire):
     assert [call[1] for call in wire.calls] == [USERINFO, TOPIC]
     assert wire.calls[1][2]["headers"]["authorization"] == "Bearer token"
     assert http.principal == PRINCIPALS["supervisor"]
+
+
+def test_a_write_the_request_meter_refused_leaves_the_session_settled(wire):
+    # The meter refuses inside the transport, before anything leaves.
+    wire.responses = [identity(), RequestRefused("ceiling")]
+    with session() as http, pytest.raises(RequestRefused):
+        http.request("POST", TOPIC + ":publish", timeout=5, json={})
+    assert http.settled()
+    wire.responses = [identity(), requests.ConnectionError("lost")]
+    with session() as http, pytest.raises(TransportError):
+        http.request("POST", TOPIC + ":publish", timeout=5, json={})
+    assert not http.settled()
 
 
 @pytest.mark.parametrize(

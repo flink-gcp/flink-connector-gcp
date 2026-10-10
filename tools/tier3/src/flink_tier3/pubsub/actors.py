@@ -27,6 +27,7 @@ from .auth import PubSubSession
 from .guard import PubSubGuard
 from .handoff import PubSubHandoff
 from .lifecycle import PubSubLifecycle
+from .meter import require_metered
 from .plan import require_trial_jobs
 from .quiesce import barrier
 from .traffic import PubSubTraffic
@@ -42,6 +43,7 @@ def _handoff(env, application, token, http, role):
         raise Failure("Pub/Sub actor environment has the wrong role or approval")
     validate_approval(approval.to_dict(), env.clock())
     require_installed_source(env, role, "Pub/Sub")
+    require_metered(env)
     env.assert_owner()
     controller = PubSubLifecycle(env, http, application, PubSubGuard(env))
     return PubSubHandoff(

@@ -13,6 +13,8 @@
 # limitations under the License.
 """External admission, settlement and finalization for the Tier-3 lifecycle."""
 
+from dataclasses import replace
+
 import flink_tier3 as rt
 
 from .bigquery.exercise import require_handoff
@@ -23,6 +25,7 @@ from .pubsub.admission import admit, require_admission
 from .pubsub.guard import admission_deadline
 from .pubsub.handoff import CohortUnstarted
 from .pubsub.lifecycle import require_pubsub_clean
+from .pubsub.verdict import request_reasons
 from .records import write_artifact
 
 # Scenarios whose finalization retry compares the whole receipt, and whose
@@ -582,6 +585,14 @@ class Runner:
                         # run this while the environment lock is retained.
                         and isinstance(control.recovery, dict)
                         and control.recovery.get("verdict") == rt.USABLE
+                        # A Pub/Sub run also stayed inside its request ceiling.
+                        and not (
+                            self.env.approval.scenario == "pubsub-recovery"
+                            and request_reasons(
+                                control.requests,
+                                self.env.approval.pubsub_trial["total_request_limit"],
+                            )
+                        )
                     )
                 )
             ),
@@ -595,6 +606,7 @@ class Runner:
                 scenario=self.env.approval.scenario,
                 pubsub_trial=self.env.approval.pubsub_trial,
                 recovery=control.recovery,
+                requests=control.requests,
             )
         if self.env.approval.scenario == "bigquery-recovery":
             result.update(
@@ -636,6 +648,15 @@ class Runner:
         return result
 
     def finalize(self, plans):
+        meter = self.env.records.meter
+        if meter is None:
+            return self._finalize(plans)
+        # Reserved first, so finalization writes no meter state between the
+        # record it reads and the one it deletes.
+        with meter.freeze():
+            return self._finalize(plans)
+
+    def _finalize(self, plans):
         rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
         control = self.env.refresh()
         require_pubsub_clean(control)
@@ -660,7 +681,13 @@ class Runner:
                 and self.env.approval.version == 5
             )
         ):
-            # Refreshed empty plans have a new observation time on each retry.
+            # Refreshed empty plans have a new observation time on each retry,
+            # and a retrying process adds its own requests to the meter, so
+            # the retry derives the receipt from the meter the first wrote.
+            if "requests" in previous:
+                result = self.receipt(
+                    replace(control, requests=previous["requests"]), plans
+                )
             prior, expected = dict(previous), dict(result)
             for receipt in (prior, expected):
                 if isinstance(receipt.get("plans"), dict):
@@ -754,6 +781,7 @@ class Runner:
                 recovery=stored.get("recovery"),
                 bigquery=stored.get("bigquery"),
                 pubsub=stored.get("pubsub"),
+                requests=stored.get("requests"),
             )
             try:
                 require_pubsub_clean(record)

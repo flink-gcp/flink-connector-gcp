@@ -17,9 +17,10 @@
 import json
 
 from ..common import Failure, digest
-from .access import evaluate_workload_log
+from .access import PROBE_REQUESTS, evaluate_workload_log
 from .guard import PubSubGuard, admission_deadline
 from .messages import COHORTS
+from .meter import require_metered
 from .plan import require_probe, require_trial_jobs
 
 # The probe prints one short line per attempt; a longer log is refused after
@@ -43,6 +44,7 @@ def require_admission(runner, config, application, probe):
         or handoff.settled is None
     ):
         raise Failure("Pub/Sub admission requires its authenticated, guarded handoff")
+    require_metered(runner.env)
     recovery = config.get("data", {}).get("upgrade-application.json")
     try:
         recovery = json.loads(recovery)
@@ -60,8 +62,14 @@ def require_admission(runner, config, application, probe):
 
 
 def run_probe(runner, probe, deadline):
-    """Create the workload's probe Pod, read what it saw, then remove it."""
+    """Create the workload's probe Pod, read what it saw, then remove it.
+
+    The probe's whole request allowance is reserved before its Pod exists,
+    because its own requests are counted inside it, beyond this meter.
+    """
     env = runner.env
+    meter = require_metered(env)
+    meter.charge_external("probe", PROBE_REQUESTS)
     runner.create_root("probe", probe)
 
     def ended():
@@ -94,7 +102,9 @@ def run_probe(runner, probe, deadline):
     )
     if pod.get("status", {}).get("phase") != "Succeeded":
         raise Failure("Access probe Pod did not succeed")
-    runner.pubsub.record_workload(evaluate_workload_log(env.approval.pubsub_plan, text))
+    workload = evaluate_workload_log(env.approval.pubsub_plan, text)
+    meter.report_external("probe", workload["requests"])
+    runner.pubsub.record_workload(workload)
     env.kube.delete(pod)
 
     def gone():

@@ -25,8 +25,9 @@ from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, veri
 from ..model import Schedule, _hourly
 from ..policy import GAR, POD_RESOURCES, POLL, PUBSUB_CEILINGS, SHA
 from ..workflow import render
-from .access import probe_spec
+from .access import PROBE_REQUESTS, probe_spec
 from .messages import MAX_BATCH, cohort_ranges
+from .meter import BLOCK, TAIL
 from .resources import ResourcePlan
 from .traffic import COUNTER_CEILINGS, TrafficLimits
 
@@ -37,6 +38,27 @@ ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 # The supervisor's exercise pulls the output subscription at least once per
 # poll, empty or not, from admission until cleanup: at most this many polls.
 EXERCISE_PULLS = (WINDOW_SECONDS - PUBSUB_CEILINGS["cleanup_seconds"]) // POLL
+# The rig's own requests besides the access probe's, as the synthetic run
+# counts them, each fake operation mapped to the requests its transport
+# sends, rounded up: admission; each poll of the
+# supervisor without its pull, and of the runner's settlement; each
+# publication and each pull with its evidence and control updates; and the
+# supervisor's cleanup with the runner's settlement after it.
+ADMISSION_REQUESTS = 1500
+SUPERVISOR_POLL_REQUESTS = 160
+RUNNER_POLL_REQUESTS = 100
+PUBLISH_REQUESTS = 50
+COLLECT_REQUESTS = 75
+SETTLEMENT_REQUESTS = 1300
+# Not measured there: each actor's token refreshes and identity checks, an
+# allowance; and each grant's own three requests.
+CREDENTIAL_REQUESTS = 100
+GRANT_REQUESTS = 3
+# Both actors poll for at most the supervisor Job's deadline. Three actors,
+# the runner, the supervisor and one replacement, may each leave a block
+# unspent.
+POLLS = ACTIVE_SECONDS // POLL
+SPENT_BLOCKS = 3
 # The estimate's rates, read from the official pricing pages on this date;
 # the basis of the number the owner approves, not an admission deadline.
 REVIEWED_AT = "2026-10-10T00:00:00Z"
@@ -74,7 +96,7 @@ def validate_trial(value):
     for key, low, high in (
         ("version", 3, 3),
         ("records_per_subscription", 3, 10000),
-        ("total_request_limit", 1, 100000),
+        ("total_request_limit", 1, 300000),
     ):
         if type(value[key]) is not int or not low <= value[key] <= high:
             raise Failure("Invalid Pub/Sub trial field: " + key)
@@ -210,6 +232,22 @@ def require_probe(probe, plan, schedule, image):
     verify_pod(probe, "supervisor", image, POD_RESOURCES["supervisor"], spot=False)
 
 
+def request_floor(publish_calls, pulls):
+    """Requests the rig itself sends for one pass, before the workload's own."""
+    sent = (
+        ADMISSION_REQUESTS
+        + PROBE_REQUESTS
+        + POLLS * (SUPERVISOR_POLL_REQUESTS + RUNNER_POLL_REQUESTS)
+        + publish_calls * PUBLISH_REQUESTS
+        + pulls * COLLECT_REQUESTS
+        + SETTLEMENT_REQUESTS
+        + CREDENTIAL_REQUESTS
+        + TAIL
+        + SPENT_BLOCKS * BLOCK
+    )
+    return sent + -(-sent // BLOCK) * GRANT_REQUESTS
+
+
 def input_plan(run_id, trial):
     """Validate one feasible pass and derive its exact logical input domain."""
     validate_trial(trial)
@@ -240,6 +278,12 @@ def input_plan(run_id, trial):
         raise Failure(
             "Traffic proposal cannot cover even one complete input/output pass"
         )
+    floor = request_floor(publish_calls, pulls)
+    if trial["total_request_limit"] < floor:
+        raise Failure(
+            f"Total request ceiling is below the {floor} requests the rig itself "
+            "sends for one pass"
+        )
     return {
         "subscriptions": 2,
         "records_per_subscription": records,
@@ -248,6 +292,7 @@ def input_plan(run_id, trial):
         "publish_calls": publish_calls,
         "messages": 2 * records,
         "payload_bytes": input_bytes,
+        "request_floor": floor,
     }
 
 

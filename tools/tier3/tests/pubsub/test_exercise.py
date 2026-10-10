@@ -15,20 +15,23 @@
 """The supervised Pub/Sub recovery exercise over a simulated relay."""
 
 import base64
+import copy
 import itertools
 import json
 import uuid
 
 import pytest
-from flink_tier3.common import INCONCLUSIVE
+from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.policy import PUBSUB, PUBSUB_STATE
 from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
 from flink_tier3.pubsub.observe import SINK_METRICS, SOURCE_METRICS
 from flink_tier3.pubsub.plan import COUNTER_CEILINGS
 from flink_tier3.pubsub.verdict import MEASUREMENT_EVENT
+from flink_tier3.runner import Runner
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, rt
+from .test_actors import leave
 from .test_actors import prepared as prepared  # noqa: PLC0414
 from .test_admission import admitting as admitting  # noqa: PLC0414
 from .test_admission import supervisor_uid
@@ -834,6 +837,22 @@ def test_the_receipt_succeeds_only_with_the_usable_verdict(admitting, monkeypatc
     assert receipt(world, control)["success"] is False
 
 
+@one("jm-replacement")
+def test_a_usable_run_past_its_request_ceiling_does_not_succeed(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    control = world.run()
+    assert control.recovery["verdict"] == USABLE
+    result = receipt(world, control)
+    assert result["success"] is True and result["requests"] == control.requests
+    assert control.requests["exhausted"] is False
+    for key, value in (("exhausted", True), ("incomplete", True)):
+        changed = copy.deepcopy(control)
+        changed.requests[key] = value
+        assert receipt(world, changed)["success"] is False
+    control.requests = None
+    assert receipt(world, control)["success"] is False
+
+
 @pytest.mark.parametrize("trial", ["jm-replacement", "tm-replacement"], indirect=True)
 def test_a_lost_boundary_completes_inconclusive(admitting, monkeypatch):
     """The trial exercised no redelivery, so it cannot carry the claim."""
@@ -1400,3 +1419,109 @@ def test_a_stage_that_expired_during_its_own_reads_does_not_advance(
     control = world.run()
     assert late and "deadline expired: boundary" in control.reason
     assert not [e for e in world.relay.events if e[0] == "delete"]
+
+
+def settled(world):
+    """The run after its supervisor ended and the runner settled it."""
+    world.run()
+    a = world.a
+    job = a.environment.root("supervisor")
+    job.setdefault("status", {})["succeeded"] = 1
+    a.environment.kube.put(job)
+    a.runner.settle()
+    return a
+
+
+PLANS = {"roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"], "empty": True}
+
+
+@one("jm-replacement")
+def test_finalization_reserves_its_tail_and_then_writes_no_meter_state(
+    admitting, monkeypatch
+):
+    a = settled(World(admitting, monkeypatch))
+    meter, verify = a.environment.records.meter, rt.verify_idle
+    # Above the low-water top-up, below the tail finalization reserves.
+    meter.sent = meter.granted - 200
+    before = a.environment.refresh().requests["reserved"]
+
+    def verified(env):
+        # Idle verification lists every namespace, and here spends the whole
+        # tail; nothing may write the record finalization is about to delete.
+        for _ in range(meter.headroom + 10):
+            meter.charge("storage.googleapis.com", "GET", "/storage/v1/b")
+        return verify(env)
+
+    monkeypatch.setattr(rt, "verify_idle", verified)
+    plans = {"nonce": a.environment.approval.nonce, **PLANS}
+    assert a.runner.finalize(plans) is True
+    stored, _ = a.environment.store.read(
+        f"runs/{a.environment.approval.run_id}/result.json"
+    )
+    # The tail was reserved before the record was read for the receipt.
+    assert stored["requests"]["reserved"] > before
+    assert stored["requests"]["incomplete"] is False and stored["success"] is True
+    assert a.environment.store.read(a.environment.records.path)[0] is None
+    assert not meter.frozen
+
+
+@one("jm-replacement")
+def test_a_retried_finalization_keeps_the_meter_its_receipt_recorded(
+    admitting, monkeypatch
+):
+    a = settled(World(admitting, monkeypatch))
+    plans = {"nonce": a.environment.approval.nonce, **PLANS}
+    assert a.runner.finalize(plans) is True
+    stored, _ = a.environment.store.read(
+        f"runs/{a.environment.approval.run_id}/result.json"
+    )
+    # Recovery restores the record from the receipt, meter included.
+    a.environment.store.write(rt.ENVIRONMENT, a.environment.approval.lock_owner)
+    Runner(a.environment).restore_control()
+    restored, _ = a.environment.store.read(a.environment.records.path)
+    assert restored["requests"] == stored["requests"]
+
+    # The retrying process's own requests reached the ceiling.
+    a.environment.records.unfenced(leave(0, exhausted=True))
+    assert Runner(a.environment).finalize(plans) is True
+    assert a.environment.store.read(a.environment.records.path)[0] is None
+
+
+@one("jm-replacement")
+def test_a_stopped_meter_stops_the_supervisor_s_work_too(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    observer, meter = world.a.observer, world.a.observer.records.meter
+    observer.require_running("running")
+    for flag in ("exhausted", "closed"):
+        setattr(meter, flag, True)
+        with pytest.raises(rt.Failure, match="stopped"):
+            observer.require_running("stopped")
+        with pytest.raises(rt.Failure, match="admission has been stopped"):
+            observer.admission_open()
+        setattr(meter, flag, False)
+
+
+@one("jm-replacement")
+def test_reaching_the_ceiling_mid_trial_stops_it_and_still_cleans(
+    admitting, monkeypatch
+):
+    world = World(admitting, monkeypatch)
+    a, polls = world.a, []
+    meter = a.environment.records.meter
+
+    def exhaust():
+        polls.append(None)
+        if len(polls) == 3:
+            # Ten requests of room left: the next grant stops the run.
+            a.environment.records.unfenced(leave(10))
+            meter.sent = meter.granted
+            meter.charge("storage.googleapis.com", "GET", "/storage/v1/b")
+
+    world.relay.hooks.append(exhaust)
+    control = world.run()
+    assert control.requests["exhausted"] is True and control.stop_requested
+    assert control.recovery["stage"] != "complete"
+    assert control.pubsub["stage"] == "cleaned"
+    result = receipt(world, control)
+    assert result["success"] is False
+    assert result["requests"]["exhausted"] is True

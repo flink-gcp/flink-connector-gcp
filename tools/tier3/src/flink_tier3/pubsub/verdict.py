@@ -18,9 +18,11 @@ import math
 
 from ..common import INCONCLUSIVE, USABLE
 from ..metrics import coverage_reasons, fold_coverage, metric_name
+from .meter import malformed
 from .observe import FAMILIES
 
 COMPLETE_STAGE = "complete"
+REQUEST_BUDGET = "request-budget-exhausted"
 # The evidence events the exercise writes and the offline analysis reads.
 COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "pubsub-measurement"
@@ -146,6 +148,25 @@ def oracle_reasons(oracle):
     missing = oracle.get("missing_inputs")
     if type(missing) is not int or missing != 0:
         return ["oracle-incomplete"]
+    return []
+
+
+def request_reasons(requests, limit):
+    """Why the run's request meter withholds success from its receipt.
+
+    A run whose meter reached the ceiling stopped admitting work on it, so its
+    evidence ends where the meter stopped it; a meter that is missing, not
+    one the meter could have written for the approved `limit`, or begun by
+    an actor other than the dispatching runner, did not count the whole run.
+    """
+    if not isinstance(requests, dict):
+        return ["request-meter-missing"]
+    if malformed(requests, limit):
+        return ["request-meter-malformed"]
+    if requests.get("incomplete") is not False:
+        return ["request-meter-incomplete"]
+    if requests.get("exhausted") is not False:
+        return [REQUEST_BUDGET]
     return []
 
 

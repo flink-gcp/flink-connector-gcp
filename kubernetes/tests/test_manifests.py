@@ -2465,7 +2465,8 @@ def test_pubsub_proposal_from_real_cue(
             "entry_point": entry_point,
             "records_per_subscription": records,
             "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
-            "total_request_limit": 100000,
+            # Above the rig's own floor at every record count.
+            "total_request_limit": 300000,
         },
     }
     bundle = pubsub_plan.prepare(**inputs)
@@ -2473,7 +2474,7 @@ def test_pubsub_proposal_from_real_cue(
     initial, recovery = bundle["application"], bundle["recovery_application"]
     assert proposal["approved"] is False
     assert proposal["cost"]["kind"] == "planning-estimate"
-    assert proposal["cost"]["usd"] == "2.44"
+    assert proposal["cost"]["usd"] == "4.18"
     assert proposal["application_sha256"] == digest(initial)
     assert proposal["recovery_application_sha256"] == digest(recovery)
     assert proposal["supervisor_sha256"] == digest(bundle["delivery"]["supervisor"])

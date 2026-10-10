@@ -91,8 +91,13 @@ class Records:
         # The Pod UID this process claimed the run as. The runner and recovery
         # never claim, so their writes are not fenced.
         self.claimed_as = None
+        # A Pub/Sub actor's request meter, which tops up its grant before
+        # each read, and so before each update's.
+        self.meter = None
 
     def read(self):
+        if self.meter is not None:
+            self.meter.top_up()
         value, generation = self.store.read(self.path)
         if value is None or value.get("nonce") != self.approval.nonce:
             raise Failure("Missing or replaced run control record")
@@ -109,6 +114,14 @@ class Records:
         )
         self.cache = record
         return record
+
+    def unfenced(self, edit):
+        """An update no supervisor claim fences, for the request meter.
+
+        A process's requests are charged to the run whichever Pod holds it,
+        so a displaced supervisor still records what it sent.
+        """
+        return self._update(edit)
 
     def _change(self, edit):
         def fenced(record):

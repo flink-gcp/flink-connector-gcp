@@ -317,7 +317,9 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         ("traffic_limits", {}),
         ("traffic_limits", []),
         ("total_request_limit", 29999),
-        ("total_request_limit", 100001),
+        ("total_request_limit", 300001),
+        # Above the data requests, below what the rig itself sends.
+        ("total_request_limit", 81248),
         ("total_request_limit", True),
         # Spend is approved from the estimate before dispatch, not proposed here.
         ("additional_cost_usd", "10.00"),
@@ -602,8 +604,8 @@ def test_the_estimate_charges_each_slot_and_allowance_at_its_own_value(
 
 
 def test_the_estimate_follows_the_request_ceiling(trial):
-    trial["total_request_limit"] = 30000
-    assert plan.estimate(trial) == Decimal("1.822196208953857421875000")
+    trial["total_request_limit"] = 300000
+    assert plan.estimate(trial) == Decimal("4.17802458953857421875000")
 
 
 def test_the_estimate_refuses_an_invalid_trial(trial):
@@ -629,5 +631,5 @@ def test_the_proposal_carries_the_estimate_and_its_basis(inputs, renderer):
 
 
 def test_the_proposal_rounds_the_estimate_up_to_a_cent(inputs, renderer):
-    inputs["trial"]["total_request_limit"] = 30000
-    assert plan.prepare(**inputs)["proposal"]["cost"]["usd"] == "1.83"
+    inputs["trial"]["total_request_limit"] = 300000
+    assert plan.prepare(**inputs)["proposal"]["cost"]["usd"] == "4.18"

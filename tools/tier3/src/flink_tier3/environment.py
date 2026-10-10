@@ -74,10 +74,16 @@ class Environment:
     def assert_owner(self):
         EnvironmentLock(self.store).assert_owner(self.approval.lock_owner)
 
+    def metered_out(self):
+        """Whether this actor's request meter has stopped admitting work."""
+        return self.records.meter is not None and self.records.meter.stopped
+
     def admission_open(self):
         self.namespaces()
         validate_approval(self.approval.to_dict(), self.clock())
         control = self.refresh()
+        if self.metered_out():
+            raise Failure("Run admission has been stopped by its request meter")
         if (
             self.stopping
             or self.evidence_failed
@@ -94,6 +100,7 @@ class Environment:
         control = self.refresh()
         if (
             self.stopping
+            or self.metered_out()
             or self.evidence_failed
             or control.evidence_failed
             or control.stop_requested

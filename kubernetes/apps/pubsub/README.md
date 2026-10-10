@@ -135,22 +135,26 @@ Input bytes exclude service framing; output messages count reserved deliveries, 
 The [output collector](#output-collector) reserves a whole batch of 100 for every pull, and the [recovery exercise](#recovery-exercise) pulls at least once per 15-second poll, empty or not, until cleanup: 180 pulls in the 2,700 seconds before `cleanup_at`.
 One feasible run therefore needs its minimum pulls plus those 180 in `pull_calls`, 100 output messages for each of them, and requests for every publication, two for each minimum pull and one for each of the 180: for the example, 201 pulls, 20,100 output messages and 246 requests.
 These helper counters exclude connector SDK traffic and resource/control/credential/storage operations.
-`total_request_limit` separately proposes at most 100,000 aggregate requests, including those operations and retries, and must be at least the data-helper request limit.
-No aggregate request accounting is wired into execution yet.
+`total_request_limit`, at most 300,000, is the ceiling of the run's [request meter](#request-meter), which counts those operations and their retries too.
+It must be at least the data-helper request limit and the rig's own request floor, which the input plan reports as `request_floor`.
+The floor is what the rig sends for one pass, as the synthetic run counts it, each fake operation mapped to the requests its transport sends, rounded up: 1,500 requests for admission, the access probe's allowance of 528, 160 for each supervisor poll and 100 for each runner poll over the 228 polls the supervisor Job's deadline allows, 50 for each publication and 75 for each pull with their evidence and control updates, and 1,300 for cleanup and settlement.
+It adds what that run does not measure: 100 for token refreshes and identity checks, the 256 finalization reserves, three unspent blocks of 512, and three requests for each grant.
+For the example it is 81,249; at 10,000 records per subscription, 103,881.
+At 1,000 records more than half of it, 44,460 requests, is the Kubernetes inventory both actors list at every poll, which [#1681](https://github.com/flink-gcp/flink-connector-gcp/issues/1681) is to narrow.
 
 The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
 Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowance, and the Operator, supervisor and one control-Pod replacement allowance; PVCs are zero.
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
 Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-The proposal's `cost` is a planning estimate, USD 2.44 for a trial at the 100,000-request ceiling, rounded up to a cent; the owner approves it before a dispatch, and nothing at run time compares spend against it.
+The proposal's `cost` is a planning estimate, USD 2.44 for the example's 100,000-request ceiling, rounded up to a cent; the owner approves it before a dispatch, and nothing at run time compares spend against it.
 It charges all seven Pods for the whole hour at the conservative CPU, memory and ephemeral-storage rates, the four application slots at the Flink shape and the three control slots at the Operator's.
 It charges each request of `total_request_limit` twice over: as a Cloud Storage Class A operation at USD 0.005 per 1,000, the dearest price one request can carry, and as one 100-message batch of 1 KiB messages through Pub/Sub at USD 40 per TiB, which also covers Pub/Sub's 1 KB minimum per request.
 It adds 100,000 Cloud Monitoring time series at USD 0.50 per million, one read a minute returning at most 1,000 series, the 200 MiB log and evidence allowance leaving Google Cloud at USD 0.12 per GiB, and a USD 0.50 reserve for state and evidence storage and Cloud Logging ingestion.
-It takes no free tier, Spot or commitment discount, and it falls with the request ceiling: USD 1.83 at 30,000.
+It takes no free tier, Spot or commitment discount, and it rises with the request ceiling: USD 4.18 at the 300,000 maximum.
 The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
 A response that carries more than one batch, or a request beyond the ceiling, falls outside the estimate, which is not a bound on the bill.
-A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
+A runnable approval also needs enforcement of the fixed state/log/evidence limits and the connector's own requests counted against the ceiling ([#1675](https://github.com/flink-gcp/flink-connector-gcp/issues/1675)), live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
 The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence; dispatch and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
@@ -220,7 +224,7 @@ The caller's shared environment lock and exclusive control of run resources must
 The guard runs before each Pub/Sub request or logical storage adapter call and must prove current approval, exclusive ownership and the appropriate admission or cleanup budget.
 For a control-record `GET`, the shared adapter reads metadata and then generation-matched data, repeating on a generation race at most five times: reserve up to ten GCS data requests for that single callback.
 A control-record `PUT` callback denotes the logical create upload, whose GCS HTTP method is `POST`.
-The caller must reserve the whole adapter call's request and time budget; callback counts are not HTTP-request counts, and credential refresh and the guard's own I/O require additional caller accounting.
+The caller must reserve the whole adapter call's request and time budget; callback counts are not HTTP-request counts, and the [request meter](#request-meter) counts credential refresh and the guard's own I/O.
 The helper delegates those checks to the caller; it does not implement durable operation counters, the lock, deadlines or independent supervision.
 Pub/Sub HTTP requests use the shared 20-second timeout with redirects disabled and no automatic retry; this is a per-request transport limit, not a total elapsed-time or cost ceiling.
 Responses are read streamed and refused once their body passes 1 MiB, the same local cap the message helper applies; a body that fails while arriving is a transport failure.
@@ -369,7 +373,46 @@ The controller and the traffic wrapper call the guard after their own control re
 The budget covers the request's authentication, its sending and the response's status and headers; reading a streamed body is bounded only by the transport's per-read timeout and the helpers' 1 MiB response cap, so a slowly arriving body can still end after the deadline.
 The deadline is the admission deadline, the earlier of 900 seconds after the window's start and `cleanup_at`, except that `publish` and `collect` default to `cleanup_at` because later cohorts and collection belong to the exercise; a caller publishing during admission passes the admission deadline.
 Control and storage operations are not held to it, so a stop, a cleared marker or the evidence of a request already sent can still be written; the controller and the traffic wrapper enforce stop and evidence failure where they admit new work.
-These are per-method bounds held in the actor's process, not the aggregate request ceiling across connector, credential and storage calls, which [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433) owns.
+These are per-method bounds held in the actor's process; the [request meter](#request-meter) is the run's aggregate ceiling.
+
+### Request meter
+
+Every request a Pub/Sub actor process sends counts against the trial's `total_request_limit`.
+[`pubsub.meter`](../../../tools/tier3/src/flink_tier3/pubsub/meter.py) replaces urllib3's connection-pool `urlopen` for the whole process.
+Every HTTP client the actors use sends through it: the Pub/Sub, Cloud Storage and credential sessions built on requests, the requests google-auth builds for itself, and the Kubernetes client, Flink REST through its proxy included.
+It counts each request as it leaves, from any thread, so urllib3's own retries count again, and so does the regional access boundary lookup google-auth sends from a thread of its own; a request sent around the pool through `http.client` is refused.
+The supervisor installs it before its first request; the runner's commands install it when dispatch opens ([#1675](https://github.com/flink-gcp/flink-connector-gcp/issues/1675)).
+Each request is attributed by its destination, and a request to any other destination is refused before it is sent.
+
+| Category | Destinations |
+| --- | --- |
+| `pubsub` | `pubsub.googleapis.com`, in project `flink-gcp` |
+| `storage` | `storage.googleapis.com` |
+| `credential` | The OAuth, STS and IAM credentials endpoints, the userinfo endpoint, the metadata server, the Resource Manager lookup an external-account credential makes, and the GitHub Actions OIDC token host |
+| `kubernetes` | The in-cluster API server and any regional GKE DNS endpoint in `us-central1` |
+| `flink-rest` | The API server's service proxy paths |
+| `registry` | The `flink-tier3` Artifact Registry repository |
+
+Child processes the runner starts, such as `gcloud`, `kubectl`, `gh` and `tofu`, send requests the meter cannot see, and are not charged.
+
+All actors charge one durable aggregate, the run control record's `requests`, which a replacement supervisor shares.
+Before an actor can reserve, it may send at most 1,024 requests, which its first grant then charges.
+An actor reserves 512 requests at a time by conditional update: when it has sent everything granted, and before control I/O when fewer than 160 remain.
+Each grant charges everything the actor sent since the last one, the update's own reads and write included, so requests sent before the record existed are charged to the first block, and it records the actor's counts by category.
+A grant is never refunded: a reservation whose acknowledgement was lost is charged again, and a block an actor leaves unspent is lost.
+A meter that an actor other than the dispatching runner began is marked `incomplete`.
+
+The access probe Pod runs outside the package, so it carries its own urllib3 hook with an allowance of 528 requests: 61 rounds of six permission tests and two pulls, plus 40 for the metadata server's ping, project and token requests with their retries.
+The runner reserves that allowance before it creates the Pod, and refuses to create it when the ceiling cannot cover it.
+The probe refuses any other destination and anything past its allowance, and reports what it sent in its passing line, which the runner checks against the allowance and records.
+
+A grant that would leave fewer than 80 requests of headroom marks the meter exhausted and requests the run's stop in the same update, so admission, the exercise, publication and collection refuse new work through the stop checks they already make.
+Stop, cleanup and settlement continue.
+The meter then refuses only requests that admit new work, which are Pub/Sub creates, publications, pulls, acknowledgements and policy writes, Kubernetes creates in a namespace, and Flink REST writes; everything else is recorded as over the ceiling.
+An actor whose grant is spent and not yet renewed refuses the same requests: a reservation that failed is retried after 40 more requests, and in between, the requests that do not admit work go out and are charged at the next grant.
+A supervisor records what it sent past its last grant as it ends.
+Finalization first makes sure at least 256 requests of headroom remain, reserving a fresh block if fewer do, and then reserves nothing more, because the record it would write to is the one it deletes; what it sends past that headroom is not recorded.
+The final receipt carries the meter as finalization read it, and a retried finalization derives its receipt from the meter the first one recorded rather than from the record its own requests have since changed.
 
 ### Admission and effective access
 
@@ -380,7 +423,7 @@ After the supervisor Job and the Operator are ready, and while the run is `READY
 1. Bind the runner and the resource intent in one control update.
 2. Create the six resources, then install their grants: installing a policy reads the resource it belongs to, so creation comes first.
 3. Probe the runner's own access.
-4. Open the application quota, run the workload's probe Pod, read what it saw, delete it, and wait until it is gone, so that no other Pod of the run stands beside the application.
+4. Open the application quota, reserve the probe's request allowance, run the workload's probe Pod, read what it saw, delete it, and wait until it is gone, so that no other Pod of the run stands beside the application.
 5. Wait for the supervisor to join and to record its own access.
 6. Re-read every resource and policy.
 7. Publish the first cohort, so that the application finds its input waiting.
@@ -392,7 +435,7 @@ Each identity is tested on all six resources for the one permission the run's bi
 A permission test answers only for the identity that sends it, so the runner and the supervisor each probe themselves.
 The workload's service account is reachable only through the `pubsub` Kubernetes service account, so the runner creates a Pod named `<run>-access-probe` that runs as it, through a runner-only Role in `tier3-pubsub`.
 The Pod runs the lifecycle tools image with [`pubsub/probe.py`](../../../tools/tier3/src/flink_tier3/pubsub/probe.py) passed inline, because a Pod cannot mount the control ConfigMap from another namespace; CUE renders it, and the bundle's re-render pins it.
-The runner keeps the Pod's log, at most 64 KiB, as `pubsub-workload-probe` evidence, requires the Pod to succeed, and re-derives the verdict from the log rather than trusting the exit status alone: the log must name the workload identity, show a last attempt that meets every expectation, and end in a pass.
+The runner keeps the Pod's log, at most 64 KiB, as `pubsub-workload-probe` evidence, requires the Pod to succeed, and re-derives the verdict from the log rather than trusting the exit status alone: the log must name the workload identity, show a last attempt that meets every expectation, and end in a pass that counts the requests the probe sent within its allowance.
 The program refreshes its own token before each request and then starts the request only while its 20-second timeout still fits before the deadline; it uses a plain HTTP session, so nothing replays a request answered 401 after that check.
 When a request no longer fits, the program logs a refusal and fails.
 As on the runner's side, a slowly arriving response body is bounded only by the per-read timeout and the 1 MiB cap.
@@ -503,6 +546,8 @@ Every earlier transition also carries the coverage so far, so a trial that stops
 | `source` | The source reader's `messagesReceived`, `messagesAcked`, `messagesNacked`, `pendingAcks`, `pendingCheckpoints`, `bufferedMessages`, `fetcherBufferedMessages`, `subscriberShutdownsAbandoned` and `subscriberFailuresUnreported` |
 | `sink` | The sink writer's `inFlightMessages`, `inFlightBytes`, `activePublishers` and `publisherShutdownsAbandoned` |
 
+The final receipt also withholds success from a `usable` trial whose [request meter](#request-meter) is missing (`request-meter-missing`), is not one the meter could have written for the approved ceiling, such as one whose actors' shares do not add up to its total (`request-meter-malformed`), was begun by an actor other than the dispatching runner (`request-meter-incomplete`) or reached the ceiling (`request-budget-exhausted`), which can happen after the exercise completes, during cleanup.
+
 The oracle's duplicate counters are reported in the record beside the verdict and decide nothing.
 At-least-once delivery owes them, and neither unique Pub/Sub message IDs nor a deduplicated count can establish exactly-once output, so their absence would prove nothing either.
 A `usable` verdict says nothing about ordering across the replay: the oracle is a completeness check over a set of identities.
@@ -519,7 +564,7 @@ A `usable` verdict says nothing about ordering across the replay: the oracle is 
 
 Whether the boundary held and which observations were collected before the fault are read from the `recovery-complete` record, because rebuilding them would re-run the exercise offline over the exported Pod logs and checkpoint statistics.
 They are held instead to the earlier `recovery-<stage>` records, which wrote the same outcomes as the trial reached them, to the approval, whose trial the fault must name, and to the observations: every attempt the fault names as running before it is the initial job's and restored nothing, the expected replay is the fault's own list, recovery cannot have seen more of it than the whole evidence holds, and a completion record preserving replay IDs is refused when a replay came under an ID no pre-fault attempt processed at all, the looser question an export without collection times can ask; the recovery's own claim, made before later replays arrived, is not asked against the whole export.
-The verdict is recomputed with the rebuilt values, and the run is classified with the BigQuery section's rules, from steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
+The verdict is recomputed with the rebuilt values, the receipt's request meter withholds success as the runner's receipt does and adds its reasons, and the run is classified with the BigQuery section's rules, from steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
 
 | Status | Problems that lead to it |
 | --- | --- |
@@ -645,7 +690,7 @@ Ownership loss, completed service cleanup or approval expiry also closes evidenc
 These checks admit individual operations; they do not cancel an in-flight HTTP request or replace the external actor-quiescence barrier.
 
 The caller still validates the complete application and numeric execution approval, authenticates both actors, verifies effective permissions and keeps exclusive resource control through cleanup and settlement.
-The resource controller's mandatory guard remains active: credential refresh, guard I/O, control/lock reads, conditional-write retries and logical storage request/time costs need their own total budget.
+The resource controller's mandatory guard remains active, and the [request meter](#request-meter) counts credential refresh, guard I/O, control and lock reads, conditional-write retries and storage requests against the run's ceiling.
 Input payload and message-evidence counters do not measure all network bytes or billed Pub/Sub traffic, and `admit_until` does not bound total elapsed execution.
 Synthetic tests cover competing reservations, restart, deadline/stop races, ambiguous outcomes, shared byte exhaustion and receipt preservation.
 CLI admission and runnable fault/recovery orchestration remain disabled pending the remaining work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
@@ -826,7 +871,7 @@ Final settlement preserves `pubsub_trial` and the recovery observations even bef
 The original receipt is retained; the current plans must still prove the same nonce, all three foundation roots and an empty result.
 Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
 
-The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch, but the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
+The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch, and the [request meter](#request-meter) counts the supervisor's own requests against the total request cap, but not yet the runner's or the connector's ([#1675](https://github.com/flink-gcp/flink-connector-gcp/issues/1675)).
 Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, and the supervisor runs the [recovery exercise](#recovery-exercise), but dispatch still refuses before the environment lock until that accounting exists.
 Complete execution accounting and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
@@ -845,7 +890,7 @@ The scenario takes four inputs beyond the common ones.
 A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the approved commit.
 The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
 The phrase carries the trial's own numbers because they differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one trial therefore does not approve another trial with different numbers.
-The request number is the proposed total ceiling, which is not yet an aggregate meter.
+The request number is the trial's ceiling, which the [request meter](#request-meter) enforces.
 The trial directory is created when [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's first reviewed input, so every dispatch is refused at the trial file for now; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, as the version 5 approval requires.

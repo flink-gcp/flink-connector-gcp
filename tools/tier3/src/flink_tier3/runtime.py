@@ -38,6 +38,7 @@ from .google import GoogleToken, Storage, authorized_session
 from .kubernetes import Kubernetes, KubernetesTransport
 from .model import Approval
 from .policy import SYSTEM
+from .pubsub import meter as request_meter
 from .supervisor import HookChain, Supervisor
 
 
@@ -84,7 +85,20 @@ def verify_delivery(directory):
 
 
 def supervisor_main(directory):
-    approval, approved, application, upgrade, cells = verify_delivery(directory)
+    delivered = verify_delivery(directory)
+    if delivered[1].scenario != "pubsub-recovery":
+        return supervise(*delivered)
+    # A Pub/Sub supervisor meters every request from its first, the cluster
+    # identity check included, and charges them to the run once it can.
+    meter = request_meter.Meter("supervisor:" + os.environ["POD_UID"])
+    with request_meter.install(meter):
+        try:
+            return supervise(*delivered, meter=meter)
+        finally:
+            meter.flush()
+
+
+def supervise(approval, approved, application, upgrade, cells, meter=None):
     account = Path("/var/run/secrets/kubernetes.io/serviceaccount")
     if (account / "namespace").read_text().strip() != SYSTEM:
         raise Failure("Supervisor must run in tier3-system")
@@ -112,6 +126,8 @@ def supervisor_main(directory):
         queues = Queues(authorized_session(GoogleToken()), approved.queue)
         ledger = Ledger(store, approved.campaign)
     env = Environment(kube, store, approval, queues=queues, ledger=ledger)
+    if meter is not None:
+        meter.attach(env)
     hooks = None
     if cells is not None:
         # Observe every poll, then collect and export each cell's evidence.

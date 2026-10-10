@@ -25,7 +25,15 @@ from flink_tier3.common import ApiError, Failure, TransportError, digest
 from flink_tier3.environment import Environment
 from flink_tier3.model import Phase
 from flink_tier3.policy import PUBSUB, SYSTEM
-from flink_tier3.pubsub.access import CONSUME, MEMBERS, PUBLISH, expectations, pulls
+from flink_tier3.pubsub import meter as request_meter
+from flink_tier3.pubsub.access import (
+    CONSUME,
+    MEMBERS,
+    PROBE_REQUESTS,
+    PUBLISH,
+    expectations,
+    pulls,
+)
 from flink_tier3.pubsub.guard import PubSubGuard, admission_deadline
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle
@@ -38,6 +46,7 @@ from flink_tier3.supervisor import Supervisor
 from ..bigquery.test_runtime_approval import mount
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, supervisor_pod
+from .test_actors import leave
 from .test_actors import prepared as prepared  # noqa: PLC0414
 from .test_bundle import approval as approval  # noqa: PLC0414
 from .test_handoff import Service
@@ -116,7 +125,7 @@ def workload_log(plan, **change):
             "seen": {name: want["held"] for name, want in expected.items()},
         },
         *({"event": "pulled", "name": name} for name in pulls(plan, "workload")),
-        {"event": "passed", "attempts": 1},
+        {"event": "passed", "attempts": 1, "requests": {"credential": 4, "pubsub": 8}},
     ]
     for line in lines:
         line.update(change.get(line["event"], {}))
@@ -149,6 +158,8 @@ def admitting(prepared, monkeypatch):
         environment.sleep,
         actor="supervisor",
     )
+    # One process here: the supervisor's environment shares its meter.
+    request_meter.ACTIVE.attach(observer)
     sender = actor(
         environment, application, Identity(service, "runner", events), "b" * 32
     )
@@ -278,6 +289,42 @@ def test_admission_runs_the_ordered_preparation_before_the_application(admitting
     assert control.pubsub["handoff"]["actors"]["supervisor"] is not None
     assert "probe" not in [k for k, v in control.roots.items() if a.environment.root(k)]
     assert control.roots["application"]["namespace"] == PUBSUB
+
+
+def test_the_probe_s_allowance_is_reserved_before_its_pod(admitting, monkeypatch):
+    a = admitting
+    meter = a.environment.records.meter
+    charge = meter.charge_external
+
+    def charged(name, requests):
+        a.events.append(("reserve", name))
+        return charge(name, requests)
+
+    monkeypatch.setattr(meter, "charge_external", charged)
+    a.runner.start(*a.args)
+    reserved, created = positions(a.events, ("reserve", "probe"), ("probe", "created"))
+    assert reserved < created
+    probe = a.environment.refresh().requests["actors"]["probe"]
+    assert probe == {"reserved": PROBE_REQUESTS, "used": {"credential": 4, "pubsub": 8}}
+
+
+def test_a_ceiling_that_cannot_cover_the_probe_creates_no_probe(admitting):
+    a = admitting
+
+    a.environment.records.unfenced(leave(PROBE_REQUESTS - 1))
+    with pytest.raises(Failure, match="cannot cover probe"):
+        a.runner.start(*a.args)
+    assert ("probe", "created") not in a.events
+    assert ("application", "created") not in a.events
+
+
+def test_a_run_whose_meter_stopped_admits_nothing(admitting):
+    a = admitting
+    a.environment.records.meter.closed = True
+    with pytest.raises(Failure, match="admission has been stopped"):
+        a.runner.start(*a.args)
+    assert not kinds(a.events, "create")
+    assert ("application", "created") not in a.events
 
 
 def test_later_cohorts_run_under_the_actors_production_guards(admitting):
@@ -638,10 +685,11 @@ def test_a_replacement_reclaims_a_joined_supervisor_only_once_it_ended(
 
 
 def test_a_valid_pubsub_delivery_reaches_the_entrypoint_s_cluster_step(
-    prepared, tmp_path
+    prepared, tmp_path, monkeypatch
 ):
     """The delivery carries the recovery manifest the supervisor factory checks."""
     environment, bundle = prepared
+    monkeypatch.setenv("POD_UID", "supervisor-pod")
     mount(
         tmp_path,
         environment,
@@ -652,8 +700,86 @@ def test_a_valid_pubsub_delivery_reaches_the_entrypoint_s_cluster_step(
     assert approved.scenario == "pubsub-recovery"
     assert application == bundle["application"]
     assert upgrade == bundle["recovery_application"] and cells is None
-    with pytest.raises(FileNotFoundError, match="serviceaccount"):
-        runtime.supervisor_main(tmp_path)
+    # The supervisor runs in its own process, which installs its own meter.
+    active, request_meter.ACTIVE = request_meter.ACTIVE, None
+    installed = []
+    supervise = runtime.supervise
+
+    def supervising(*delivered, meter=None):
+        installed.append((request_meter.ACTIVE, meter))
+        return supervise(*delivered, meter=meter)
+
+    monkeypatch.setattr(runtime, "supervise", supervising)
+    try:
+        with pytest.raises(FileNotFoundError, match="serviceaccount"):
+            runtime.supervisor_main(tmp_path)
+    finally:
+        request_meter.ACTIVE = active
+    # Installed before the first request, the cluster identity check included.
+    ((meter, passed),) = installed
+    assert meter is passed and meter.actor == "supervisor:supervisor-pod"
+    assert meter.records is None
+
+
+def test_the_supervisor_charges_its_requests_to_the_run_it_supervises(
+    prepared, tmp_path, monkeypatch
+):
+    environment, bundle = prepared
+    mount(tmp_path, environment, bundle["application"], bundle["recovery_application"])
+    monkeypatch.setenv("POD_UID", "supervisor-pod")
+    account = tmp_path / "serviceaccount"
+    account.mkdir()
+    (account / "namespace").write_text(SYSTEM)
+    monkeypatch.setattr(
+        runtime, "Path", lambda path: account if "serviceaccount" in path else path
+    )
+    kube, clock = environment.kube, environment.clock
+    identity = {
+        "status": {
+            "userInfo": {
+                "username": "system:serviceaccount:tier3-system:tier3-supervisor"
+            }
+        }
+    }
+    monkeypatch.setattr(runtime, "KubernetesTransport", lambda *a: None)
+    monkeypatch.setattr(kube, "request", lambda *a, **k: identity)
+    monkeypatch.setattr(runtime, "Kubernetes", lambda *a: kube)
+    monkeypatch.setattr(runtime, "Storage", lambda: environment.store)
+    built = []
+
+    def environment_of(kube, store, approval, **kwargs):
+        built.append(Environment(kube, store, approval, clock, clock.sleep, **kwargs))
+        return built[-1]
+
+    def wait(predicate, deadline):
+        # The supervisor reaches the ceiling and sends past it before it
+        # ends, below the low-water at which it would record them itself.
+        meter = built[-1].records.meter
+        built[-1].records.unfenced(leave(10))
+        meter.sent = meter.granted
+        meter.charge("storage.googleapis.com", "GET", "/storage/v1/b")
+        for _ in range(meter.headroom + 20):
+            meter.charge("storage.googleapis.com", "DELETE", "/storage/v1/b/o")
+        raise Failure("Bounded wait expired")
+
+    monkeypatch.setattr(Environment, "wait", lambda self, p, d: wait(p, d))
+
+    monkeypatch.setattr(runtime, "Environment", environment_of)
+    active, request_meter.ACTIVE = request_meter.ACTIVE, None
+    try:
+        # It waits for its Job's root, which this run never records.
+        with pytest.raises(Failure, match="Bounded wait expired"):
+            runtime.supervisor_main(tmp_path)
+    finally:
+        request_meter.ACTIVE = active
+    (supervised,) = built
+    meter = supervised.records.meter
+    assert meter.actor == "supervisor:supervisor-pod" and meter.records is not None
+    state = environment.refresh().requests
+    assert {"runner:test", "supervisor:supervisor-pod"} <= set(state["actors"])
+    # Recorded as it ended: what it sent past the ceiling and the write that
+    # records it; the fake store's reads send nothing.
+    assert state["exhausted"] and state["over"] == 20 + 1
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,7 @@
 """The Pub/Sub lifecycle actors' OAuth session and its record of ambiguous writes."""
 
 from ..actor_auth import ActorSession
+from .meter import RequestRefused
 from .resources import BASE
 
 
@@ -24,7 +25,8 @@ class PubSubSession(ActorSession):
     Every request other than a GET or a permission test counts as a write. A write is unsettled
     when it left this process and no status came back, or the service
     answered 5xx, or its budget expired after it left: each may still
-    complete at the service. A refusal before sending, a read, or a write
+    complete at the service. A refusal before sending, including the request
+    meter's, a read, or a write
     answered below 500 within its budget is settled, whatever the caller then
     makes of the response. The latch is the session's, not a
     call's, and never clears: nothing this session sees later proves the
@@ -49,8 +51,9 @@ class PubSubSession(ActorSession):
         self._pending = False
         try:
             response = super().request(method, url, **kwargs)
-        except BaseException:
-            if self._pending:
+        except BaseException as error:
+            # The meter refuses before anything leaves.
+            if self._pending and not isinstance(error, RequestRefused):
                 self.ambiguous = True
             raise
         if self._pending and response.status_code >= 500:

@@ -49,6 +49,7 @@ from .verdict import (
     MEASUREMENT_EVENT,
     RESCALES,
     oracle_reasons,
+    request_reasons,
     started_by_fault,
     summarize,
     verdict,
@@ -477,13 +478,18 @@ def assess(run):
             record, decided, complete, "verdict-disagrees-with-its-evidence"
         )
     )
-    problems.extend(receipt_problems(result, record, complete, SCENARIO, decided))
-    assessed = status(problems, OVERSTATEMENTS, missing, decided["verdict"])
+    # The receipt also withholds success from a run whose request meter
+    # stopped it or did not count all of it, whatever the evidence decides.
+    limit = approval["pubsub_trial"].get("total_request_limit")
+    reasons = decided["reasons"] + request_reasons(result.get("requests"), limit)
+    reported = {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+    problems.extend(receipt_problems(result, record, complete, SCENARIO, reported))
+    assessed = status(problems, OVERSTATEMENTS, missing, reported["verdict"])
     return {
         "run_id": run.run_id,
         "status": assessed,
-        "verdict": None if assessed == UNEXPORTED else decided["verdict"],
-        "reasons": decided["reasons"],
+        "verdict": None if assessed == UNEXPORTED else reported["verdict"],
+        "reasons": reasons,
         "problems": sorted(problems),
         "samples": len(readings),
         "oracle": oracle,

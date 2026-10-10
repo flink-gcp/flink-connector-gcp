@@ -768,6 +768,9 @@ class RunRecord:
     evidence_bytes: int = 0
     bigquery: dict | None = None
     pubsub: dict | None = None
+    # The Pub/Sub trial's aggregate request meter, which its actors reserve
+    # from before the service state exists.
+    requests: dict | None = None
 
     @classmethod
     def from_dict(cls, value):

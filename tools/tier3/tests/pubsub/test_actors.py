@@ -15,6 +15,7 @@
 """Bind the authenticated Pub/Sub actors to externally supplied approvals."""
 
 import copy
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -25,6 +26,7 @@ from flink_tier3.environment import Environment
 from flink_tier3.policy import ENVIRONMENT, PUBSUB, SMOKE
 from flink_tier3.pubsub import actors
 from flink_tier3.pubsub import bundle as bundles
+from flink_tier3.pubsub import meter as request_meter
 from flink_tier3.pubsub.guard import PubSubGuard, admission_deadline
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
@@ -54,7 +56,34 @@ def prepared(approval, env):
     clock.now = timestamp(approval["started_at"])
     environment = Environment(kube, store, approval, clock, clock.sleep, actor="runner")
     bundle = bundles.prepare(approval, prepared_at=approval["started_at"])
-    return environment, bundle
+    with metered(environment):
+        yield environment, bundle
+
+
+def leave(room, *, exhausted=False):
+    """A control edit as if other actors had reserved all but `room`."""
+
+    def edit(record):
+        state = record.requests
+        taken = state["limit"] - room - state["reserved"]
+        state["reserved"] += taken
+        state["actors"]["elsewhere"] = {"reserved": taken, "used": {}}
+        state["exhausted"] = exhausted
+
+    return edit
+
+
+@contextmanager
+def metered(environment):
+    """The runner's request meter, bound to the run as dispatch binds it.
+
+    The fakes send nothing through urllib3, so it counts only what a test
+    sends through a real transport.
+    """
+    meter = request_meter.Meter("runner:test")
+    with request_meter.install(meter):
+        meter.attach(environment, first=True)
+        yield meter
 
 
 def supervising(env):
@@ -109,6 +138,29 @@ def test_runner_and_supervisor_bind_distinct_authenticated_actors(prepared, wire
     # Each supervisor process binds its own token.
     assert len(tokens) == 2 and TOKEN not in tokens
     assert env.refresh().pubsub is None
+
+
+def test_neither_actor_is_built_without_the_run_s_request_meter(prepared, wire):
+    env, bundle = prepared
+    meter, env.records.meter = env.records.meter, None
+    try:
+        with (
+            pytest.raises(Failure, match="request meter"),
+            actors.runner(
+                env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+            ),
+        ):
+            pytest.fail("Built an unmetered runner")
+        with (
+            pytest.raises(Failure, match="request meter"),
+            construct_supervisor(
+                supervising(env), bundle["application"], bundle["recovery_application"]
+            ),
+        ):
+            pytest.fail("Built an unmetered supervisor")
+    finally:
+        env.records.meter = meter
+    assert not wire.calls
 
 
 @pytest.mark.parametrize("field", ["application", "approval", "delivery"])
