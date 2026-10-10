@@ -564,6 +564,17 @@ check-notice-sources:
 check-flink-api-tiers:
     mise x uv -- uv run --locked scripts/check-flink-api-tiers.py
 
+# The tiers this repository's own declarations carry, where check-flink-api-tiers
+# reads the tiers of the Flink types they import (issue #1567): every top-level
+# type in a main source root needs @Public, @PublicEvolving, @Experimental or
+# @Internal from org.apache.flink.annotation. A nested type inherits its
+# enclosing tier and is not read. Needs no Maven Central, and CI runs it in the
+# api_tiers job.
+#
+# Does every top-level main type carry a Flink API tier annotation?
+check-declared-api-tiers:
+    mise x uv -- uv run --locked scripts/check-declared-api-tiers.py
+
 # Holds docs/content/docs/reference/ to the options the connectors actually
 # take, in both directions: every builder setter and every Table API
 # ConfigOption must be named in a table whose first column is `Option`, and

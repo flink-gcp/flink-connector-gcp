@@ -50,11 +50,13 @@ import zipfile
 from pathlib import Path
 
 from java_ast import (
+    API_TIER_SOURCE_PATTERNS,
     TYPE_DECLARATIONS,
     JavaSource,
     JavaSyntaxError,
     annotation_name,
     annotations,
+    api_tier_sources,
     declaration_target,
 )
 
@@ -113,14 +115,37 @@ def flink_version() -> str:
     return version
 
 
+def pinned_versions(root_version: str) -> list[str]:
+    """Each Tier-3 job module whose own flink.version differs from the root's.
+
+    Every import is classified at the root pom's version, so a module compiled
+    against another would be audited against the wrong tiers: a type Flink
+    demoted there would pass here.
+    """
+    mismatched: list[str] = []
+    for pom in sorted(ROOT.glob("kubernetes/apps/*/pom.xml")):
+        match = re.search(
+            r"<flink\.version>([^<]+)</flink\.version>", pom.read_text(encoding="utf-8")
+        )
+        if match and match.group(1).strip() != root_version:
+            mismatched.append(
+                f"{pom.relative_to(ROOT)} pins flink.version {match.group(1).strip()}"
+            )
+    return mismatched
+
+
 def collect_imports() -> set[str]:
-    """Distinct concrete Flink imports across every module's main source roots."""
+    """Distinct concrete Flink imports across java_ast.API_TIER_SOURCE_PATTERNS."""
     found: set[str] = set()
-    for source in ROOT.glob("*/src/main/java*/**/*.java"):
+    for source in api_tier_sources(ROOT):
         try:
             parsed = JavaSource.parse(source.relative_to(ROOT), source.read_bytes())
         except JavaSyntaxError as error:
             infra(str(error))
+        except OSError as error:
+            # Exit 2, not the policy-violation 1: an unreadable source is the
+            # tree's state, not a tier finding.
+            infra(f"{source.relative_to(ROOT)} could not be read: {error}")
         for node in parsed.nodes("import_declaration"):
             imported = declaration_target(parsed, node)
             if imported.startswith("org.apache.flink.") and imported.endswith(".*"):
@@ -132,7 +157,10 @@ def collect_imports() -> set[str]:
             if imported.startswith("org.apache.flink."):
                 found.add(imported)
     if not found:
-        infra(f"No org.apache.flink imports found under {ROOT}/*/src/main/java*.")
+        infra(
+            f"No org.apache.flink imports found under {ROOT} in "
+            f"{', '.join(API_TIER_SOURCE_PATTERNS)}."
+        )
     return found
 
 
@@ -307,6 +335,14 @@ def main() -> int:
                     f"reason. The reason is the point of the allowlist; write one."
                 )
     version = flink_version()
+    mismatched = pinned_versions(version)
+    if mismatched:
+        infra(
+            f"{'; '.join(mismatched)}, but this audit classifies every import at "
+            f"pom.xml's {version}. Align the versions, or teach the audit to "
+            f"classify that module at its own; the artifacts comment in "
+            f"{CONFIG.name} records the coupling."
+        )
     index = build_index(config["artifacts"], version)
 
     by_tier: dict[str, set[str]] = {tier: set() for tier in (*TIERS, UNANNOTATED)}

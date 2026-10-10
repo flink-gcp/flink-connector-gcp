@@ -53,6 +53,12 @@
 # flink-avro owns GenericRecordAvroTypeInfo, the one type the BigQuery source's
 # GenericRecord deserializer needs (issue #390). flink-table-api-java-bridge owns
 # DataStreamSinkProvider, used by the Pub/Sub table sink's ordering-key route (#143).
+# flink-connector-datagen owns DataGeneratorSource and GeneratorFunction, which of
+# the main sources only the Tier-3 job modules under kubernetes/apps import (#1567).
+# Every import is classified at the root pom's flink.version. The cloudtasks and
+# pubsub jobs inherit it; smoke and bigquery pin their own to the image runtime,
+# and the script exits 2 when a pin differs from the root, because a type Flink
+# demoted at the pinned version would otherwise pass here.
 artifacts = [
     "flink-annotations",
     "flink-core",
@@ -66,6 +72,7 @@ artifacts = [
     "flink-table-api-java",
     "flink-test-utils",
     "flink-avro",
+    "flink-connector-datagen",
 ]
 
 # ---------------------------------------------------------------------------
@@ -190,6 +197,32 @@ for the SPI's declared type, and the import stays in the java-flink2 root becaus
 Flink 1.20 has neither the method nor the type. If this API changes, adapt the
 per-major bridge to forward the supported declaration API before admitting
 sources that emit generalized watermarks."""
+
+# The datagen entries below are the Tier-3 job modules' input, not connector code,
+# and none of those modules is published to Maven. Accepted by the owner on PR #1709
+# (#1567), when this audit started reading them.
+
+[experimental."org.apache.flink.connector.datagen.source.DataGeneratorSource"]
+reason = """
+The input of the smoke, BigQuery recovery and Cloud Tasks measurement jobs
+(kubernetes/apps/{smoke,bigquery,cloudtasks}): a bounded, checkpointed, rate-limited
+sequence. The rate is what the Cloud Tasks and BigQuery campaigns offer and measure,
+and what spreads the smoke run across its planned disruptions. The @Public
+NumberSequenceSource has no rate control, so replacing it means writing a rate-limited
+source. A Flink change that breaks it surfaces in that module's just tier3-*-verify
+lane, which CI selects on any change to the module or the root pom, and the job adapts
+there."""
+
+[experimental."org.apache.flink.connector.datagen.source.GeneratorFunction"]
+reason = """
+DataGeneratorSource's element function; the Cloud Tasks measurement job's
+MeasurementInput implements it. Same exposure as DataGeneratorSource."""
+
+[experimental."org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy"]
+reason = """
+How DataGeneratorSource takes its rate: the three datagen-fed jobs call
+RateLimiterStrategy.perSecond, BigQuery with a rows-per-second value derived from its
+configured bytes per second. Same exposure as DataGeneratorSource."""
 
 # ---------------------------------------------------------------------------
 # Unannotated — no tier at all, which is weaker than @Internal, not stronger.

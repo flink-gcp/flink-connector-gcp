@@ -19,7 +19,9 @@ from java_ast import (
     JavaSyntaxError,
     code_named_children,
     declaration_target,
+    flink_tier,
     string_literal_content,
+    type_imports,
 )
 
 
@@ -74,3 +76,25 @@ def test_package_and_import_targets_come_from_identifier_children():
     assert declaration_target(parsed, package) == "demo.source"
     assert declaration_target(parsed, imports[0]) == "org.apache.flink.Util.call"
     assert declaration_target(parsed, imports[1]) == "org.apache.flink.*"
+
+
+def test_type_imports_keep_single_type_imports_only():
+    parsed = JavaSource.parse(
+        "Imports.java",
+        "import org.apache.flink.annotation.Internal;\n"
+        "import static com.example.Constants.Internal;\n"
+        "import org.apache.flink.annotation.*;\n"
+        "class X {}",
+    )
+    assert type_imports(parsed) == {"Internal": "org.apache.flink.annotation.Internal"}
+
+
+def test_a_dual_tiered_declaration_reports_the_stablest_tier():
+    parsed = JavaSource.parse(
+        "Dual.java",
+        "import org.apache.flink.annotation.Internal;\n"
+        "import org.apache.flink.annotation.PublicEvolving;\n"
+        "@Internal @PublicEvolving class X {}",
+    )
+    declaration = next(parsed.nodes("class_declaration"))
+    assert flink_tier(parsed, declaration, type_imports(parsed)) == "PublicEvolving"

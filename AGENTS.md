@@ -52,8 +52,9 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
   symlink.
-- `just check-option-docs`, `just check-metric-docs`, `just check-javadoc-links`, and
-  `just check-flink-api-tiers`: run the repository-specific source/documentation audits.
+- `just check-option-docs`, `just check-metric-docs`, `just check-javadoc-links`,
+  `just check-flink-api-tiers`, and `just check-declared-api-tiers`: run the
+  repository-specific source/documentation audits.
 - `just e2e`: run credential-gated real-GCP suites. A fresh worktree first needs
   `just worktree-env` to link the main checkout's uncommitted `.env`.
 
@@ -98,8 +99,9 @@ green; use the clean-state procedures in that guide for such changes.
 
 ## Code and tests
 
-- Production packages use `io.github.flink.gcp.connector.<product>`; each main-tree class carries
-  the appropriate Flink API annotation. `@Public` types are frozen by the japicmp gate once
+- Production packages use `io.github.flink.gcp.connector.<product>`; each top-level main-tree type
+  carries the appropriate Flink API annotation, held by `just check-declared-api-tiers` (a nested
+  type inherits its enclosing tier). `@Public` types are frozen by the japicmp gate once
   `1.0.0` is published — breaking or demoting one is then a deliberate act with an exclusion and
   a release-notes entry (ADR-0124). Before the tag, a tier re-examination may still move a type
   down without either artifact, under ADR-0141's clauses, recorded in ADR-0124's revision.

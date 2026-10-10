@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.protobuf.BoolValue;
 import com.google.protobuf.BytesValue;
 import com.google.protobuf.Descriptors;
@@ -61,6 +63,7 @@ import java.util.Map;
  * which is faithful: the payload cannot be expanded without the descriptor its type URL names, and
  * the connector has no way to obtain one.
  */
+@Internal
 enum ProtoWellKnownType {
 
     /** Not a message field, or not a recognised well-known type. */

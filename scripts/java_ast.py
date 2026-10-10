@@ -34,6 +34,16 @@ TYPE_DECLARATIONS = frozenset(
     }
 )
 ANNOTATIONS = frozenset({"annotation", "marker_annotation"})
+# The main source roots the two Flink API tier checkers read: every connector
+# module with its Flink-version compatibility roots (java-flink1, java-flink2),
+# and the Tier-3 job modules. Other checkers define their own roots.
+API_TIER_SOURCE_PATTERNS = (
+    "*/src/main/java*/**/*.java",
+    "kubernetes/apps/*/src/main/java*/**/*.java",
+)
+FLINK_ANNOTATION_PACKAGE = "org.apache.flink.annotation"
+# Flink's API stability tiers, stablest first.
+FLINK_TIERS = ("Public", "PublicEvolving", "Experimental", "Internal")
 COMMENTS = frozenset({"block_comment", "line_comment"})
 
 
@@ -131,6 +141,48 @@ def annotation_name(source: JavaSource, annotation: Node) -> str:
     if name is None and annotation.named_child_count:
         name = annotation.named_children[0]
     return source.text(name) if name is not None else ""
+
+
+def api_tier_sources(root: Path) -> list[Path]:
+    """Every Java source under ``root`` that API_TIER_SOURCE_PATTERNS matches, sorted."""
+    return sorted(
+        {path for pattern in API_TIER_SOURCE_PATTERNS for path in root.glob(pattern)}
+    )
+
+
+def type_imports(source: JavaSource) -> dict[str, str]:
+    """Map each single-type import's simple name to its qualified name.
+
+    Static and on-demand imports are left out: neither names an annotation
+    type, and a static member sharing a type's simple name must not shadow it.
+    """
+    imports: dict[str, str] = {}
+    for node in source.nodes("import_declaration"):
+        if any(child.type in ("static", "asterisk") for child in node.children):
+            continue
+        qualified = declaration_target(source, node)
+        imports[qualified.rsplit(".", 1)[-1]] = qualified
+    return imports
+
+
+def flink_tier(
+    source: JavaSource, declaration: Node, imports: dict[str, str]
+) -> str | None:
+    """The Flink API-tier annotation a declaration itself carries, or None.
+
+    A qualified name counts when it names the annotation in
+    ``org.apache.flink.annotation``; a simple name counts only when ``imports``
+    (from ``type_imports``) maps it there, because with ``AvoidStarImport`` on,
+    an unimported ``@Internal`` is somebody else's annotation. An annotation
+    written after a modifier counts too, since the grammar attaches it to the
+    same modifiers node. A declaration carrying two tiers reports the stablest.
+    """
+    names = {annotation_name(source, node) for node in annotations(declaration)}
+    for tier in FLINK_TIERS:
+        qualified = f"{FLINK_ANNOTATION_PACKAGE}.{tier}"
+        if qualified in names or (tier in names and imports.get(tier) == qualified):
+            return tier
+    return None
 
 
 def code_named_children(node: Node) -> tuple[Node, ...]:

@@ -145,13 +145,28 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `-am` does not change that, and it only appears to work against a local repository some earlier
   `install` primed
 - `just check-flink-api-tiers` — classifies every `org.apache.flink` type the main sources import
+  (`java_ast.API_TIER_SOURCE_PATTERNS`, the Tier-3 job modules under `kubernetes/apps/` included)
   by its class-level stability annotation, read from the `-sources.jar`s at the pom-pinned
   `flink.version` (never class files: their constant pool lists method-level annotations too,
-  the #103 miscount). `@Internal`, `@Experimental` and unannotated types each need a reasoned
-  allowlist entry in `scripts/config/flink-api-tiers.toml`; a new one — or a stale entry — fails.
+  the #103 miscount). A Tier-3 module pinning another `flink.version` stops it with exit 2, since
+  its imports would be classified at the wrong version. `@Internal`, `@Experimental` and
+  unannotated types each need a reasoned allowlist entry in `scripts/config/flink-api-tiers.toml`;
+  a new one — or a stale entry — fails.
   Runs as its own `verify.yaml` job, not in `lint.yaml` and not inside `just lint` (ADR-0058),
   and it downloads the sources jars (into `target/flink-api-tiers/`) while `just lint` stays
   offline — the rule that also put `check-skill-frontmatter` in `verify.yaml`
+- `just check-declared-api-tiers` — the other direction of the tier rule (#1567): every top-level
+  class, interface, enum, record and annotation type in the same source roots carries `@Public`,
+  `@PublicEvolving`, `@Experimental` or `@Internal` from `org.apache.flink.annotation`.
+  `check-flink-api-tiers` never reads this repository's own declarations, and a sweep found
+  unannotated types that had passed two self-review rounds and an independent review. A nested
+  type inherits its enclosing tier and is not checked. What counts as a tier is
+  `java_ast.flink_tier`, shared with `check-javadoc-links`, whose Javadoc-presence rule skips a
+  type with no tier in its enclosing chain: an unannotated top-level type would escape that rule
+  as well, so an exemption here would weaken both. It needs no Maven Central and runs as the last
+  step of the `api_tiers` job under `!cancelled()`, so a failure of either audit does not hide the
+  other. **A checker with no `curate-*` skill**, for the reason the
+  `check-gated-tags` entry gives
 - `just check-option-docs` — holds the hand-written option reference to public builder setters and
   Table API keys in both directions. A first-column `Option` header opts a table in; module mappings
   catch new option classes, a `heading` lets a second class own one section of a shared page (the
@@ -580,7 +595,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0165 before changing
 the CUE hierarchy or the OpenTofu/CUE ownership split. Before changing the smoke application,
 its image or workload identity, also read `kubernetes/apps/smoke/README.md`. Use
-`just tier3-smoke-verify` for its opt-in Maven build and local recovery tests.
+`just tier3-smoke-verify` for its opt-in Maven build and local recovery tests. A Tier-3 job
+module's main sources are held by both Flink API tier checkers like a connector's: every
+top-level type carries a tier annotation, and an unstable Flink import needs its entry in
+`scripts/config/flink-api-tiers.toml`, classified at the root pom's `flink.version`.
 `just tier3-check` validates the static layer,
 `just tier3-render <leaf>` prints an ordinary `runs/` delivery as a YAML document stream, and
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,

@@ -221,6 +221,13 @@ def test_imports_are_collected_from_every_per_major_source_root(
     }
 
 
+def test_imports_are_collected_from_the_tier3_job_modules(root, check_flink_api_tiers):
+    # Issue #1567: the Tier-3 jobs sit one directory deeper than the connectors.
+    write_import(root, "org.apache.flink.demo.One", module="kubernetes/apps/smoke")
+    write_import(root, "org.apache.flink.demo.Two", module="tools/nested")
+    assert check_flink_api_tiers.collect_imports() == {"org.apache.flink.demo.One"}
+
+
 def test_import_whitespace_does_not_hide_a_flink_import(root, check_flink_api_tiers):
     source = root / "conn/src/main/java/io/github/User.java"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +249,17 @@ def test_a_flink_wildcard_import_names_the_fixable_source_error(
     assert error.value.code == 2
     assert "User.java:3: wildcard import org.apache.flink.demo.*" in stderr
     assert "replace it with explicit type imports" in stderr
+
+
+def test_an_unreadable_source_is_an_infrastructure_error(
+    root, check_flink_api_tiers, capsys
+):
+    # The glob matches a directory named like a source; reading it fails.
+    (root / "conn/src/main/java/Odd.java").mkdir(parents=True)
+    with pytest.raises(SystemExit) as error:
+        check_flink_api_tiers.collect_imports()
+    assert error.value.code == 2
+    assert "Odd.java could not be read" in capsys.readouterr().err
 
 
 def test_a_tree_with_no_flink_imports_is_an_infrastructure_error(
@@ -522,6 +540,33 @@ def audit_tree(root, tier, allowlist=None, artifacts=("flink-core",)):
         {"org/apache/flink/demo/Demo.java": java("Demo", annotations)},
     )
     write_config(root, artifacts=artifacts, **(allowlist or {}))
+
+
+def write_tier3_pom(root, version):
+    pom = root / "kubernetes/apps/smoke/pom.xml"
+    pom.parent.mkdir(parents=True, exist_ok=True)
+    pom.write_text(POM.format(property=FLINK_VERSION_PROPERTY.format(version=version)))
+
+
+def test_a_tier3_module_pinning_the_root_version_is_audited(
+    root, check_flink_api_tiers
+):
+    audit_tree(root, "Public")
+    write_tier3_pom(root, VERSION)
+    assert exit_code(check_flink_api_tiers) == 0
+
+
+def test_a_tier3_module_pinning_another_version_stops_the_audit(
+    root, check_flink_api_tiers, capsys
+):
+    # Its imports would be classified at the root's tiers, not its own.
+    audit_tree(root, "Public")
+    write_tier3_pom(root, "9.9.10")
+    assert exit_code(check_flink_api_tiers) == 2
+    assert (
+        "kubernetes/apps/smoke/pom.xml pins flink.version 9.9.10"
+        in capsys.readouterr().err
+    )
 
 
 def test_a_public_import_needs_no_entry(root, check_flink_api_tiers):
