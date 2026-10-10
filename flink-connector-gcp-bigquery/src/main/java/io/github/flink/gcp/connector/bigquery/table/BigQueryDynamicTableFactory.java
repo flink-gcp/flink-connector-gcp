@@ -179,6 +179,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DURATION,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_PATH,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_DATASET,
+                        BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_TABLE_EXPIRATION,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES,

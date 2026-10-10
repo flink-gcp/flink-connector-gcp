@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
+import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
@@ -46,6 +47,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -176,6 +178,13 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                 CdcTableReconciliationPolicy reconciliationPolicy) {
             create(destination, schema, optionsProvider.optionsFor(destination));
             return true;
+        }
+
+        @Override
+        public long prepareTemporaryTable(
+                TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
+            throw new UnsupportedOperationException(
+                    "FILE_LOADS temporary tables are not used here");
         }
 
         @Override

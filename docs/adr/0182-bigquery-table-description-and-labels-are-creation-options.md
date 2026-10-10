@@ -77,10 +77,11 @@ temporary tables into a final table the admin created with a description and lab
 rows and kept both.
 The same copy into a column-partitioned final table was refused ("Failed to copy Non partitioned
 table to Column partitioned table: not supported"), and into a clustered one ("incompatible
-clustering fields"), under `WRITE_APPEND` as well: the temporary tables carry neither setting.
+clustering fields"), under `WRITE_APPEND` as well: the temporary tables then carried neither setting.
 That predates this decision and concerns `FILE_LOADS`' temporary-table path rather than the
-metadata; it is recorded here because the measurement found it, and tracked in
-[#1671](https://github.com/flink-gcp/flink-connector-gcp/issues/1671).
+metadata; it is recorded here because the measurement found it.
+[ADR-0183](0183-file-loads-temporary-tables-take-the-destinations-live-layout.md) resolves it by
+giving the temporary tables the destination's layout.
 
 ## Consequences
 

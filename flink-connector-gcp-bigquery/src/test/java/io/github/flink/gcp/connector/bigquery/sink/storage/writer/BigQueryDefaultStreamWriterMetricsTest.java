@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
+import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
@@ -51,6 +52,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdminException;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -59,6 +61,7 @@ import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -870,6 +873,13 @@ class BigQueryDefaultStreamWriterMetricsTest {
                 throw cdcFailureAfterCreate;
             }
             return true;
+        }
+
+        @Override
+        public long prepareTemporaryTable(
+                TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
+            throw new UnsupportedOperationException(
+                    "FILE_LOADS temporary tables are not used here");
         }
 
         @Override

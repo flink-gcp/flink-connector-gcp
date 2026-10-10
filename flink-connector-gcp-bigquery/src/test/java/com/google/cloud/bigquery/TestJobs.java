@@ -184,6 +184,13 @@ public final class TestJobs {
                 .build();
     }
 
+    /** Returns a table reporting a creation time, as a created or patched table does. */
+    public static Table tableCreatedAt(BigQuery bigquery, TableId tableId, long creationTime) {
+        return new Table.Builder(bigquery, tableId, StandardTableDefinition.of(Schema.of()))
+                .setCreationTime(creationTime)
+                .build();
+    }
+
     /** Returns a table carrying the metadata needed by conditional table-update tests. */
     public static Table table(
             BigQuery bigquery, TableId tableId, String etag, Map<String, String> labels) {

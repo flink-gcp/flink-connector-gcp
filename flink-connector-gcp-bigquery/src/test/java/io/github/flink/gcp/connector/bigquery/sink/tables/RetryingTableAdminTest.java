@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -86,6 +87,8 @@ class RetryingTableAdminTest {
         private final Deque<IOException> creationFailures = new ArrayDeque<>();
         private final Deque<IOException> cdcFailures = new ArrayDeque<>();
         private final Deque<Boolean> cdcResults = new ArrayDeque<>();
+        private final Deque<IOException> preparationFailures = new ArrayDeque<>();
+        private int preparations;
         private int getSchemaCalls;
         private int updateSchemaCalls;
 
@@ -115,6 +118,21 @@ class RetryingTableAdminTest {
                 throw failure;
             }
             return cdcResults.isEmpty() || cdcResults.remove();
+        }
+
+        @Override
+        public long prepareTemporaryTable(
+                TableDestination table,
+                com.google.cloud.bigquery.Schema schema,
+                TableLayout layout,
+                Duration expiration)
+                throws IOException {
+            preparations++;
+            IOException failure = preparationFailures.poll();
+            if (failure != null) {
+                throw failure;
+            }
+            return 42L;
         }
 
         @Override
@@ -151,6 +169,23 @@ class RetryingTableAdminTest {
                 .create(DESTINATION, SCHEMA, TableCreateOptions.defaults());
 
         assertThat(delegate.creates).containsExactly(DESTINATION, DESTINATION, DESTINATION);
+    }
+
+    @Test
+    void repeatsARateLimitedTemporaryTablePreparationAndReturnsItsCreationTime() throws Exception {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.preparationFailures.add(rateLimited());
+
+        long creationTime =
+                new RetryingTableAdmin(delegate, fast(3))
+                        .prepareTemporaryTable(
+                                DESTINATION,
+                                com.google.cloud.bigquery.Schema.of(),
+                                TableLayout.NONE,
+                                Duration.ofHours(1));
+
+        assertThat(creationTime).isEqualTo(42L);
+        assertThat(delegate.preparations).isEqualTo(2);
     }
 
     @Test

@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
@@ -33,10 +34,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Duration;
 
 /**
- * A {@link TableAdmin} that repeats a creation the service answered with a {@link
- * RetriableTableAdminException}, within a fixed budget.
+ * A {@link TableAdmin} that repeats a creation, or a temporary table's preparation, the service
+ * answered with a {@link RetriableTableAdminException}, within a fixed budget.
  *
  * <p><b>What it is for.</b> Parallel subtasks all race to create the same missing table. A loser is
  * normally answered HTTP 409, which {@link BigQueryTableAdmin} treats as success, but past a
@@ -53,10 +55,11 @@ import java.io.IOException;
  * enumerable, and leaves every caller holding the SPI it already held. It also makes the budget
  * structural: a site cannot pass the wrong schedule, because no site passes one.
  *
- * <p>{@link #create} and {@link #ensureCdcTable} retry. {@link #getSchema} and {@link
- * #updateSchema} pass straight through — the latter reports its own lost race as {@code false} for
- * the caller to re-read and re-derive from, which a blind repeat here would turn into a
- * stale-proposal loop.
+ * <p>{@link #create}, {@link #ensureCdcTable} and {@link #prepareTemporaryTable(TableDestination,
+ * Schema, TableLayout, Duration)} retry; the last covers both the creation and the extension of an
+ * existing table's expiration. {@link #getSchema} and {@link #updateSchema} pass straight through —
+ * the latter reports its own lost race as {@code false} for the caller to re-read and re-derive
+ * from, which a blind repeat here would turn into a stale-proposal loop.
  */
 @Internal
 public final class RetryingTableAdmin implements TableAdmin {
@@ -208,6 +211,20 @@ public final class RetryingTableAdmin implements TableAdmin {
     @Override
     public TableSchemaSnapshot getSchema(TableDestination destination) throws IOException {
         return delegate.getSchema(destination);
+    }
+
+    @Override
+    public long prepareTemporaryTable(
+            TableDestination table, Schema schema, TableLayout layout, Duration expiration)
+            throws IOException {
+        long[] creationTime = new long[1];
+        retry(
+                table,
+                "prepare temporary",
+                () ->
+                        creationTime[0] =
+                                delegate.prepareTemporaryTable(table, schema, layout, expiration));
+        return creationTime[0];
     }
 
     @Override

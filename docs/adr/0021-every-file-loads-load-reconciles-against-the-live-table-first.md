@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-27; overflow wording revised by [#72] (2026-08-13); destination-task ownership
-  revised by [#1129] (2026-08-29)
-- Issues: [#72], [#142], [#1129]
+  revised by [#1129] (2026-08-29); temporary-table layout revised by [#1671] (2026-10-09)
+- Issues: [#72], [#142], [#1129], [#1671]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Schema evolution
 
@@ -48,7 +48,12 @@ Consequences that are decisions, not accidents:
 
 - Missing tables are created via `TableAdmin` (with `TableCreateOptions`) before the load,
   retiring the load-job-driven creation machinery (`mayCreate`/`missingTables`) and
-  `LoadJobSpec`'s partitioning/clustering fields — so a failed load can leave an empty table or
+  `LoadJobSpec`'s partitioning/clustering fields as a description of the destination. Where the
+  copy into the destination needs it, a temporary-table load carries the destination's partitioning
+  and clustering instead, read by the same reconciliation from the live table, so its table can be
+  copied into the destination
+  ([ADR-0183](0183-file-loads-temporary-tables-take-the-destinations-live-layout.md)). A
+  pre-load creation means a failed load can leave an empty table or
   an applied schema union behind, as the temp path always could, columns being irreversible
   anyway. `CREATE_NEVER` + missing table is a client-side `IOException` before anything is
   submitted. `bigquery.tables.get` became an unconditional FILE_LOADS requirement (one read per
@@ -72,3 +77,4 @@ Both measured rows are pinned against real BigQuery by
 [#142]: https://github.com/flink-gcp/flink-connector-gcp/issues/142
 [#72]: https://github.com/flink-gcp/flink-connector-gcp/issues/72
 [#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129
+[#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671

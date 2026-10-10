@@ -59,6 +59,9 @@ class FileLoadsOptionsMapperTest {
         SETTER_TO_OPTION.put("stagingPath", BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_PATH);
         SETTER_TO_OPTION.put("tempDataset", BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_DATASET);
         SETTER_TO_OPTION.put(
+                "tempTableExpiration",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_TABLE_EXPIRATION);
+        SETTER_TO_OPTION.put(
                 "writeDisposition", BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION);
         SETTER_TO_OPTION.put(
                 "minCheckpointInterval",
@@ -295,6 +298,13 @@ class FileLoadsOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option '" + key("maxSerializedRowBytes") + "' is invalid")
                 .hasMessageContaining("maxSerializedRowBytes must be positive");
+
+        Map<String, String> expiration = staged();
+        expiration.put(key("tempTableExpiration"), "59 min");
+        assertThatThrownBy(() -> map(expiration))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("tempTableExpiration") + "' is invalid")
+                .hasMessageContaining("tempTableExpiration must be at least 1 hour");
     }
 
     @Test

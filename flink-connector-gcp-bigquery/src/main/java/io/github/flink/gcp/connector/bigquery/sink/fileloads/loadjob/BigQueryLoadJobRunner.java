@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -177,7 +178,8 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         if (!spec.getSchemaUpdateOptions().isEmpty()) {
             load.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
-        submitOrAttach(jobId, load.build(), spec.getDestination(), spec.toString());
+        configureLayout(load, spec.getLayout());
+        submitOrAttach(jobId, load.build(), spec.getDestination(), spec.toString(), null);
     }
 
     /**
@@ -204,6 +206,34 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         }
     }
 
+    /**
+     * Gives the table a temporary-table load creates its destination's partitioning and clustering.
+     * A copy job refuses a non-partitioned source for a column- or range-partitioned destination,
+     * and a source whose clustering differs from an existing destination's (measured, ADR-0183).
+     *
+     * <p>A time-partitioned temporary table also gets {@link
+     * TableLayout#TEMPORARY_PARTITION_EXPIRATION_MS}, so it cannot inherit its dataset's default
+     * partition expiration. The table exists already, created by {@code
+     * TableAdmin.prepareTemporaryTable} with the same layout; the load states that layout so its
+     * configuration matches the table it truncates, and under {@code CREATE_NEVER} a table that
+     * vanished since fails the attempt.
+     */
+    private static void configureLayout(
+            LoadJobConfiguration.Builder load, @Nullable TableLayout layout) {
+        if (layout == null) {
+            return;
+        }
+        if (layout.getTimePartitioning() != null) {
+            load.setTimePartitioning(layout.getTemporaryTimePartitioning());
+        }
+        if (layout.getRangePartitioning() != null) {
+            load.setRangePartitioning(layout.getRangePartitioning());
+        }
+        if (layout.getClustering() != null) {
+            load.setClustering(layout.getClustering());
+        }
+    }
+
     @Override
     public void submitCopy(String jobId, CopyJobSpec spec) throws IOException {
         CopyJobConfiguration copy =
@@ -215,7 +245,8 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                         .setCreateDisposition(spec.getCreateDisposition())
                         .setWriteDisposition(spec.getWriteDisposition())
                         .build();
-        submitOrAttach(jobId, copy, spec.getDestination(), spec.toString());
+        submitOrAttach(
+                jobId, copy, spec.getDestination(), spec.toString(), spec.getEquivalentJobId());
     }
 
     @Override
@@ -230,7 +261,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         if (!spec.getSchemaUpdateOptions().isEmpty()) {
             query.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
-        submitOrAttach(jobId, query.build(), spec.getDestination(), spec.toString());
+        submitOrAttach(jobId, query.build(), spec.getDestination(), spec.toString(), null);
     }
 
     @Override
@@ -282,6 +313,76 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     }
 
     @Override
+    public boolean copySucceeded(String jobId, CopyJobSpec spec) throws IOException {
+        String jobLocation = jobLocation(spec.getDestination());
+        return succeeded(findNotFailed(jobId, jobLocation))
+                || (spec.getEquivalentJobId() != null
+                        && succeeded(findNotFailed(spec.getEquivalentJobId(), jobLocation)));
+    }
+
+    /**
+     * Whether {@code job}, which {@link #findNotFailed(String, String)} returned and so has not
+     * failed, is done; {@code false} for {@code null}, which means no job.
+     */
+    private static boolean succeeded(@Nullable Job job) {
+        return job != null && isDone(job);
+    }
+
+    /**
+     * Returns the first job under {@code baseJobId} or one of its retry ids that has not failed, or
+     * {@code null}. Retry ids are taken in order, past failed ones, so the first absent id ends the
+     * search.
+     */
+    @Nullable
+    private Job findNotFailed(String baseJobId, String jobLocation) throws IOException {
+        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
+            Job existing =
+                    getJob(
+                            JobId.newBuilder()
+                                    .setJob(retryJobName(baseJobId, probe))
+                                    .setLocation(jobLocation)
+                                    .build(),
+                            "looking for a previous attempt's job");
+            if (existing == null) {
+                return null;
+            }
+            if (!isFailed(existing.getStatus())) {
+                return existing;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Re-attaches to a job under {@code equivalentBaseJobId} or one of its retry ids that has not
+     * failed, which ran the same copy under the id an earlier attempt gave it. Retry ids are taken
+     * in order, past failed ones, so the first absent id ends the search.
+     *
+     * @return whether such a job was found and stands for this one
+     */
+    private boolean attachToEquivalent(
+            String baseJobId, String equivalentBaseJobId, String jobLocation) throws IOException {
+        Job existing = findNotFailed(equivalentBaseJobId, jobLocation);
+        if (existing == null) {
+            return false;
+        }
+        sharedJobs.jobs.put(baseJobId, existing);
+        JobStatus status = existing.getStatus();
+        LOG.info(
+                "Re-attached to BigQuery job {}, which stands for {}, from a previous attempt"
+                        + " (state {})",
+                existing.getJobId().getJob(),
+                baseJobId,
+                status == null ? "unknown" : status.getState());
+        return true;
+    }
+
+    /** The id the {@code probe}-th attempt at a deterministic job submits under. */
+    private static String retryJobName(String baseJobId, int probe) {
+        return probe == 0 ? baseJobId : baseJobId + "-r" + probe;
+    }
+
+    @Override
     public void deleteTable(TableDestination table) {
         try {
             client().delete(BigQueryTableAdmin.toTableId(table));
@@ -294,12 +395,17 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             String baseJobId,
             JobConfiguration configuration,
             TableDestination destination,
-            String what)
+            String what,
+            @Nullable String equivalentBaseJobId)
             throws IOException {
         String jobLocation = jobLocation(destination);
+        if (equivalentBaseJobId != null
+                && attachToEquivalent(baseJobId, equivalentBaseJobId, jobLocation)) {
+            return;
+        }
         String lastError = null;
         for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
-            String jobName = probe == 0 ? baseJobId : baseJobId + "-r" + probe;
+            String jobName = retryJobName(baseJobId, probe);
             JobId jobId = JobId.newBuilder().setJob(jobName).setLocation(jobLocation).build();
             Job existing = getJob(jobId, "looking for a previous attempt's job");
             if (existing == null) {

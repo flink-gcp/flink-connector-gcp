@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
+import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.CopyJobConfiguration;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.Field;
@@ -27,15 +28,18 @@ import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.RangePartitioning;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TestJobs;
+import com.google.cloud.bigquery.TimePartitioning;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery.JobAnswer;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -975,6 +979,206 @@ class BigQueryLoadJobRunnerTest {
         assertThat(submitted.getParquetOptions().getEnableListInference()).isTrue();
         // useAvroLogicalTypes is meaningless here and must not travel with a Parquet load.
         assertThat(submitted.getUseAvroLogicalTypes()).isNull();
+    }
+
+    @Test
+    void aTempTableLoadCreatesItsTableWithTheGivenLayout() throws Exception {
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+        TimePartitioning partitioning =
+                TimePartitioning.newBuilder(TimePartitioning.Type.DAY).setField("ts").build();
+        RangePartitioning range =
+                RangePartitioning.newBuilder()
+                        .setField("n")
+                        .setRange(
+                                RangePartitioning.Range.newBuilder()
+                                        .setStart(0L)
+                                        .setEnd(10L)
+                                        .setInterval(1L)
+                                        .build())
+                        .build();
+        Clustering clustering = Clustering.newBuilder().setFields(List.of("region")).build();
+        BigQueryLoadJobRunner runner = runner();
+
+        runner.submitLoad(JOB_ID, layoutSpec(TableLayout.of(partitioning, null, clustering)));
+        runner.submitLoad("bq-2", layoutSpec(TableLayout.of(null, range, null)));
+
+        LoadJobConfiguration timeAndClustering = client.created.get(0).getConfiguration();
+        // An explicit expiration, so the table never inherits its dataset's default one: 10,000
+        // years, pinned literally.
+        assertThat(timeAndClustering.getTimePartitioning())
+                .isEqualTo(partitioning.toBuilder().setExpirationMs(315_360_000_000_000L).build());
+        assertThat(timeAndClustering.getRangePartitioning()).isNull();
+        assertThat(timeAndClustering.getClustering()).isEqualTo(clustering);
+        LoadJobConfiguration rangeOnly = client.created.get(1).getConfiguration();
+        assertThat(rangeOnly.getTimePartitioning()).isNull();
+        assertThat(rangeOnly.getRangePartitioning()).isEqualTo(range);
+        assertThat(rangeOnly.getClustering()).isNull();
+    }
+
+    @Test
+    void aLoadWithoutALayoutSetsNoPartitioningOrClustering() throws Exception {
+        client.answering(JobAnswer.absent());
+
+        runner().submitLoad(JOB_ID, loadSpec(List.of()));
+
+        LoadJobConfiguration submitted = client.created.get(0).getConfiguration();
+        assertThat(submitted.getTimePartitioning()).isNull();
+        assertThat(submitted.getRangePartitioning()).isNull();
+        assertThat(submitted.getClustering()).isNull();
+    }
+
+    @Test
+    void aCopyReAttachesToASucceededEquivalentJobInsteadOfCopyingAgain() throws Exception {
+        client.answering(JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitCopy(JOB_ID, equivalentCopySpec("bq-equivalent"));
+        runner.awaitJob(JOB_ID);
+
+        assertThat(client.created).isEmpty();
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly("bq-equivalent");
+        // Looked up where the copy runs; a location-less id is not found outside the default one.
+        assertThat(client.getJobCalls)
+                .allSatisfy(id -> assertThat(id.getLocation()).isEqualTo(LOCATION));
+    }
+
+    @Test
+    void aCopyReAttachesToARunningEquivalentJob() throws Exception {
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitCopy(JOB_ID, equivalentCopySpec("bq-equivalent"));
+        runner.awaitJob(JOB_ID);
+
+        assertThat(client.created).isEmpty();
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly("bq-equivalent", "bq-equivalent");
+    }
+
+    @Test
+    void aCopyPassesOverFailedEquivalentJobsAndSubmitsItsOwnId() throws Exception {
+        client.answering(
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused again")),
+                JobAnswer.absent(),
+                JobAnswer.absent());
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitCopy(JOB_ID, equivalentCopySpec("bq-equivalent"));
+        runner.awaitJob(JOB_ID);
+
+        // An earlier version's refused copies do not stand for this one, and the first absent
+        // retry id ends the search.
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly("bq-equivalent", "bq-equivalent-r1", "bq-equivalent-r2", JOB_ID);
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID);
+    }
+
+    @Test
+    void aCopySubmitsItsOwnIdOnceEveryEquivalentRetryIdFailed() throws Exception {
+        client.answering(
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.absent());
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitCopy(JOB_ID, equivalentCopySpec("bq-equivalent"));
+        runner.awaitJob(JOB_ID);
+
+        // An earlier version's restart loop used every retry id of the equivalent copy, each
+        // refused; none of them stands for this copy.
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(
+                        "bq-equivalent",
+                        "bq-equivalent-r1",
+                        "bq-equivalent-r2",
+                        "bq-equivalent-r3",
+                        "bq-equivalent-r4",
+                        "bq-equivalent-r5",
+                        JOB_ID);
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID);
+    }
+
+    @Test
+    void aCopySucceededOnlyWhenItsOwnOrItsEquivalentChainHoldsADoneJob() throws Exception {
+        BigQueryLoadJobRunner runner = runner();
+
+        client.answering(
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
+
+        client.answering(
+                JobAnswer.absent(), JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
+
+        // Its own copy still running, its equivalent done: the equivalent stands for it.
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
+
+        // Still running is not a success: the commit prepares its tables and re-attaches later.
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)));
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isFalse();
+
+        client.answering(
+                JobAnswer.absent(), JobAnswer.withStatus(failed("refused")), JobAnswer.absent());
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isFalse();
+
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(
+                        JOB_ID,
+                        JOB_ID + "-r1",
+                        JOB_ID,
+                        "bq-equivalent",
+                        JOB_ID,
+                        "bq-equivalent",
+                        JOB_ID,
+                        "bq-equivalent",
+                        JOB_ID,
+                        "bq-equivalent",
+                        "bq-equivalent-r1");
+        assertThat(client.created).isEmpty();
+    }
+
+    private static CopyJobSpec equivalentCopySpec(String equivalentJobId) {
+        return new CopyJobSpec(
+                List.of(TEMP),
+                DESTINATION,
+                JobInfo.CreateDisposition.CREATE_NEVER,
+                JobInfo.WriteDisposition.WRITE_APPEND,
+                equivalentJobId);
+    }
+
+    private static LoadJobSpec layoutSpec(TableLayout layout) {
+        return new LoadJobSpec(
+                TEMP,
+                List.of("gs://bucket/a.avro"),
+                SCHEMA,
+                JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                JobInfo.WriteDisposition.WRITE_TRUNCATE,
+                List.of(),
+                StagingFormat.AVRO,
+                layout);
     }
 
     private static LoadJobSpec loadSpec(List<JobInfo.SchemaUpdateOption> schemaUpdateOptions) {

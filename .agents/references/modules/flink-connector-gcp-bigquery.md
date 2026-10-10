@@ -179,7 +179,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   metadata on existing tables was built and removed by owner decision — do not reintroduce it
   without reading ADR-0182's declined alternative.
 
-## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
+## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`, `0183`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
   checkpoint, synchronously; every overflow uses temp tables and inserts deterministic
@@ -219,6 +219,25 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Every load reconciles against the live table via `ensureFinalTable`; the native
   `ALLOW_FIELD_*` options are kept deliberately, and the once-per-destination union warn is
   load-bearing (`docs/adr/0021`).
+- **Temporary tables take the destination's live layout** (`docs/adr/0183`): when a copy writes a
+  column- or range-partitioned or clustered destination, leaf loads carry its partitioning and
+  clustering from the reconciliation read, never from `TableCreateOptions`, and never its partition
+  expiration or `requirePartitionFilter`; a time-partitioned leaf gets the explicit 10,000-year
+  expiration so it cannot inherit a dataset default. Ingestion-time-only destinations and
+  `WRITE_TRUNCATE_DATA` keep unlaid tables and unchanged ids. Laid-out temporary names and the jobs filling them
+  take the layout hash; the final copy takes the fixed `-laidout` marker, never the hash, or a
+  clustering change between attempts repeats a succeeded copy. Each final copy names the other
+  plan's id as `CopyJobSpec.getEquivalentJobId()`, and the runner re-attaches to a non-failed job
+  under it; do not drop it, or adding or removing a destination's only clustering re-appends rows.
+  Do not reintroduce deleting a table by comparing layouts (ADR-0183 declines it).
+  Laid-out temporary tables are created first by `TableAdmin.prepareTemporaryTable` with a
+  `tempTableExpiration` table expiration (a load cannot set one, and a partitioned table skips the
+  dataset default table expiration when a default partition expiration is set), extended on every
+  attempt; the jobs filling them carry the table's creation time (`-t<millis>`). Never drop that
+  stamp: a retry after the table expired would re-attach to the job that filled its predecessor and
+  copy an empty table, losing rows silently. Laid-out loads and copies are `CREATE_NEVER`, and a
+  destination whose final copy succeeded under either id (`LoadJobRunner.copySucceeded`, DONE only,
+  not RUNNING) skips preparation and loads, laid out or not: ask before the layout guard.
 - **Staging files are zstandard, and the reason is CPU — never size.** Measured with this
   writer: deflate 11,436 ms against zstandard 3,182 ms for 2M rows, and 1.8% *more* bytes, so a
   size win must not be reintroduced from #283's 1,000-row probe (17% is a small-file artifact).

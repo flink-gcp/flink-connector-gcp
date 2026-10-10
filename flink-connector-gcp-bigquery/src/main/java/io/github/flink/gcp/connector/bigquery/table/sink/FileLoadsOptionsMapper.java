@@ -60,6 +60,7 @@ public final class FileLoadsOptionsMapper {
             Arrays.asList(
                     BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_PATH,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_DATASET,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_TABLE_EXPIRATION,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES,
@@ -119,6 +120,10 @@ public final class FileLoadsOptionsMapper {
                 config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_DATASET,
                 builder::tempDataset);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_TABLE_EXPIRATION,
+                builder::tempTableExpiration);
         OptionSetters.apply(
                 config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION,

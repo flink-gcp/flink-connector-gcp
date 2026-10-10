@@ -17,11 +17,15 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
+
+import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -36,7 +40,9 @@ public final class LoadJobSpec {
     private final JobInfo.WriteDisposition writeDisposition;
     private final List<JobInfo.SchemaUpdateOption> schemaUpdateOptions;
     private final StagingFormat format;
+    @Nullable private final TableLayout layout;
 
+    @VisibleForTesting
     LoadJobSpec(
             TableDestination destination,
             List<String> sourceUris,
@@ -45,6 +51,26 @@ public final class LoadJobSpec {
             JobInfo.WriteDisposition writeDisposition,
             List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
             StagingFormat format) {
+        this(
+                destination,
+                sourceUris,
+                schema,
+                createDisposition,
+                writeDisposition,
+                schemaUpdateOptions,
+                format,
+                null);
+    }
+
+    LoadJobSpec(
+            TableDestination destination,
+            List<String> sourceUris,
+            Schema schema,
+            JobInfo.CreateDisposition createDisposition,
+            JobInfo.WriteDisposition writeDisposition,
+            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
+            StagingFormat format,
+            @Nullable TableLayout layout) {
         this.destination = destination;
         this.sourceUris = List.copyOf(sourceUris);
         this.schema = schema;
@@ -52,6 +78,7 @@ public final class LoadJobSpec {
         this.writeDisposition = writeDisposition;
         this.schemaUpdateOptions = List.copyOf(schemaUpdateOptions);
         this.format = format;
+        this.layout = layout;
     }
 
     /** Returns the destination table. */
@@ -89,6 +116,16 @@ public final class LoadJobSpec {
         return format;
     }
 
+    /**
+     * Returns the partitioning and clustering of the laid-out temporary table this load fills, or
+     * {@code null} for any other load. The table exists already, created by the commit with this
+     * layout; the load states it again so its configuration matches the table it truncates.
+     */
+    @Nullable
+    public TableLayout getLayout() {
+        return layout;
+    }
+
     @Override
     public String toString() {
         return "LoadJobSpec{destination="
@@ -103,6 +140,7 @@ public final class LoadJobSpec {
                 + schemaUpdateOptions
                 + ", format="
                 + format
+                + (layout != null ? ", layout=" + layout : "")
                 + "}";
     }
 }

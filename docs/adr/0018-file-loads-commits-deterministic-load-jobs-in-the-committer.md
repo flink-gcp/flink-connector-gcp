@@ -24,8 +24,8 @@ limitations under the License.
   revised by [#598] (2026-08-13); data-only replacement revised by [#646] (2026-08-14);
   writer lifecycle revised by [#1128] (2026-08-28); destination commit concurrency revised by
   [#1129] (2026-08-29); writer checkpoint finalization concurrency revised by [#1164]
-  (2026-08-30)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164]
+  (2026-08-30); laid-out temporary tables revised by [#1671] (2026-10-09)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -117,8 +117,12 @@ limitations under the License.
   carried forward without spending a copy job. A level is fully awaited before the next level is
   submitted, and only the final level writes the destination. Every intermediate uses
   `CREATE_IF_NEEDED` plus `WRITE_TRUNCATE`, so the existing deterministic job re-attachment also
-  makes a retry idempotent. Names and ids hash their ordered inputs and include the hierarchy level,
-  group and checkpoint attribution.
+  makes a retry idempotent; a laid-out destination's are created ahead with an expiration and filled
+  under `CREATE_NEVER` by jobs that also name the table's creation time (ADR-0183). Names and ids hash their ordered inputs and include the hierarchy level,
+  group and checkpoint attribution. A destination whose copy needs a layout has its temporary
+  tables renamed, and the jobs filling them salted, with that layout after reconciliation, and its
+  final copy takes a fixed marker and an equivalent id
+  ([ADR-0183](0183-file-loads-temporary-tables-take-the-destinations-live-layout.md)).
   Leaf and intermediate tables remain until the final action succeeds, then join the existing
   best-effort cleanup.
 - **`WRITE_TRUNCATE_DATA` is a batch-only data replacement that preserves destination metadata**
@@ -144,7 +148,9 @@ limitations under the License.
   sink configuration, the FILE_LOADS options, the Flink job id, the checkpoint id and the limits —
   no runner, no table admin, no staging storage. So "before side effects" is a property of what
   planning can reach rather than a rule each review has to re-apply; `LoadJobOrchestrator` receives
-  the finished `CommitPlan` and is the only half that can act on it.
+  the finished `CommitPlan` and is the only half that can act on it. Reconciliation may rewrite a
+  laid-out destination's names and ids and drop its loads and intermediate copies once its final
+  copy succeeded (ADR-0183), which never raises a count.
   This does not reserve shared quota: other workloads and
   failed attempts still consume the project's daily allowance. The cap is deliberately not a
   public option; a plan large enough to spend a whole project's default daily quota should be
@@ -335,3 +341,4 @@ are the ones this record's decisions rest on:
 [#1128]: https://github.com/flink-gcp/flink-connector-gcp/issues/1128
 [#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
+[#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671

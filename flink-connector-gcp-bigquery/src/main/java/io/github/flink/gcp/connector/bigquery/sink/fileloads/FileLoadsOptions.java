@@ -138,6 +138,11 @@ public final class FileLoadsOptions implements Serializable {
     /** Default for {@link Builder#destinationIdleTimeout(Duration)}. */
     public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofMinutes(1);
 
+    /** Default for {@link Builder#tempTableExpiration(Duration)}. */
+    public static final Duration DEFAULT_TEMP_TABLE_EXPIRATION = Duration.ofDays(1);
+
+    private static final Duration MIN_TEMP_TABLE_EXPIRATION = Duration.ofHours(1);
+
     /**
      * Default for {@link Builder#maxSerializedRowBytes(long)}.
      *
@@ -156,6 +161,8 @@ public final class FileLoadsOptions implements Serializable {
 
     private final String stagingPath;
     @Nullable private final String tempDataset;
+    // Null in an instance serialized before the option existed; the getter supplies the default.
+    @Nullable private final Duration tempTableExpiration;
     private final WriteDisposition writeDisposition;
     private final Duration minCheckpointInterval;
     private final long maxStagingFileBytes;
@@ -182,6 +189,7 @@ public final class FileLoadsOptions implements Serializable {
         this.schemaReconcileMaxAttempts = builder.schemaReconcileMaxAttempts;
         this.stagingPath = builder.stagingPath;
         this.tempDataset = builder.tempDataset;
+        this.tempTableExpiration = builder.tempTableExpiration;
         this.writeDisposition = builder.writeDisposition;
         this.minCheckpointInterval = builder.minCheckpointInterval;
         this.maxStagingFileBytes = builder.maxStagingFileBytes;
@@ -220,6 +228,14 @@ public final class FileLoadsOptions implements Serializable {
     @Nullable
     public String getTempDataset() {
         return tempDataset;
+    }
+
+    /**
+     * Returns how long a temporary table laid out for a column- or range-partitioned or clustered
+     * destination lives after a commit attempt creates it or extends it.
+     */
+    public Duration getTempTableExpiration() {
+        return tempTableExpiration == null ? DEFAULT_TEMP_TABLE_EXPIRATION : tempTableExpiration;
     }
 
     /** Returns how loaded rows land in a destination table that already contains data. */
@@ -355,6 +371,7 @@ public final class FileLoadsOptions implements Serializable {
         FileLoadsOptions that = (FileLoadsOptions) o;
         return stagingPath.equals(that.stagingPath)
                 && Objects.equals(tempDataset, that.tempDataset)
+                && getTempTableExpiration().equals(that.getTempTableExpiration())
                 && writeDisposition == that.writeDisposition
                 && minCheckpointInterval.equals(that.minCheckpointInterval)
                 && maxStagingFileBytes == that.maxStagingFileBytes
@@ -380,6 +397,7 @@ public final class FileLoadsOptions implements Serializable {
         return Objects.hash(
                 stagingPath,
                 tempDataset,
+                getTempTableExpiration(),
                 writeDisposition,
                 minCheckpointInterval,
                 maxStagingFileBytes,
@@ -405,6 +423,8 @@ public final class FileLoadsOptions implements Serializable {
                 + stagingPath
                 + ", tempDataset="
                 + tempDataset
+                + ", tempTableExpiration="
+                + getTempTableExpiration()
                 + ", writeDisposition="
                 + writeDisposition
                 + ", minCheckpointInterval="
@@ -448,6 +468,7 @@ public final class FileLoadsOptions implements Serializable {
 
         private String stagingPath;
         @Nullable private String tempDataset;
+        private Duration tempTableExpiration = DEFAULT_TEMP_TABLE_EXPIRATION;
         private WriteDisposition writeDisposition = WriteDisposition.WRITE_APPEND;
         private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
         private long maxStagingFileBytes = DEFAULT_MAX_STAGING_FILE_BYTES;
@@ -498,13 +519,41 @@ public final class FileLoadsOptions implements Serializable {
          * tables, optional intermediate copy levels, and one final copy or query. Optional;
          * defaults to each destination table's own dataset. The temporary and final datasets must
          * share a BigQuery location. A dedicated dataset with a default table expiration is
-         * recommended so temporary tables orphaned by hard failures are garbage-collected.
+         * recommended so temporary tables orphaned by hard failures are garbage-collected; those
+         * laid out for a column- or range-partitioned or clustered destination carry their own
+         * expiration instead ({@link #tempTableExpiration(Duration)}).
          *
          * @param tempDataset the dataset id, in the same project as the destination table
          * @return this builder
          */
         public Builder tempDataset(String tempDataset) {
             this.tempDataset = ResourceNames.checkComponent(tempDataset, "tempDataset");
+            return this;
+        }
+
+        /**
+         * Sets how long a temporary table laid out for a column- or range-partitioned or clustered
+         * destination lives after a commit attempt creates it or extends it. Such a table takes its
+         * destination's partitioning and clustering so the final copy is accepted, and is created
+         * before the job that fills it, because a partitioned table may not take its dataset's
+         * default table expiration. Every attempt of the commit extends it again, and a table that
+         * expired before a retry is created and filled anew from the staged files. Temporary tables
+         * that are not laid out, and those of {@code WRITE_TRUNCATE_DATA}, are left to the
+         * dataset's default table expiration. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_TEMP_TABLE_EXPIRATION}.
+         *
+         * @param tempTableExpiration the expiration, at least one hour
+         * @return this builder
+         */
+        public Builder tempTableExpiration(Duration tempTableExpiration) {
+            Preconditions.checkNotNull(tempTableExpiration, "tempTableExpiration must not be null");
+            Preconditions.checkArgument(
+                    tempTableExpiration.compareTo(MIN_TEMP_TABLE_EXPIRATION) >= 0,
+                    "tempTableExpiration must be at least 1 hour: %s",
+                    tempTableExpiration);
+            this.tempTableExpiration =
+                    OptionChecks.checkExpressibleInNanos(
+                            tempTableExpiration, "tempTableExpiration");
             return this;
         }
 

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.JobInfo;
@@ -29,6 +30,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 
 import javax.annotation.Nullable;
 
@@ -69,14 +71,15 @@ import java.util.TreeMap;
  * <p><b>Temporary tables plus a copy hierarchy.</b> If any staging format for a table exceeds the
  * limits, or replacement rows span formats, every format for that table is loaded
  * partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED},
- * so a retried partition load is idempotent). At most 1,200 sources feed one copy job. A larger
- * source set is reduced through deterministic intermediate tables. An ordinary disposition then
- * uses one final copy. Because a copy job cannot use {@code WRITE_TRUNCATE_DATA}, that disposition
- * first copies into one aggregate temporary table and then atomically replaces the final table's
- * data with a terminal query job. Copy jobs support no schema update options and require matching
- * schemas, so every leaf is loaded with the reconciled schema and every intermediate inherits it.
- * Streaming temporary-table names include the checkpoint id so consecutive checkpoints do not
- * collide.
+ * so a retried partition load is idempotent; a destination whose copy needs its layout has its
+ * temporary tables created first instead, and filled under {@code CREATE_NEVER}, ADR-0183). At most
+ * 1,200 sources feed one copy job. A larger source set is reduced through deterministic
+ * intermediate tables. An ordinary disposition then uses one final copy. Because a copy job cannot
+ * use {@code WRITE_TRUNCATE_DATA}, that disposition first copies into one aggregate temporary table
+ * and then atomically replaces the final table's data with a terminal query job. Copy jobs support
+ * no schema update options and require matching schemas, so every leaf is loaded with the
+ * reconciled schema and every intermediate inherits it. Streaming temporary-table names include the
+ * checkpoint id so consecutive checkpoints do not collide.
  *
  * <p><b>Determinism.</b> Files are sorted by URI before bin-packing, so a retried run over the same
  * committables produces identical partitions, temporary table names and job ids (hashes over
@@ -85,9 +88,6 @@ import java.util.TreeMap;
  */
 @Internal
 final class CommitPlanner {
-
-    /** BigQuery's per-load-job source URI limit. */
-    @VisibleForTesting static final int MAX_FILES_PER_JOB = 10_000;
 
     /** Per-load-job byte budget: 11 TiB, a safety margin under BigQuery's 15 TB limit. */
     private static final long MAX_BYTES_PER_JOB = 11L * (1L << 40);
@@ -261,14 +261,18 @@ final class CommitPlanner {
                                     null),
                             new QueryJobSpec(copyDestination, destination, schemaUpdateOptions()));
         }
+        String finalCopyId = jobId("flink-bq-copy", copyDestination, tablePaths(sources), null);
         PlannedCopy finalCopy =
                 new PlannedCopy(
-                        jobId("flink-bq-copy", copyDestination, tablePaths(sources), null),
+                        finalCopyId,
                         new CopyJobSpec(
                                 sources,
                                 copyDestination,
                                 copyCreateDisposition,
-                                copyWriteDisposition));
+                                copyWriteDisposition,
+                                // A copy into the destination may have run laid out in an earlier
+                                // attempt, before the destination's clustering was removed.
+                                terminalQuery == null ? laidOutFinalCopyId(finalCopyId) : null));
         return new DestinationCopy(intermediateLevels, finalCopy, terminalQuery, cleanupTables);
     }
 
@@ -339,7 +343,9 @@ final class CommitPlanner {
             files.sort(Comparator.comparing(FileLoadsCommittable::getUri));
             loads.add(
                     new DestinationLoad(
-                            entry.getKey().destination, entry.getKey().format, partition(files)));
+                            entry.getKey().destination,
+                            entry.getKey().format,
+                            partition(files, limits.maxFilesPerJob)));
         }
         return loads;
     }
@@ -364,12 +370,18 @@ final class CommitPlanner {
 
     @VisibleForTesting
     static List<List<FileLoadsCommittable>> partition(List<FileLoadsCommittable> sortedFiles) {
+        return partition(sortedFiles, Limits.MAX_FILES_PER_JOB);
+    }
+
+    @VisibleForTesting
+    static List<List<FileLoadsCommittable>> partition(
+            List<FileLoadsCommittable> sortedFiles, int maxFilesPerJob) {
         List<List<FileLoadsCommittable>> partitions = new ArrayList<>();
         List<FileLoadsCommittable> current = new ArrayList<>();
         long currentBytes = 0;
         for (FileLoadsCommittable file : sortedFiles) {
             if (!current.isEmpty()
-                    && (current.size() >= MAX_FILES_PER_JOB
+                    && (current.size() >= maxFilesPerJob
                             || currentBytes + file.getByteCount() > MAX_BYTES_PER_JOB)) {
                 partitions.add(current);
                 current = new ArrayList<>();
@@ -486,6 +498,51 @@ final class CommitPlanner {
             uris.add(file.getUri());
         }
         return uris;
+    }
+
+    /** The salt a laid-out destination's temporary tables and their jobs take (ADR-0183). */
+    static String layoutSalt(TableLayout layout) {
+        return sha256Hex(layout.fingerprint()).substring(0, 8);
+    }
+
+    /** The id of a job that fills a laid-out temporary table. */
+    static String laidOutJobId(String jobId, String salt) {
+        return jobId + "-layout-" + salt;
+    }
+
+    /** The laid-out name of a temporary table. */
+    static TableDestination laidOutTable(TableDestination table, String salt) {
+        return TableDestination.of(
+                table.getProject(), table.getDataset(), table.getTable() + "_layout_" + salt);
+    }
+
+    /**
+     * The id of a job that fills a laid-out temporary table, for the incarnation of that table
+     * created at {@code creationTime}. A table that expired and was created anew is filled by a new
+     * job rather than re-attached to the one that filled its predecessor.
+     */
+    static String incarnationJobId(String jobId, long creationTime) {
+        return jobId + "-t" + creationTime;
+    }
+
+    /**
+     * The id of a job that fills the laid-out temporary table {@code table}: salted with the layout
+     * and naming the table's incarnation.
+     */
+    static String laidOutIncarnationJobId(
+            String jobId,
+            String salt,
+            Map<TableDestination, Long> creationTimes,
+            TableDestination table) {
+        Long creationTime = creationTimes.get(table);
+        Preconditions.checkState(
+                creationTime != null, "Temporary table %s was not prepared", table);
+        return incarnationJobId(laidOutJobId(jobId, salt), creationTime);
+    }
+
+    /** The id of the copy from laid-out temporary tables into the destination. */
+    static String laidOutFinalCopyId(String jobId) {
+        return jobId + "-laidout";
     }
 
     private static List<String> tablePaths(List<TableDestination> tables) {

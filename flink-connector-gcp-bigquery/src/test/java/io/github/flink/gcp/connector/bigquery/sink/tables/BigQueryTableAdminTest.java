@@ -25,7 +25,11 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.Clustering;
+import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.Schema;
+import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
@@ -47,6 +51,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -1007,6 +1012,150 @@ class BigQueryTableAdminTest {
                 .isExactlyInstanceOf(IOException.class)
                 .hasMessageContaining("p.d.t")
                 .hasCause(denied);
+    }
+
+    private static final TableLayout TEMP_LAYOUT =
+            TableLayout.of(
+                    TimePartitioning.newBuilder(TimePartitioning.Type.DAY).setField("ts").build(),
+                    null,
+                    Clustering.newBuilder().setFields(List.of("region")).build());
+
+    private static final Schema TEMP_SCHEMA =
+            Schema.of(
+                    Field.of("ts", StandardSQLTypeName.TIMESTAMP),
+                    Field.of("region", StandardSQLTypeName.STRING));
+
+    @Test
+    void aTemporaryTableIsCreatedWithItsLayoutAndAnExpiration() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.createdTableCreationTime = 123L;
+        long before = System.currentTimeMillis();
+
+        long creationTime =
+                new BigQueryTableAdmin(client)
+                        .prepareTemporaryTable(
+                                DESTINATION, TEMP_SCHEMA, TEMP_LAYOUT, Duration.ofHours(6));
+
+        long after = System.currentTimeMillis();
+        assertThat(creationTime).isEqualTo(123L);
+        assertThat(client.createdTables).hasSize(1);
+        TableInfo created = client.createdTables.get(0);
+        assertThat(created.getExpirationTime())
+                .isBetween(
+                        before + Duration.ofHours(6).toMillis(),
+                        after + Duration.ofHours(6).toMillis());
+        StandardTableDefinition definition = created.getDefinition();
+        assertThat(definition.getSchema()).isEqualTo(TEMP_SCHEMA);
+        assertThat(definition.getTimePartitioning())
+                .isEqualTo(TEMP_LAYOUT.getTemporaryTimePartitioning());
+        assertThat(definition.getTimePartitioning().getExpirationMs())
+                .isEqualTo(TableLayout.TEMPORARY_PARTITION_EXPIRATION_MS);
+        assertThat(definition.getClustering()).isEqualTo(TEMP_LAYOUT.getClustering());
+        assertThat(client.updatedTables).isEmpty();
+    }
+
+    @Test
+    void anExistingTemporaryTableHasOnlyItsExpirationExtended() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+        client.updatedTableCreationTime = 77L;
+        long before = System.currentTimeMillis();
+
+        long creationTime =
+                new BigQueryTableAdmin(client)
+                        .prepareTemporaryTable(
+                                DESTINATION, TEMP_SCHEMA, TEMP_LAYOUT, Duration.ofHours(6));
+
+        // The incarnation an earlier attempt created, so its jobs are re-attached to.
+        assertThat(creationTime).isEqualTo(77L);
+        assertThat(client.updatedTables).hasSize(1);
+        TableInfo patch = client.updatedTables.get(0);
+        assertThat(patch.getExpirationTime())
+                .isBetween(
+                        before + Duration.ofHours(6).toMillis(),
+                        System.currentTimeMillis() + Duration.ofHours(6).toMillis());
+        assertThat(patch.getTableId()).isEqualTo(BigQueryTableAdmin.toTableId(DESTINATION));
+        // Nothing but the expiration: no schema, partitioning or clustering is sent back.
+        StandardTableDefinition definition = patch.getDefinition();
+        assertThat(definition.getSchema()).isNull();
+        assertThat(definition.getTimePartitioning()).isNull();
+        assertThat(definition.getClustering()).isNull();
+    }
+
+    @Test
+    void aRetriableFailureToPrepareATemporaryTableIsTypedRetriable() {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure =
+                new BigQueryException(
+                        403, "quota", new BigQueryError("rateLimitExceeded", null, "quota"));
+
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .prepareTemporaryTable(
+                                                DESTINATION,
+                                                TEMP_SCHEMA,
+                                                TEMP_LAYOUT,
+                                                Duration.ofHours(1)))
+                .isInstanceOf(RetriableTableAdminException.class);
+    }
+
+    @Test
+    void aRateLimitedExtensionIsTypedRetriable() {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+        client.updateTableFailure =
+                new BigQueryException(
+                        403, "quota", new BigQueryError("rateLimitExceeded", null, "quota"));
+
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .prepareTemporaryTable(
+                                                DESTINATION,
+                                                TEMP_SCHEMA,
+                                                TEMP_LAYOUT,
+                                                Duration.ofHours(1)))
+                .isInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("Failed to extend the expiration");
+    }
+
+    @Test
+    void anExtensionThatReportsNoCreationTimeFailsTheAttempt() {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+
+        // The incarnation the job ids name cannot be guessed.
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .prepareTemporaryTable(
+                                                DESTINATION,
+                                                TEMP_SCHEMA,
+                                                TEMP_LAYOUT,
+                                                Duration.ofHours(1)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("no creation time");
+    }
+
+    @Test
+    void aTemporaryTableThatVanishedBeforeItsExtensionFailsTheAttempt() {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+        client.updateTableFailure = new BigQueryException(404, "Not found: Table");
+
+        // The next attempt creates it anew, under a new incarnation.
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .prepareTemporaryTable(
+                                                DESTINATION,
+                                                TEMP_SCHEMA,
+                                                TEMP_LAYOUT,
+                                                Duration.ofHours(1)))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("Failed to extend the expiration");
     }
 
     @Test

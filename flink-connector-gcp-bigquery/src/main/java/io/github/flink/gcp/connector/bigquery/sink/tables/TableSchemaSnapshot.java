@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.tables;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.Table;
@@ -33,28 +34,53 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
  * optimistic-concurrency safe) and to preserve REST-only column attributes the Storage API form
  * cannot represent. Only the schema is written back; the table's other attributes are read here but
  * never submitted.
+ *
+ * <p>It also carries the table's {@link TableLayout}, read from the same table, which {@code
+ * FILE_LOADS} loads its temporary tables with so they can be copied into it.
  */
 @Internal
 public final class TableSchemaSnapshot {
 
     private final TableSchema schema;
     private final Table table;
+    private final TableLayout layout;
 
-    private TableSchemaSnapshot(TableSchema schema, Table table) {
+    private TableSchemaSnapshot(TableSchema schema, Table table, TableLayout layout) {
         this.schema = schema;
         this.table = table;
+        this.layout = layout;
     }
 
     /**
-     * Creates a snapshot.
+     * Creates a snapshot whose layout is read from {@code table}, or is {@link TableLayout#NONE}
+     * without one.
      *
      * @param schema the schema in Storage API form
      * @param table the REST table the schema was read from, or {@code null}
      * @return the snapshot
      */
     public static TableSchemaSnapshot of(TableSchema schema, Table table) {
+        return of(
+                schema,
+                table,
+                table == null ? TableLayout.NONE : TableLayout.of(table.getDefinition()));
+    }
+
+    /**
+     * Creates a snapshot with an explicit layout, for a test double that has no REST table to read
+     * it from.
+     *
+     * @param schema the schema in Storage API form
+     * @param table the REST table the schema was read from, or {@code null}
+     * @param layout the table's layout
+     * @return the snapshot
+     */
+    @VisibleForTesting
+    public static TableSchemaSnapshot of(TableSchema schema, Table table, TableLayout layout) {
         return new TableSchemaSnapshot(
-                Preconditions.checkNotNull(schema, "schema must not be null"), table);
+                Preconditions.checkNotNull(schema, "schema must not be null"),
+                table,
+                Preconditions.checkNotNull(layout, "layout must not be null"));
     }
 
     /** Returns the schema in Storage API form. */
@@ -65,5 +91,10 @@ public final class TableSchemaSnapshot {
     /** Returns the REST table the schema was read from, or {@code null}. */
     public Table getTable() {
         return table;
+    }
+
+    /** Returns the table's partitioning and clustering. */
+    public TableLayout getLayout() {
+        return layout;
     }
 }
