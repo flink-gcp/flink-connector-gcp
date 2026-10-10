@@ -14,11 +14,11 @@
 
 # The account the nightly real-GCP E2E workflow runs as. Scoped to the fixed
 # set of services the connectors touch; the fine-grained resources (tables,
-# topics, subscriptions, queues, and the Bigtable and Spanner instances
-# themselves) are created and deleted by the tests themselves, which is why the
-# Pub/Sub, Cloud Tasks, Bigtable and Spanner grants are create-capable. A new
-# connector's E2E suite adds its grant here in the pull request that first
-# needs it.
+# topics, subscriptions, queues, the Bigtable and Spanner instances and the
+# Firestore databases themselves) are created and deleted by the tests
+# themselves, which is why the Pub/Sub, Cloud Tasks, Bigtable, Spanner and
+# Firestore grants are create-capable. A new connector's E2E suite adds its
+# grant here in the pull request that first needs it.
 
 resource "google_service_account" "github_actions_e2e" {
   account_id   = "github-actions-e2e"
@@ -57,6 +57,22 @@ resource "google_project_iam_member" "e2e" {
     "roles/appengine.serviceAdmin",
     # Tests create and delete their own queues and tasks.
     "roles/cloudtasks.admin",
+    # Admin, because the Firestore suite (#1546) creates and deletes an
+    # ephemeral database per gated test class, in Native and in Datastore mode,
+    # and datastore.databases.delete is in no narrower predefined role: checked
+    # against `gcloud iam roles describe`, of the Datastore and Firestore roles
+    # only roles/datastore.admin and roles/datastore.owner carry it, while
+    # roles/datastore.cloneAdmin and roles/datastore.restoreAdmin carry the
+    # create without the delete. Admin carries every data permission of
+    # roles/datastore.user as well, so this is one binding rather than two.
+    # Owner adds only the console's saved queries. The writable permissions
+    # admin adds beyond the suite's needs cover backups and their schedules,
+    # clone, import and export, bulk delete, schemas, tag bindings, user
+    # credentials, and cancelling or deleting operations; nothing
+    # persistent exists for it to reach except the (default) database App
+    # Engine created, which no suite touches. A custom role was declined for
+    # the reason written out under Bigtable above.
+    "roles/datastore.admin",
     # Tests create and delete their own topics and subscriptions.
     "roles/pubsub.editor",
     # Editor, not admin, and unlike Bigtable above this connector does not need
