@@ -125,8 +125,8 @@ The Flink base image has no application JAR; each actual delivery still supplies
 The [generic smoke application](apps/smoke/README.md) supplies that JAR, a dedicated workload identity and a reusable `pkg/smoke.#Application` definition.
 Its committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries share concrete run inputs and the published `images.smoke` pin.
 They update the same deployment sequentially; the [application runbook](apps/smoke/README.md#deployment-and-storage) records the planned window, expiry and independent render commands.
-The [BigQuery application package](apps/bigquery/README.md#deployment-definition) supplies initial and savepoint-upgrade definitions for both delivery modes and destination counts.
-Its synthetic deliveries are checked locally; a concrete approved delivery and lifecycle admission remain subsequent work.
+The [BigQuery application package](apps/bigquery/README.md#deployment-definition) supplies initial and savepoint-upgrade definitions for its three delivery methods, ALO, EO and FILE_LOADS, at both destination counts.
+Its synthetic deliveries are checked locally, and [production dispatch](apps/bigquery/README.md#production-dispatch) renders and admits an approved trial's delivery.
 The common and manager-specific Flink Pod templates select AMD64 and carry the run label; the TaskManager template adds Spot, and the JobManager template selects no capacity class, which is how a Pod asks Autopilot for normal capacity.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.

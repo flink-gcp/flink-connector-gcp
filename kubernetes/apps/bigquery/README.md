@@ -29,7 +29,7 @@ Separate local graph tests verify both writers reach every destination for every
 Emulator tests create the application's production default-stream writer for both destination counts, write each destination sequentially, check the open/append/close observations, then query every table.
 The application graph is tested separately: concurrent appends caused SQLite lock errors and RPC retries inside the pinned emulator in CI.
 The pinned emulator assigns buffered offsets across streams and can hang on multi-stream flush, so it cannot exercise the production EO writer for this workload.
-Existing connector tests cover that writer with deterministic service doubles; this application still needs real BigQuery EO validation.
+Existing connector tests cover that writer with deterministic service doubles, and the deployed EO trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427) ran it against real BigQuery, one run at each destination count, with no duplicate or missing sequence across a savepoint upgrade and a JobManager failover, as their [findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md) record.
 The ALO emulator fixtures use one append of two rows per destination because follow-up appends are not reliably bound to their stream.
 They establish local wiring and routing, not BigQuery exactly-once recovery, GCS checkpoint permissions or deployed Operator behavior.
 
@@ -182,7 +182,7 @@ Replay serializes the same sequence into the same bytes and table.
 The deployed query oracle must require every expected sequence in its correct table; EO and FILE_LOADS additionally require exact uniqueness, while ALO records duplicate multiplicities.
 The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
 The resource adapter and controller below provide internal query, ownership and deletion operations.
-The internal admission path connects those operations to deployment creation; authenticated production dispatch remains subsequent lifecycle work.
+The internal admission path connects those operations to deployment creation, and [production dispatch](#production-dispatch) reaches it through the authenticated actors.
 
 ## State and observations
 
@@ -255,7 +255,7 @@ mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery
 
 The first command writes GoogleSQL; it submits no query.
 The second requires an already collected JSON array of aggregate objects and prints one JSON report to standard output; the example redirects it to `oracle-report.json`.
-These commands do not provide the missing query submission/export step.
+These commands submit and export nothing; a deployed run's queries go through the [query handoff](#query-requests-and-runner-release).
 An installed CLI can run either command outside the checkout.
 The array must contain every result row, with the generated field names; BigQuery INT64 strings and JSON integers are accepted.
 Missing, repeated or extra destinations, a changed input identity, inconsistent counts, duplicate JSON keys or evidence over 64 KiB are rejected.
@@ -278,7 +278,7 @@ Each object in `aggregate.json` has this shape; this example shows only destinat
 
 The result collector must flatten each query-result row into these named fields using the returned schema and retain all pages.
 A raw REST `rows[].f[].v` envelope or job-metadata wrapper is not this format.
-The internal resource adapter supplies this collector; its authorized CLI submission/export path remains subsequent implementation.
+The internal resource adapter supplies this collector; a deployed run reaches it only through the [query handoff](#query-requests-and-runner-release), and no CLI subcommand submits or exports a query on its own.
 
 The query reads exactly the run's 10 or 50 named tables and emits an aggregate even for an empty table.
 It counts every row, including rows with another run ID, null identity fields, an out-of-range sequence, or a mismatch between physical table, declared destination and sequence modulo destination count.
@@ -308,13 +308,13 @@ The internal resource controller persists intent, query slots and query evidence
 The executor must supply the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
 The local tests execute the generated SQL unchanged on synthetic SQLite tables to exercise row, NULL, empty-table and duplicate semantics.
 Their SQLite build must provide the `MOD` math function.
-That coverage does not establish BigQuery query acceptance or streaming visibility; an authorized service run remains an acceptance gate.
+That coverage does not establish BigQuery query acceptance or streaming visibility; the deployed trials ran the generated SQL against BigQuery, as their [Storage Write](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md) and [FILE_LOADS](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) findings record.
 
 ### Resource adapter
 
 [`flink_tier3.bigquery.resources`](../../../tools/tier3/src/flink_tier3/bigquery/resources.py) provides internal REST v2 table and query operations for the BigQuery actors.
 It has no CLI route and does not extend lifecycle admission.
-Its synthetic HTTP tests cover request construction, lost responses, ownership conflicts, cleanup and result pagination; real-service acceptance remains pending.
+Its synthetic HTTP tests cover request construction, lost responses, ownership conflicts, cleanup and result pagination; the deployed trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427) and [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) used it against the real service to provision, query and delete their tables, and neither record reports an ownership conflict; the FILE_LOADS trial found no temporary table to delete.
 
 The caller must persist one `ResourcePlan` before any write: the approved `Trial`, a fresh 32-character hexadecimal nonce, an absolute table expiration, the number of query slots, maximum bytes billed per slot and job timeout.
 These values have no operational defaults or implied approval.
@@ -347,7 +347,7 @@ It flattens the returned `f`/`v` cells using the schema, runs the offline oracle
 It does not establish checkpoint provenance, table quiescence or a deployed recovery verdict.
 Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
 The resource controller below supplies durable intent, query evidence and a cleanup pass.
-The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; actor construction below supplies the BigQuery session, while production dispatch and live idle verification remain executor work.
+The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; actor construction below supplies the BigQuery session; [production dispatch](#production-dispatch) constructs the runner and the in-cluster entrypoint the supervisor, and dispatch verifies idle afterwards.
 Provisioning passes the earlier of the approved start plus 600 seconds and the query window's end to all of its REST operations.
 Query submission, job status and every result page share the requested observation's fixed deadline.
 Common cleanup passes its cleanup deadline separately, allowing cancellation and table deletion after the query window closes without reusing an expired query deadline.
@@ -358,10 +358,10 @@ Expiry rejects late responses, including a 404 or an empty successful body; a fa
 
 [`flink_tier3.bigquery.lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery/lifecycle.py) composes the adapter with generation-checked lifecycle records.
 The internal runner and supervisor use this controller only with explicitly supplied handoffs.
-Neither production CLI entrypoint admits a BigQuery scenario yet.
+Both execution entrypoints reach it only through the authenticated actor factories.
 The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
 The controller binds the complete service plan, run ID, nonce and trial arguments to the approved initial application hash.
-The common model validates the version 5 approval; complete deployment admission remains executor work.
+The common model validates the version 5 approval, and [production dispatch](#production-dispatch) performs deployment admission.
 
 Initialization stores the unchanged plan in `RunRecord.bigquery`.
 Provisioning first checks absence, records a creation intent, then creates or reconciles that table and stores its creation receipt.
@@ -443,7 +443,7 @@ The runner attempts permanent release before leaving the wait, including on time
 A recovery process must not reconstruct the original submitting process's token to manufacture this acknowledgement.
 Repeated release attempts can recover a transient control failure; settlement emits a blocked-release diagnostic only when its cause changes.
 
-The supervisor receives its own environment-bound handoff and a mandatory external `quiesce` callback.
+The supervisor receives its own environment-bound handoff and a mandatory `quiesce` callback, which the supervisor factory supplies as the [quiescence barrier](#quiescence-barrier).
 Supplying the callback without a handoff is rejected at construction.
 Its `query(name, deadline=...)` method requests an observation and waits for archived evidence, maintaining heartbeats and auditing resources until the deadline or cancellation.
 It returns the verified result without interpreting an incomplete baseline as a failed trial or treating a query report as a deployed recovery verdict.
@@ -486,12 +486,12 @@ The final receipt retains the complete BigQuery control snapshot, including tabl
 A conflicting receipt or a concurrent control change leaves the control record and lock in place.
 When finalization deleted the control record but did not release the lock, recovery restores that snapshot from the receipt, including a success verdict the receipt records, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
 A failure of recovery's own settlement after a success receipt fails that recovery and keeps the verdict rather than lowering it, whether or not the record was restored.
-These tests use synthetic actors and services; authenticated admission, the external quiescence implementation, image publication and live acceptance remain subsequent work for issue #1312.
+Synthetic tests cover these settlement and receipt-restore paths with fake actors and services.
 The internal recovery schedule is described below.
 
-The deployed exercise still needs authenticated admission, updated image publication, measurement collection and complete cleanup acceptance.
+The deployed exercise runs only through [production dispatch](#production-dispatch): its runner and the in-cluster supervisor are both authenticated, and dispatch verifies the published image digest live.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
-The fixed dataset and namespace grants already exist, but checkpoint/savepoint restore through the conditional GCS grants remains a live acceptance gate.
+The conditional GCS grants, including the `.inprogress/` grant [#1498](https://github.com/flink-gcp/flink-connector-gcp/issues/1498) added, are in the [BigQuery trial foundation](../../../opentofu/README.md#bigquery-trial-foundation); the deployed trials wrote and restored checkpoints and savepoints through them.
 
 ### Approval and shared resource policy
 
@@ -505,7 +505,7 @@ The approval requires a 90-minute window with the final 15 minutes reserved for 
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
 The control quota covers the Operator, supervisor and one Operator replacement while the previous Pod terminates; five Pods run in the steady state.
 State and log limits remain 1 GiB of state, 10,000 state objects and 100 MiB of logs; the approval carries no cost ceiling, because spend is approved from the estimate before dispatch.
-The two trial modes retain their fixed finite input sizes; the approval model derives the resource plan rather than accepting another independently editable copy.
+Every trial retains its mode's fixed finite input size; the approval model derives the resource plan rather than accepting another independently editable copy.
 The resource controller refuses a plan that differs from this approval before reading or creating service resources.
 
 Common creation/adoption uses the approved application namespace.
@@ -559,7 +559,7 @@ Verification compares the complete bundle, including its embedded source, comman
 Both input files reject duplicate JSON object fields.
 The commands perform local generation and comparison, including CUE's pinned public dependency downloads when needed, and make no cluster or GCP service calls.
 A matching file does not authenticate its approval or authorize execution.
-The future executor must independently authenticate the approval, verify GitHub main ancestry and image publication/provenance/retention, prove current lock/namespace ownership, prepare for the actual admission time, and enforce absolute deadlines, actor fencing and aggregate evidence budgets.
+The executor must independently authenticate the approval, verify GitHub main ancestry and image publication/provenance/retention, prove current lock/namespace ownership, prepare for the actual admission time, and enforce absolute deadlines, actor fencing and aggregate evidence budgets.
 A previously prepared relative Job deadline is not permission to start that Job later.
 The [production dispatch](#production-dispatch) is that executor, for the checks it can make; image publication and retention remain a live check at dispatch.
 
@@ -717,7 +717,7 @@ These checks do not forcibly interrupt credential discovery, synchronous credent
 The resource adapter still enforces the absolute operation deadline while consuming BigQuery responses.
 
 The factories do not authenticate the supplied Kubernetes/storage collaborators or the approval's origin, establish GitHub main ancestry or image provenance, fence another creator/writer, or implement the immutable artifact allowance.
-The supervisor still requires an explicit external quiescence callback; constructing a session does not prove that callback works.
+The supervisor factory builds the [quiescence barrier](#quiescence-barrier) from the run's own identity; constructing a session does not prove that barrier works.
 Synthetic tests exercise the pinned Google auth request adapter, token refresh and rotation, identity refusal, shared time budgets, approval binding and lock loss.
-Acceptance of the deployed WIF/GKE credentials by userinfo remains unmeasured, as do live IAM access, fencing and full recovery/cleanup.
+The deployed trials ran both actors under the deployed WIF and GKE credentials with live IAM access, the quiescence barrier, the upgrade and failover recoveries, and cleanup; these synthetic tests establish none of that.
 The overall BigQuery receipt reports success only for the [deployed verdict](#deployed-verdict)'s `usable`.
