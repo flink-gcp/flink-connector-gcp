@@ -38,6 +38,9 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
  *   <li>{@code delete} — idempotent, and deleting a missing document succeeds.
  *   <li>{@code create} — the replay is refused with {@code ALREADY_EXISTS}, which is routed to the
  *       failure handler as a per-write failure.
+ *   <li>{@code add} — the record is stored again under another drawn id: a restart's serializer
+ *       draws a new one, and a retried create is refused with {@code ALREADY_EXISTS} and sent again
+ *       under a new id.
  *   <li>{@code update} — idempotent, <em>but</em> if the document was deleted between the two
  *       attempts Firestore answers {@code NOT_FOUND}, which is not a per-write refusal and <b>fails
  *       the job</b>.

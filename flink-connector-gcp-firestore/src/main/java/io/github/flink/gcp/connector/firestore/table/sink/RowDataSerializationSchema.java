@@ -17,8 +17,6 @@
 package io.github.flink.gcp.connector.firestore.table.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.table.data.RowData;
 
@@ -30,10 +28,8 @@ import io.github.flink.gcp.connector.firestore.table.WriteMode;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.security.SecureRandom;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Random;
 
 /**
  * Turns a table row into the document write the {@code firestore} table sink sends.
@@ -41,8 +37,8 @@ import java.util.Random;
  * <p>With a PRIMARY KEY, the key column is the document id within the collection and every other
  * column a field: an insert or an update-after is a {@code set}, a {@code merge} or an {@code
  * update} as {@code sink.write-mode} says, and a delete deletes the document. Without one, every
- * row is written to a new document whose id this class mints, as the client library does for {@code
- * CollectionReference.add}: 20 characters drawn from letters and digits.
+ * row is an {@link FirestoreWrite#add(String, Map)}: a create under a drawn id, which never
+ * replaces an existing document.
  */
 @Internal
 public final class RowDataSerializationSchema
@@ -50,17 +46,11 @@ public final class RowDataSerializationSchema
 
     private static final long serialVersionUID = 1L;
 
-    private static final String AUTO_ID_ALPHABET =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    private static final int AUTO_ID_LENGTH = 20;
-
     private final FirestoreTableSchema schema;
     private final String collection;
     private final WriteMode writeMode;
     @Nullable private final String keyColumn;
     private final RowDataToFirestoreConverter document;
-
-    private transient Random random;
 
     /**
      * Creates the schema.
@@ -82,17 +72,14 @@ public final class RowDataSerializationSchema
     }
 
     @Override
-    public void open(SerializationSchema.InitializationContext context) {
-        random = new SecureRandom();
-    }
-
-    @Override
     public FirestoreWrite serialize(RowData row, SinkWriter.Context context) throws IOException {
         try {
             switch (row.getRowKind()) {
                 case INSERT:
                 case UPDATE_AFTER:
-                    return schema.hasPrimaryKey() ? upsert(row) : create(row);
+                    return schema.hasPrimaryKey()
+                            ? upsert(row)
+                            : FirestoreWrite.add(collection, fields(row));
                 case DELETE:
                     if (writeMode == WriteMode.UPDATE) {
                         // The sink declares no deletes under update, but the planner still sends
@@ -133,15 +120,6 @@ public final class RowDataSerializationSchema
         }
     }
 
-    /**
-     * A {@code set} under a fresh id rather than a {@code create}: the result is the same new
-     * document, but a {@code create} the client library retries after an answer was lost would be
-     * refused with {@code ALREADY_EXISTS} and fail the job, where a {@code set} applies again.
-     */
-    private FirestoreWrite create(RowData row) {
-        return FirestoreWrite.set(collection + "/" + autoId(), fields(row));
-    }
-
     @SuppressWarnings("unchecked")
     private Map<String, Object> fields(RowData row) {
         return (Map<String, Object>) document.convertNonNull(row);
@@ -164,15 +142,6 @@ public final class RowDataSerializationSchema
                             + ", which is not a document id: an id is not empty and has no '/'.");
         }
         return collection + "/" + id;
-    }
-
-    @VisibleForTesting
-    String autoId() {
-        StringBuilder id = new StringBuilder(AUTO_ID_LENGTH);
-        for (int i = 0; i < AUTO_ID_LENGTH; i++) {
-            id.append(AUTO_ID_ALPHABET.charAt(random.nextInt(AUTO_ID_ALPHABET.length())));
-        }
-        return id.toString();
     }
 
     @Override

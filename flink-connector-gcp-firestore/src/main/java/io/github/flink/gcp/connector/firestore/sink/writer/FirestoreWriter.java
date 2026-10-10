@@ -89,6 +89,14 @@ import java.util.function.LongSupplier;
  * write of its request. Only a refusal that repeats alone is routed; a write that succeeds alone is
  * applied.
  *
+ * <p>A create whose id the write drew ({@link FirestoreWrite#add}) and that Firestore refuses with
+ * {@code ALREADY_EXISTS} is <b>sent again under a new id</b>, never routed: the id names an
+ * existing document, which the create left in place, or the library retried a create that was
+ * applied but whose answer was lost, which this writer cannot tell apart without a read. The second
+ * case leaves the document twice. The writer parks such a write and sends it again before the next
+ * record, as it does a write it confirms alone; {@value #MAX_ID_DRAWS} drawn ids refused in a row
+ * for one record fail the job, since chance does not explain that.
+ *
  * <h2>Two defects of the client library this writer works around</h2>
  *
  * <p>Both measured against google-cloud-firestore 3.46.0 on the emulator, 2026-09-27, one run, and
@@ -164,6 +172,14 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
      */
     private static final long POLL_INTERVAL_NANOS = Duration.ofMillis(1).toNanos();
 
+    /**
+     * How many drawn ids one record may have refused with {@code ALREADY_EXISTS} before the job
+     * fails. A collision of ids with about 119 bits of randomness, or a lost answer, ten times in a
+     * row for one record is not chance; a service that refuses every fresh id would otherwise be
+     * retried forever.
+     */
+    static final int MAX_ID_DRAWS = 10;
+
     /** {@link #awaitProgress} ran a mail rather than finding the mailbox empty. */
     private static final long RAN_A_MAIL = -1L;
 
@@ -201,6 +217,12 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
 
     /** Writes awaiting a solo re-send to confirm an {@code INVALID_ARGUMENT}; task thread only. */
     private final Deque<ParkedWrite> pendingIsolation = new ArrayDeque<>();
+
+    /**
+     * Drawn-id creates refused with {@code ALREADY_EXISTS}, awaiting a re-send under a new id; task
+     * thread only.
+     */
+    private final Deque<ParkedWrite> pendingRedraws = new ArrayDeque<>();
 
     /** Confirmed rejections since the last applied write; task thread only. */
     private int consecutiveRejections;
@@ -303,6 +325,9 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         // completion mails, which only answer writes already in flight, and every park releases
         // one write from the in-flight counters — so between two records at most
         // maxInFlightWrites can accumulate.
+        if (!pendingRedraws.isEmpty()) {
+            sendRedraws();
+        }
         if (!pendingIsolation.isEmpty()) {
             runIsolationPass();
         }
@@ -324,7 +349,7 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         }
         int estimatedSize = sizeEstimator.estimate(write);
         awaitCapacity();
-        submit(write, estimatedSize, true, false);
+        submit(write, estimatedSize, true, false, 1);
     }
 
     @Override
@@ -332,14 +357,18 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         checkAsyncError();
         // A pass's solo re-sends confirm or route every parked write, so one iteration normally
         // ends with nothing parked; the loop is what makes "a completed checkpoint leaves nothing
-        // parked" true regardless.
+        // parked" true regardless. A redraw parks again only when its new id is refused too, and a
+        // solo re-send of a drawn-id create can park one, so both parks are looped on.
         do {
+            if (!pendingRedraws.isEmpty()) {
+                sendRedraws();
+            }
             sendOutstanding();
             drainInFlight();
             if (!pendingIsolation.isEmpty()) {
                 runIsolationPass();
             }
-        } while (!pendingIsolation.isEmpty());
+        } while (!pendingIsolation.isEmpty() || !pendingRedraws.isEmpty());
         // After the loop, never inside it: the drain is what discovers this checkpoint's failures,
         // and the pass is what turns the batched ones among them into dead letters.
         failedWriteHandler.flush();
@@ -355,6 +384,7 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         inFlightWrites = 0;
         inFlightBytes = 0;
         pendingIsolation.clear();
+        pendingRedraws.clear();
         Closers.closeAll(access, failedWriteHandler::close);
     }
 
@@ -364,8 +394,14 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
      * @param firstAttempt whether this is the record's first submission, the only one {@code
      *     numRecordsSend} counts
      * @param solo whether this is a solo re-send, whose verdict is the write's own
+     * @param idDraws how many ids the record has drawn, this write's included
      */
-    private void submit(FirestoreWrite write, int estimatedSize, boolean firstAttempt, boolean solo)
+    private void submit(
+            FirestoreWrite write,
+            int estimatedSize,
+            boolean firstAttempt,
+            boolean solo,
+            int idDraws)
             throws IOException, InterruptedException {
         ensureBulkWriterHasRoom();
         if (bytesSinceSend > 0 && bytesSinceSend + estimatedSize > REQUEST_BYTE_BUDGET) {
@@ -391,7 +427,7 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
             metrics.writeSent(estimatedSize);
         }
         ApiFutures.addCallback(
-                future, new WriteCallback(write, estimatedSize, solo), Runnable::run);
+                future, new WriteCallback(write, estimatedSize, solo, idDraws), Runnable::run);
     }
 
     /**
@@ -429,9 +465,10 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
      * <p>The opening send and drain are what make the re-sends solo: once everything in flight is
      * answered the library holds nothing, so a write submitted and sent at once travels alone.
      * Consumed with {@code poll()} rather than iterated: the opening drain runs mails that may park
-     * further writes, and the loop picks those up. Nothing parks during the solo drains, because a
-     * solo verdict is routed, made fatal or applied, never parked again — so the loop is bounded by
-     * the park's size and raises, rather than spins, if that invariant is ever broken.
+     * further writes, and the loop picks those up. Nothing parks here during the solo drains,
+     * because a solo verdict is routed, made fatal, applied or, for a drawn-id create refused with
+     * {@code ALREADY_EXISTS}, handed to the redraw park, never parked here again — so the loop is
+     * bounded by the park's size and raises, rather than spins, if that invariant is ever broken.
      *
      * <p>A failure raised here abandons the rest of the park, neither applied nor routed. That is
      * safe for the reason {@link #close()}'s discard is, and it is why the throw must not be
@@ -443,7 +480,7 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         for (int budget = pendingIsolation.size(); budget > 0; budget--) {
             ParkedWrite parked = pendingIsolation.poll();
             metrics.writeConfirmedAlone();
-            submit(parked.write, parked.estimatedSize, false, true);
+            submit(parked.write, parked.estimatedSize, false, true, parked.idDraws);
             sendOutstanding();
             drainInFlight();
         }
@@ -455,6 +492,31 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
                             + " unless the isolation contract has been broken; "
                             + pendingIsolation.size()
                             + " write(s) would never get a verdict.");
+        }
+    }
+
+    /**
+     * Sends every parked drawn-id create again, each under a new id in the same collection. Not
+     * solo: {@code ALREADY_EXISTS} answers only its own write, so batching cannot blur the next
+     * verdict.
+     *
+     * <p>Each re-send waits for room under the in-flight caps like a record: a record admitted
+     * while a redraw was parked may hold the slot the park released. The wait runs mails that may
+     * park further redraws, which the loop picks up; it ends because a record draws at most {@value
+     * #MAX_ID_DRAWS} ids.
+     */
+    private void sendRedraws() throws IOException, InterruptedException {
+        ParkedWrite parked;
+        while ((parked = pendingRedraws.poll()) != null) {
+            awaitCapacity();
+            FirestoreWrite write = parked.write;
+            String documentPath = write.getDocumentPath();
+            FirestoreWrite redrawn =
+                    FirestoreWrite.add(
+                            documentPath.substring(0, documentPath.lastIndexOf('/')),
+                            write.getFields());
+            metrics.idRedrawn();
+            submit(redrawn, sizeEstimator.estimate(redrawn), false, false, parked.idDraws + 1);
         }
     }
 
@@ -569,7 +631,11 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
 
     /** Task-thread handler for a write the library gave up on, run as a mailbox mail. */
     private void onWriteFailed(
-            FirestoreWrite write, int estimatedSize, boolean solo, Throwable throwable) {
+            FirestoreWrite write,
+            int estimatedSize,
+            boolean solo,
+            int idDraws,
+            Throwable throwable) {
         releaseInFlight(estimatedSize);
         failuresOnBulkWriter++;
         FirestoreErrorClassifier.Kind kind =
@@ -578,7 +644,30 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
             // The status may answer the request rather than this write. Park it for the isolation
             // pass; routing here would drop a whole request for one bad write (ADR-0045). Not
             // counted yet, or one request-level status would be counted once per write it carried.
-            pendingIsolation.add(new ParkedWrite(write, estimatedSize));
+            pendingIsolation.add(new ParkedWrite(write, estimatedSize, idDraws));
+            return;
+        }
+        if (kind == FirestoreErrorClassifier.Kind.ID_TAKEN) {
+            // Not the record's failure: the create left the existing document in place. Neither
+            // errorClass nor numRecordsSendErrors counts it; idsRedrawn does, when it is re-sent.
+            if (idDraws < MAX_ID_DRAWS) {
+                pendingRedraws.add(new ParkedWrite(write, estimatedSize, idDraws));
+                return;
+            }
+            // The refusal that fails the job is counted like every other job-failing status.
+            metrics.writeFailure(FirestoreErrorClassifier.statusCode(throwable));
+            if (asyncError == null) {
+                asyncError =
+                        new IOException(
+                                "Firestore refused "
+                                        + idDraws
+                                        + " drawn document id(s) in a row with ALREADY_EXISTS for"
+                                        + " one record, the last at "
+                                        + describe(write)
+                                        + ". Ids drawn at random do not collide that often, so the"
+                                        + " job fails rather than draw again.",
+                                throwable);
+            }
             return;
         }
         StatusCode.Code code = FirestoreErrorClassifier.statusCode(throwable);
@@ -710,15 +799,17 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         return pendingIsolation.size();
     }
 
-    /** A write awaiting a solo re-send. */
+    /** A write awaiting a solo re-send, or a re-send under a new id. */
     private static final class ParkedWrite {
 
         private final FirestoreWrite write;
         private final int estimatedSize;
+        private final int idDraws;
 
-        private ParkedWrite(FirestoreWrite write, int estimatedSize) {
+        private ParkedWrite(FirestoreWrite write, int estimatedSize, int idDraws) {
             this.write = write;
             this.estimatedSize = estimatedSize;
+            this.idDraws = idDraws;
         }
     }
 
@@ -732,11 +823,13 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         private final FirestoreWrite write;
         private final int estimatedSize;
         private final boolean solo;
+        private final int idDraws;
 
-        private WriteCallback(FirestoreWrite write, int estimatedSize, boolean solo) {
+        private WriteCallback(FirestoreWrite write, int estimatedSize, boolean solo, int idDraws) {
             this.write = write;
             this.estimatedSize = estimatedSize;
             this.solo = solo;
+            this.idDraws = idDraws;
         }
 
         /** The success mail: runs on the task thread. */
@@ -757,7 +850,9 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         @Override
         public void onFailure(Throwable throwable) {
             lastCompletionNanos = nanoClock.getAsLong();
-            dispatch(() -> onWriteFailed(write, estimatedSize, solo, throwable), FAILURE_MAIL);
+            dispatch(
+                    () -> onWriteFailed(write, estimatedSize, solo, idDraws, throwable),
+                    FAILURE_MAIL);
         }
 
         private void dispatch(ThrowingRunnable<Exception> mail, String description) {

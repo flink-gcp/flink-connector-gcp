@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.firestore.sink.writer;
 import org.apache.flink.api.connector.sink2.Sink;
 
 import com.google.cloud.Timestamp;
+import com.google.cloud.firestore.BulkWriterException;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
@@ -44,8 +45,10 @@ import org.junit.jupiter.api.Timeout;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -130,6 +133,20 @@ class FirestoreWriterTest {
 
     private static FirestoreWrite create(String id) {
         return FirestoreWrite.create("c/" + id, Map.of("v", 1L));
+    }
+
+    /** An add into a subcollection, so a redraw must keep every segment of its collection. */
+    private static FirestoreWrite add() {
+        return FirestoreWrite.add("users/alice/orders", Map.of("v", 1L));
+    }
+
+    /** Refuses the first write it sees under each of the given paths with ALREADY_EXISTS. */
+    private static FakeFirestoreDatabaseAccess.Responder takenOnce(Set<String> paths) {
+        Set<String> refused = new HashSet<>();
+        return (write, batch) ->
+                paths.contains(write.getDocumentPath()) && refused.add(write.getDocumentPath())
+                        ? failure(Status.ALREADY_EXISTS)
+                        : null;
     }
 
     private long errorClass(String code) {
@@ -265,6 +282,165 @@ class FirestoreWriterTest {
                 .containsExactly(create("a"), create("b"));
         assertThat(access.sentBatches()).hasSize(1);
         assertThat(errorClass("ALREADY_EXISTS")).isEqualTo(2);
+    }
+
+    @Test
+    void anAlreadyExistsForADrawnIdIsSentAgainUnderANewIdWithoutRouting() throws Exception {
+        FirestoreWrite taken = add();
+        FirestoreWrite other = add();
+        access.respondWith(takenOnce(Set.of(taken.getDocumentPath())));
+        FirestoreWriter<FirestoreWrite> writer = writer(b -> {});
+
+        writer.write(taken, TestContexts.NO_OP);
+        writer.write(other, TestContexts.NO_OP);
+        writer.flush(false);
+
+        List<List<FirestoreWrite>> batches = access.sentBatches();
+        assertThat(batches).hasSize(2);
+        assertThat(batches.get(0)).containsExactly(taken, other);
+        assertThat(batches.get(1))
+                .singleElement()
+                .satisfies(
+                        redrawn -> {
+                            assertThat(redrawn.getDocumentPath())
+                                    .matches("users/alice/orders/[A-Za-z0-9]{20}")
+                                    .isNotEqualTo(taken.getDocumentPath());
+                            assertThat(redrawn.getOperation())
+                                    .isEqualTo(FirestoreWrite.Operation.CREATE);
+                            assertThat(redrawn.hasDrawnId()).isTrue();
+                            assertThat(redrawn.getFields()).isEqualTo(taken.getFields());
+                        });
+        assertThat(routed).isEmpty();
+        assertThat(metrics.counterValue(FirestoreMetricNames.IDS_REDRAWN)).isEqualTo(1);
+        assertThat(metrics.counterValue(NUM_RECORDS_SEND)).isEqualTo(2);
+        assertThat(metrics.counterValue(NUM_RECORDS_SEND_ERRORS)).isZero();
+        assertThat(
+                        metrics.hasMetric(
+                                ErrorClassCounters.ERROR_CLASS_GROUP,
+                                "ALREADY_EXISTS",
+                                ErrorClassCounters.ERRORS))
+                .isFalse();
+        assertThat(writer.getInFlightWrites()).isZero();
+    }
+
+    @Test
+    void aRedrawIsSentBeforeTheNextRecord() throws Exception {
+        FirestoreWrite taken = add();
+        access.respondWith(takenOnce(Set.of(taken.getDocumentPath())));
+        FirestoreWriter<FirestoreWrite> writer =
+                writer(
+                        b ->
+                                b.writerOptions(
+                                        FirestoreWriterOptions.builder()
+                                                .maxInFlightWrites(1)
+                                                .build()));
+
+        writer.write(taken, TestContexts.NO_OP);
+        // At the cap: the wait sends the queued write, whose failure mail parks its redraw.
+        writer.write(set("b"), TestContexts.NO_OP);
+        assertThat(metrics.counterValue(FirestoreMetricNames.IDS_REDRAWN)).isZero();
+
+        writer.write(set("c"), TestContexts.NO_OP);
+        writer.flush(false);
+
+        List<FirestoreWrite> sent = new ArrayList<>();
+        access.sentBatches().forEach(sent::addAll);
+        assertThat(sent).hasSize(4);
+        assertThat(sent.subList(0, 2)).containsExactly(taken, set("b"));
+        assertThat(sent.get(2).getDocumentPath()).isNotEqualTo(taken.getDocumentPath());
+        assertThat(sent.get(2).hasDrawnId()).isTrue();
+        assertThat(sent.get(3)).isEqualTo(set("c"));
+        // The redraw waited for room like a record: b held the only slot when it was re-sent.
+        assertThat(access.sentBatches()).allSatisfy(batch -> assertThat(batch).hasSize(1));
+        assertThat(routed).isEmpty();
+    }
+
+    @Test
+    void aDrawnIdRefusedWhileConfirmedAloneIsRedrawnBeforeTheCheckpointCompletes()
+            throws Exception {
+        // A request-level INVALID_ARGUMENT parks both writes; the add's solo re-send then meets an
+        // existing document, and the flush must not return before its redraw is applied.
+        FirestoreWrite taken = add();
+        Set<String> refused = new HashSet<>();
+        access.respondWith(
+                (write, batch) -> {
+                    if (batch.size() > 1) {
+                        return failure(Status.INVALID_ARGUMENT);
+                    }
+                    return write.getDocumentPath().equals(taken.getDocumentPath())
+                                    && refused.add(write.getDocumentPath())
+                            ? failure(Status.ALREADY_EXISTS)
+                            : null;
+                });
+        FirestoreWriter<FirestoreWrite> writer = writer(b -> {});
+
+        writer.write(taken, TestContexts.NO_OP);
+        writer.write(set("b"), TestContexts.NO_OP);
+        writer.flush(false);
+
+        List<List<FirestoreWrite>> batches = access.sentBatches();
+        assertThat(batches).hasSize(4);
+        assertThat(batches.get(1)).containsExactly(taken);
+        assertThat(batches.get(2)).containsExactly(set("b"));
+        assertThat(batches.get(3))
+                .singleElement()
+                .satisfies(
+                        redrawn ->
+                                assertThat(redrawn.getDocumentPath())
+                                        .isNotEqualTo(taken.getDocumentPath()));
+        assertThat(routed).isEmpty();
+        assertThat(metrics.counterValue(FirestoreMetricNames.IDS_REDRAWN)).isEqualTo(1);
+        assertThat(writer.getInFlightWrites()).isZero();
+    }
+
+    @Test
+    void aRecordWhoseEveryDrawnIdIsRefusedFailsTheJobAtTheBound() throws Exception {
+        access.respondWith((write, batch) -> failure(Status.ALREADY_EXISTS));
+        FirestoreWriter<FirestoreWrite> writer = writer(b -> {});
+
+        writer.write(add(), TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(
+                        "refused "
+                                + FirestoreWriter.MAX_ID_DRAWS
+                                + " drawn document id(s) in a row")
+                .hasMessageContaining("/documents/users/alice/orders/")
+                .hasCauseInstanceOf(BulkWriterException.class);
+        assertThat(access.sentBatches()).hasSize(FirestoreWriter.MAX_ID_DRAWS);
+        // Only the refusal that failed the job is an error; the nine before it were redrawn.
+        assertThat(errorClass("ALREADY_EXISTS")).isEqualTo(1);
+        assertThat(metrics.counterValue(FirestoreMetricNames.IDS_REDRAWN))
+                .isEqualTo(FirestoreWriter.MAX_ID_DRAWS - 1);
+        assertThat(routed).isEmpty();
+    }
+
+    @Test
+    void redrawnRefusalsCountTowardTheBulkWritersLeakedSlots() throws Exception {
+        // Every refused write keeps a library slot, an add's included; every add here is refused
+        // once and applied under its second id.
+        Set<String> refused = new HashSet<>();
+        access.respondWith(
+                (write, batch) ->
+                        refused.size() < FirestoreWriter.PENDING_OPERATION_LIMIT
+                                        && refused.add(write.getDocumentPath())
+                                ? failure(Status.ALREADY_EXISTS)
+                                : null);
+        FirestoreWriter<FirestoreWrite> writer = writer(b -> {});
+
+        for (int i = 0; i < FirestoreWriter.PENDING_OPERATION_LIMIT; i++) {
+            writer.write(add(), TestContexts.NO_OP);
+        }
+        writer.flush(false);
+        writer.write(set("after"), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.replacements()).isEqualTo(1);
+        assertThat(access.strandedWrites()).isZero();
+        assertThat(metrics.counterValue(FirestoreMetricNames.IDS_REDRAWN))
+                .isEqualTo(FirestoreWriter.PENDING_OPERATION_LIMIT);
+        assertThat(routed).isEmpty();
     }
 
     @Test

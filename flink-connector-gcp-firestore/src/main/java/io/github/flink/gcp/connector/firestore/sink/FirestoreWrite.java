@@ -26,6 +26,7 @@ import com.google.cloud.firestore.GeoPoint;
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.security.SecureRandom;
 import java.util.Map;
 import java.util.Objects;
 
@@ -45,6 +46,9 @@ import java.util.Objects;
  *       missing. A nested map is merged key by key rather than replaced.
  *   <li>{@link #create(String, Map)} — creates the document, and fails with {@code ALREADY_EXISTS}
  *       if it exists.
+ *   <li>{@link #add(String, Map)} — creates a new document in a collection, under an id the write
+ *       draws. It never replaces an existing document: if the id names one, the sink creates the
+ *       document again under a new id.
  *   <li>{@link #update(String, Map)} — replaces the named top-level fields of an existing document,
  *       and fails with {@code NOT_FOUND} if it is missing.
  *   <li>{@link #delete(String)} — deletes the document; deleting a missing document succeeds.
@@ -97,6 +101,15 @@ public final class FirestoreWrite implements Serializable {
      */
     static final int MAX_NESTING_DEPTH = 500;
 
+    /** The characters of a drawn document id: the client library's own for an added document. */
+    private static final String DRAWN_ID_ALPHABET =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    /** The length of a drawn document id, the client library's own: about 119 bits. */
+    private static final int DRAWN_ID_LENGTH = 20;
+
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     /** The document operation a write performs. */
     @PublicEvolving
     public enum Operation {
@@ -116,16 +129,19 @@ public final class FirestoreWrite implements Serializable {
     private final Operation operation;
     private final Map<String, Object> fields;
     @Nullable private final Timestamp lastUpdateTime;
+    private final boolean drawnId;
 
     private FirestoreWrite(
             String documentPath,
             Operation operation,
             Map<String, Object> fields,
-            @Nullable Timestamp lastUpdateTime) {
+            @Nullable Timestamp lastUpdateTime,
+            boolean drawnId) {
         this.documentPath = documentPath;
         this.operation = operation;
         this.fields = fields;
         this.lastUpdateTime = lastUpdateTime;
+        this.drawnId = drawnId;
     }
 
     /**
@@ -168,6 +184,39 @@ public final class FirestoreWrite implements Serializable {
      */
     public static FirestoreWrite create(String documentPath, Map<String, ?> fields) {
         return of(documentPath, Operation.CREATE, fields, null);
+    }
+
+    /**
+     * Creates a new document in the collection, under an id the write draws: 20 letters and digits
+     * from a {@link SecureRandom}, as the client library draws one for {@code
+     * CollectionReference.add}.
+     *
+     * <p>The write is a {@link Operation#CREATE} of that document, so it never replaces an existing
+     * one. If the drawn id names a document that exists, Firestore refuses it with {@code
+     * ALREADY_EXISTS} and the sink sends the document again under a new id, rather than routing the
+     * record. That refusal also answers the client library's own retry of a create that was applied
+     * but whose answer was lost, and the sink cannot tell the two apart without a read, so such a
+     * retry leaves the document twice, under two ids. A replay after a restart draws new ids too,
+     * and so creates its documents again.
+     *
+     * @param collectionPath the collection path relative to the database's documents root, such as
+     *     {@code users} or {@code users/alice/orders}
+     * @param fields the document's fields
+     * @return the write, whose {@link #getDocumentPath()} names the drawn id
+     * @throws IllegalArgumentException if the path is malformed or a field name or value is not
+     *     accepted
+     */
+    public static FirestoreWrite add(String collectionPath, Map<String, ?> fields) {
+        FirestoreWriteChecks.checkCollectionPath(collectionPath);
+        return of(collectionPath + "/" + drawId(), Operation.CREATE, fields, null, true);
+    }
+
+    private static String drawId() {
+        StringBuilder id = new StringBuilder(DRAWN_ID_LENGTH);
+        for (int i = 0; i < DRAWN_ID_LENGTH; i++) {
+            id.append(DRAWN_ID_ALPHABET.charAt(RANDOM.nextInt(DRAWN_ID_ALPHABET.length())));
+        }
+        return id.toString();
     }
 
     /**
@@ -237,13 +286,26 @@ public final class FirestoreWrite implements Serializable {
             Operation operation,
             Map<String, ?> fields,
             @Nullable Timestamp lastUpdateTime) {
+        return of(documentPath, operation, fields, lastUpdateTime, false);
+    }
+
+    private static FirestoreWrite of(
+            String documentPath,
+            Operation operation,
+            Map<String, ?> fields,
+            @Nullable Timestamp lastUpdateTime,
+            boolean drawnId) {
         FirestoreWriteChecks.checkDocumentPath(documentPath);
         Preconditions.checkNotNull(fields, "fields must not be null");
         Preconditions.checkArgument(
                 operation != Operation.UPDATE || !fields.isEmpty(),
                 "An update must name at least one field.");
         return new FirestoreWrite(
-                documentPath, operation, FirestoreWriteChecks.copyFields(fields), lastUpdateTime);
+                documentPath,
+                operation,
+                FirestoreWriteChecks.copyFields(fields),
+                lastUpdateTime,
+                drawnId);
     }
 
     /** Returns the document path relative to the database's documents root. */
@@ -273,6 +335,14 @@ public final class FirestoreWrite implements Serializable {
         return lastUpdateTime;
     }
 
+    /**
+     * Returns whether the write drew its document id, as {@link #add(String, Map)} does: such a
+     * write is sent again under a new id when its id names an existing document.
+     */
+    public boolean hasDrawnId() {
+        return drawnId;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -285,17 +355,19 @@ public final class FirestoreWrite implements Serializable {
         return documentPath.equals(that.documentPath)
                 && operation == that.operation
                 && fields.equals(that.fields)
-                && Objects.equals(lastUpdateTime, that.lastUpdateTime);
+                && Objects.equals(lastUpdateTime, that.lastUpdateTime)
+                && drawnId == that.drawnId;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(documentPath, operation, fields, lastUpdateTime);
+        return Objects.hash(documentPath, operation, fields, lastUpdateTime, drawnId);
     }
 
     /**
-     * Returns the operation, the path, the field names and the precondition — never the field
-     * values, which may be large or sensitive and which a log line has no use for.
+     * Returns the operation, the path, the field names, the precondition and whether the id was
+     * drawn — never the field values, which may be large or sensitive and which a log line has no
+     * use for.
      */
     @Override
     public String toString() {
@@ -306,6 +378,7 @@ public final class FirestoreWrite implements Serializable {
                 + ", fieldNames="
                 + fields.keySet()
                 + (lastUpdateTime == null ? "" : ", lastUpdateTime=" + lastUpdateTime)
+                + (drawnId ? ", drawnId=true" : "")
                 + "}";
     }
 }

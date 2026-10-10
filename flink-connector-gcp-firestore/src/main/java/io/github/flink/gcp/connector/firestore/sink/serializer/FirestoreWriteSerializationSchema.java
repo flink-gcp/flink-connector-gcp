@@ -44,6 +44,9 @@ import java.io.Serializable;
  *       succeeds.
  *   <li>{@link FirestoreWrite#create} — the replay is refused with {@code ALREADY_EXISTS}, which
  *       the sink routes to the configured failure handler as a per-write failure.
+ *   <li>{@link FirestoreWrite#add(String, java.util.Map)} — the record is stored again, under
+ *       another drawn id: the sink sends a create refused with {@code ALREADY_EXISTS} again under a
+ *       new id rather than routing it, so an existing document is never replaced.
  *   <li>{@link FirestoreWrite#update(String, java.util.Map)} — idempotent, <em>but</em> a document
  *       deleted between the two attempts answers {@code NOT_FOUND}, which is not a per-write
  *       refusal and <b>fails the job</b>. {@link FirestoreWrite#setMerge} is the operation to reach

@@ -44,6 +44,7 @@ public final class FirestoreMetricNames {
     public static final String WRITES_RETRIED = "writesRetried";
     public static final String BULK_WRITERS_REPLACED = "bulkWritersReplaced";
     public static final String WRITES_CONFIRMED_ALONE = "writesConfirmedAlone";
+    public static final String IDS_REDRAWN = "idsRedrawn";
 
     // Registered by the batch source's split enumerator (FirestoreBatchSplitEnumerator).
     public static final String SPLITS_ASSIGNED = "splitsAssigned";

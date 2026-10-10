@@ -42,11 +42,16 @@ import java.util.Set;
  *       carried — including a request refused for its total size — so the status may answer the
  *       request rather than this write. The writer re-sends such a write alone before routing it
  *       (ADR-0045).
+ *   <li>{@link Kind#ID_TAKEN} — {@code ALREADY_EXISTS} for a {@code CREATE} whose id the write drew
+ *       ({@link FirestoreWrite#hasDrawnId()}): the id names an existing document, or the library
+ *       retried a create that was applied but whose answer was lost. Not a failure of the record;
+ *       the writer sends it again under a new id.
  *   <li>{@link Kind#REFUSED} — a refusal only this write can have earned, routed as it stands:
- *       {@code ALREADY_EXISTS} for a {@code CREATE}, which is what a replayed create answers
- *       (ADR-0076), and {@code FAILED_PRECONDITION} for a write carrying a {@code lastUpdateTime}
- *       precondition, when {@link PreconditionFailurePolicy#ROUTE_TO_FAILURE_HANDLER} asks for it.
- *       Neither status is a request-level answer the service gives a {@code BatchWrite}.
+ *       {@code ALREADY_EXISTS} for any other {@code CREATE}, which is what a replayed create
+ *       answers (ADR-0076), and {@code FAILED_PRECONDITION} for a write carrying a {@code
+ *       lastUpdateTime} precondition, when {@link
+ *       PreconditionFailurePolicy#ROUTE_TO_FAILURE_HANDLER} asks for it. Neither status is a
+ *       request-level answer the service gives a {@code BatchWrite}.
  *   <li>{@link Kind#FATAL} — everything else, and both of those statuses on any other write. That
  *       includes {@code NOT_FOUND}, which a missing database and an update of a missing document
  *       share, so routing it would drop every record of a misconfigured job; {@code
@@ -70,6 +75,7 @@ final class FirestoreErrorClassifier {
     /** The classes a failed write falls into. */
     enum Kind {
         INVALID,
+        ID_TAKEN,
         REFUSED,
         FATAL
     }
@@ -109,9 +115,10 @@ final class FirestoreErrorClassifier {
             case INVALID_ARGUMENT:
                 return Kind.INVALID;
             case ALREADY_EXISTS:
-                return write.getOperation() == FirestoreWrite.Operation.CREATE
-                        ? Kind.REFUSED
-                        : Kind.FATAL;
+                if (write.getOperation() != FirestoreWrite.Operation.CREATE) {
+                    return Kind.FATAL;
+                }
+                return write.hasDrawnId() ? Kind.ID_TAKEN : Kind.REFUSED;
             case FAILED_PRECONDITION:
                 return write.getLastUpdateTime() != null
                                 && policy == PreconditionFailurePolicy.ROUTE_TO_FAILURE_HANDLER

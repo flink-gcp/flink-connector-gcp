@@ -42,6 +42,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +80,49 @@ class FirestoreWriteTest {
         assertThatThrownBy(() -> FirestoreWrite.set(path, Map.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Document path");
+    }
+
+    @Test
+    void anAddIsACreateUnderAFreshDrawnIdInTheCollection() throws Exception {
+        Map<String, Object> fields = Map.of("v", 1L);
+
+        FirestoreWrite first = FirestoreWrite.add("users/alice/orders", fields);
+        FirestoreWrite second = FirestoreWrite.add("users/alice/orders", fields);
+
+        assertThat(first.getOperation()).isEqualTo(FirestoreWrite.Operation.CREATE);
+        assertThat(first.hasDrawnId()).isTrue();
+        assertThat(first.getDocumentPath()).matches("users/alice/orders/[A-Za-z0-9]{20}");
+        assertThat(first.getFields()).isEqualTo(fields);
+        assertThat(second.getDocumentPath()).isNotEqualTo(first.getDocumentPath());
+        assertThat(first.toString()).contains("drawnId=true");
+        assertThat(InstantiationUtil.clone(first)).isEqualTo(first);
+        // The flag is part of the value: the writer draws again only for a drawn id.
+        FirestoreWrite chosen = FirestoreWrite.create(first.getDocumentPath(), fields);
+        assertThat(chosen.hasDrawnId()).isFalse();
+        assertThat(chosen).isNotEqualTo(first);
+        assertThat(chosen.toString()).doesNotContain("drawnId");
+    }
+
+    @Test
+    void aDrawnIdUsesTheWholeAlphabet() {
+        Set<Character> seen = new HashSet<>();
+        for (int i = 0; i < 1000; i++) {
+            String path = FirestoreWrite.add("c", Map.of()).getDocumentPath();
+            for (char ch : path.substring(2).toCharArray()) {
+                seen.add(ch);
+            }
+        }
+
+        // 20,000 draws from 62 symbols miss one with probability below 10^-130.
+        assertThat(seen).hasSize(62);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "c/a", "c/a/sub/b", "/c", "c/", "c//sub", "c/a//"})
+    void aMalformedCollectionPathIsRejected(String path) {
+        assertThatThrownBy(() -> FirestoreWrite.add(path, Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Collection path '" + path + "'");
     }
 
     @Test
