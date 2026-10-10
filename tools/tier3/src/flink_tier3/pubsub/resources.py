@@ -221,7 +221,7 @@ class Resources:
     ``before_operation(phase, method, name)`` is mandatory. The caller must
     prove current approval, exclusive environment ownership and the appropriate
     admission/cleanup budget before each Pub/Sub request or logical storage call.
-    Storage GET denotes one adapter read (up to ten GCS data requests on generation
+    Storage GET denotes one adapter read (up to forty GCS data requests on generation
     churn), and storage PUT denotes one create upload (HTTP POST). The guard must
     reserve the whole adapter call's request/time budget, not count callbacks as
     HTTP requests; credential refresh and guard I/O need their own caller budget.

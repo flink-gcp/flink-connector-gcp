@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import time
 from contextlib import contextmanager
 from datetime import UTC
 from functools import partial
@@ -31,7 +33,15 @@ from google.cloud import storage
 from google.cloud.storage.exceptions import DataCorruption
 
 from .common import ApiError, Failure, json_bytes
-from .policy import EVIDENCE, HTTP_TIMEOUT, MIB, PROJECT
+from .policy import (
+    EVIDENCE,
+    GENERATION_RACES,
+    HTTP_TIMEOUT,
+    MIB,
+    PROJECT,
+    RACE_BACKOFF_CAP,
+    RACE_BACKOFF_FIRST,
+)
 
 
 class GoogleToken:
@@ -73,7 +83,8 @@ def authorized_session(token):
 
 
 class Storage:
-    def __init__(self, client=None):
+    def __init__(self, client=None, sleep=time.sleep):
+        self.sleep = sleep
         # The SDK otherwise starts unbudgeted background bucket-metadata reads.
         os.environ["DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA"] = "true"
         if client is None:
@@ -102,7 +113,7 @@ class Storage:
             ) from error
 
     def read(self, name, bucket=EVIDENCE):
-        for _ in range(5):
+        for race in range(1, GENERATION_RACES + 1):
             try:
                 with self.operation("GET", name):
                     blob = self.client.bucket(bucket).blob(name)
@@ -125,6 +136,11 @@ class Storage:
                 # read. Restart with a fresh blob; only metadata 404 means absent.
                 if error.status not in (404, 412):
                     raise
+            if race < GENERATION_RACES:
+                # A busy record is rewritten about once a second; waiting lets
+                # a read fall between two writes, as a conditional update does.
+                ceiling = min(RACE_BACKOFF_FIRST * 2 ** (race - 1), RACE_BACKOFF_CAP)
+                self.sleep(random.uniform(0, ceiling))
         raise Failure("Concurrent storage reads did not settle")
 
     def write(self, name, data, generation="0", bucket=EVIDENCE):

@@ -131,7 +131,8 @@ HTTP_TIMEOUT = 20
 # retries a refused write after each of these backoffs, in seconds before
 # jitter.
 RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16, 32)
-# A lost generation race is retried after a random wait of up to 0.25 seconds,
+# A lost generation race, in a conditional update or between a read's metadata
+# and its download, is retried after a random wait of up to 0.25 seconds,
 # doubling per race to at most 4: a Pub/Sub supervisor collecting output
 # updates the record for every pull, and a runner that re-read at once lost
 # five races in a row to it on 2026-10-10. The twentieth lost race gives up,

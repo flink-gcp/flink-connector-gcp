@@ -213,7 +213,7 @@ Pub/Sub resource names can be reused after deletion, and the [subscription](http
 Names and ownership labels therefore do not make deletion atomic with replacement.
 The caller's shared environment lock and exclusive control of run resources must cover provisioning through cleanup, including each read/delete gap; unexpected replacement is an incident to reconcile.
 The guard runs before each Pub/Sub request or logical storage adapter call and must prove current approval, exclusive ownership and the appropriate admission or cleanup budget.
-For a control-record `GET`, the shared adapter reads metadata and then generation-matched data, repeating on a generation race at most five times: reserve up to ten GCS data requests for that single callback.
+For a control-record `GET`, the shared adapter reads metadata and then generation-matched data, restarting after a jittered wait on a generation race, in at most twenty attempts: reserve up to forty GCS data requests for that single callback.
 A control-record `PUT` callback denotes the logical create upload, whose GCS HTTP method is `POST`.
 The caller must reserve the whole adapter call's request and time budget; callback counts are not HTTP-request counts, and credential refresh and the guard's own I/O require additional caller accounting.
 The helper delegates those checks to the caller; it does not implement durable operation counters, the lock, deadlines or independent supervision.

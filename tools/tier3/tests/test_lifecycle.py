@@ -497,6 +497,21 @@ def test_namespace_replacement_blocks_mutations(env):
     assert env[0].calls == []
 
 
+def test_admission_closing_during_its_control_read_refuses_it(env, monkeypatch):
+    """A control read that waits out generation races can outlast the window."""
+    runner = lifecycle(env, cli.runner_api.Runner)
+    refresh = runner.env.refresh
+
+    def slow_refresh():
+        control = refresh()
+        env[3].now = rt.timestamp(env[2]["cleanup_at"])
+        return control
+
+    monkeypatch.setattr(runner.env, "refresh", slow_refresh)
+    with pytest.raises(rt.Failure, match="admission window"):
+        runner.env.admission_open()
+
+
 def test_cancellation_blocks_every_admission(env):
     runner = lifecycle(env, cli.runner_api.Runner)
     runner.env.records.request_stop()
@@ -1196,8 +1211,12 @@ def test_storage_read_restarts_when_observed_generation_is_replaced(status):
             (200, b"{}"),
         ]
     )
+    sleeps = []
+    store.sleep = sleeps.append
     assert store.read("control") == ({}, "18")
     assert len(adapter.calls) == 4
+    # One restart, after a jittered wait of at most a quarter second.
+    assert len(sleeps) == 1 and 0 <= sleeps[0] <= 0.25
     assert "ifGenerationMatch=17" in adapter.calls[1][0].url
     assert "ifGenerationMatch=18" in adapter.calls[3][0].url
     assert "generation=" not in adapter.calls[2][0].url
@@ -1208,16 +1227,20 @@ def test_storage_read_conflict_retries_are_bounded(status):
     store, adapter = sdk_store(
         [
             reply
-            for _ in range(5)
+            for _ in range(20)
             for reply in (
                 (200, {"generation": "17", "size": "2"}),
                 (status, {"error": {"message": "generation replaced"}}),
             )
         ]
     )
+    sleeps = []
+    store.sleep = sleeps.append
     with pytest.raises(rt.Failure, match="Concurrent storage reads did not settle"):
         store.read("control")
-    assert len(adapter.calls) == 10
+    assert len(adapter.calls) == 40
+    # A wait between restarts, none after the last; the ceiling stops at 4 s.
+    assert len(sleeps) == 19 and max(sleeps) <= 4
 
 
 @pytest.mark.parametrize("status", [401, 403, 503])
