@@ -465,6 +465,8 @@ jobs:
   # dependency on an @Internal, @Experimental or unannotated Flink type
   # without a reasoned allowlist entry in scripts/config/flink-api-tiers.toml (see
   # .agents/skills/curate-flink-api-tier/ for how to respond).
+  # Its last step holds the other direction (issue #1567): every top-level
+  # type the main sources declare carries a tier annotation of its own.
   #
   # A job here rather than a step in lint.yaml (decided with the user on the
   # pull request that added it): the audit's inputs — the Java main sources
@@ -541,6 +543,12 @@ jobs:
         with:
           path: target/flink-api-tiers
           key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
+
+      # Runs whatever the steps above did: it needs no Maven Central, and a pull
+      # request that trips both audits sees both failures in one run.
+      - name: Check every top-level main type carries an API tier
+        if: ${{ !cancelled() }}
+        run: just check-declared-api-tiers
 
   # Is every skill's frontmatter strict YAML (ADR-0069)? A skill that any reader
   # disagrees about fails silently: the file stays valid markdown, no build step

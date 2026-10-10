@@ -645,7 +645,16 @@ write family" are dated. The connector prefix still names the precise thing: the
 `RequestFailures` reuses `BigtableErrorClassifier`'s status walk rather than adding a second
 classifier, so one classifier serves both families and a family word would be the narrower name.
 
+## Refinement (2026-10-10): a checker now holds the tier annotation
+
+C12's premise, that no checker holds the repository's own classes, is dated. [#1567] added
+`just check-declared-api-tiers`, which fails when a top-level type in a main source root carries
+no Flink API tier annotation. Its first run found one remaining type, BigQuery's
+package-private `ProtoWellKnownType`, which gained `@Internal` in the same change. Nested types
+stay unchecked, because they inherit their enclosing tier.
+
 [#1178]: https://github.com/flink-gcp/flink-connector-gcp/issues/1178
+[#1567]: https://github.com/flink-gcp/flink-connector-gcp/issues/1567
 [#782]: https://github.com/flink-gcp/flink-connector-gcp/issues/782
 [#1043]: https://github.com/flink-gcp/flink-connector-gcp/issues/1043
 [#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047

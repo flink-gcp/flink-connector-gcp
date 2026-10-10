@@ -71,8 +71,10 @@ from java_ast import (
     annotations,
     code_named_children,
     declaration_target,
+    flink_tier,
     modifiers,
     string_literal_content,
+    type_imports,
 )
 from java_example_regions import line_at
 from tree_sitter import Node
@@ -99,9 +101,6 @@ MODIFIERS = frozenset(
     ]
 )
 ANNOTATION = re.compile(r"@\w+(?:\.\w+)*")
-# The Flink API-tier annotations, in the order surface_tier() reports them.
-FLINK_ANNOTATION = "org.apache.flink.annotation"
-TIERS = ("Public", "PublicEvolving", "Experimental", "Internal")
 DOCUMENTED_TIERS = frozenset(["Public", "PublicEvolving", "Experimental"])
 # `{@link Type#member}` and `@see Type#member`, with the reference split across
 # Javadoc lines exactly as the formatter leaves it.
@@ -180,26 +179,6 @@ def mask(source: str, parsed: JavaSource) -> str:
     return "".join(out)
 
 
-def tier_of(annotations: str, imports: dict[str, str]) -> str | None:
-    """The Flink API-tier annotation a declaration carries, or None.
-
-    A simple name counts only when the file imports it from
-    ``org.apache.flink.annotation``: with ``AvoidStarImport`` on, an unimported
-    ``@Experimental`` is somebody else's annotation, not a tier. An annotation
-    written after a visibility modifier still counts because the Java grammar
-    attaches it to the declaration's modifiers node.
-    """
-    for name in TIERS:
-        if re.search(rf"@org\.apache\.flink\.annotation\.{name}\b", annotations):
-            return name
-        if (
-            re.search(rf"@{name}\b", annotations)
-            and imports.get(name) == f"{FLINK_ANNOTATION}.{name}"
-        ):
-            return name
-    return None
-
-
 def member_visibility(head: str, enclosing: JavaType | None) -> str:
     """What Java gives a declaration whose modifiers say nothing.
 
@@ -263,6 +242,7 @@ def index_source(path: Path, text: str) -> SourceFile:
     for import_node in parsed.nodes("import_declaration"):
         qualified = declaration_target(parsed, import_node)
         imports[qualified.rsplit(".", 1)[-1]] = qualified
+    tier_imports = type_imports(parsed)
 
     types: list[JavaType] = []
 
@@ -327,13 +307,7 @@ def index_source(path: Path, text: str) -> SourceFile:
             body_end=parsed.end(body),
             outer=outer,
             ann_start=parsed.start(node),
-            tier=tier_of(
-                " ".join(
-                    f"@{annotation_name(parsed, annotation)}"
-                    for annotation in annotations(node)
-                ),
-                imports,
-            ),
+            tier=flink_tier(parsed, node, tier_imports),
             visibility=member_visibility(modifier_text(node), outer),
             record_components=(
                 signatures(node.child_by_field_name("parameters"))

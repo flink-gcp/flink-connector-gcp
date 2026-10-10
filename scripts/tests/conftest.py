@@ -92,3 +92,8 @@ def check_gated_tags():
 @pytest.fixture(scope="session")
 def check_javadoc_links():
     return load_script("check-javadoc-links.py")
+
+
+@pytest.fixture(scope="session")
+def check_declared_api_tiers():
+    return load_script("check-declared-api-tiers.py")
