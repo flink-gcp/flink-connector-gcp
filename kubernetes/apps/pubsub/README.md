@@ -34,7 +34,7 @@ These are local wiring and state-continuity checks; they do not measure real-ser
 [`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the relay on Flink 2.2.1 / Java 17.
 A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription`, `parallelism` and `entryPoint` inputs.
 The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade, parallelism 1/2 and entry-point combination.
-The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and the runner can [admit](#admission-and-effective-access) a run, but [dispatch](#approval-dispatch) still refuses before the environment lock, so no Pub/Sub run executes yet.
+The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs one of the four [reviewed trials](../../lifecycle/README.md#reviewed-pubsub-trials) through the runner's [admission](#admission-and-effective-access) and the supervisor's [recovery exercise](#recovery-exercise).
 
 The first verified image reference is:
 
@@ -71,7 +71,7 @@ Render one unapproved trial with the existing application and lifecycle delivery
 ```bash
 cat > /tmp/pubsub-trial.json <<'JSON'
 {
-  "version": 3,
+  "version": 4,
   "trial": "rescale-out",
   "entry_point": "datastream",
   "records_per_subscription": 1000,
@@ -83,8 +83,7 @@ cat > /tmp/pubsub-trial.json <<'JSON'
     "output_messages": 25000,
     "pubsub_requests": 420,
     "evidence_bytes": 67108864
-  },
-  "total_request_limit": 100000
+  }
 }
 JSON
 
@@ -127,26 +126,27 @@ Each range is published in ascending batches of at most 100, without crossing th
 The output records exact logical messages, payload bytes and required publication calls.
 A cohort range alone does not prove that its messages were processed but not checkpoint-confirmed: the [recovery exercise](#recovery-exercise) times the cohort and proves the boundary.
 
-The input file requires exactly the seven fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
+The input file requires exactly the five fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
 `entry_point` is `datastream` or `table` and applies to both manifests, so a trial never changes the entry point between phases.
 `traffic_limits` supplies every counter in the [shared reservation contract](#shared-traffic-reservations), within its existing ceilings.
 The renderer refuses caps too small for one complete input/output pass; extra pulls, duplicates, ambiguous calls and evidence sizes can exhaust otherwise valid proposals.
 Input bytes exclude service framing; output messages count reserved deliveries, including collector redelivery and empty-pull reservations.
 The [output collector](#output-collector) reserves a whole batch of 100 for every pull, and the [recovery exercise](#recovery-exercise) pulls at least once per 15-second poll, empty or not, until cleanup: 180 pulls in the 2,700 seconds before `cleanup_at`.
 One feasible run therefore needs its minimum pulls plus those 180 in `pull_calls`, 100 output messages for each of them, and requests for every publication, two for each minimum pull and one for each of the 180: for the example, 201 pulls, 20,100 output messages and 246 requests.
-These helper counters exclude connector SDK traffic and resource/control/credential/storage operations.
-`total_request_limit` separately proposes at most 100,000 aggregate requests, including those operations and retries, and must be at least the data-helper request limit.
-No aggregate request accounting is wired into execution yet.
+These helper counters exclude connector SDK traffic and resource/control/credential/storage operations, which no ceiling meters: those requests are nearly free, and the trial's cost is bounded by its window and Pod quota, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records.
 
 The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
 Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowance, and the Operator, supervisor and one control-Pod replacement allowance; PVCs are zero.
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
 Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-The proposal's `cost` is `unestimated`: spend is approved from an estimate before dispatch, and a runnable trial still needs one.
-A runnable approval also needs enforcement of the fixed state/log/evidence limits and complete request budgets, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
+The proposal's `cost` is a planning estimate, USD 1.987 for every trial; the owner approves it before a dispatch, and nothing at run time compares spend against it.
+It charges all seven Pods for the whole hour at the conservative CPU, memory and ephemeral-storage rates, the four application slots at the Flink shape and the three control slots at the Operator's, with no Spot or commitment discount, and adds a USD 1.00 reserve.
+The reserve covers what the trial's message and byte ceilings bound, each a fraction of it at those ceilings: Pub/Sub throughput at USD 40 per TiB with a 1 KB minimum per request, Cloud Storage operations at USD 0.005 per 1,000 and storage, Cloud Logging ingestion, and the logs and evidence leaving Google Cloud at USD 0.12 per GiB.
+The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
+A runnable approval also needs enforcement of the fixed state/log/evidence limits, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 Budget exhaustion, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
-The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence; dispatch and deployed trials of either entry point remain work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence.
 
 ## Run identity and service resources
 
@@ -363,7 +363,7 @@ The controller and the traffic wrapper call the guard after their own control re
 The budget covers the request's authentication, its sending and the response's status and headers; reading a streamed body is bounded only by the transport's per-read timeout and the helpers' 1 MiB response cap, so a slowly arriving body can still end after the deadline.
 The deadline is the admission deadline, the earlier of 900 seconds after the window's start and `cleanup_at`, except that `publish` and `collect` default to `cleanup_at` because later cohorts and collection belong to the exercise; a caller publishing during admission passes the admission deadline.
 Control and storage operations are not held to it, so a stop, a cleared marker or the evidence of a request already sent can still be written; the controller and the traffic wrapper enforce stop and evidence failure where they admit new work.
-These are per-method bounds held in the actor's process, not the aggregate request ceiling across connector, credential and storage calls, which [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433) owns.
+These are per-method bounds held in the actor's process; no aggregate request ceiling exists, as the [offline trial proposal](#offline-trial-proposal) explains.
 
 ### Admission and effective access
 
@@ -728,7 +728,7 @@ A replacement that finds another supervisor's binding reclaims through `reclaim(
 Direct `Records.set_phase(CLEANED)`, `Records.settled()` and `verify_idle()` now enforce the same Pub/Sub clean-state gate as final receipt creation.
 Records without Pub/Sub state retain their prior behavior.
 Cleanup routes Pub/Sub resources to `tier3-pubsub` and temporary state to `flink-gcp-tier3-pubsub`; existing smoke, Cloud Tasks and BigQuery inventory scopes remain unchanged.
-The production attachments are built by [`pubsub_actors`](#actor-construction-and-operation-bounds), and [admission](#admission-and-effective-access) uses them; dispatch still refuses before the environment lock.
+The production attachments are built by [`pubsub_actors`](#actor-construction-and-operation-bounds), and [admission](#admission-and-effective-access) uses them.
 A successful synthetic cleanup is not a recovery verdict; final Pub/Sub success criteria, full numeric approval, input/fault orchestration and deployed evidence remain under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ## Payload and restoration
@@ -820,13 +820,12 @@ Final settlement preserves `pubsub_trial` and the recovery observations even bef
 The original receipt is retained; the current plans must still prove the same nonce, all three foundation roots and an empty result.
 Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
 
-The dollar cap remains an unestimated proposal and the total request cap is not yet metered across connector SDK, provisioning, control, credentials and storage operations.
-Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, and the supervisor runs the [recovery exercise](#recovery-exercise), but dispatch still refuses before the environment lock until that accounting exists.
-Complete execution accounting and deployed trials remain prerequisites to the live campaign under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch.
+Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, the supervisor runs the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.
 
 ## Approval dispatch
 
-The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery` and builds its version 5 approval, but dispatch still refuses before the environment lock.
+The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery`, builds its version 5 approval and runs the trial.
 The scenario takes four inputs beyond the common ones.
 
 | Input | Contract |
@@ -834,13 +833,12 @@ The scenario takes four inputs beyond the common ones.
 | `pubsub_trial` | A reviewed trial file under [`kubernetes/lifecycle/pubsub-trials/`](../../lifecycle/README.md#reviewed-pubsub-trials), named without `.toml`; an empty name is refused |
 | `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
 | `expires_at` | 60 to 70 minutes after admission; the latest the run may end |
-| `approval` | `APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION, N REQUESTS`, where `R` and `N` are the trial file's `records_per_subscription` and `total_request_limit` |
+| `approval` | `APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION`, where `R` is the trial file's `records_per_subscription` |
 
 A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the approved commit.
 The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
-The phrase carries the trial's own numbers because they differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one trial therefore does not approve another trial with different numbers.
-The request number is the proposed total ceiling, which is not yet an aggregate meter.
-The trial directory is created when [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's first reviewed input, so every dispatch is refused at the trial file for now; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
+The phrase carries the trial's record count because it can differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one record count therefore does not approve a trial with another.
+The four reviewed trials are the campaign [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, as the version 5 approval requires.
 The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
@@ -851,8 +849,8 @@ Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and veri
 The proposal names its second manifest the recovery application; the approval pins that manifest as `upgrade_application_sha256`, the name every service scenario shares, and takes the supervisor image from the proposal's `images`, as a BigQuery approval does.
 The bundle re-renders from the approval alone and refuses a different application, recovery manifest, supervisor image, source or delivery digest, and an approved checkout with local changes or untracked CUE or TOML files under `kubernetes/`, so a trial file the approved commit lacks is refused too.
 
-Dispatch also confirms that it may create Pods in `tier3-pubsub`, which admission's access probe needs, then fails with "Pub/Sub execution waits on execution accounting (#1433)" before it acquires the environment lock.
-Apart from the kubeconfig every dispatch writes to authenticate, it writes no lock, no run evidence, no control record, no run document and no step output, so the workflow skips its plan proof and finalization as it does for any refusal before admission.
-[Admission](#admission-and-effective-access) and the [recovery exercise](#recovery-exercise) are implemented; execution accounting ([#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433)) keeps dispatch closed.
+Dispatch also confirms that it may create Pods in `tier3-pubsub`, which admission's access probe needs.
+It then acquires the environment lock, rechecks the idle foundation, stores the approval, both manifests and the image receipts as the run's documents, writes the control record and builds the runner through `pubsub_actors.runner()`, as a BigQuery dispatch does.
+The runner starts the run with the bundle's ConfigMap, supervisor Job, application and access probe, and settles it; a runner that cannot be built leaves the lock to a plain runner's settlement.
 The workflow job keeps the default 85-minute limit, because the window is one hour, as for smoke.
 Enabling the scenario does not approve a run.

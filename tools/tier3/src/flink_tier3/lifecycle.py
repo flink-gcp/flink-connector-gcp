@@ -51,6 +51,7 @@ from .policy import (
     PUBSUB_CEILINGS,
     RECOVERY,
 )
+from .pubsub import actors as pubsub_actors
 from .pubsub import bundle as pubsub_bundle
 from .pubsub import plan as pubsub_plan
 
@@ -156,8 +157,7 @@ def pubsub_phrase(trial):
     return (
         f"APPROVE ONE PUBSUB TRIAL: {PUBSUB_CEILINGS['pods']} PODS, "
         f"{PUBSUB_CEILINGS['seconds'] // 60} MINUTES, "
-        f"{trial['records_per_subscription']} RECORDS PER SUBSCRIPTION, "
-        f"{trial['total_request_limit']} REQUESTS"
+        f"{trial['records_per_subscription']} RECORDS PER SUBSCRIPTION"
     )
 
 
@@ -218,13 +218,11 @@ def pubsub_approval(
 
 
 def start_pubsub(args, store):
-    """Build and verify one Pub/Sub trial's approval, then refuse admission.
+    """Dispatch one approved Pub/Sub recovery trial from its reviewed file.
 
-    Everything here reads: the cluster's idle state, the image receipts and the
-    checkout the bundle re-renders from. The runner cannot yet admit Pub/Sub
-    execution, so this stops before the lock. Beyond the kubeconfig every
-    dispatch writes to authenticate, it writes neither the lock, evidence nor a
-    run document or step output the workflow's finalization reads.
+    Everything that can refuse without the lock does so first: the cluster's
+    idle state, the image receipts, and the bundle's revision check, rendering
+    and ConfigMap size.
     """
     trial, application_image = pubsub_inputs(args)
     refuse_before_admission(args, store, pubsub_phrase(trial))
@@ -255,7 +253,7 @@ def start_pubsub(args, store):
         "supervisor": proposal["images"]["supervisor"],
         "application": application_image,
     }
-    wf.image_receipts(
+    receipts = wf.image_receipts(
         rt.authorized_session(rt.GoogleToken()), images, proposal["expires_at"]
     )
     approval = pubsub_approval(
@@ -272,10 +270,27 @@ def start_pubsub(args, store):
         actor=os.environ["GITHUB_ACTOR"],
     )
     rt.validate_approval(approval, time.time())
-    pubsub_bundle.prepare(approval, prepared_at=rt.utc(math.ceil(time.time())))
-    raise rt.Failure(
-        "Pub/Sub execution waits on execution accounting (#1433); the approval and "
-        "its bundle were verified and nothing was locked"
+    bundle = pubsub_bundle.prepare(approval, prepared_at=rt.utc(math.ceil(time.time())))
+    run_service_trial(
+        args,
+        store,
+        kube,
+        foundation=(namespaces, operator_uid, operator_image, baseline),
+        namespace=PUBSUB,
+        owner=owner,
+        approval=approval,
+        documents={
+            "application.json": rendered["application"],
+            "images.json": receipts,
+            "upgrade-application.json": rendered["recovery_application"],
+        },
+        actor=functools.partial(pubsub_actors.runner, bundle=bundle),
+        admitted=(
+            bundle["delivery"]["config"],
+            bundle["delivery"]["supervisor"],
+            bundle["application"],
+            bundle["delivery"]["probe"],
+        ),
     )
 
 
@@ -397,37 +412,71 @@ def start_bigquery(args, store):
     bundle = bigquery_bundle.prepare(
         approval, prepared_at=rt.utc(math.ceil(time.time()))
     )
+    run_service_trial(
+        args,
+        store,
+        kube,
+        foundation=(namespaces, operator_uid, operator_image, baseline),
+        namespace=BIGQUERY,
+        owner=owner,
+        approval=approval,
+        documents={
+            "application.json": rendered["application"],
+            "images.json": receipts,
+            "upgrade-application.json": rendered["upgrade_application"],
+        },
+        actor=functools.partial(bigquery_actors.runner, bundle=bundle),
+        admitted=(
+            bundle["delivery"]["config"],
+            bundle["delivery"]["supervisor"],
+            bundle["application"],
+        ),
+    )
+
+
+def run_service_trial(
+    args,
+    store,
+    kube,
+    *,
+    foundation,
+    namespace,
+    owner,
+    approval,
+    documents,
+    actor,
+    admitted,
+):
+    """Lock the environment, record the run and admit it through its actor.
+
+    Everything that can refuse without the lock has done so. The runner's
+    token is minted here and lives only in this process and in the binding it
+    writes; the supervisor adopts it from that binding.
+    """
+    scenario = approval["scenario"]
     wf.save(args.directory / "owner.json", owner)
     rt.EnvironmentLock(store).acquire(owner)
     # Recheck idle after acquiring exclusivity; the earlier snapshot cannot
     # authorize a change that raced an infrastructure apply.
-    if wf.snapshot(kube, BIGQUERY) != (
-        namespaces,
-        operator_uid,
-        operator_image,
-        baseline,
-    ):
+    if wf.snapshot(kube, namespace) != foundation:
         raise rt.Failure("Foundation changed while acquiring the environment lock")
     wf.save(args.directory / "approval.json", approval)
     artifact = functools.partial(
-        rt.write_artifact, store, args.run_id, scenario="bigquery-recovery"
+        rt.write_artifact, store, args.run_id, scenario=scenario
     )
     artifact("approval.json", approval)
-    artifact("application.json", rendered["application"])
-    artifact("images.json", receipts)
-    artifact("upgrade-application.json", rendered["upgrade_application"])
+    for name, value in documents.items():
+        artifact(name, value)
     store.write(
         f"_control/runs/{args.run_id}.json",
-        {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},
+        {"nonce": approval["nonce"], "phase": "approved", "roots": {}, "observed": {}},
     )
     env = rt.Environment(kube, store, approval, actor="runner")
     with contextlib.ExitStack() as session:
         try:
-            runner = session.enter_context(
-                bigquery_actors.runner(env, bundle, runner_token=uuid.uuid4().hex)
-            )
+            runner = session.enter_context(actor(env, runner_token=uuid.uuid4().hex))
         except BaseException:
-            # Nothing is admitted and no BigQuery state exists yet, so a plain
+            # Nothing is admitted and no service state exists yet, so a plain
             # runner can settle what the lock and the documents hold.
             try:
                 runner_for(approval, kube, store).settle(request_stop=True)
@@ -442,11 +491,7 @@ def start_bigquery(args, store):
         signal.signal(signal.SIGINT, stop)
         failed = True
         try:
-            runner.start(
-                bundle["delivery"]["config"],
-                bundle["delivery"]["supervisor"],
-                bundle["application"],
-            )
+            runner.start(*admitted)
             failed = False
         finally:
             runner.settle(request_stop=failed)

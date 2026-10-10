@@ -18,10 +18,11 @@ import json
 import re
 import tomllib
 from dataclasses import asdict
+from decimal import Decimal
 
 from ..bundle import delivery_digest, package_sources, source_digest
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
-from ..model import Schedule
+from ..model import Schedule, _hourly
 from ..policy import GAR, POD_RESOURCES, POLL, PUBSUB_CEILINGS, SHA
 from ..workflow import render
 from .access import probe_spec
@@ -36,24 +37,26 @@ ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 # The supervisor's exercise pulls the output subscription at least once per
 # poll, empty or not, from admission until cleanup: at most this many polls.
 EXERCISE_PULLS = (WINDOW_SECONDS - PUBSUB_CEILINGS["cleanup_seconds"]) // POLL
+# When the rates behind the estimate were read from the official pricing
+# pages: the basis of the number the owner approves, not an admission deadline.
+REVIEWED_AT = "2026-10-10T00:00:00Z"
+RESERVE_USD = Decimal("1.00")
 FIELDS = {
     "version",
     "trial",
     "entry_point",
     "records_per_subscription",
     "traffic_limits",
-    "total_request_limit",
 }
 
 
 def validate_trial(value):
     """Validate proposed caps, without asserting feasibility or bill enforcement."""
     if not isinstance(value, dict) or set(value) != FIELDS:
-        raise Failure("Pub/Sub trial fields must match the version 3 schema")
+        raise Failure("Pub/Sub trial fields must match the version 4 schema")
     for key, low, high in (
-        ("version", 3, 3),
+        ("version", 4, 4),
         ("records_per_subscription", 3, 10000),
-        ("total_request_limit", 1, 100000),
     ):
         if type(value[key]) is not int or not low <= value[key] <= high:
             raise Failure("Invalid Pub/Sub trial field: " + key)
@@ -65,8 +68,22 @@ def validate_trial(value):
     if not isinstance(limits, dict) or set(limits) != set(COUNTER_CEILINGS):
         raise Failure("Pub/Sub trial requires every traffic counter")
     TrafficLimits(**limits, admit_until=1)
-    if value["total_request_limit"] < limits["pubsub_requests"]:
-        raise Failure("Total request proposal is below the data request limit")
+
+
+def estimate():
+    """Planning estimate for one trial; not a bound on bills or SDK retries.
+
+    It is the same for every trial. It charges all seven Pods of the policy for
+    the whole window, the four application slots at the Flink shape and the
+    three control slots at the Operator's, which is at least the supervisor's,
+    with no Spot or commitment discount. The reserve covers what the trial's
+    message and byte ceilings bound: Pub/Sub throughput, Cloud Storage
+    operations and storage, Cloud Logging ingestion and the logs and evidence
+    leaving Google Cloud, each a fraction of it at those ceilings.
+    """
+    shapes = [POD_RESOURCES["smoke"]] * 4 + [POD_RESOURCES["operator"]] * 3
+    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
+    return compute + RESERVE_USD
 
 
 def load_trial(path):
@@ -371,9 +388,13 @@ def prepare(
             "cleanup_seconds": PUBSUB_CEILINGS["cleanup_seconds"],
             "pods": PUBSUB_CEILINGS["pods"],
             "pvcs": 0,
-            "total_requests": trial["total_request_limit"],
         },
-        "cost": {"kind": "unestimated"},
+        "cost": {
+            "kind": "planning-estimate",
+            "usd": str(estimate()),
+            "reviewed_at": REVIEWED_AT,
+            "other_reserve_usd": str(RESERVE_USD),
+        },
     }
     data["proposal.json"] = json_bytes(proposal).decode()
     return {

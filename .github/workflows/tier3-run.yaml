@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, one Cloud Tasks measurement session, one BigQuery recovery trial, or one Pub/Sub recovery trial (approved and verified, then refused before the lock until its execution accounting exists)'
+        description: 'Normal completion, one savepoint upgrade and one JM Pod deletion, one Cloud Tasks measurement session, one BigQuery recovery trial, or one Pub/Sub recovery trial'
         required: true
         type: choice
         default: smoke
@@ -29,7 +29,7 @@ on:
         required: true
         type: string
       approval:
-        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES, or APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, or APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION, N REQUESTS with the pubsub_trial file''s numbers; spend is approved beforehand from the estimate'
+        description: 'Type APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES, or APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES, or APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, or APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION with the pubsub_trial file''s record count; spend is approved beforehand from the estimate'
         required: true
         type: string
       session:
@@ -68,7 +68,7 @@ on:
           - 'eo-50'
           - 'fl-10'
       pubsub_trial:
-        description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml (none until #1434)'
+        description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
         type: string
         default: ''

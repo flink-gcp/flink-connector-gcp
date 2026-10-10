@@ -88,7 +88,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub/traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
 | `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
 | `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier |
-| `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program; dispatch still refuses before the lock |
+| `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.
@@ -99,7 +99,7 @@ Merging this implementation does not authorize a dispatch.
 ## Execution approval
 
 A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, the ceilings below and the run's cost estimate; spend is approved from that estimate before dispatch, and nothing at run time compares spend against it.
-The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, and `bigquery_plan.estimate` for a BigQuery trial, which its rendered proposal carries.
+The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
 The run workflow can check out another rig commit through `rig_sha`, which must equal the approved `reviewed_sha` and head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
@@ -517,10 +517,10 @@ A synthetic digest renders locally but never passes the live registry check that
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
-The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal); Pub/Sub dispatch still refuses before the environment lock.
+The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
 The version 5 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
-A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's numbers; dispatch builds and verifies its version 5 approval and bundle, then refuses before the lock until execution accounting exists, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes; the runner's [admission](../apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](../apps/pubsub/README.md#recovery-exercise) are implemented.
+A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's record count, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 
 ## Reviewed Pub/Sub trials
 
@@ -528,6 +528,6 @@ A `pubsub-recovery` dispatch names one file under `kubernetes/lifecycle/pubsub-t
 Each file holds the [offline trial schema](../apps/pubsub/README.md#offline-trial-proposal) as TOML beside the Apache licence header that apache-rat requires.
 The approved commit must contain the file: dispatch refuses an untracked TOML file under `kubernetes/`.
 
-No trial is committed yet; [#1434](https://github.com/flink-gcp/flink-connector-gcp/issues/1434) preregisters the campaign's trials, their numbers and their stop conditions.
-Create the directory when adding its first reviewed trial file.
-A file under that path is a runnable trial once admission opens, so the example the tests use lives in `tools/tier3/tests/fixtures/pubsub-trials/` instead, where no dispatch can name it.
+The directory holds the four trials [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs once each: `jm-replacement`, `tm-replacement`, `rescale-out` and `rescale-in`, on the DataStream entry point with 1,000 records per subscription.
+Their input limits are exactly that input domain, 2,000 messages of at most 128 bytes, and the other traffic limits are the helper ceilings; each run is dispatched only after the owner approves its [estimate](../apps/pubsub/README.md#offline-trial-proposal).
+A file under that path is a runnable trial, so the example the tests use lives in `tools/tier3/tests/fixtures/pubsub-trials/` instead, where no dispatch can name it.

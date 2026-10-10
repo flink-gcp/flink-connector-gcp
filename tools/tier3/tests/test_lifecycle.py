@@ -2487,15 +2487,13 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     assert inputs["scenario"]["options"] == list(cli.SCENARIOS)
     assert inputs["trial"]["options"] == ["none", *bigquery_plan.TRIALS]
     assert inputs["trial"]["default"] == "none"
-    # The Pub/Sub phrase carries the reviewed trial's numbers, so the form can
-    # only name their places; the ceilings around them are the policy's.
-    pubsub = cli.pubsub_phrase(
-        {"records_per_subscription": "R", "total_request_limit": "N"}
-    )
+    # The Pub/Sub phrase carries the reviewed trial's record count, so the form
+    # can only name its place; the ceilings around it are the policy's.
+    pubsub = cli.pubsub_phrase({"records_per_subscription": "R"})
     assert inputs["approval"]["description"] == (
         f"Type {cli.APPROVAL}, or {cli.CLOUDTASKS_APPROVAL}, or "
         f"{cli.BIGQUERY_APPROVAL}, or {pubsub} with the pubsub_trial file's "
-        "numbers; spend is approved beforehand from the estimate"
+        "record count; spend is approved beforehand from the estimate"
     )
     assert (
         f"under {cli.PUBSUB_TRIALS}, without .toml"

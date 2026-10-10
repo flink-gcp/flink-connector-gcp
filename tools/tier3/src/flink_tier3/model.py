@@ -433,8 +433,8 @@ def validate_approval(approval, now=None):
 
 
 def _validate_pubsub(approval, start, end):
-    # This internal schema binds proposed caps; it does not estimate cost or
-    # authorize execution. Runner and Supervisor still refuse this scenario.
+    # This schema binds the trial's caps; it neither estimates cost nor
+    # authorizes execution, which the dispatch's typed phrase does.
     from .pubsub.plan import WINDOW_SECONDS, input_plan
     from .pubsub.resources import ResourcePlan
 

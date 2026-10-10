@@ -15,6 +15,9 @@
 """The Pub/Sub dispatch boundary: the approval it builds, and where it stops."""
 
 import copy
+import json
+import signal
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,10 +39,7 @@ SHA = "e" * 40
 NOW = cli.rt.timestamp("2026-09-21T00:00:00Z")
 WINDOW = PUBSUB_CEILINGS["seconds"]
 EXPIRY = cli.rt.utc(NOW + WINDOW + 60)
-PHRASE = (
-    "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, "
-    "1000 RECORDS PER SUBSCRIPTION, 100000 REQUESTS"
-)
+PHRASE = "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, 1000 RECORDS PER SUBSCRIPTION"
 
 
 @pytest.fixture
@@ -84,10 +84,9 @@ def args(tmp_path, **overrides):
 
 def test_the_phrase_names_the_policy_and_the_trial_ceilings(trial):
     assert cli.pubsub_phrase(trial) == PHRASE
-    trial.update(records_per_subscription=10, total_request_limit=30000)
+    trial.update(records_per_subscription=10)
     assert cli.pubsub_phrase(trial) == (
-        "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, "
-        "10 RECORDS PER SUBSCRIPTION, 30000 REQUESTS"
+        "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, 10 RECORDS PER SUBSCRIPTION"
     )
 
 
@@ -146,11 +145,6 @@ def test_an_expiry_that_would_not_bound_the_run_is_refused(slack):
         # Another trial's numbers do not approve this one.
         (
             {"approve": PHRASE.replace("1000 RECORDS", "2000 RECORDS")},
-            {},
-            "explicitly approve",
-        ),
-        (
-            {"approve": PHRASE.replace("100000 REQUESTS", "30000 REQUESTS")},
             {},
             "explicitly approve",
         ),
@@ -220,8 +214,11 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
     )
     snapshots = []
 
+    events = []
+
     def observe(kube, namespace):
         snapshots.append(namespace)
+        events.append("snapshot")
         return snapshot
 
     monkeypatch.setattr(cli.wf, "snapshot", observe)
@@ -239,10 +236,31 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
     monkeypatch.setattr(cli.rt, "authorized_session", lambda token: None)
     monkeypatch.setattr(cli.rt, "GoogleToken", lambda: None)
 
-    def lock(store):
-        raise AssertionError("Pub/Sub dispatch must not reach the lock")
+    locks = []
 
-    monkeypatch.setattr(cli.rt, "EnvironmentLock", lock)
+    def acquire(owner):
+        locks.append(owner)
+        events.append("lock")
+
+    monkeypatch.setattr(
+        cli.rt, "EnvironmentLock", lambda store: SimpleNamespace(acquire=acquire)
+    )
+    scenarios = []
+    write = cli.rt.write_artifact
+
+    def artifact(store, run_id, name, value, scenario):
+        scenarios.append(scenario)
+        return write(store, run_id, name, value, scenario)
+
+    monkeypatch.setattr(cli.rt, "write_artifact", artifact)
+    fallback = []
+    monkeypatch.setattr(
+        cli,
+        "runner_for",
+        lambda approval, kube, store: SimpleNamespace(
+            settle=lambda request_stop=False: fallback.append(request_stop)
+        ),
+    )
     bundled = []
     original = bundles.prepare
 
@@ -269,30 +287,65 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
         snapshots=snapshots,
         receipts=receipts,
         bundled=bundled,
+        locks=locks,
+        fallback=fallback,
+        events=events,
+        scenarios=scenarios,
+        snapshot=snapshot,
     )
 
 
-def test_a_verified_approval_is_refused_before_the_lock(cluster, trial, tmp_path):
-    """The approval and its bundle are built and checked; nothing is admitted."""
-    store, kube = cluster.store, cluster.kube
-    before = copy.deepcopy((store.data, store.blobs, store.serial, kube.data))
-    calls = len(kube.calls)
-    with pytest.raises(Failure, match=r"waits on execution accounting \(#1433\)"):
-        cli.start(args(tmp_path), store)
-    # Neither the lock, evidence, control, a cluster change, nor a local document
-    # or step output that finalization reads.
-    assert (store.data, store.blobs, store.serial, kube.data) == before
-    assert len(kube.calls) == calls
-    assert not (tmp_path / "lifecycle").exists()
-    assert not (tmp_path / "github-output").exists()
+class Recorded:
+    """A runner that records what dispatch asked of it."""
+
+    def __init__(self, env, fail=None):
+        self.env, self.calls, self.fail = env, [], fail
+
+    def start(self, config, job, application, probe):
+        self.calls.append(("start", config, job, application, probe))
+        # A termination while the run is admitted stops it rather than
+        # killing the process before it settles.
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        self.stopped = self.env.stopping
+        if self.fail:
+            raise Failure(self.fail)
+
+    def settle(self, request_stop=False):
+        self.calls.append(("settle", request_stop))
+
+
+def install(monkeypatch, fail=None, enter=None):
+    """A runner factory that checks the bundle it is handed, as the real one does."""
+    seen = {}
+
+    @contextmanager
+    def runner(env, bundle, *, runner_token, credentials=None):
+        if enter:
+            raise Failure(enter)
+        bundles.validate(bundle, env.approval.to_dict())
+        seen.update(env=env, bundle=bundle, token=runner_token)
+        seen["runner"] = Recorded(env, fail)
+        yield seen["runner"]
+
+    monkeypatch.setattr(cli.pubsub_actors, "runner", runner)
+    return seen
+
+
+def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
+    cluster, trial, tmp_path, monkeypatch
+):
+    seen = install(monkeypatch)
+    cli.start(args(tmp_path), cluster.store)
     assert cluster.connected == [True]
     assert cluster.checked == [
         (True, "create", "flink.apache.org", "flinkdeployments", PUBSUB),
         # Admission creates the workload access probe Pod.
         (True, "create", "", "pods", PUBSUB),
     ]
-    assert cluster.snapshots == [PUBSUB]
-    [approval] = cluster.bundled
+    # Idle before the lock, and again once it is held.
+    assert cluster.snapshots == [PUBSUB, PUBSUB]
+    # Dispatch's own bundle; the runner factory re-renders it again.
+    approval = cluster.bundled[0]
     validate_approval(approval, NOW)
     assert approval["version"] == 5
     assert approval["scenario"] == "pubsub-recovery"
@@ -310,6 +363,88 @@ def test_a_verified_approval_is_refused_before_the_lock(cluster, trial, tmp_path
     }
     # The image receipts cover exactly the approved images, to the approved end.
     assert cluster.receipts == [(approval["images"], approval["expires_at"])]
+    # The token is minted in this process and handed to nothing but the runner.
+    assert seen["env"].actor == "runner"
+    assert len(seen["token"]) == 32
+    assert seen["token"] not in json.dumps(approval)
+    bundle, runner = seen["bundle"], seen["runner"]
+    assert runner.calls == [
+        (
+            "start",
+            bundle["delivery"]["config"],
+            bundle["delivery"]["supervisor"],
+            bundle["application"],
+            bundle["delivery"]["probe"],
+        ),
+        ("settle", False),
+    ]
+    assert cluster.locks == [approval["lock_owner"]]
+    assert cluster.fallback == []
+    # Idle is rechecked once the lock is held.
+    assert cluster.events == ["snapshot", "lock", "snapshot"]
+    assert cluster.scenarios == ["pubsub-recovery"] * 4
+    assert runner.stopped is True
+    # What the workflow's plan proof and finalization need: the owner it
+    # releases and the idle signal that runs them.
+    owner = json.loads((tmp_path / "lifecycle" / "owner.json").read_text())
+    assert owner == approval["lock_owner"]
+    assert (tmp_path / "github-output").read_text() == "idle=true\n"
+    documents = {
+        name: cluster.store.read(f"runs/ps-1429-0001/{name}")[0]
+        for name in (
+            "approval.json",
+            "application.json",
+            "images.json",
+            "upgrade-application.json",
+        )
+    }
+    assert documents["approval.json"] == approval
+    assert documents["application.json"] == bundle["application"]
+    assert documents["upgrade-application.json"] == bundle["recovery_application"]
+    assert documents["images.json"] is None or documents["images.json"] == {}
+    control, _ = cluster.store.read("_control/runs/ps-1429-0001.json")
+    assert control["nonce"] == approval["nonce"] and control["phase"] == "approved"
+
+
+def test_a_failed_start_still_settles_with_a_stop(cluster, tmp_path, monkeypatch):
+    seen = install(monkeypatch, fail="admission broke")
+    with pytest.raises(Failure, match="admission broke"):
+        cli.start(args(tmp_path), cluster.store)
+    assert seen["runner"].calls[-1] == ("settle", True)
+    assert cluster.fallback == []
+    assert (tmp_path / "github-output").read_text() == "idle=true\n"
+
+
+def test_a_foundation_that_changed_under_the_lock_admits_nothing(
+    cluster, tmp_path, monkeypatch
+):
+    seen = install(monkeypatch)
+    observed = []
+
+    def observe(kube, namespace):
+        observed.append(namespace)
+        if len(observed) == 1:
+            return cluster.snapshot
+        namespaces, _, image, baseline = cluster.snapshot
+        return namespaces, "replaced-operator", image, baseline
+
+    monkeypatch.setattr(cli.wf, "snapshot", observe)
+    with pytest.raises(Failure, match="Foundation changed"):
+        cli.start(args(tmp_path), cluster.store)
+    assert len(cluster.locks) == 1 and "runner" not in seen
+    assert cluster.store.read("_control/runs/ps-1429-0001.json")[0] is None
+
+
+def test_a_runner_that_cannot_be_built_after_the_lock_is_settled_by_a_plain_one(
+    cluster, tmp_path, monkeypatch
+):
+    """Nothing is admitted and no Pub/Sub state exists, but the lock is held."""
+    install(monkeypatch, enter="authentication refused")
+    with pytest.raises(Failure, match="authentication refused"):
+        cli.start(args(tmp_path), cluster.store)
+    assert len(cluster.locks) == 1
+    assert cluster.fallback == [True]
+    assert (tmp_path / "github-output").read_text() == "idle=true\n"
 
 
 def test_a_bundle_that_refuses_does_so_before_the_lock(cluster, monkeypatch, tmp_path):
@@ -323,12 +458,13 @@ def test_a_bundle_that_refuses_does_so_before_the_lock(cluster, monkeypatch, tmp
 
 
 def test_the_approval_pins_the_manifests_the_proposal_rendered(
-    cluster, trial, tmp_path
+    cluster, trial, tmp_path, monkeypatch
 ):
     """The recovery manifest, not the initial one, becomes the upgrade digest."""
-    with pytest.raises(Failure, match=r"waits on execution accounting \(#1433\)"):
-        cli.start(args(tmp_path), cluster.store)
-    [approval] = cluster.bundled
+    install(monkeypatch)
+    cli.start(args(tmp_path), cluster.store)
+    # Dispatch's own bundle; the runner factory re-renders it again.
+    approval = cluster.bundled[0]
     # The first render is dispatch's own; the bundle re-renders after it.
     rendered = cluster.rendered[0]
     initial, recovery = rendered["application"], rendered["recovery_application"]
@@ -371,3 +507,21 @@ def test_the_approval_holds_a_deep_copy_of_the_trial(trial):
     trial["records_per_subscription"] = 2
     assert approval["pubsub_trial"] == before
     assert approval["upgrade_application_sha256"] == "4" * 64
+
+
+def test_each_reviewed_trial_is_one_of_the_four_and_covers_one_pass():
+    checkout = Path(__file__).resolve().parents[4]
+    reviewed = sorted((checkout / cli.PUBSUB_TRIALS).glob("*.toml"))
+    trials = {path.stem: cli.pubsub_plan.load_reviewed_trial(path) for path in reviewed}
+    assert set(trials) == set(cli.pubsub_plan.TRIALS)
+    for name, reviewed_trial in trials.items():
+        assert reviewed_trial["trial"] == name
+        assert reviewed_trial["entry_point"] == "datastream"
+        assert reviewed_trial["records_per_subscription"] == 1000
+        # Message evidence is the helper's whole allowance; nothing else in
+        # the plan checks it is enough for a run.
+        assert (
+            reviewed_trial["traffic_limits"]["evidence_bytes"]
+            == (cli.pubsub_plan.COUNTER_CEILINGS["evidence_bytes"])
+        )
+        cli.pubsub_plan.input_plan("ps-1361-0001", reviewed_trial)
