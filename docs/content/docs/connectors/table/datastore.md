@@ -23,12 +23,12 @@ limitations under the License.
 # Datastore-mode SQL connector
 
 The `datastore` connector reads and writes Table API and SQL rows as the entities of one kind, in one namespace of a Firestore database in Datastore mode, through `flink-connector-gcp-firestore`.
-It maps onto the [Datastore-mode DataStream source and sink]({{< relref "docs/connectors/datastream/firestore" >}}#datastore-mode), so splitting, snapshot, paging, recovery, batching, ramp-up, delivery, metrics and failure behavior remain the same.
+It maps onto the [Datastore-mode DataStream source and sink]({{< relref "docs/connectors/datastream/firestore" >}}#datastore-mode), so splitting, snapshot, paging, recovery, batching, ramp-up, delivery, metrics and failure behavior remain the same; a lookup join reads through its own client, with the retries its section describes.
 A table with a PRIMARY KEY writes each row under that key's name or numeric id; a table without one writes every row as a new entity.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="overview" >}}
 
-A scan reads the kind as a bounded snapshot; a lookup join is [#1653]({{< param BookRepo >}}/issues/1653).
+A scan reads the kind as a bounded snapshot, and a lookup join reads one entity of it by key.
 A database in Native mode uses the [`firestore` connector]({{< relref "docs/connectors/table/firestore" >}}) instead.
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
@@ -39,15 +39,16 @@ The same jar carries the `firestore` and `datastore` connectors; the [Firestore 
 The Table source and sink report their configured kind in the `gcp` facet of one logical SQL dataset, named by the table's catalog identifier.
 The kind is a `datastore-kind` resource: namespace `datastore://{project}/{database}`, with the default database spelled `(default)`, followed by `/{namespace}` outside the default namespace, and the kind as its name.
 This is the resource the [Datastore-mode source]({{< relref "docs/connectors/datastream/firestore" >}}#lineage) reports for the same kind.
+Lookup joins are outside this extraction path and report no resource.
 See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader configuration and what Flink 1.20 and 2.x each deliver.
 
 ## Credentials
 
-`service-account-key-file` selects one service-account JSON key for the scan and the sink.
-The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, while each sink subtask reads it on its TaskManager, so mount the same path in every container.
-Without it and without `emulator-endpoint`, both use Application Default Credentials, and the identity needs the role the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) name.
+`service-account-key-file` selects one service-account JSON key for the scan, the lookup and the sink.
+The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, while each lookup and sink subtask reads it on its TaskManager, so mount the same path in every container.
+Without it and without `emulator-endpoint`, all three use Application Default Credentials, and the identity needs the role the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) name.
 The option is mutually exclusive with `emulator-endpoint`, because the emulator channel carries no credentials.
-Only `emulator-endpoint` reaches an emulator, one started with `--database-mode=datastore-mode`: the scan and the sink always give their clients a host, so `DATASTORE_EMULATOR_HOST` is never read.
+Only `emulator-endpoint` reaches an emulator, one started with `--database-mode=datastore-mode`: none of the three reads `DATASTORE_EMULATOR_HOST`.
 
 ## Keys and type mapping
 
@@ -124,7 +125,7 @@ A scan reads whole entities and converts only the columns it produces.
 A column projection is not sent to the service as a Datastore projection query, because such a query returns only the entities that hold an indexed value of every projected property, and one result per value of an array property: a column written through `sink.unindexed-columns` would read as no row at all.
 Filters are not pushed down either.
 
-A scan can read six metadata columns:
+A scan or a lookup can read six metadata columns:
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -133,16 +134,48 @@ A scan can read six metadata columns:
 | `version` | `BIGINT NOT NULL` | The entity's version, which grows with every change to the entity |
 | `create-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the entity was created |
 | `update-time` | `TIMESTAMP_LTZ(6) NOT NULL` | When the entity was last changed |
-| `read-time` | `TIMESTAMP_LTZ(6) NOT NULL` | The time the entity was read at, the scan's one read time |
+| `read-time` | `TIMESTAMP_LTZ(6) NOT NULL` | The time the entity was read at: the scan's one read time, or the time of a lookup's read |
 
 Each time is truncated to microseconds, the type's precision.
-A query result carries the version and both times of every entity it returns, and the read fails, naming the entity's key and the metadata, if a result lacks one that a column reads.
+A query result or a lookup's answer carries the version and both times of every entity it returns, and a lookup's answer its read time; the read fails, naming the entity's key and the metadata, if an answer lacks one that a column reads.
 
 A table without a PRIMARY KEY reads the ids the service allocated for its rows through `key-id`:
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="key-less-read" >}}
 
 The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) describes the read-time window, the split count's estimate, paging and recovery.
+
+## Lookup
+
+A lookup join reads one entity of the table's kind, in its namespace, by the PRIMARY KEY column: the key's name for a `STRING` key column, its numeric id for a `BIGINT` one.
+It also accepts equality keys on other top-level physical scalar columns, whether a constant such as `c.tier = 'gold'` appears in `ON` or `WHERE`, or an input column supplies the comparison value.
+Only the entity key addresses the read; the additional keys compare against the converted Flink row before it is returned, with binary values compared by content.
+Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
+A NULL lookup key or a failed additional equality joins no row, and a condition that is not an equality, such as `c.tier <> 'gold'`, stays a filter applied after the lookup.
+A table without a PRIMARY KEY cannot be looked up.
+
+{{< sql-snippet file="flink/DatastoreTableReference.sql" tag="lookup" >}}
+
+An entity that does not exist joins no row, so a `LEFT JOIN` fills its columns with NULL.
+The lookup reads a key without a parent, so an entity whose key has one is never found, even when its last path element equals the lookup key.
+A key that can address no entity joins no row without a read: an empty name, the id `0`, a name of the form `__…__` with at least one character between the underscores, and a name longer than 1,500 bytes.
+The emulator refuses a lookup of an empty name, the id `0` or an over-long name with `INVALID_ARGUMENT`, which would fail the job for one stream value if the key were sent.
+Every other key is sent to the service as it is, a negative id included: Datastore stores an entity under a negative id.
+
+A lookup asks Datastore only for the properties of the columns the join uses, through the `Lookup` request's property mask, and for the key alone when the join uses only the key and metadata columns.
+Unlike the projection query the [scan](#source) declines, the mask returns an entity whatever its indexes, and an array property whole.
+The lookup fills the metadata columns from the answer: `version`, `create-time` and `update-time` from the entity it found, and `read-time` from the time of that read.
+`type-mismatch-policy` applies to a looked-up value as it does to a scanned one.
+A lookup reads strongly, the entity as it is when the request reaches the service, and under a `PARTIAL` cache a hit returns the row as it was cached until it expires; `scan.read-time` and the other `scan.*` options do not apply to it.
+
+`lookup.async` runs the join as Flink's asynchronous lookup, with several reads in flight per subtask, instead of waiting for each read; both modes send one `Lookup` request per key through the same generated client, one per lookup subtask.
+Flink's `lookup.cache` modes `NONE` and `PARTIAL` are supported, and Flink owns the partial cache; `FULL` is refused, because a full cache is loaded by a scan with a snapshot and a reload contract of its own.
+The cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same key have separate entries.
+An additional equality that fails follows the configured missing-key cache policy; expiry and size options keep their standard Flink meaning.
+`lookup.max-retries` reads again after `UNAVAILABLE` or `DEADLINE_EXCEEDED`, the statuses the client library already retries `Lookup` on, so it adds attempts on top of the library's rather than retrying anything the library does not; it counts retries after the first read, and every other failure fails the join at once.
+Datastore can also defer a key for lack of resources and read nothing.
+A deferred key is sent again at once, within the same `lookup.max-retries` budget, and a key still deferred when the budget runs out fails the join, because joining no row would hide an entity that may exist.
+A lookup needs the `datastore.entities.get` permission, which `roles/datastore.user` and `roles/datastore.viewer` both carry.
 
 ## Sink
 
@@ -178,12 +211,19 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `kind` | **required** | The kind of the table's entities |
 | `namespace` | *unset ⇒ the default namespace* | The namespace of the table's entities |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started in Datastore mode; setting it also stops credential discovery |
-| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each sink subtask; rejected with `emulator-endpoint` |
+| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each lookup and sink subtask; rejected with `emulator-endpoint` |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
 | `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000` |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the entities one request asks for |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
+| `lookup.async` | `false` | Run the join as Flink's asynchronous lookup, with several reads in flight per subtask |
+| `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
+| `lookup.max-retries` | `3` | Reads after the first one, for `UNAVAILABLE`, `DEADLINE_EXCEEDED` and a deferred key only |
+| `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
+| `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
+| `lookup.partial-cache.cache-missing-key` | `true` | Whether the partial cache records a key that found no entity |
+| `lookup.partial-cache.max-rows` | *unset* | Maximum rows the partial cache keeps |
 | `sink.unindexed-columns` | empty | Semicolon-separated top-level columns written excluded from indexes, with every value nested in them |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations`: the mutations in one commit |
 | `sink.buffer-flush.max-size` | `9000000 bytes` | Maps to `maxBatchBytes`: the protobuf size of one commit request, at most `10 mb` |
@@ -196,7 +236,7 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `sink.throttling.parallelism` | *unset ⇒ the sink's parallelism* | Maps to `throttlingParallelism`: how many subtasks share the ramp-up's starting 500 operations per second |
 | `sink.parallelism` | *unset ⇒ the input's parallelism* | Flink's standard sink parallelism override |
 
-The [configuration reference]({{< relref "docs/reference/firestore" >}}#datastorewriteroptions) explains each writer option, and a refusal of a `sink.*` or `scan.*` value names the option key the `WITH` clause spells.
+The [configuration reference]({{< relref "docs/reference/firestore" >}}#datastorewriteroptions) explains each writer option, and a refusal of a `scan.*`, `lookup.*` or `sink.*` value names the option key the `WITH` clause spells.
 The pair `sink.recovery.initial-backoff` and `sink.recovery.max-backoff` is checked over the values the writer would use, so setting one compares it with the other's default.
 
 ## Delivery guarantee
@@ -213,4 +253,5 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 The table mapping and the declined alternatives are recorded in [ADR-0184]({{< param BookRepo >}}/blob/main/docs/adr/0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md).
 The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
 They also read every type back through a SQL scan with its metadata, read the allocated ids of a table without a PRIMARY KEY, fail and read as NULL a mismatched value under each policy, keep every entity under a column projection, and read at a configured read time.
+Blocking and asynchronous lookups join against entities by name and by numeric id, a negative one and one in a namespace included, join no row for the keys that address no entity without failing, read the metadata, filter on an additional equality key under both caches, and read the current entity whatever `scan.read-time` says; the lookup's own client is checked to return exactly the masked properties, names holding a dot, a backquote or a backslash included, and an unindexed value and an array whole.
 The uber-jar's tests write through its relocated classes.

@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -79,6 +80,13 @@ public final class DatastoreDynamicTableFactory
                         DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         DatastoreConnectorOptions.SCAN_READ_TIME,
                         DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
+                        DatastoreConnectorOptions.LOOKUP_ASYNC,
+                        LookupOptions.CACHE_TYPE,
+                        LookupOptions.MAX_RETRIES,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
+                        LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
+                        LookupOptions.PARTIAL_CACHE_MAX_ROWS,
                         DatastoreConnectorOptions.SINK_UNINDEXED_COLUMNS,
                         DatastoreConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         DatastoreConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
@@ -128,6 +136,7 @@ public final class DatastoreDynamicTableFactory
                 namespace,
                 kind,
                 DatastoreScanConfig.from(config),
+                DatastoreLookupConfig.from(config),
                 config.get(DatastoreConnectorOptions.TYPE_MISMATCH_POLICY),
                 context.getPhysicalRowDataType(),
                 config.getOptional(DatastoreConnectorOptions.EMULATOR_ENDPOINT).orElse(null),

@@ -40,12 +40,14 @@ class DatastoreConnectorOptionsTest {
     @Test
     void onlyTheRecordedOptionsCarryADefault() {
         // A mapped option's default lives on the connector's own builder and is applied by not
-        // calling a setter. This one is table-owned: no builder setter takes it, and the factory
-        // reads it with get().
+        // calling a setter. These two are table-owned: no builder setter takes them, and the
+        // factory reads each with get().
         assertThat(DeclaredOptions.all()).isNotEmpty();
         assertThat(DeclaredOptions.all())
                 .filteredOn(ConfigOption::hasDefaultValue)
-                .containsExactly(DatastoreConnectorOptions.TYPE_MISMATCH_POLICY);
+                .containsExactlyInAnyOrder(
+                        DatastoreConnectorOptions.TYPE_MISMATCH_POLICY,
+                        DatastoreConnectorOptions.LOOKUP_ASYNC);
     }
 
     @Test

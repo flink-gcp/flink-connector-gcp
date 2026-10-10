@@ -24,7 +24,8 @@ import javax.annotation.Nullable;
 
 /**
  * What a query result carries about an entity beside the entity itself, and the read time of the
- * split that read it: none of it is on the client library's {@code Entity}.
+ * split that read it: none of it is on the client library's {@code Entity}. The {@code datastore}
+ * table's lookup fills it from a lookup's answer, whose read time is the answer's own.
  */
 @Internal
 public final class EntityMetadata {
@@ -32,7 +33,7 @@ public final class EntityMetadata {
     private final long version;
     @Nullable private final Timestamp createTime;
     @Nullable private final Timestamp updateTime;
-    private final Timestamp readTime;
+    @Nullable private final Timestamp readTime;
 
     /**
      * Creates the metadata.
@@ -40,13 +41,13 @@ public final class EntityMetadata {
      * @param version the entity's version, which grows with every change to the entity
      * @param createTime when the entity was created, or {@code null} when the result has none
      * @param updateTime when the entity was last changed, or {@code null} when the result has none
-     * @param readTime the time the split read the entity at
+     * @param readTime the time the entity was read at, or {@code null} when the answer has none
      */
     public EntityMetadata(
             long version,
             @Nullable Timestamp createTime,
             @Nullable Timestamp updateTime,
-            Timestamp readTime) {
+            @Nullable Timestamp readTime) {
         this.version = version;
         this.createTime = createTime;
         this.updateTime = updateTime;
@@ -70,7 +71,8 @@ public final class EntityMetadata {
         return updateTime;
     }
 
-    /** Returns the time the split read the entity at. */
+    /** Returns the time the entity was read at, or {@code null} when the answer has none. */
+    @Nullable
     public Timestamp getReadTime() {
         return readTime;
     }

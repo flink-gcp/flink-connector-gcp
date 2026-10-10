@@ -44,8 +44,8 @@ public final class DatastoreTableSchema implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** The longest kind or property name Datastore stores, in UTF-8 bytes. */
-    static final int MAX_NAME_BYTES = 1500;
+    /** The longest kind, key name or property name Datastore stores, in UTF-8 bytes. */
+    public static final int MAX_NAME_BYTES = 1500;
 
     private final RowType rowType;
     private final int keyIndex;
@@ -166,12 +166,12 @@ public final class DatastoreTableSchema implements Serializable {
      * ____}, and Datastore's documentation every kind beginning with {@code __}; the emulator
      * stores both, so they are left to the service.
      */
-    static boolean isReserved(String name) {
+    public static boolean isReserved(String name) {
         return name.length() > 4 && name.startsWith("__") && name.endsWith("__");
     }
 
     /** Returns whether {@code name} is longer than {@value #MAX_NAME_BYTES} UTF-8 bytes. */
-    static boolean isTooLong(String name) {
+    public static boolean isTooLong(String name) {
         return name.getBytes(StandardCharsets.UTF_8).length > MAX_NAME_BYTES;
     }
 

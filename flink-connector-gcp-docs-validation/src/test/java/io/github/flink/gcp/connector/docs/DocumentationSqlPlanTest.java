@@ -783,7 +783,15 @@ public class DocumentationSqlPlanTest {
                         snippet("flink/DatastoreTableReference.sql", "scan")),
                 scenario(
                         "Datastore table reference key-less read",
-                        snippet("flink/DatastoreTableReference.sql", "key-less-read")));
+                        snippet("flink/DatastoreTableReference.sql", "key-less-read")),
+                scenario(
+                        "Datastore table reference lookup join",
+                        setup(
+                                "CREATE TABLE order_events (order_id STRING, customer_id STRING, "
+                                        + "proc_time AS PROCTIME()) WITH ("
+                                        + "'connector' = 'datagen', "
+                                        + "'number-of-rows' = '1')"),
+                        snippet("flink/DatastoreTableReference.sql", "lookup")));
     }
 
     private static Scenario scenario(String name, ValidationStep... steps) {

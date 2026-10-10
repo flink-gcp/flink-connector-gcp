@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.firestore.sql;
 
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.NoCredentials;
 import com.google.cloud.Timestamp;
@@ -36,13 +38,15 @@ import org.testcontainers.containers.FirestoreEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Runs a SQL insert through the shaded Datastore-mode classes against the Firestore emulator in
- * Datastore mode.
+ * Runs a SQL insert and a SQL lookup join through the shaded Datastore-mode classes against the
+ * Firestore emulator in Datastore mode.
  *
  * <p>The connector writes through its relocated Datastore client while this harness reads the
  * entity back with the stock client that arrives transitively from the connector. The row carries
@@ -125,5 +129,46 @@ class DatastoreSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
         assertThat(stored.getValue("logo").excludeFromIndexes()).isTrue();
         assertThat(stored.getTimestamp("opened"))
                 .isEqualTo(Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 123_000_000));
+    }
+
+    @Test
+    void sqlLooksUpTheEntityThroughTheShadedFactory() throws Exception {
+        client.put(
+                Entity.newBuilder(Key.newBuilder(PROJECT, "Customer", "c-1").build())
+                        .set("name", "Ada")
+                        .set("ignored", "not asked for")
+                        .build());
+        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        tEnv.executeSql(
+                "CREATE TABLE customers (\n"
+                        + "  id STRING NOT NULL,\n"
+                        + "  name STRING,\n"
+                        + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'datastore',\n"
+                        + "  'project' = '"
+                        + PROJECT
+                        + "',\n"
+                        + "  'kind' = 'Customer',\n"
+                        + "  'lookup.async' = 'true',\n"
+                        + "  'emulator-endpoint' = '"
+                        + EMULATOR.getEmulatorEndpoint()
+                        + "'\n"
+                        + ")");
+        tEnv.executeSql(
+                "CREATE TEMPORARY VIEW probe AS SELECT k, PROCTIME() AS t"
+                        + " FROM (VALUES ('c-1'), ('c-2')) AS v(k)");
+
+        List<Row> rows = new ArrayList<>();
+        try (CloseableIterator<Row> iterator =
+                tEnv.executeSql(
+                                "SELECT p.k, c.name FROM probe AS p LEFT JOIN customers"
+                                        + " FOR SYSTEM_TIME AS OF p.t AS c ON p.k = c.id")
+                        .collect()) {
+            iterator.forEachRemaining(rows::add);
+        }
+
+        // The lookup reads through the relocated generated client and its gRPC channel.
+        assertThat(rows).containsExactlyInAnyOrder(Row.of("c-1", "Ada"), Row.of("c-2", null));
     }
 }

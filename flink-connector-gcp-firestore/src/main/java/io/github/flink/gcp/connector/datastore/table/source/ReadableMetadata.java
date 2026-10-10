@@ -48,7 +48,7 @@ enum ReadableMetadata {
     CREATE_TIME("create-time", DataTypes.TIMESTAMP_LTZ(6).notNull()),
     /** When the entity was last changed. */
     UPDATE_TIME("update-time", DataTypes.TIMESTAMP_LTZ(6).notNull()),
-    /** The time the entity was read at: the scan's one read time. */
+    /** The time the entity was read at: the scan's one read time, or the lookup's own. */
     READ_TIME("read-time", DataTypes.TIMESTAMP_LTZ(6).notNull());
 
     private final String key;
@@ -66,8 +66,8 @@ enum ReadableMetadata {
     /**
      * Reads this metadata of an entity as its Flink internal value.
      *
-     * @throws IOException if the query result carries no version, create time or update time where
-     *     this metadata is one of them
+     * @throws IOException if the result carries no version, create time, update time or read time
+     *     where this metadata is one of them
      */
     @Nullable
     Object read(Entity entity, EntityMetadata metadata) throws IOException {
@@ -108,7 +108,7 @@ enum ReadableMetadata {
                         + entityKey
                         + " without its '"
                         + key
-                        + "', which a full query result carries.");
+                        + "', which every answer that returns an entity carries.");
     }
 
     /** Every key with its type, in declaration order. */

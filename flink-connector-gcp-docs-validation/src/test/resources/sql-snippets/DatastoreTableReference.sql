@@ -106,3 +106,25 @@ CREATE TABLE page_view_log (
 
 SELECT view_id, path, viewed_at FROM page_view_log;
 -- end::key-less-read[]
+
+-- tag::lookup[]
+CREATE TABLE customer_dim (
+  customer_id STRING NOT NULL,
+  name STRING,
+  tier STRING,
+  PRIMARY KEY (customer_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Customer',
+  'lookup.async' = 'true',
+  'lookup.cache' = 'PARTIAL',
+  'lookup.partial-cache.max-rows' = '10000',
+  'lookup.partial-cache.expire-after-write' = '10 min'
+);
+
+SELECT e.order_id, c.name, c.tier
+FROM order_events AS e
+LEFT JOIN customer_dim FOR SYSTEM_TIME AS OF e.proc_time AS c
+  ON e.customer_id = c.customer_id;
+-- end::lookup[]

@@ -19,12 +19,15 @@ package io.github.flink.gcp.connector.datastore;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.Credentials;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.datastore.Datastore;
 import com.google.cloud.datastore.DatastoreOptions;
 import com.google.cloud.datastore.v1.DatastoreSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 
 import javax.annotation.Nullable;
@@ -46,6 +49,11 @@ import java.time.Duration;
  * setting turns off both layers, and the timeout given here bounds each call; the sink owns its
  * retry loop. The source's reads are idempotent at a fixed read time, so it passes no timeout and
  * keeps the library's retry settings instead.
+ *
+ * <p><b>The table lookup reads through the generated client</b> ({@link
+ * #lookupSettings(EmulatorEndpoint, Credentials)}), the one whose {@code Lookup} returns a future:
+ * the library's {@code Datastore} and its RPC object only block. The generated client keeps its own
+ * retry settings for {@code Lookup}, and never reads {@code DATASTORE_EMULATOR_HOST} either.
  */
 @Internal
 public final class DatastoreClients {
@@ -105,6 +113,36 @@ public final class DatastoreClients {
         } catch (RuntimeException e) {
             throw new IOException("Failed to create the Datastore client for " + database + ".", e);
         }
+    }
+
+    /**
+     * Builds the generated client's settings for the table lookup: the service's endpoint with the
+     * given or application-default credentials, or an emulator over plaintext without credentials.
+     * The library's retry settings for {@code Lookup} stay.
+     *
+     * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
+     * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
+     *     ADC
+     * @return the settings
+     * @throws IOException if the settings cannot be built
+     */
+    public static DatastoreSettings lookupSettings(
+            @Nullable EmulatorEndpoint emulatorEndpoint, @Nullable Credentials credentialsOverride)
+            throws IOException {
+        Preconditions.checkArgument(
+                emulatorEndpoint == null || credentialsOverride == null,
+                "credentialsOverride cannot be combined with an emulator endpoint");
+        DatastoreSettings.Builder settings = DatastoreSettings.newBuilder();
+        if (emulatorEndpoint != null) {
+            settings.setCredentialsProvider(NoCredentialsProvider.create())
+                    .setTransportChannelProvider(
+                            EmulatorChannels.plaintextProvider(
+                                    DatastoreSettings.defaultGrpcTransportProviderBuilder(),
+                                    emulatorEndpoint));
+        } else if (credentialsOverride != null) {
+            settings.setCredentialsProvider(FixedCredentialsProvider.create(credentialsOverride));
+        }
+        return settings.build();
     }
 
     /** One attempt, bounded by the timeout; the multipliers are irrelevant past one attempt. */

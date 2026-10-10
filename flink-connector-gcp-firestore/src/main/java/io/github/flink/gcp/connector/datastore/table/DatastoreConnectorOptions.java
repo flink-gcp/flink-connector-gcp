@@ -121,6 +121,19 @@ public final class DatastoreConnectorOptions {
                     .withDescription("How many entities one request of the scan asks for.");
 
     /**
+     * Whether the lookup join runs as Flink's asynchronous lookup, keeping several reads in flight
+     * per subtask instead of waiting for each.
+     */
+    public static final ConfigOption<Boolean> LOOKUP_ASYNC =
+            ConfigOptions.key("lookup.async")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether the lookup join runs as Flink's asynchronous lookup, keeping"
+                                    + " several reads in flight per subtask instead of waiting"
+                                    + " for each.");
+
+    /**
      * Top-level columns whose values, with every value nested in them, the sink writes excluded
      * from Datastore's indexes, which refuse a string or a blob longer than 1,500 bytes.
      */

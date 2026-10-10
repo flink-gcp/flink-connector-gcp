@@ -21,7 +21,7 @@ the client library's query splitter and write one in non-transactional commits.
 | Table API / SQL lookup for Native mode (by document id; blocking or asynchronous; `NONE` or `PARTIAL` cache) | Implemented ([#1609](https://github.com/flink-gcp/flink-connector-gcp/issues/1609)) |
 | Table API / SQL sink for Datastore mode (`datastore`; upsert by key name or id, unindexed columns) | Implemented ([#1651](https://github.com/flink-gcp/flink-connector-gcp/issues/1651)) |
 | Table API / SQL scan for Datastore mode (key ranges at one read time; key, version and time metadata; type-mismatch policy) | Implemented ([#1652](https://github.com/flink-gcp/flink-connector-gcp/issues/1652)) |
-| Table API / SQL lookup for Datastore mode | Planned ([#1653](https://github.com/flink-gcp/flink-connector-gcp/issues/1653)) |
+| Table API / SQL lookup for Datastore mode (one `Lookup` per key name or id; sync or async; partial cache; property mask) | Implemented ([#1653](https://github.com/flink-gcp/flink-connector-gcp/issues/1653)) |
 | Gated real-GCP integration tests | Planned ([#1546](https://github.com/flink-gcp/flink-connector-gcp/issues/1546)) |
 | Opt-in per-document submission order | Planned ([#1556](https://github.com/flink-gcp/flink-connector-gcp/issues/1556)) |
 | Change-stream source (the Firestore APIs have no change-stream read; reopen conditions recorded on the issue) | Declined ([#355](https://github.com/flink-gcp/flink-connector-gcp/issues/355)) |
