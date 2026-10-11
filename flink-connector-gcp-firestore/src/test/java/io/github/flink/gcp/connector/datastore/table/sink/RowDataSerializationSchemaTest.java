@@ -212,7 +212,8 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
-    void theWriteModeChoosesBetweenAMergeAndAWholeUpsert() throws IOException {
+    void theWriteModeChoosesBetweenAMergeAWholeUpsertAndAnUpdateOfTheProperties()
+            throws IOException {
         DatastoreTableSchema schema = everyType(List.of());
 
         assertThat(
@@ -227,6 +228,38 @@ class RowDataSerializationSchemaTest {
                                 .serialize(everyTypeRow("o1"), TestContexts.NO_OP)
                                 .getOperation())
                 .isEqualTo(DatastoreMutation.Operation.UPSERT);
+        GenericRowData updateAfter = everyTypeRow("o1");
+        updateAfter.setRowKind(RowKind.UPDATE_AFTER);
+        RowDataSerializationSchema update =
+                new RowDataSerializationSchema(schema, DATABASE, "", "Order", WriteMode.UPDATE);
+        DatastoreMutation merged =
+                serializer(schema).serialize(everyTypeRow("o1"), TestContexts.NO_OP);
+        for (GenericRowData row : List.of(everyTypeRow("o1"), updateAfter)) {
+            DatastoreMutation mutation = update.serialize(row, TestContexts.NO_OP);
+            assertThat(mutation.getOperation())
+                    .isEqualTo(DatastoreMutation.Operation.UPDATE_PROPERTIES);
+            // The same entity a merge writes: every column but the key, NULLs included.
+            assertThat(mutation.getEntity()).isEqualTo(merged.getEntity());
+        }
+    }
+
+    @Test
+    void aDeleteUnderUpdateFailsTheRecordInsteadOfDeleting() {
+        GenericRowData delete = everyTypeRow("o1");
+        delete.setRowKind(RowKind.DELETE);
+
+        assertThatThrownBy(
+                        () ->
+                                new RowDataSerializationSchema(
+                                                everyType(List.of()),
+                                                DATABASE,
+                                                "",
+                                                "Order",
+                                                WriteMode.UPDATE)
+                                        .serialize(delete, TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("whose sink.write-mode is 'update', which takes no deletes")
+                .hasMessageContaining("Nothing was deleted");
     }
 
     @Test
@@ -547,6 +580,13 @@ class RowDataSerializationSchemaTest {
                                 "tenant-a",
                                 "Order",
                                 WriteMode.REPLACE))
+                .isNotEqualTo(
+                        new RowDataSerializationSchema(
+                                everyType(List.of("s")),
+                                DATABASE,
+                                "tenant-a",
+                                "Order",
+                                WriteMode.UPDATE))
                 .isNotEqualTo(
                         new RowDataSerializationSchema(
                                 everyType(List.of("s")),

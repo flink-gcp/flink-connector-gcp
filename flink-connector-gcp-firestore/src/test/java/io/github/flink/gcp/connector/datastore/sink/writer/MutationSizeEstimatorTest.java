@@ -72,6 +72,11 @@ class MutationSizeEstimatorTest {
                         .setUpsert(smallProto)
                         .setPropertyMask(PropertyMask.newBuilder().addPaths("`v`")));
         assertSizeIsTheRequestsGrowth(
+                DatastoreMutation.updateProperties(small),
+                Mutation.newBuilder()
+                        .setUpdate(smallProto)
+                        .setPropertyMask(PropertyMask.newBuilder().addPaths("`v`")));
+        assertSizeIsTheRequestsGrowth(
                 DatastoreMutation.delete(KEY),
                 Mutation.newBuilder().setDelete(EntityProtos.key(KEY)));
     }

@@ -78,11 +78,23 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
         return new Builder();
     }
 
-    /** Insert-only without a PRIMARY KEY; an upsert changelog with one. */
+    /**
+     * Insert-only without a PRIMARY KEY; an upsert changelog with one, except under {@code update},
+     * which takes inserts and updates but no deletes. An {@code update} fails the job on a missing
+     * entity, and a replay re-applies writes the stream already followed with a delete, so a delete
+     * in the input would let an update meet the entity it deleted, and fail again on every restart.
+     * Leaving deletes out makes the planner refuse such an input when the statement is planned.
+     */
     @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
         if (!schema.hasPrimaryKey() || requestedMode.containsOnly(RowKind.INSERT)) {
             return ChangelogMode.insertOnly();
+        }
+        if (writeMode == WriteMode.UPDATE) {
+            return ChangelogMode.newBuilder()
+                    .addContainedKind(RowKind.INSERT)
+                    .addContainedKind(RowKind.UPDATE_AFTER)
+                    .build();
         }
         return CrossVersionChangelogMode.upsert();
     }

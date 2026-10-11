@@ -111,14 +111,15 @@ public final class DatastoreDynamicTableFactory
         String namespace = namespace(config);
         String kind = kind(config);
         DatastoreTableSchema schema = schema(context, config);
-        validateWriteMode(context, schema);
+        WriteMode writeMode = config.get(DatastoreConnectorOptions.SINK_WRITE_MODE);
+        validateWriteMode(context, schema, writeMode);
 
         return DatastoreDynamicSink.builder()
                 .schema(schema)
                 .database(database)
                 .namespace(namespace)
                 .kind(kind)
-                .writeMode(config.get(DatastoreConnectorOptions.SINK_WRITE_MODE))
+                .writeMode(writeMode)
                 .writerOptions(WriterOptionsMapper.map(config))
                 .emulatorEndpoint(
                         config.getOptional(DatastoreConnectorOptions.EMULATOR_ENDPOINT)
@@ -166,9 +167,11 @@ public final class DatastoreDynamicTableFactory
 
     /**
      * Refuses a {@code sink.write-mode} on a table without a PRIMARY KEY, whose rows are always
-     * written as new entities under allocated ids.
+     * written as new entities under allocated ids, and an {@code update} that would name no
+     * property.
      */
-    private static void validateWriteMode(Context context, DatastoreTableSchema schema) {
+    private static void validateWriteMode(
+            Context context, DatastoreTableSchema schema, WriteMode writeMode) {
         String key = DatastoreConnectorOptions.SINK_WRITE_MODE.key();
         if (!schema.hasPrimaryKey() && context.getCatalogTable().getOptions().containsKey(key)) {
             throw new ValidationException(
@@ -178,6 +181,12 @@ public final class DatastoreDynamicTableFactory
                             + " column PRIMARY KEY NOT ENFORCED, or remove "
                             + key
                             + ".");
+        }
+        if (writeMode == WriteMode.UPDATE && schema.getRowType().getFieldCount() == 1) {
+            throw new ValidationException(
+                    key
+                            + " = 'update' replaces the table's properties, but the table declares"
+                            + " only its PRIMARY KEY, so there is no property to replace.");
         }
     }
 

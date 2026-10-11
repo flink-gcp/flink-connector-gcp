@@ -205,23 +205,41 @@ A lookup needs the `datastore.entities.get` permission, which `roles/datastore.u
 
 ## Sink
 
-Every write is an `upsert` or a `delete`.
 With a PRIMARY KEY, `sink.write-mode` says what an insert or an update does to the entity:
 
 - **`merge`**, the default, merges the row into the entity, creating it if it is missing: each column replaces the property of its name, properties the table does not declare keep their values, and a `ROW` column is merged into the stored embedded entity property by property, at any depth. An `ARRAY` and a `NULL` replace the stored property, and so does a `ROW` a marker names, a geographical point or a key value being one value, and a `ROW` written where the entity holds a value of another type (measured on the emulator). The write is an `upsert` whose property mask names every value the row holds.
 - **`replace`** writes the row's entity whole, replacing whatever the key held, so properties the table does not declare are removed.
+- **`update`** replaces the table's properties of an existing entity, each one whole, a `ROW` column included, and properties the table does not declare keep their values; a missing entity fails the job, and nothing is created. The write is an `update` whose property mask names the row's columns other than the key.
+  An `update` table takes inserts and updates but no deletes, and an input that carries deletes is refused when the statement is planned: an update replayed after a restart that meets an entity a later delete removed would fail the job again on every restart.
+  The planner can still send a delete when the query's key differs from the table's PRIMARY KEY, as in an aggregation written into a table keyed by its result, because it then materializes the upsert and turns a retraction into a delete; such a delete fails the job without deleting anything, and the message says to key the query by the PRIMARY KEY or to use `merge` or `replace`.
+  A table that declares only its PRIMARY KEY has no property to update, and `update` is refused on it.
 
-A delete deletes the entity, and deleting a missing entity succeeds.
+For a table `(id STRING, tier STRING, address ROW<city STRING>)` whose key `c-1` holds `{name: "Alice", tier: "silver", address: {city: "Tokyo", zip: "100"}}`, an entity's properties written here as JSON-like shorthand, the row `('c-1', 'gold', ROW('Osaka'))` leaves:
+
+| `sink.write-mode` | The key holds afterwards |
+|---|---|
+| `merge` | `{name: "Alice", tier: "gold", address: {city: "Osaka", zip: "100"}}` |
+| `replace` | `{tier: "gold", address: {city: "Osaka"}}` |
+| `update` | `{name: "Alice", tier: "gold", address: {city: "Osaka"}}` |
+
+`name`, which the table does not declare, survives `merge` and `update`; `zip`, inside the `ROW`, survives only `merge`.
+Had `c-1` held no entity, `merge` and `replace` would create it and `update` would fail the job.
+
+Under `merge` and `replace`, a delete deletes the entity, and deleting a missing entity succeeds.
 The default keeps what other writers store in the kind: a job that maintains some properties of entities another application also writes leaves that application's properties in place, and so does a table that declares fewer properties than the entities hold.
 Choose `replace` when the row is the whole entity, so that a property the row no longer carries does not stay stored.
 Under `merge`, a table that declares only its PRIMARY KEY creates a missing entity, without properties, and leaves a stored one as it was.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="replace" >}}
 
-Under `merge`, a value the sink writes excluded from indexes (see [Unindexed columns](#unindexed-columns)) carries the mark, while a value the row does not write keeps its own: measured on the emulator, merging a `ROW` into an indexed embedded entity left the entity and its undeclared properties indexed.
-The table offers no `insert` or `update` operation: a replay after a restart would meet `ALREADY_EXISTS` for an `insert`, or `NOT_FOUND` for an `update` of an entity deleted in between, and fail the job again on every restart.
+Choose `update` when the job must change only entities that already exist, never create one:
 
-A table with a PRIMARY KEY consumes an upsert changelog: inserts, updates after and deletes, keyed by the entity key.
+{{< sql-snippet file="flink/DatastoreTableReference.sql" tag="update" >}}
+
+Under `merge`, a value the sink writes excluded from indexes (see [Unindexed columns](#unindexed-columns)) carries the mark, while a value the row does not write keeps its own: measured on the emulator, merging a `ROW` into an indexed embedded entity left the entity and its undeclared properties indexed.
+The table offers no `insert` operation: a replay after a restart would meet `ALREADY_EXISTS` and fail the job again on every restart.
+
+A table with a PRIMARY KEY consumes an upsert changelog: inserts, updates after and, except under `update`, deletes, keyed by the entity key.
 On Flink 2.x a delete may carry the key alone, which is all the sink reads from it.
 On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect such a delete, whose non-key columns are null.
 Flink's not-null enforcer checks those columns and fails the job when the table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)); setting `table.exec.sink.not-null-enforcer` to `DROP`, as the error suggests, drops the delete instead, so the entity is never deleted.
@@ -264,7 +282,7 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | `true` | Whether the partial cache records a key that found no entity |
 | `lookup.partial-cache.max-rows` | *unset* | Maximum rows the partial cache keeps |
-| `sink.write-mode` | `merge` | `merge` or `replace`, for a table with a PRIMARY KEY |
+| `sink.write-mode` | `merge` | `merge`, `replace` or `update`, for a table with a PRIMARY KEY |
 | `sink.unindexed-columns` | empty | Semicolon-separated top-level columns written excluded from indexes, with every value nested in them |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations`: the mutations in one commit |
 | `sink.buffer-flush.max-size` | `9000000 bytes` | Maps to `maxBatchBytes`: the protobuf size of one commit request, at most `10 mb` |
@@ -285,14 +303,14 @@ The pair `sink.recovery.initial-backoff` and `sink.recovery.max-backoff` is chec
 A scan restored from a checkpoint resumes each split just after the last entity it passed, at the same read time; a job that restarts before its first checkpoint plans again, at a new read time unless `scan.read-time` is set.
 
 The sink is at-least-once: it commits everything it holds at each checkpoint, and a restart replays the records after the last completed one.
-With a PRIMARY KEY, a `merge`, a `replace` and a delete are idempotent, so a replayed row writes the same entity again.
+With a PRIMARY KEY, a `merge`, a `replace` and a delete are idempotent, so a replayed row writes the same entity again; an `update` replayed after something outside the job deleted the entity fails the job, and fails again after each restart until the entity exists.
 Without a PRIMARY KEY, a replayed row writes another entity under a newly allocated id, so a restart can leave duplicates; it replaces no entity written under an allocated id.
 See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/firestore" >}}#delivery-guarantee-in-datastore-mode).
 
 ## Design decisions and testing
 
 The table mapping and the declined alternatives are recorded in [ADR-0184]({{< param BookRepo >}}/blob/main/docs/adr/0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md).
-The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, merge rows into stored entities and replace them, NULL and mismatched stored values included, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
+The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, merge rows into stored entities, replace them and update their declared properties, NULL and mismatched stored values included, fail an update of a missing entity, refuse deletes into an `update` table when planned and fail the delete an upsert materialization still sends, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
 They also read every type back through a SQL scan with its metadata, read the allocated ids of a table without a PRIMARY KEY, fail and read as NULL a mismatched value under each policy, keep every entity under a column projection, and read at a configured read time.
 Blocking and asynchronous lookups join against entities by name and by numeric id, a negative one and one in a namespace included, join no row for the keys that address no entity without failing, read the metadata, filter on an additional equality key under both caches, and read the current entity whatever `scan.read-time` says; the lookup's own client is checked to return exactly the masked properties, names holding a dot, a backquote or a backslash included, and an unindexed value and an array whole.
 Geographical points and key values, with ancestors and in arrays, and a point inside a `ROW` in an array, are written through SQL, read back by the client library and the scan, and looked up, a lookup join on a key value's name included; a key value in another namespace fails the scan or reads as NULL by the policy, and an incomplete one fails the job.

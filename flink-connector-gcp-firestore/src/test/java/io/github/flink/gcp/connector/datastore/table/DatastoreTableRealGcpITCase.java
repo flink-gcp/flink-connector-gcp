@@ -262,6 +262,47 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     }
 
     @Test
+    void anUpdateReplacesTheDeclaredPropertiesWholeAndFailsOnAMissingEntity() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        Entity.newBuilder(keyIn(kind, "u").build())
+                                .set("other", 1L)
+                                .set("a.b", 0L)
+                                .set(
+                                        "e.f",
+                                        FullEntity.newBuilder()
+                                                .set("g.h", 0L)
+                                                .set("dropped", "y")
+                                                .build())
+                                .build());
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(
+                "CREATE TABLE updated (id STRING NOT NULL, `a.b` BIGINT, `e.f` ROW<`g.h` BIGINT>,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'update'"));
+
+        table.executeSql(
+                        "INSERT INTO updated VALUES ('u', CAST(1 AS BIGINT), ROW(CAST(1 AS BIGINT)))")
+                .await(120, TimeUnit.SECONDS);
+        Entity updated = read(keyIn(kind, "u").build());
+        assertThat(updated.getNames()).containsExactlyInAnyOrder("other", "a.b", "e.f");
+        assertThat(updated.getLong("other")).isEqualTo(1L);
+        assertThat(updated.getLong("a.b")).isEqualTo(1L);
+        assertThat(updated.getEntity("e.f").getNames()).containsExactly("g.h");
+        assertThat(updated.getEntity("e.f").getLong("g.h")).isEqualTo(1L);
+
+        assertThatThrownBy(
+                        () ->
+                                table.executeSql(
+                                                "INSERT INTO updated VALUES ('missing',"
+                                                        + " CAST(1 AS BIGINT), ROW(CAST(1 AS BIGINT)))")
+                                        .await(120, TimeUnit.SECONDS))
+                .hasStackTraceContaining("Datastore refused the UPDATE_PROPERTIES with NOT_FOUND");
+        assertThat(read(keyIn(kind, "missing").build())).isNull();
+    }
+
+    @Test
     void aMergeOfNoPropertyKeepsTheEntityAndQuotedNamesAddressOneProperty() throws Exception {
         // A key-only table sends a property mask with no path, which datastore.proto does not
         // describe; and a backquote or a backslash in a name is escaped inside its quoted mask

@@ -53,6 +53,8 @@ class DatastoreMutationTest {
                 .isEqualTo(DatastoreMutation.Operation.INSERT);
         assertThat(DatastoreMutation.update(entity).getOperation())
                 .isEqualTo(DatastoreMutation.Operation.UPDATE);
+        assertThat(DatastoreMutation.updateProperties(entity).getOperation())
+                .isEqualTo(DatastoreMutation.Operation.UPDATE_PROPERTIES);
         assertThat(DatastoreMutation.upsert(entity).getEntity()).isSameAs(entity);
         assertThat(DatastoreMutation.upsert(entity).getKey()).isEqualTo(KEY);
 
@@ -80,10 +82,27 @@ class DatastoreMutationTest {
         assertThatThrownBy(() -> DatastoreMutation.insert(unkeyed))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Allocate ids before the sink");
+        assertThatThrownBy(() -> DatastoreMutation.updateProperties((FullEntity) incomplete))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("complete key");
         assertThatThrownBy(() -> DatastoreMutation.update(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> DatastoreMutation.updateProperties(null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> DatastoreMutation.delete(null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void anUpdateOfPropertiesNeedsAProperty() {
+        // A merge of a key-only entity is allowed: it creates a missing entity.
+        Entity keyOnly = Entity.newBuilder(KEY).build();
+        assertThat(DatastoreMutation.upsertMerge(keyOnly).getEntity()).isSameAs(keyOnly);
+
+        assertThatThrownBy(() -> DatastoreMutation.updateProperties(keyOnly))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one property")
+                .hasMessageContaining("o-1");
     }
 
     /**
@@ -125,6 +144,7 @@ class DatastoreMutationTest {
                     DatastoreMutation.upsertMerge(entity),
                     DatastoreMutation.insert(entity),
                     DatastoreMutation.update(entity),
+                    DatastoreMutation.updateProperties(entity),
                     DatastoreMutation.delete(KEY)
                 }) {
             DatastoreMutation copy = InstantiationUtil.clone(write);
@@ -141,6 +161,8 @@ class DatastoreMutationTest {
         assertThat(DatastoreMutation.upsert(one)).isEqualTo(DatastoreMutation.upsert(one));
         assertThat(DatastoreMutation.upsert(one)).isNotEqualTo(DatastoreMutation.insert(one));
         assertThat(DatastoreMutation.upsert(one)).isNotEqualTo(DatastoreMutation.upsertMerge(one));
+        assertThat(DatastoreMutation.update(one))
+                .isNotEqualTo(DatastoreMutation.updateProperties(one));
         assertThat(DatastoreMutation.upsert(one)).isNotEqualTo(DatastoreMutation.upsert(two));
         assertThat(DatastoreMutation.delete(KEY).toString()).contains("DELETE").contains("o-1");
     }

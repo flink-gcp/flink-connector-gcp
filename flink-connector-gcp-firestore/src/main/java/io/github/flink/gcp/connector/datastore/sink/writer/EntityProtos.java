@@ -44,7 +44,8 @@ import java.util.List;
 /**
  * Encodes a {@link DatastoreMutation} as the {@code google.datastore.v1.Mutation} the writer
  * commits, since the client library's {@code Batch} cannot carry the property mask an {@link
- * DatastoreMutation.Operation#UPSERT_MERGE} needs.
+ * DatastoreMutation.Operation#UPSERT_MERGE} or an {@link
+ * DatastoreMutation.Operation#UPDATE_PROPERTIES} needs.
  *
  * <p>The library's own conversion is package-private ({@code BaseEntity.toPb}, {@code Value.toPb},
  * {@code Key.toPb}; google-cloud-datastore 3.7.0), so this repeats it value type by value type:
@@ -78,6 +79,12 @@ final class EntityProtos {
                 return mutation.setInsert(entity(entityOf(write))).build();
             case UPDATE:
                 return mutation.setUpdate(entity(entityOf(write))).build();
+            case UPDATE_PROPERTIES:
+                FullEntity<?> updated = entityOf(write);
+                return mutation.setUpdate(entity(updated))
+                        .setPropertyMask(
+                                PropertyMask.newBuilder().addAllPaths(topLevelPaths(updated)))
+                        .build();
             case DELETE:
                 return mutation.setDelete(key(write.getKey())).build();
             default:
@@ -89,6 +96,22 @@ final class EntityProtos {
     private static FullEntity<?> entityOf(DatastoreMutation write) {
         return Preconditions.checkNotNull(
                 write.getEntity(), "A %s carries an entity", write.getOperation());
+    }
+
+    /**
+     * Returns the property mask paths an update of the entity's properties writes: one {@link
+     * PropertyPaths#segment(String)} per property it holds, so that each replaces the stored
+     * property whole, an embedded entity included.
+     *
+     * @param entity the entity the update writes
+     * @return the paths, in the entity's property order
+     */
+    static List<String> topLevelPaths(BaseEntity<?> entity) {
+        List<String> paths = new ArrayList<>();
+        for (String name : entity.getNames()) {
+            paths.add(PropertyPaths.segment(name));
+        }
+        return paths;
     }
 
     /**

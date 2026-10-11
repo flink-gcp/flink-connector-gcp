@@ -84,6 +84,18 @@ class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     @Test
+    void anUpdateOfPropertiesOfAMissingKeyIsNotFoundAsAnUpdateIs() {
+        // datastore.proto says only that the entity to update "must already exist", naming no
+        // status; the property mask does not change the answer.
+        DatastoreMutation masked = DatastoreMutation.updateProperties(entity("missing"));
+        assertThat(code(masked)).isEqualTo("NOT_FOUND");
+        assertThat(code(upsert("c1"), masked, upsert("c2"))).isEqualTo("NOT_FOUND");
+        assertThat(read(key(kind, "c1"))).isNotNull();
+        assertThat(read(key(kind, "c2"))).isNull();
+        assertThat(read(key(kind, "missing"))).isNull();
+    }
+
+    @Test
     void aDeleteOfAMissingKeyIsApplied() {
         assertThat(code(DatastoreMutation.delete(key(kind, "missing")))).isEqualTo("applied");
     }

@@ -43,15 +43,17 @@ import java.util.Objects;
  * <p>With a PRIMARY KEY, the key column is the key's name or numeric id under the table's kind, in
  * its namespace, and every other column a property: an insert or an update-after is an {@code
  * upsert}, merged into the stored entity under {@link WriteMode#MERGE} and replacing it under
- * {@link WriteMode#REPLACE}, and a delete deletes the entity. Without one, every row is upserted
- * whole under a new key whose numeric id the service allocated, drawn from batches the writer's
- * allocator fetches: the service never hands an allocated id out again, so a row cannot replace an
- * entity another row wrote.
+ * {@link WriteMode#REPLACE}, or under {@link WriteMode#UPDATE} an {@code update} of the row's
+ * properties of an entity that must exist, and a delete deletes the entity. Without one, every row
+ * is upserted whole under a new key whose numeric id the service allocated, drawn from batches the
+ * writer's allocator fetches: the service never hands an allocated id out again, so a row cannot
+ * replace an entity another row wrote.
  *
- * <p>Every write is an {@code upsert} or a {@code delete}, the two a replay leaves as they were: an
- * {@code insert} replayed after a restart would be refused with {@code ALREADY_EXISTS} and an
- * {@code update} of a deleted entity with {@code NOT_FOUND}, and either fails the job again on
- * every restart.
+ * <p>No write is an {@code insert}, which a replay after a restart would meet with {@code
+ * ALREADY_EXISTS}, failing the job again on every restart. A replayed {@code update} meets {@code
+ * NOT_FOUND} only for an entity deleted in between, so the sink takes no deletes under {@link
+ * WriteMode#UPDATE}, and a delete the planner still sends fails the record without deleting
+ * anything.
  */
 @Internal
 public final class RowDataSerializationSchema implements KeyAllocatingSerializationSchema<RowData> {
@@ -115,10 +117,25 @@ public final class RowDataSerializationSchema implements KeyAllocatingSerializat
                                 properties.setAll(row, Entity.newBuilder(newKey())).build());
                     }
                     Entity entity = properties.setAll(row, Entity.newBuilder(key(row))).build();
-                    return writeMode == WriteMode.MERGE
-                            ? DatastoreMutation.upsertMerge(entity)
-                            : DatastoreMutation.upsert(entity);
+                    switch (writeMode) {
+                        case REPLACE:
+                            return DatastoreMutation.upsert(entity);
+                        case UPDATE:
+                            return DatastoreMutation.updateProperties(entity);
+                        default:
+                            return DatastoreMutation.upsertMerge(entity);
+                    }
                 case DELETE:
+                    if (writeMode == WriteMode.UPDATE) {
+                        // The sink declares no deletes under update, but the planner still sends
+                        // one when it materializes an upsert whose key differs from the table's.
+                        throw new IOException(
+                                "A DELETE reached a datastore table whose sink.write-mode is"
+                                        + " 'update', which takes no deletes. The planner produces"
+                                        + " one when the query's key differs from the table's"
+                                        + " PRIMARY KEY; key the query by the PRIMARY KEY, or use"
+                                        + " 'merge' or 'replace'. Nothing was deleted.");
+                    }
                     if (!schema.hasPrimaryKey()) {
                         throw new IOException(
                                 "A DELETE reached a datastore table without a PRIMARY KEY, which"

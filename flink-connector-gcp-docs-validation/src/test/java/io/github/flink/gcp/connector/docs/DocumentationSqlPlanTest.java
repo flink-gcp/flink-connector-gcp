@@ -755,7 +755,7 @@ public class DocumentationSqlPlanTest {
                                         + "CAST('2026-01-01 00:00:00.000000' "
                                         + "AS TIMESTAMP_LTZ(6)) AS updated_at"),
                         snippet("flink/DatastoreTableReference.sql", "overview")),
-                // The id-key, unindexed and replace regions declare a table and stop; the
+                // The id-key, unindexed, replace and update regions declare a table and stop; the
                 // follow-up insert is what reaches the factory, which checks the key type, the
                 // namespace, the unindexed columns and the write mode against the schema. The
                 // markers region's own join reaches it through both scans.
@@ -782,6 +782,12 @@ public class DocumentationSqlPlanTest {
                                 "replace",
                                 "INSERT INTO customer_snapshots SELECT 'c-1001', 'Alice',"
                                         + " 'gold';")),
+                scenario(
+                        "Datastore table reference update write mode",
+                        withFollowup(
+                                "flink/DatastoreTableReference.sql",
+                                "update",
+                                "INSERT INTO customer_tiers SELECT 'c-1001', 'gold';")),
                 scenario(
                         "Datastore table reference append-only table",
                         setup(

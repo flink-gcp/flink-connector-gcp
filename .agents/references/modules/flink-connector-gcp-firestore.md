@@ -198,6 +198,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   as Firestore's merge treats an empty map), stopping at an array (the mask cannot enter one) and a
   null. It never masks an absent property, so it never deletes one. `PropertyPaths` is the one
   copy of the mask grammar, shared with the lookup's mask; do not quote a name anywhere else.
+- **`updateProperties` masks the entity's top-level names only** (`EntityProtos.topLevelPaths`,
+  #1743): an `update` replacing each property whole, an embedded entity included, refused with
+  `NOT_FOUND` like `update`; an entity without properties is refused at build. Every operation
+  that can earn `NOT_FOUND` must be named in `DatastoreWriter.earns` and in the fake's
+  `servesLikeTheService()` refusal.
 - **The client makes one attempt per call** (`DatastoreClients` sets single-attempt
   `RetrySettings`, which the library applies to `RetryHelper` and to every generated call); the
   writer owns retries on the `recovery*` schedule. **The host is always set**, so
@@ -206,7 +211,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `DatabaseDestination` normalizes it. A key of another project or database is routed before it is
   sent.
 - **Routing**: a refused commit whose status a write could earn (`INVALID_ARGUMENT` always,
-  `ALREADY_EXISTS` beside an insert, `NOT_FOUND` beside an update) is re-sent one write at a time;
+  `ALREADY_EXISTS` beside an insert, `NOT_FOUND` beside an update or an `updateProperties`) is
+  re-sent one write at a time;
   a write refused alone is routed only for an operation that can earn the status. **`NOT_FOUND` is
   routed only after a lookup of the key is answered** (owner's decision, 2026-10-03); a refused
   lookup fails the job as a missing database. The lookup is one `Lookup` through the client's RPC
@@ -285,10 +291,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Factory` service file**; the uber jar's `FirestoreSqlConnectorPackagingITCase` and
   `DatastoreSqlConnectorSmokeITCase` hold both factories. The scan (#1652) and lookup (#1653)
   extend this factory and `DatastoreTableSchema`; the type mapping is their read-back contract.
-- **Every write is `upsert` or `delete`** (owner, 2026-10-10): `insert`/`update` replays fail the
-  job on every restart under the table's fail-job handler. **`sink.write-mode`** (#1729, owner
-  2026-10-11) is `merge` (default: `upsertMerge`) or `replace` (`upsert`), the Native-mode table's
-  names; it is refused without a PRIMARY KEY. A keyless table upserts whole (an allocated id names
+- **No write is an `insert`** (owner, 2026-10-10): its replay fails the job on every restart under
+  the table's fail-job handler. **`sink.write-mode`** (#1729, owner 2026-10-11) is `merge`
+  (default: `upsertMerge`), `replace` (`upsert`) or `update` (`updateProperties`, #1743), the
+  Native-mode table's names; it is refused without a PRIMARY KEY. `update` declares no deletes
+  (the restart loop otherwise), fails a delete the planner still sends with the Native-mode
+  message, and is refused on a key-only table. A keyless table upserts whole (an allocated id names
   no stored entity), under ids the service allocates (`AllocateIds`, owner 2026-10-10: a
   guarantee against silently replacing an entity, which random names only made improbable). The
   guarantee covers allocated ids only, not self-chosen numeric ids in the same kind. The writer

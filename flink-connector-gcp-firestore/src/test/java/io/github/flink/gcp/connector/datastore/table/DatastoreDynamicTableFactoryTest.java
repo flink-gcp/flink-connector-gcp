@@ -179,6 +179,37 @@ class DatastoreDynamicTableFactoryTest {
     }
 
     @Test
+    void anUpdateTableTakesNoDeletes() {
+        DynamicTableSink update =
+                FactoryMocks.createTableSink(KEYED, options("sink.write-mode", "update"));
+
+        ChangelogMode mode = update.getChangelogMode(ChangelogMode.all());
+        assertThat(mode.contains(RowKind.INSERT)).isTrue();
+        assertThat(mode.contains(RowKind.UPDATE_AFTER)).isTrue();
+        assertThat(mode.contains(RowKind.DELETE)).isFalse();
+        assertThat(mode.contains(RowKind.UPDATE_BEFORE)).isFalse();
+        assertThat(update.getChangelogMode(ChangelogMode.insertOnly()))
+                .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void anUpdateOfATableWithNoPropertyIsRefused() {
+        ResolvedSchema keyOnly =
+                new ResolvedSchema(
+                        List.of(Column.physical("id", DataTypes.STRING().notNull())),
+                        List.of(),
+                        UniqueConstraint.primaryKey("pk", List.of("id")));
+
+        assertThatThrownBy(
+                        () ->
+                                FactoryMocks.createTableSink(
+                                        keyOnly, options("sink.write-mode", "update")))
+                .hasStackTraceContaining("there is no property to replace");
+        assertThat(FactoryMocks.createTableSink(keyOnly, options("sink.write-mode", "merge")))
+                .isNotNull();
+    }
+
+    @Test
     void theSinkReportsTheKindUnderTheTablesName() {
         Map<String, String> options = options("database", "db");
         options.put("namespace", "tenant-a");
@@ -277,7 +308,8 @@ class DatastoreDynamicTableFactoryTest {
                     {"sink.unindexed-columns", null},
                     {"database", "other"},
                     {"sink.buffer-flush.max-mutations", "18"},
-                    {"sink.write-mode", "replace"}
+                    {"sink.write-mode", "replace"},
+                    {"sink.write-mode", "update"}
                 }) {
             Map<String, String> changed = new HashMap<>(everything);
             if (differing[1] == null) {

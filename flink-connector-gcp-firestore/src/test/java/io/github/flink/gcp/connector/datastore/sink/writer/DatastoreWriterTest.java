@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import com.google.datastore.v1.Mutation;
@@ -550,6 +551,37 @@ class DatastoreWriterTest {
     }
 
     @Test
+    void aNotFoundIsRoutedForAnUpdateOfPropertiesOnceALookupOfItsKeyIsAnswered() throws Exception {
+        // Beside an upsert, so that the commit's refusal is confirmed one write at a time only
+        // because the masked update can earn NOT_FOUND too.
+        access.refuse(key("gone"), StatusCode.Code.NOT_FOUND);
+        DatastoreWriter<DatastoreMutation> writer = writer(dropping());
+        DatastoreMutation update = DatastoreMutation.updateProperties(entity("gone", 1));
+        writer.write(upsert("a"), TestContexts.NO_OP);
+        writer.write(update, TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.lookups()).containsExactly(key("gone"));
+        assertThat(handler.routed).extracting(FailedMutation::getMutation).containsExactly(update);
+        assertThat(handler.routed.get(0).getErrorMessage()).contains("NOT_FOUND");
+        assertThat(access.applied()).containsOnlyKeys(key("a"));
+    }
+
+    @Test
+    void aNotFoundForAnUpdateOfPropertiesWhoseLookupIsRefusedFailsTheJob() throws Exception {
+        access.refuse(key("gone"), StatusCode.Code.NOT_FOUND)
+                .failNextLookups(StatusCode.Code.NOT_FOUND);
+        DatastoreWriter<DatastoreMutation> writer = writer(dropping());
+        writer.write(DatastoreMutation.updateProperties(entity("gone", 1)), TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("a lookup of the same key failed with NOT_FOUND")
+                .hasMessageContaining("missing or unreachable database");
+        assertThat(handler.routed).isEmpty();
+    }
+
+    @Test
     void aNotFoundWhoseLookupIsRefusedFailsTheJobAsAMissingDatabase() throws Exception {
         access.refuse(key("gone"), StatusCode.Code.NOT_FOUND)
                 .failNextLookups(StatusCode.Code.NOT_FOUND);
@@ -840,6 +872,97 @@ class DatastoreWriterTest {
 
         assertThat(handler.routed).extracting(FailedMutation::getMutation).containsExactly(update);
         assertThat(access.applied()).containsEntry(key("new"), insert);
+    }
+
+    @Test
+    void theWritesAServiceAppliedBesideARefusedUpdateOfPropertiesAreNotRouted() throws Exception {
+        access.servesLikeTheService().store(entity("kept", 0));
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        DatastoreMutation insert = DatastoreMutation.insert(entity("new", 1));
+        DatastoreMutation applied = DatastoreMutation.updateProperties(entity("kept", 2));
+        DatastoreMutation missing = DatastoreMutation.updateProperties(entity("missing", 3));
+        writer.write(insert, TestContexts.NO_OP);
+        writer.write(applied, TestContexts.NO_OP);
+        writer.write(missing, TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed).extracting(FailedMutation::getMutation).containsExactly(missing);
+        assertThat(access.applied())
+                .containsEntry(key("new"), insert)
+                .containsEntry(key("kept"), applied)
+                .doesNotContainKey(key("missing"));
+    }
+
+    @Test
+    void theServiceFakeLooksUpWhatAMaskedWriteLeftStored() throws Exception {
+        // A merge merges into the stored embedded entity; an update of properties replaces each
+        // property it names whole and keeps the others.
+        Entity stored =
+                Entity.newBuilder(key("k"))
+                        .set("v", 0L)
+                        .set("kept", 0L)
+                        .set("e", FullEntity.newBuilder().set("x", 0L).set("y", 0L).build())
+                        .build();
+        access.servesLikeTheService()
+                .store(stored)
+                .store(Entity.newBuilder(key("m"), stored).set("p", "keep").build());
+        DatastoreWriter<DatastoreMutation> writer = writer(dropping());
+        FullEntity<IncompleteKey> x1 = FullEntity.newBuilder().set("x", 1L).build();
+        writer.write(
+                DatastoreMutation.updateProperties(
+                        Entity.newBuilder(key("k")).set("v", 1L).set("e", x1).build()),
+                TestContexts.NO_OP);
+        writer.write(
+                DatastoreMutation.upsertMerge(
+                        Entity.newBuilder(key("m"))
+                                .set("v", 1L)
+                                .set("e", x1)
+                                // Only empty entities below it: no mask path, so "keep" stays.
+                                .set(
+                                        "p",
+                                        FullEntity.newBuilder()
+                                                .set("child", FullEntity.newBuilder().build())
+                                                .build())
+                                .build()),
+                TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.lookup(key("k")))
+                .isEqualTo(
+                        Entity.newBuilder(key("k"))
+                                .set("v", 1L)
+                                .set("kept", 0L)
+                                .set("e", x1)
+                                .build());
+        assertThat(access.lookup(key("m")))
+                .isEqualTo(
+                        Entity.newBuilder(key("m"))
+                                .set("v", 1L)
+                                .set("kept", 0L)
+                                .set("e", FullEntity.newBuilder().set("x", 1L).set("y", 0L).build())
+                                .set("p", "keep")
+                                .build());
+    }
+
+    @Test
+    void anInsertAfterAnUpdateOfPropertiesIsComparedWithTheWholeStoredEntity() throws Exception {
+        // The insert's replay meets the entity the update left: the stored properties it did not
+        // name included. Compared with only the update's own properties, it would be routed.
+        access.servesLikeTheService()
+                .store(Entity.newBuilder(key("k")).set("v", 0L).set("kept", 0L).build());
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(3), dropping());
+        writer.write(
+                DatastoreMutation.updateProperties(
+                        Entity.newBuilder(key("k")).set("v", 1L).build()),
+                TestContexts.NO_OP);
+        writer.write(
+                DatastoreMutation.insert(
+                        Entity.newBuilder(key("k")).set("v", 1L).set("kept", 0L).build()),
+                TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.lookups()).containsExactly(key("k"));
+        assertThat(handler.routed).isEmpty();
     }
 
     @Test

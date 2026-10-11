@@ -23,8 +23,8 @@ limitations under the License.
   `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by [#1651]
   (writer-side id allocation for the table sink) and 2026-10-11 by [#1707] (the service's answers,
   and an insert a refused commit already wrote), [#1729] (a commit the writer encodes, and the
-  merge operation) and [#1744] (each write encoded once)
-- Issues: [#1542], [#355], [#1546], [#1651], [#1707], [#1729], [#1744]
+  merge operation), [#1744] (each write encoded once) and [#1743] (the masked update operation)
+- Issues: [#1542], [#355], [#1546], [#1651], [#1707], [#1729], [#1744], [#1743]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -179,6 +179,13 @@ Two alternatives were declined on these measurements.
 - **Keeping only the encoding**, and rebuilding the `DatastoreMutation` from it (`Entity.fromPb`) for a routed write or the `ALREADY_EXISTS` lookup's comparison. It would lower the peak for small long properties by about 28% (128 MB of the 178 MB above) and a large-value one not at all. In exchange the handler would receive a decoded copy rather than the write the serializer returned, its fidelity resting on `EntityProtosTest` alone, and an `upsertMerge` of an entity without properties would be told from an `upsert` only by the presence of an empty mask.
 - **Sizing without building a message**, as the Native-mode `DocumentSizeEstimator` does, and encoding at the commit. The commit would still hold both forms, so the peak would be the same but for the one write that overflows a batch, which it would not encode until after that commit, while a second walk of every value type would have to stay equal to `EntityProtos`, and retries and solo re-sends would still need the commit's encodings kept.
 
+### The masked update operation ([#1743], 2026-10-11)
+
+The Datastore-mode table's `update` write mode (ADR-0184) changes the declared properties of an existing entity and keeps the others, which `update` cannot express: it replaces the entity whole.
+
+- **`DatastoreMutation.updateProperties(FullEntity<Key>)`** is the public operation (`Operation.UPDATE_PROPERTIES`): an `update` whose mask names each property the entity holds, one `PropertyPaths.segment` per top-level name (`EntityProtos.topLevelPaths`), so each property, an embedded entity included, replaces the stored one whole. A top-level mask is what the table needs and what Native mode's `update` does; a recursive one would be `upsertMerge`'s mask on an `update`, which no consumer has asked for and can be added beside it. The name says what is updated, the entity's properties ("property" is Datastore mode's noun, `Entity.properties` and `PropertyMask`; "field" is Native mode's), rather than the mask's shape. Two names were declined on review (owner, 2026-10-11): renaming `update` to `replace` and giving the masked operation `update`, which would match Native mode's and the SQL mode's `update` but make the connector's `update` differ from the API's mutation of that name and its `replace` differ from the SQL `replace`, which creates a missing entity; and `updateMasked`, which names the mechanism and suggests what a mask can also do, delete a named property the entity lacks, which this operation never does. An entity without properties is refused when the write is built, as `FirestoreWrite.update` refuses no fields: its mask would name nothing, so the write would change nothing.
+- **It earns `NOT_FOUND` as an `update` does**, so a commit refused with it is confirmed one write at a time beside either operation, and routed after the lookup; `DatastoreWriter.earns` holds the rule, and the unit-test fake refuses it under `servesLikeTheService()` as it refuses an `update`. Measured on the emulator and the service in `DatastoreRejectionITCase` and `DatastoreRejectionRealGcpITCase` (ADR-0184's [#1743] section): a commit refused for it applied the other writes as a commit refused for an `update` does.
+
 ## Consequences
 
 - A refused commit costs one solo commit per write, sequentially on the task thread, plus one lookup per update refused with `NOT_FOUND` and per insert refused with `ALREADY_EXISTS`; `mutationsConfirmedAlone` counts each mutation re-sent alone, once; retries of those solo commits count in `batchesSent`.
@@ -204,3 +211,4 @@ Two alternatives were declined on these measurements.
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1729]: https://github.com/flink-gcp/flink-connector-gcp/issues/1729
 [#1744]: https://github.com/flink-gcp/flink-connector-gcp/issues/1744
+[#1743]: https://github.com/flink-gcp/flink-connector-gcp/issues/1743

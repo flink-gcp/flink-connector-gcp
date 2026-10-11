@@ -27,7 +27,12 @@ public enum WriteMode {
      */
     MERGE("merge"),
     /** Replaces the entity with the row; properties the table does not declare are removed. */
-    REPLACE("replace");
+    REPLACE("replace"),
+    /**
+     * Replaces the table's properties of an entity that must exist, each one whole, a ROW column
+     * included; properties the table does not declare keep their values.
+     */
+    UPDATE("update");
 
     private final String value;
 
