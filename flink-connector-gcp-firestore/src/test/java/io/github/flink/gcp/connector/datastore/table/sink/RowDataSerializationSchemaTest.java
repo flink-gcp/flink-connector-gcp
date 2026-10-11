@@ -21,6 +21,7 @@ import org.apache.flink.table.data.GenericArrayData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.InstantiationUtil;
@@ -31,7 +32,11 @@ import com.google.cloud.datastore.EntityValue;
 import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
+import com.google.cloud.datastore.KeyValue;
+import com.google.cloud.datastore.LatLng;
+import com.google.cloud.datastore.LatLngValue;
 import com.google.cloud.datastore.ListValue;
+import com.google.cloud.datastore.PathElement;
 import com.google.cloud.datastore.Value;
 import com.google.cloud.datastore.ValueType;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
@@ -90,7 +95,7 @@ class RowDataSerializationSchemaTest {
     }
 
     private static DatastoreTableSchema everyType(List<String> unindexed) {
-        return DatastoreTableSchema.of(EVERY_TYPE, new int[] {0}, unindexed);
+        return DatastoreTableSchema.of(EVERY_TYPE, new int[] {0}, unindexed, List.of(), List.of());
     }
 
     private static GenericRowData everyTypeRow(String id) {
@@ -181,7 +186,8 @@ class RowDataSerializationSchemaTest {
                                                                         "sku",
                                                                         DataTypes.STRING())))))
                                 .getLogicalType();
-        DatastoreTableSchema schema = DatastoreTableSchema.of(row, new int[] {0}, List.of("items"));
+        DatastoreTableSchema schema =
+                DatastoreTableSchema.of(row, new int[] {0}, List.of("items"), List.of(), List.of());
 
         FullEntity<Key> entity =
                 serializer(schema)
@@ -234,7 +240,9 @@ class RowDataSerializationSchemaTest {
         delete.setField(0, StringData.fromString("o1"));
 
         DatastoreMutation mutation =
-                serializer(DatastoreTableSchema.of(row, new int[] {0}, List.of()))
+                serializer(
+                                DatastoreTableSchema.of(
+                                        row, new int[] {0}, List.of(), List.of(), List.of()))
                         .serialize(delete, TestContexts.NO_OP);
 
         assertThat(mutation.getOperation()).isEqualTo(DatastoreMutation.Operation.DELETE);
@@ -251,7 +259,10 @@ class RowDataSerializationSchemaTest {
                                 .getLogicalType();
 
         DatastoreMutation mutation =
-                serializer(DatastoreTableSchema.of(row, new int[] {0}, List.of()), "tenant-a")
+                serializer(
+                                DatastoreTableSchema.of(
+                                        row, new int[] {0}, List.of(), List.of(), List.of()),
+                                "tenant-a")
                         .serialize(
                                 GenericRowData.of(-7L, StringData.fromString("v")),
                                 TestContexts.NO_OP);
@@ -284,7 +295,9 @@ class RowDataSerializationSchemaTest {
                         DataTypes.ROW(DataTypes.FIELD("id", DataTypes.BIGINT().notNull()))
                                 .getLogicalType();
         RowDataSerializationSchema byId =
-                serializer(DatastoreTableSchema.of(idRow, new int[] {0}, List.of()));
+                serializer(
+                        DatastoreTableSchema.of(
+                                idRow, new int[] {0}, List.of(), List.of(), List.of()));
         RowDataSerializationSchema byName = serializer(everyType(List.of()));
 
         assertThatThrownBy(() -> byId.serialize(GenericRowData.of(0L), TestContexts.NO_OP))
@@ -329,7 +342,9 @@ class RowDataSerializationSchemaTest {
         RowType row =
                 (RowType) DataTypes.ROW(DataTypes.FIELD("s", DataTypes.STRING())).getLogicalType();
         RowDataSerializationSchema serializer =
-                serializer(DatastoreTableSchema.of(row, new int[0], List.of()), "tenant-a");
+                serializer(
+                        DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of()),
+                        "tenant-a");
         CountingAllocator allocator = new CountingAllocator(7);
         serializer.setKeyAllocator(allocator);
 
@@ -362,7 +377,9 @@ class RowDataSerializationSchemaTest {
         RowType row =
                 (RowType) DataTypes.ROW(DataTypes.FIELD("s", DataTypes.STRING())).getLogicalType();
         RowDataSerializationSchema serializer =
-                serializer(DatastoreTableSchema.of(row, new int[0], List.of()), "tenant-a");
+                serializer(
+                        DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of()),
+                        "tenant-a");
         // An answer in another namespace, database and kind: the key must stay the table's.
         serializer.setKeyAllocator(
                 key ->
@@ -388,7 +405,9 @@ class RowDataSerializationSchemaTest {
         RowType row =
                 (RowType) DataTypes.ROW(DataTypes.FIELD("s", DataTypes.STRING())).getLogicalType();
         RowDataSerializationSchema serializer =
-                serializer(DatastoreTableSchema.of(row, new int[0], List.of()), "");
+                serializer(
+                        DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of()),
+                        "");
         serializer.setKeyAllocator(
                 key -> Collections.nCopies(3, Key.newBuilder("p", "Order", "x").build()));
 
@@ -406,7 +425,9 @@ class RowDataSerializationSchemaTest {
         RowType row =
                 (RowType) DataTypes.ROW(DataTypes.FIELD("s", DataTypes.STRING())).getLogicalType();
         RowDataSerializationSchema serializer =
-                serializer(DatastoreTableSchema.of(row, new int[0], List.of()), "");
+                serializer(
+                        DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of()),
+                        "");
 
         assertThatThrownBy(
                         () ->
@@ -422,7 +443,9 @@ class RowDataSerializationSchemaTest {
         RowType row =
                 (RowType) DataTypes.ROW(DataTypes.FIELD("s", DataTypes.STRING())).getLogicalType();
         RowDataSerializationSchema serializer =
-                serializer(DatastoreTableSchema.of(row, new int[0], List.of()), "");
+                serializer(
+                        DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of()),
+                        "");
         serializer.setKeyAllocator(
                 key -> {
                     throw new IOException("allocation refused");
@@ -448,7 +471,13 @@ class RowDataSerializationSchemaTest {
 
         assertThatThrownBy(
                         () ->
-                                serializer(DatastoreTableSchema.of(row, new int[0], List.of()))
+                                serializer(
+                                                DatastoreTableSchema.of(
+                                                        row,
+                                                        new int[0],
+                                                        List.of(),
+                                                        List.of(),
+                                                        List.of()))
                                         .serialize(delete, TestContexts.NO_OP))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("has no entity to delete");
@@ -490,5 +519,262 @@ class RowDataSerializationSchemaTest {
                                 .getEntity()
                                 .getString("s"))
                 .isEqualTo("text");
+    }
+
+    private static final DataType PATH_ELEMENT =
+            DataTypes.ROW(
+                    DataTypes.FIELD("kind", DataTypes.STRING()),
+                    DataTypes.FIELD("name", DataTypes.STRING()),
+                    DataTypes.FIELD("id", DataTypes.BIGINT()));
+
+    private static final RowType MARKED =
+            (RowType)
+                    DataTypes.ROW(
+                                    DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                                    DataTypes.FIELD(
+                                            "at",
+                                            DataTypes.ROW(
+                                                    DataTypes.FIELD("latitude", DataTypes.DOUBLE()),
+                                                    DataTypes.FIELD(
+                                                            "longitude", DataTypes.DOUBLE()))),
+                                    DataTypes.FIELD("owner", PATH_ELEMENT),
+                                    DataTypes.FIELD(
+                                            "child",
+                                            DataTypes.ROW(
+                                                    DataTypes.FIELD("kind", DataTypes.STRING()),
+                                                    DataTypes.FIELD("name", DataTypes.STRING()),
+                                                    DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                                    DataTypes.FIELD(
+                                                            "ancestors",
+                                                            DataTypes.ARRAY(PATH_ELEMENT)))),
+                                    DataTypes.FIELD("refs", DataTypes.ARRAY(PATH_ELEMENT)))
+                            .getLogicalType();
+
+    private static DatastoreTableSchema marked(List<String> unindexed) {
+        return DatastoreTableSchema.of(
+                MARKED, new int[] {0}, unindexed, List.of("at"), List.of("owner", "child", "refs"));
+    }
+
+    private static GenericRowData element(String kind, String name, Long id) {
+        return GenericRowData.of(
+                kind == null ? null : StringData.fromString(kind),
+                name == null ? null : StringData.fromString(name),
+                id);
+    }
+
+    private static GenericRowData markedRow(
+            GenericRowData at, GenericRowData owner, GenericRowData child, Object[] refs) {
+        return GenericRowData.of(
+                StringData.fromString("o1"),
+                at,
+                owner,
+                child,
+                refs == null ? null : new GenericArrayData(refs));
+    }
+
+    @Test
+    void markedRowsAreWrittenAsGeoPointsAndKeyValuesInTheTablesPartition() throws IOException {
+        GenericRowData child =
+                GenericRowData.of(
+                        StringData.fromString("Line"),
+                        null,
+                        3L,
+                        new GenericArrayData(
+                                new Object[] {
+                                    element("Root", "r", null), element("Mid", null, -7L)
+                                }));
+
+        FullEntity<Key> entity =
+                serializer(marked(List.of()), "tenant-a")
+                        .serialize(
+                                markedRow(
+                                        GenericRowData.of(35.5d, -139.25d),
+                                        element("User", "u1", null),
+                                        child,
+                                        new Object[] {
+                                            element("User", "u2", null), element("User", null, 9L)
+                                        }),
+                                TestContexts.NO_OP)
+                        .getEntity();
+
+        assertThat(entity.getLatLng("at")).isEqualTo(LatLng.of(35.5d, -139.25d));
+        assertThat(entity.getKey("owner"))
+                .isEqualTo(
+                        Key.newBuilder("p", "User", "u1", "db").setNamespace("tenant-a").build());
+        assertThat(entity.getKey("child"))
+                .isEqualTo(
+                        Key.newBuilder("p", "Line", 3L, "db")
+                                .setNamespace("tenant-a")
+                                .addAncestors(
+                                        PathElement.of("Root", "r"), PathElement.of("Mid", -7L))
+                                .build());
+        List<Value<?>> refs = entity.getList("refs");
+        assertThat(refs)
+                .extracting(value -> ((KeyValue) value).get())
+                .containsExactly(
+                        Key.newBuilder("p", "User", "u2", "db").setNamespace("tenant-a").build(),
+                        Key.newBuilder("p", "User", 9L, "db").setNamespace("tenant-a").build());
+        assertThat(entity.getValue("at").excludeFromIndexes()).isFalse();
+        assertThat(entity.getValue("owner").excludeFromIndexes()).isFalse();
+    }
+
+    @Test
+    void aNullOrEmptyAncestorsFieldWritesAKeyWithoutAParentAndNullsStayNull() throws IOException {
+        FullEntity<Key> entity =
+                serializer(marked(List.of()))
+                        .serialize(
+                                markedRow(
+                                        null,
+                                        null,
+                                        GenericRowData.of(
+                                                StringData.fromString("Line"),
+                                                StringData.fromString("l"),
+                                                null,
+                                                null),
+                                        null),
+                                TestContexts.NO_OP)
+                        .getEntity();
+        FullEntity<Key> empty =
+                serializer(marked(List.of()))
+                        .serialize(
+                                markedRow(
+                                        null,
+                                        null,
+                                        GenericRowData.of(
+                                                StringData.fromString("Line"),
+                                                StringData.fromString("l"),
+                                                null,
+                                                new GenericArrayData(new Object[0])),
+                                        null),
+                                TestContexts.NO_OP)
+                        .getEntity();
+
+        assertThat(entity.getKey("child").getParent()).isNull();
+        assertThat(empty.getKey("child")).isEqualTo(entity.getKey("child"));
+        assertThat(entity.getValue("at").getType()).isEqualTo(ValueType.NULL);
+        assertThat(entity.getValue("owner").getType()).isEqualTo(ValueType.NULL);
+        assertThat(entity.getValue("refs").getType()).isEqualTo(ValueType.NULL);
+    }
+
+    @Test
+    void anUnindexedColumnMarksItsGeoPointsAndKeyValues() throws IOException {
+        FullEntity<Key> entity =
+                serializer(marked(List.of("at", "owner", "refs")))
+                        .serialize(
+                                markedRow(
+                                        GenericRowData.of(0d, 0d),
+                                        element("User", "u1", null),
+                                        null,
+                                        new Object[] {element("User", "u2", null)}),
+                                TestContexts.NO_OP)
+                        .getEntity();
+
+        assertThat((Object) entity.getValue("at")).isInstanceOf(LatLngValue.class);
+        assertThat(entity.getValue("at").excludeFromIndexes()).isTrue();
+        assertThat(entity.getValue("owner").excludeFromIndexes()).isTrue();
+        assertThat(entity.getList("refs").get(0).excludeFromIndexes()).isTrue();
+        assertThat(entity.getValue("refs").excludeFromIndexes()).isFalse();
+    }
+
+    @Test
+    void aGeoPointWithANullOrOutOfRangeCoordinateFailsTheRecord() {
+        RowDataSerializationSchema serializer = serializer(marked(List.of()));
+
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        markedRow(GenericRowData.of(1d, null), null, null, null),
+                                        TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "Field 'at' is a geographical point, so its latitude and longitude must"
+                                + " not be NULL; write a NULL point instead.");
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        markedRow(GenericRowData.of(90.5d, 0d), null, null, null),
+                                        TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageStartingWith("Field 'at' is not a valid geographical point: latitude");
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        markedRow(GenericRowData.of(0d, -180.5d), null, null, null),
+                                        TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageStartingWith("Field 'at' is not a valid geographical point:");
+    }
+
+    @Test
+    void aKeyValueThatIsNotACompleteKeyFailsTheRecord() {
+        RowDataSerializationSchema serializer = serializer(marked(List.of()));
+        Object[][] cases = {
+            {element("User", null, null), "its last path element has neither a name nor an id"},
+            {element("User", "u", 1L), "its last path element has both a name and an id"},
+            {element(null, "u", null), "its last path element has no kind"},
+            {element("", "u", null), "its last path element has no kind"},
+            {element("User", "", null), "name must not be empty or null"},
+            {element("User", null, 0L), "id must not be equal to zero"},
+        };
+        for (Object[] c : cases) {
+            assertThatThrownBy(
+                            () ->
+                                    serializer.serialize(
+                                            markedRow(null, (GenericRowData) c[0], null, null),
+                                            TestContexts.NO_OP))
+                    .as((String) c[1])
+                    .isInstanceOf(IOException.class)
+                    .hasMessageStartingWith("Field 'owner' is")
+                    .hasMessageContaining((String) c[1]);
+        }
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        markedRow(
+                                                null,
+                                                null,
+                                                GenericRowData.of(
+                                                        StringData.fromString("Line"),
+                                                        StringData.fromString("l"),
+                                                        null,
+                                                        new GenericArrayData(
+                                                                new Object[] {
+                                                                    element("Root", "r", null), null
+                                                                })),
+                                                null),
+                                        TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "Field 'child' is a key value, but its ancestor 2 is NULL; every ancestor"
+                                + " is a path element.");
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        markedRow(
+                                                null,
+                                                null,
+                                                GenericRowData.of(
+                                                        StringData.fromString("Line"),
+                                                        StringData.fromString("l"),
+                                                        null,
+                                                        new GenericArrayData(
+                                                                new Object[] {
+                                                                    element("Root", null, null)
+                                                                })),
+                                                null),
+                                        TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("its ancestor 1 has neither a name nor an id");
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        markedRow(
+                                                null,
+                                                null,
+                                                null,
+                                                new Object[] {element("User", "u", 2L)}),
+                                        TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageStartingWith("Field 'refs' is a key value");
     }
 }

@@ -78,8 +78,8 @@ class DatastoreOptionParityTest {
                         "emulatorEndpoint");
 
         // database is assembled from project and database, serializer from the physical schema,
-        // kind, namespace and sink.unindexed-columns, writerOptions from the options above. The
-        // failure handler stays fail-job: no DDL names a serializable handler.
+        // kind, namespace, sink.unindexed-columns and the two markers, writerOptions from the
+        // options above. The failure handler stays fail-job: no DDL names a serializable handler.
         assertThat(declaredKeys())
                 .contains(
                         "project",
@@ -87,6 +87,8 @@ class DatastoreOptionParityTest {
                         "kind",
                         "namespace",
                         "sink.unindexed-columns",
+                        "geo-point-field-paths",
+                        "reference-field-paths",
                         "service-account-key-file",
                         "emulator-endpoint");
     }
@@ -101,6 +103,8 @@ class DatastoreOptionParityTest {
                         "namespace",
                         "emulator-endpoint",
                         "service-account-key-file",
+                        "geo-point-field-paths",
+                        "reference-field-paths",
                         "type-mismatch-policy",
                         "scan.partition.max-partitions",
                         "scan.read-time",

@@ -43,6 +43,24 @@ CREATE TABLE invoices (
 );
 -- end::id-key[]
 
+-- tag::markers[]
+CREATE TABLE deliveries (
+  delivery_id STRING NOT NULL,
+  destination ROW<latitude DOUBLE, longitude DOUBLE>,
+  customer ROW<kind STRING, name STRING, id BIGINT>,
+  invoice_line ROW<kind STRING, name STRING, id BIGINT,
+    ancestors ARRAY<ROW<kind STRING, name STRING, id BIGINT>>>,
+  stops ARRAY<ROW<label STRING, spot ROW<latitude DOUBLE, longitude DOUBLE>>>,
+  PRIMARY KEY (delivery_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Delivery',
+  'geo-point-field-paths' = 'destination;stops.spot',
+  'reference-field-paths' = 'customer;invoice_line'
+);
+-- end::markers[]
+
 -- tag::unindexed[]
 CREATE TABLE articles (
   article_id STRING NOT NULL,

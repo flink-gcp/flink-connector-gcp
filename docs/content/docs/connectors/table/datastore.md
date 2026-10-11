@@ -66,7 +66,7 @@ The PRIMARY KEY is the entity key's last path element, declared `PRIMARY KEY (..
 A `STRING` key column is the key's name and a `BIGINT` one its numeric id; it is never stored as a property.
 A row whose key is an empty name or the id `0` fails the job, because neither addresses an entity, and so does a name the service refuses: one of the form `__…__` or longer than 1,500 bytes.
 The key column is `NOT NULL`, so Flink's not-null enforcer handles a NULL key before the sink sees it, failing the job or, under `table.exec.sink.not-null-enforcer = 'DROP'`, dropping the row.
-The sink writes keys without ancestors, which are deferred until a use asks for them; [Reading values back](#reading-values-back) says how a scan meets a key that has one.
+The sink writes each row's own key without ancestors, which are deferred until a use asks for them; [Reading values back](#reading-values-back) says how a scan meets a key that has one.
 
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="id-key" >}}
 
@@ -80,10 +80,26 @@ The sink writes keys without ancestors, which are deferred until a use asks for 
 | `TIMESTAMP_LTZ(p)` | Timestamp from year 1 to 9999; Datastore keeps microseconds and rounds a finer value down |
 | `ARRAY<T>` | Array; an array directly inside an array is refused, because the client library neither builds nor reads one, although the service stored one sent as a raw commit |
 | `ROW<...>` | Embedded entity without a key, one property per field |
+| `ROW<latitude DOUBLE, longitude DOUBLE>` named by `geo-point-field-paths` | Geographical point |
+| `ROW<kind STRING, name STRING, id BIGINT>` named by `reference-field-paths`, optionally followed by `ancestors ARRAY<ROW<kind STRING, name STRING, id BIGINT>>` | Key value in the table's project, database and namespace |
 
 Every other Flink type is refused when the statement is planned, naming the field: write an `INT` as a `BIGINT` and a `FLOAT` as a `DOUBLE`.
-`DECIMAL`, `DATE` and `MAP` have no mapping, and neither do a geographical point or a key value.
+`DECIMAL`, `DATE` and `MAP` have no mapping.
 A SQL `NULL` is written as a Datastore null value, so the property exists and holds null.
+
+A geographical point and a key value share their Flink types with an ordinary embedded entity, so the table names them with two markers, each a semicolon-separated list of field paths.
+A path names a column, then a ROW field by `.name`; an `ARRAY` is passed through, so a path through an array names its elements, and an array of key values is an `ARRAY` of the key's `ROW`.
+A marker that names a path the table does not declare, a field of the wrong type, the PRIMARY KEY, or a path two fields share (a column named `a.b` beside a ROW `a` with a field `b`), is refused when the statement is planned, as are both markers on one path.
+
+{{< sql-snippet file="flink/DatastoreTableReference.sql" tag="markers" >}}
+
+A key value's `ROW` holds the key's last path element: its `kind`, and exactly one of its `name` and its numeric `id`, the other NULL.
+The optional `ancestors` field holds the elements before it, root first, in the same form; without the field, the column holds keys without a parent.
+The sink builds the key in the table's own project, database and namespace.
+The service refused a key value in another database than its entity's, and one naming a project that does not exist.
+The namespace is the table's because the `ROW` has no field to name another, although the service stores a key value in another namespace.
+A path element without a kind, with neither or both of a name and an id, with an empty name or with the id `0`, or a NULL ancestor, fails the job, and so does a point whose latitude or longitude is NULL or out of range.
+On Flink 1.20, an `ARRAY` literal of key `ROW`s that hold NULL in different fields, such as `ARRAY[ROW('User', 'u1', CAST(NULL AS BIGINT)), ROW('User', CAST(NULL AS STRING), 9)]`, fails planning with "Conversion to relational algebra failed to preserve datatypes"; casting each element to the column's `ROW` type, `CAST(ROW(...) AS ROW<kind STRING, name STRING, id BIGINT>)`, plans on both supported Flink lines.
 
 ### Reading values back
 
@@ -93,9 +109,10 @@ A scan of a kind also returns the kind's entities whose keys have a parent, and 
 Such an entity fails the read of a table with a PRIMARY KEY, also when the query does not read the key column, which the planner prunes from a `GROUP BY` over the key; a table without one reads it, and its `key-name` and `key-id` name the last path element alone.
 A property the entity does not have reads as NULL, as does a property that holds null, and so does a field the embedded entity of a `ROW` column lacks.
 An integer reads into a `DOUBLE` column only when the `DOUBLE` represents it exactly, up to `2^53` in magnitude, and a timestamp reads at the column's precision, truncated.
+A geographical point reads into a ROW `geo-point-field-paths` names, and a key value into a ROW `reference-field-paths` names, its `ancestors` an empty array for a key without a parent.
 A string or blob reads whole, whatever length a `CHAR`, `VARCHAR`, `BINARY` or `VARBINARY` column declares: the scan neither checks the length nor pads a fixed-length value, so declare `STRING` and `BYTES` for values of any length.
 
-A kind has no schema, so an entity can hold, under a column's name, a value of another type: a string where the column is `BIGINT`, or a value outside the mapping, such as a geographical point or a key.
+A kind has no schema, so an entity can hold, under a column's name, a value of another type: a string where the column is `BIGINT`, a point or a key value where the column is an unmarked `ROW`, a key value with ancestors where the marked `ROW` declares no `ancestors` field, a key value with an id where the `ROW` declares its `name` `NOT NULL` (or the reverse), or a key value in another namespace, which the service stores although the `ROW` has no field to say so.
 `type-mismatch-policy` decides what such a value does.
 Under `fail` the read fails, naming the entity's key and the property's path in the schema.
 Under `null` the innermost nullable field around the value reads as NULL instead; a `NOT NULL` field cannot, so the nearest nullable field around it does.
@@ -216,6 +233,8 @@ A refused write fails the job: a `WITH` clause cannot name a serializable failur
 | `namespace` | *unset ⇒ the default namespace* | The namespace of the table's entities |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started in Datastore mode; setting it also stops credential discovery |
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each lookup and sink subtask; rejected with `emulator-endpoint` |
+| `geo-point-field-paths` | empty | Semicolon-separated field paths of `ROW<latitude DOUBLE, longitude DOUBLE>` values written and read as geographical points |
+| `reference-field-paths` | empty | Semicolon-separated field paths of `ROW<kind STRING, name STRING, id BIGINT>` values, optionally with `ancestors`, written and read as key values in the table's namespace |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
 | `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000` |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
@@ -258,4 +277,6 @@ The table mapping and the declined alternatives are recorded in [ADR-0184]({{< p
 The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
 They also read every type back through a SQL scan with its metadata, read the allocated ids of a table without a PRIMARY KEY, fail and read as NULL a mismatched value under each policy, keep every entity under a column projection, and read at a configured read time.
 Blocking and asynchronous lookups join against entities by name and by numeric id, a negative one and one in a namespace included, join no row for the keys that address no entity without failing, read the metadata, filter on an additional equality key under both caches, and read the current entity whatever `scan.read-time` says; the lookup's own client is checked to return exactly the masked properties, names holding a dot, a backquote or a backslash included, and an unindexed value and an array whole.
+Geographical points and key values, with ancestors and in arrays, and a point inside a `ROW` in an array, are written through SQL, read back by the client library and the scan, and looked up, a lookup join on a key value's name included; a key value in another namespace fails the scan or reads as NULL by the policy, and an incomplete one fails the job.
+The gated suite runs the same write, scan and lookup against the service, and pins its answer to a key value outside the entity's partition: it stores one in another namespace and refuses with `INVALID_ARGUMENT` one in another database and one naming a project that does not exist, both of which the emulator stores.
 The uber-jar's tests write through its relocated classes.

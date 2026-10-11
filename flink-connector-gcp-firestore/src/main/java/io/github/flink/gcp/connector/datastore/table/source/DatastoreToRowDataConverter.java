@@ -30,8 +30,12 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.datastore.BaseEntity;
 import com.google.cloud.datastore.Blob;
 import com.google.cloud.datastore.FullEntity;
+import com.google.cloud.datastore.Key;
+import com.google.cloud.datastore.LatLng;
+import com.google.cloud.datastore.PathElement;
 import com.google.cloud.datastore.Value;
 import com.google.cloud.datastore.ValueType;
+import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
 import io.github.flink.gcp.connector.datastore.table.TypeMismatchPolicy;
 
@@ -49,10 +53,12 @@ import java.util.List;
  * TypeMismatchPolicy#FAIL}, or when no field around it is nullable, the read fails naming the
  * property. Only these values are read: a string, an integer into BIGINT, a floating-point number
  * or an integer of at most 2^53 in magnitude into DOUBLE, a boolean, a blob, a timestamp (truncated
- * to the column's precision), an array, and an embedded entity into a ROW. A key, a geographical
- * point and a value the client library cannot name are mismatches. A string or blob is read whole:
- * the length a CHAR, VARCHAR, BINARY or VARBINARY column declares is neither checked nor padded to,
- * as the Spanner table reads a STRING whatever its declared length.
+ * to the column's precision), an array, an embedded entity into a ROW, and, into a ROW a schema
+ * marker names, a geographical point or a key value. A key value is read only when it is in the
+ * table's own project, database and namespace, and its ancestors only into a ROW that declares
+ * them. A value the client library cannot name is a mismatch. A string or blob is read whole: the
+ * length a CHAR, VARCHAR, BINARY or VARBINARY column declares is neither checked nor padded to, as
+ * the Spanner table reads a STRING whatever its declared length.
  */
 @Internal
 abstract class DatastoreToRowDataConverter implements Serializable {
@@ -149,16 +155,37 @@ abstract class DatastoreToRowDataConverter implements Serializable {
         }
     }
 
+    /** What a converter is created against: the schema's markers and the table's partition. */
+    static final class Context {
+        private final DatastoreTableSchema schema;
+        private final DatabaseDestination database;
+        private final String namespace;
+
+        /**
+         * Creates the context.
+         *
+         * @param schema the checked schema
+         * @param database the database the table's key values address
+         * @param namespace the namespace the table's key values address, empty for the default one
+         */
+        Context(DatastoreTableSchema schema, DatabaseDestination database, String namespace) {
+            this.schema = schema;
+            this.database = database;
+            this.namespace = namespace;
+        }
+    }
+
     /**
      * Creates the converter of the field at {@code path}.
      *
+     * @param context the checked schema and the partition key values are read in
      * @param path the property path
      * @param type the field's type
      * @param policy what a mismatch does
      * @return the converter
      */
     static DatastoreToRowDataConverter create(
-            String path, LogicalType type, TypeMismatchPolicy policy) {
+            Context context, String path, LogicalType type, TypeMismatchPolicy policy) {
         switch (type.getTypeRoot()) {
             case CHAR:
             case VARCHAR:
@@ -176,14 +203,21 @@ abstract class DatastoreToRowDataConverter implements Serializable {
                 return new FromTimestamp(path, type, policy);
             case ARRAY:
                 LogicalType element = ((ArrayType) type).getElementType();
-                return new FromList(path, type, policy, create(path, element, policy));
+                return new FromList(path, type, policy, create(context, path, element, policy));
             case ROW:
                 RowType row = (RowType) type;
+                if (context.schema.isGeoPoint(path)) {
+                    return new FromLatLng(path, type, policy);
+                }
+                if (context.schema.isReference(path)) {
+                    return new FromKey(path, row, policy, context.database, context.namespace);
+                }
                 DatastoreToRowDataConverter[] fields =
                         new DatastoreToRowDataConverter[row.getFieldCount()];
                 for (int i = 0; i < fields.length; i++) {
                     fields[i] =
                             create(
+                                    context,
                                     path + "." + row.getFieldNames().get(i),
                                     row.getTypeAt(i),
                                     policy);
@@ -309,6 +343,138 @@ abstract class DatastoreToRowDataConverter implements Serializable {
                 return timestampData((Timestamp) value.get(), truncation);
             }
             throw mismatch(value, "a timestamp");
+        }
+    }
+
+    private static final class FromLatLng extends DatastoreToRowDataConverter {
+        private static final long serialVersionUID = 1L;
+
+        FromLatLng(String path, LogicalType type, TypeMismatchPolicy policy) {
+            super(path, type, policy);
+        }
+
+        @Override
+        Object convertNonNull(Value<?> value) throws Mismatch {
+            if (value.getType() == ValueType.LAT_LNG) {
+                LatLng point = (LatLng) value.get();
+                return GenericRowData.of(point.getLatitude(), point.getLongitude());
+            }
+            throw mismatch(value, "a geographical point");
+        }
+    }
+
+    private static final class FromKey extends DatastoreToRowDataConverter {
+        private static final long serialVersionUID = 1L;
+
+        /** The index of the {@code ancestors} field, after a path element's three. */
+        private static final int ANCESTORS = 3;
+
+        private final DatabaseDestination database;
+        private final String namespace;
+        private final boolean withAncestors;
+        private final boolean[] lastNullable;
+        @Nullable private final boolean[] ancestorNullable;
+
+        FromKey(
+                String path,
+                RowType type,
+                TypeMismatchPolicy policy,
+                DatabaseDestination database,
+                String namespace) {
+            super(path, type, policy);
+            this.database = database;
+            this.namespace = namespace;
+            this.withAncestors = type.getFieldCount() > ANCESTORS;
+            this.lastNullable = nullable(type);
+            this.ancestorNullable =
+                    withAncestors
+                            ? nullable(
+                                    (RowType)
+                                            ((ArrayType) type.getTypeAt(ANCESTORS))
+                                                    .getElementType())
+                            : null;
+        }
+
+        /** Whether a path element's name and id fields may hold NULL. */
+        private static boolean[] nullable(RowType element) {
+            return new boolean[] {
+                element.getTypeAt(1).isNullable(), element.getTypeAt(2).isNullable()
+            };
+        }
+
+        @Override
+        Object convertNonNull(Value<?> value) throws Mismatch {
+            if (value.getType() != ValueType.KEY) {
+                throw mismatch(value, "a key");
+            }
+            Key key = (Key) value.get();
+            // A key value carries its own partition, and the ROW only its path: one into another
+            // partition would read as a key in the table's.
+            if (!database.getProject().equals(key.getProjectId())
+                    || !database.getDatabaseId().equals(key.getDatabaseId())
+                    || !namespace.equals(key.getNamespace())) {
+                throw new Mismatch(
+                        path,
+                        "holds the key "
+                                + key
+                                + ", which is not in the table's project, database and"
+                                + " namespace");
+            }
+            List<PathElement> ancestors = key.getAncestors();
+            if (!withAncestors && !ancestors.isEmpty()) {
+                throw new Mismatch(
+                        path,
+                        "holds the key "
+                                + key
+                                + ", which has ancestors, but its ROW declares no 'ancestors'"
+                                + " field");
+            }
+            GenericRowData row = new GenericRowData(withAncestors ? ANCESTORS + 1 : ANCESTORS);
+            setElement(row, key.getKind(), key.getName(), key.getId(), lastNullable);
+            if (!withAncestors) {
+                return row;
+            }
+            Object[] path = new Object[ancestors.size()];
+            for (int i = 0; i < path.length; i++) {
+                PathElement ancestor = ancestors.get(i);
+                GenericRowData element = new GenericRowData(ANCESTORS);
+                setElement(
+                        element,
+                        ancestor.getKind(),
+                        ancestor.getName(),
+                        ancestor.getId(),
+                        ancestorNullable);
+                path[i] = element;
+            }
+            row.setField(ANCESTORS, new GenericArrayData(path));
+            return row;
+        }
+
+        /**
+         * Sets a path element's three fields on {@code row}, refusing a NULL its declared fields
+         * cannot hold.
+         */
+        private void setElement(
+                GenericRowData row,
+                String kind,
+                @Nullable String name,
+                @Nullable Long id,
+                boolean[] nullable)
+                throws Mismatch {
+            if (name == null && !nullable[0] || id == null && !nullable[1]) {
+                throw new Mismatch(
+                        path,
+                        "holds a key whose path element "
+                                + kind
+                                + " has "
+                                + (name == null ? "no name" : "no id")
+                                + ", but the table declares its "
+                                + (name == null ? "name" : "id")
+                                + " NOT NULL");
+            }
+            row.setField(0, StringData.fromString(kind));
+            row.setField(1, name == null ? null : StringData.fromString(name));
+            row.setField(2, id);
         }
     }
 

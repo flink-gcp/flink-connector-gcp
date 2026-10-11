@@ -100,7 +100,11 @@ class DatastoreDynamicTableFactoryTest {
 
     private static DatastoreTableSchema schema(ResolvedSchema schema, int... keyIndexes) {
         return DatastoreTableSchema.of(
-                (RowType) schema.toPhysicalRowDataType().getLogicalType(), keyIndexes, List.of());
+                (RowType) schema.toPhysicalRowDataType().getLogicalType(),
+                keyIndexes,
+                List.of(),
+                List.of(),
+                List.of());
     }
 
     @Test
