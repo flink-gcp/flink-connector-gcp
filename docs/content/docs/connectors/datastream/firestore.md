@@ -347,7 +347,7 @@ The library throttles itself to Firestore's 500/50/5 ramp-up guidance: it starts
 The rate is per writer subtask, so a sink of parallelism 4 starts at 2,000 operations per second across the job.
 `initialOpsPerSecond` and `maxOpsPerSecond` move the start and cap the ramp; `throttlingEnabled(false)` removes it, and a database without the warm-up it paces may then answer a burst with `RESOURCE_EXHAUSTED`.
 Neither rate may be set below 20.
-The library opens its first batch at 20 writes before it lowers its batch size to a slower rate, and a full batch of 20 cannot pass a throttle below 20: the library retries sending it with no delay, spinning its thread, until the ramp-up lifts the rate to 20, which takes minutes, or forever when the ceiling is below 20.
+The library opens its first batch at 20 writes before it lowers its batch size to a slower rate, and a batch larger than the rate cannot pass the throttle: the library retries sending it with no delay, spinning its thread, until the ramp-up lifts the rate to the batch's size, which takes minutes, or forever when the ceiling is below it.
 
 {{< java-snippet file="FirestoreConnectorTuning.java" tag="firestore-connector-tuning" >}}
 
@@ -362,7 +362,7 @@ After 500 failed writes in one `BulkWriter`'s life, it sends nothing more.
 The writer counts the failures of its `BulkWriter` and, once nothing is in flight, replaces it before a submission could reach that ceiling.
 A new `BulkWriter` starts its throttle's ramp-up again, and `bulkWritersReplaced` counts the replacements.
 That cost is why `maxInFlightWrites` defaults to 250 rather than to the ceiling: the other 250 slots absorb failed writes, such as the creates a restart replays, without a replacement for each one.
-`BulkWriterDefectsITCase` pins this defect and the synchronous-refusal one above, so a library release that fixes either fails that test.
+`BulkWriterDefectsITCase` pins this defect, the synchronous-refusal one, and the throttle one above, so a library release that fixes any of them fails that test.
 
 ### Sink metrics
 

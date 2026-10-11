@@ -117,7 +117,7 @@ public final class FirestoreWriterOptions implements Serializable {
      * the batch size to a slower rate, and a full batch cannot pass a throttle slower than itself:
      * the library retries its send with no delay, spinning its thread, until the ramp-up lifts the
      * rate to the batch size, or forever when the ceiling is below it (google-cloud-firestore
-     * 3.46.0).
+     * 3.49.0, pinned by {@code BulkWriterDefectsITCase}).
      */
     static final int MIN_OPS_PER_SECOND = BulkWriter.MAX_BATCH_SIZE;
 

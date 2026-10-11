@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-09-27 (client library facts read in google-cloud-firestore 3.46.0 through
   libraries-bom 26.87.0; emulator behavior measured 2026-09-27 against
   `google-cloud-cli:583.0.0-emulators`, one run); revised 2026-10-10 by [#1680] (`add`) and by [#1706] (the rejection table measured against the
-  service)
-- Issues: [#1540], [#355], [#1556], [#1606], [#1680], [#1706]
+  service), and 2026-10-11 by [#1561] (the throttle defect measured and pinned; the defects reported
+  upstream as issues, without fix pull requests)
+- Issues: [#1540], [#355], [#1556], [#1561], [#1606], [#1680], [#1706]
 - Modules: firestore (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Sink, § Error handling
 
@@ -29,7 +30,7 @@ limitations under the License.
 
 [#355]'s design comment settled the shape of the Native-mode sink: a serializer SPI returning a connector-owned `FirestoreWrite`, a writer on the client library's `BulkWriter`, at-least-once delivery through a flush at each checkpoint barrier, and the shared `base.failure` SPI.
 It left four decisions to the implementation: which statuses are routed, whether `FAILED_PRECONDITION` gets a policy, whether the sink or the library owns the retry loop, and what the value type carries.
-Reading the library and measuring it against the emulator added facts the design comment had not known, two of them defects.
+Reading the library and measuring it against the emulator added facts the design comment had not known, three of them defects.
 
 ## Evidence
 
@@ -64,10 +65,14 @@ The request of about 10.5 MiB is applied by the service too, so the writer's 9 M
 A database id that names no database, well formed or not, answers `NOT_FOUND` for every write, and a Datastore-mode database answers `FAILED_PRECONDITION` for every write.
 Both are statuses this decision does not route for a write without a precondition, so either fails the job.
 
-Two defects, measured the same day and pinned by `BulkWriterDefectsITCase`:
+Three defects, pinned by `BulkWriterDefectsITCase`; the first two were measured on 2026-09-27, the third on 2026-10-11 (google-cloud-firestore 3.49.0, `google-cloud-cli:587.0.0-emulators`, one run):
 
 - **A failed write never releases its pending-operation slot.** The slot is released in a `catchingAsync` for `ApiException`, and a failed write completes with a `BulkWriterException`, which extends `FirestoreException` rather than `ApiException`. After 500 failed writes, a new write on the same `BulkWriter` never completed within the observation window, while the same write on a fresh `BulkWriter` did.
 - **A synchronous refusal corrupts its request.** A value the library cannot encode (a `Short`) makes `set` throw after the operation has already been queued. The next write of the same request was applied to the database, and its future never completed.
+- **A throttle ceiling below the batch size never sends a first batch holding more writes than the ceiling.** This is the throttle fact above, measured for a ceiling: with a ceiling of 10, none of 11 flushed writes was sent within 10 seconds while the executor ran about 68 million scheduled tasks, and a ceiling of 19 held 20 writes the same way; 10 writes under 10, and 20 under 20, were sent at once.
+
+In the measurement of 2026-10-11, `flush()`'s future did not complete within 10 seconds after either of the first two defects.
+On the same date, before the reports recorded under Consequences were filed, the fixes and reports this project had filed in `googleapis/google-cloud-java` since 2026-08, six pull requests and seven issues, were all still open.
 
 ## Decision
 
@@ -106,7 +111,8 @@ The public types enter at `@PublicEvolving` (ADR-0170).
 
 - An `INVALID_ARGUMENT` costs one solo round trip per write of the refused request, sequentially on the task thread. A stream whose data is broken wholesale therefore slows to one write per round trip until `maxConsecutiveRejections` or the default `failJob()` handler stops it.
 - Under the default `failJob()` handler, a stream of creates or conditional writes fails again on each restart whose replay reaches a write already applied. The docs say so beside the replay table.
-- The two defect workarounds are held by `BulkWriterDefectsITCase`, which fails when a library release fixes either defect, so the workaround is re-examined rather than kept on faith.
+- The three defect workarounds are held by `BulkWriterDefectsITCase`, which fails when a library release fixes any of the defects, so the workaround is re-examined rather than kept on faith.
+- The three defects are reported upstream as [googleapis/google-cloud-java#14630], [#14631][googleapis/google-cloud-java#14631] and [#14632][googleapis/google-cloud-java#14632], without fix pull requests: the owner's decision of 2026-10-11 ([#1561]), because the pull requests counted above were still unmerged. A failure of `BulkWriterDefectsITCase`, not the issues, is what reports a fix, since a BOM bump that brings one fails it.
 - The emulator enforces no request size, so the 9 MiB budget is exercised against a real refusal only by the gated suite ([#1546]).
 
 ## Alternatives declined
@@ -128,9 +134,13 @@ The public types enter at `@PublicEvolving` (ADR-0170).
 [#1540]: https://github.com/flink-gcp/flink-connector-gcp/issues/1540
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1556]: https://github.com/flink-gcp/flink-connector-gcp/issues/1556
+[#1561]: https://github.com/flink-gcp/flink-connector-gcp/issues/1561
 [#1589]: https://github.com/flink-gcp/flink-connector-gcp/issues/1589
 [#1606]: https://github.com/flink-gcp/flink-connector-gcp/issues/1606
 [#1680]: https://github.com/flink-gcp/flink-connector-gcp/issues/1680
 [#1706]: https://github.com/flink-gcp/flink-connector-gcp/issues/1706
+[googleapis/google-cloud-java#14630]: https://github.com/googleapis/google-cloud-java/issues/14630
+[googleapis/google-cloud-java#14631]: https://github.com/googleapis/google-cloud-java/issues/14631
+[googleapis/google-cloud-java#14632]: https://github.com/googleapis/google-cloud-java/issues/14632
 [ADR-0137]: 0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md
 [ADR-0175]: 0175-the-datastore-sink-commits-batches-and-confirms-a-refusal-one-write-at-a-time.md
