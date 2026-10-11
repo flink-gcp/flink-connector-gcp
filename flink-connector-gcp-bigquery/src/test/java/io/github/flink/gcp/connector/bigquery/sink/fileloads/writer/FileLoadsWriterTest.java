@@ -682,9 +682,8 @@ class FileLoadsWriterTest {
                         FileLoadsOptions.builder()
                                 .stagingPath("gs://bucket/prefix")
                                 .stagingFormat(StagingFormat.PARQUET)
-                                // Not 1: Parquet writes its magic on open, so a 1-byte threshold
-                                // rolls immediately whatever the row-group size is, and would pass
-                                // on a writer that never flushed a row group at all.
+                                // Small enough that 20,000 rows flush several row groups,
+                                // each of which the writer can roll on.
                                 .maxStagingFileBytes(8 * 1024)
                                 .build());
 

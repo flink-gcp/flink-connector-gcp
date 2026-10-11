@@ -1075,8 +1075,8 @@ class StagedFileFinalizerTest {
         public void append(GenericRecord record) {}
 
         @Override
-        public long bytesWritten() {
-            return 1;
+        public boolean isFull(long maxStagingFileBytes) {
+            return false;
         }
 
         @Override

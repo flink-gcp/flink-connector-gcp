@@ -26,9 +26,10 @@ import org.apache.flink.annotation.Public;
  * <p><b>{@link #AVRO} is the default and the recommended value.</b> {@link #PARQUET} can stage
  * fewer bytes and load a large batch faster, depending on the rows, but it is not a straight
  * improvement: it needs dependencies this connector does not ship, it cannot carry a {@code JSON}
- * column at all, and BigQuery has loaded it several times more slowly below 256 MiB of total input
- * per load job — the regime a streaming checkpoint normally sits in. For rows dominated by one
- * opaque payload it was no faster on either side of 256 MiB. The docs page sets out the details.
+ * column at all, and BigQuery has loaded it 1.3 to 3.5 times more slowly than Avro below 256 MiB of
+ * total input per load job, depending on the rows — the regime a streaming checkpoint normally sits
+ * in. For rows dominated by one opaque payload it staged the same bytes as Avro, loaded slower
+ * below 256 MiB and gained little above it. The docs page sets out the details.
  *
  * <p>The format travels in each committable, so a file is always loaded as the format it was
  * actually written in, and load jobs are grouped on it.

@@ -253,13 +253,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   zstd-jni** (`docs/adr/0150`): the five artifacts the bundle ships and the set the Avro tests run
   on come from it, never from a version in this pom.
 - **Parquet staging is opt-in and its dependencies are `provided`** (`docs/adr/0072`). Avro is the
-  default and stays it: below **256 MiB of load input** Parquet was 3-5x slower for the row shape
-  ADR-0072 measured — the regime every streaming checkpoint sits in — and no faster on either side
-  for #1313's payload-dominated rows, and compressed Parquet cannot be written without a Hadoop runtime
-  ("No Hadoop" was measured false; only `UNCOMPRESSED` escapes, at 1.21x Avro's bytes). The `JSON`
+  default and stays it: below **256 MiB of load input** Parquet was 2.2-3.5x slower than Avro for the row shape
+  ADR-0072 measured — the regime every streaming checkpoint sits in — and 1.3-2.8x across the
+  row shapes #1313 and #1704 measured, with little gain above it for the one shape measured there; compressed Parquet cannot be written without a
+  Hadoop runtime ("No Hadoop" was measured false; only `UNCOMPRESSED` escapes, at 1.21x Avro's bytes). The `JSON`
   fallback is automatic and a correctness override, not a preference. Parquet's row-group size
   comes from `maxStagingFileBytes` and **must**: at Parquet's own 128 MiB default nothing reaches
-  the stream until close and the roll never fires. Both formats are written from the same Avro
+  the stream until close and the roll never fires. A Parquet file rolls at the row-group boundary
+  it expects to be nearest the threshold, assuming the next group matches the last, not on the byte
+  count, which one near-full group rarely reaches (#1704).
+  Both formats are written from the same Avro
   schema, so `TableSchemaToAvroConverter`'s rejections — including flexible column names — apply to
   Parquet unchanged.
 - **The staging format travels in the committable, and load jobs group on it.** A committable
