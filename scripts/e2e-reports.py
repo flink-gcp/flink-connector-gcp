@@ -13,7 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Validate fresh E2E reports and export only selected test metadata."""
+"""Validate fresh E2E reports and export only selected test metadata.
+
+Each gate is prepared and asserted on its own, so its suite can run in a job of its own; its
+evidence lands in target/e2e/evidence/<gate>/. `aggregate` then reads every gate's evidence back
+against the whole inventory, which is what proves that no gate's run went missing.
+"""
 
 import argparse
 import json
@@ -24,6 +29,23 @@ from pathlib import Path
 
 FRAME = re.compile(r"\s*at ([\w.$/]+\([\w.$]+\.java:[0-9]+\))\s*")
 IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+# A gate names a directory, so it is held to the environment-variable shape before it is one.
+GATE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def checked_gate(gate):
+    if not GATE.fullmatch(gate):
+        raise ValueError("invalid gate name")
+    return gate
+
+
+def manifest_path(root, gate):
+    return root / "target/e2e/runs" / f"{checked_gate(gate)}.json"
+
+
+def evidence_directory(root, gate=None):
+    directory = root / "target/e2e/evidence"
+    return directory if gate is None else directory / checked_gate(gate)
 
 
 def module_depth(parts):
@@ -56,21 +78,23 @@ def report_path(root, source):
     )
 
 
-def prepare(root, sources):
+def prepare(root, gate, sources):
     if not sources or len(set(sources)) != len(sources):
         raise ValueError("empty or duplicate E2E inventory")
     reports = [report_path(root, source)[0] for source in sources]
     for report in reports:
         report.unlink(missing_ok=True)
-    directory = root / "target/e2e"
-    directory.mkdir(parents=True, exist_ok=True)
-    manifest = directory / "run.json"
+    manifest = manifest_path(root, gate)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    # A combined result from an earlier run must not outlive the start of a new one.
+    for name in ("results.json", "summary.md"):
+        (evidence_directory(root) / name).unlink(missing_ok=True)
     # Compare filesystem timestamps with the same resolution, including coarse Linux clocks.
     manifest.touch()
     started_ns = manifest.stat().st_mtime_ns
     manifest.write_text(json.dumps({"started_ns": started_ns, "sources": sources}))
     write_evidence(
-        root,
+        evidence_directory(root, gate),
         [
             {
                 "module": module(source),
@@ -149,8 +173,8 @@ def read_report(path, fqcn, started_ns):
     return counts, exported, problems
 
 
-def collect(root, sources):
-    state = json.loads((root / "target/e2e/run.json").read_text())
+def collect(root, gate, sources):
+    state = json.loads(manifest_path(root, gate).read_text())
     if state.get("sources") != sources or not isinstance(state.get("started_ns"), int):
         raise ValueError("E2E inventory differs from the prepared run")
     results = []
@@ -184,17 +208,110 @@ def collect(root, sources):
             )
             result["problems"] = [message]
         results.append(result)
-    write_evidence(root, results)
+    write_evidence(evidence_directory(root, gate), results)
     for result in results:
-        print(
-            f"{result['class']}: {result['status']} " + "; ".join(result["problems"]),
-            file=sys.stdout if result["status"] == "PASSED" else sys.stderr,
-        )
+        print_result(result)
     return int(any(result["status"] != "PASSED" for result in results))
 
 
-def write_evidence(root, results):
-    directory = root / "target/e2e/evidence"
+def aggregate(root, inventory):
+    """Combine every gate's evidence and fail unless each covers its own classes, all passing.
+
+    A gate whose run was cancelled, skipped or never uploaded leaves no evidence, and that has to
+    read as a failure here; otherwise its classes would simply be absent from a green summary.
+    It reads whatever evidence is present and cannot tell this run's from an earlier one's, and a
+    gate can fail after its tests passed (its fixture's stop, say); e2e.yaml therefore also
+    requires every gate job to have succeeded, and `--run` returns each gate's own status.
+    """
+    results = []
+    problems = []
+    for gate, sources in inventory.items():
+        expected = {
+            (module(source), report_path(root, source)[1]): source for source in sources
+        }
+        reported = {}
+        path = evidence_directory(root, gate) / "results.json"
+        try:
+            rows = json.loads(path.read_text())
+        except FileNotFoundError:
+            problems.append(
+                f"{gate}: no evidence; its run did not start or did not finish"
+            )
+            rows = []
+        except (OSError, json.JSONDecodeError):
+            problems.append(f"{gate}: unreadable evidence")
+            rows = []
+        if not isinstance(rows, list) or not all(map(well_formed, rows)):
+            problems.append(f"{gate}: malformed evidence")
+            rows = []
+        for row in rows:
+            key = (row["module"], row["class"])
+            if key not in expected:
+                problems.append(
+                    f"{gate}: evidence for {row['class']}, which is not one of its classes"
+                )
+            elif key in reported:
+                problems.append(f"{gate}: {row['class']} is reported twice")
+            reported[key] = row
+        for key in expected:
+            results.append(
+                reported.get(key)
+                or {
+                    "module": key[0],
+                    "class": key[1],
+                    "status": "NOT_RUN",
+                    "problems": ["no evidence from its gate's run"],
+                    "cases": [],
+                }
+            )
+    write_evidence(evidence_directory(root), results, problems)
+    for result in results:
+        if result["status"] != "PASSED":
+            print_result(result)
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    passed = sum(result["status"] == "PASSED" for result in results)
+    print(
+        f"E2E: {passed} of {len(results)} gated classes passed "
+        f"across {len(inventory)} gates"
+    )
+    return int(bool(problems) or passed != len(results))
+
+
+def well_formed(row):
+    """Whether an evidence row has the fields the summary and the checks read."""
+    return (
+        isinstance(row, dict)
+        and all(isinstance(row.get(key), str) for key in ("module", "class", "status"))
+        and isinstance(row.get("problems"), list)
+        and all(isinstance(problem, str) for problem in row["problems"])
+    )
+
+
+def read_inventory(lines):
+    """Group `GATE<TAB>MODULE<TAB>SOURCE` lines, as check-gated-tags.py --inventory prints them."""
+    inventory = {}
+    for line in lines:
+        fields = line.split("\t")
+        # The runner selects a module by the middle column and this reads its report from the
+        # module the path names; the two must be the same module.
+        if len(fields) != 3 or fields[1] != module(fields[2]):
+            raise ValueError("malformed E2E inventory")
+        inventory.setdefault(checked_gate(fields[0]), []).append(fields[2])
+    sources = [source for gate_sources in inventory.values() for source in gate_sources]
+    if not sources or len(set(sources)) != len(sources):
+        raise ValueError("empty or duplicate E2E inventory")
+    return inventory
+
+
+def print_result(result):
+    print(
+        f"{result['class']}: {result['status']} " + "; ".join(result["problems"]),
+        file=sys.stdout if result["status"] == "PASSED" else sys.stderr,
+    )
+
+
+def write_evidence(directory, results, problems=()):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     lines = [
@@ -207,20 +324,27 @@ def write_evidence(root, results):
         lines.append(
             f"| {result['module']} | {result['class']} | {result['status']} | {'; '.join(result['problems'])} |"
         )
+    if problems:
+        lines.extend(["", *(f"- {problem}" for problem in problems)])
     (directory / "summary.md").write_text("\n".join(lines) + "\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("prepare", "assert"))
+    parser.add_argument("mode", choices=("prepare", "assert", "aggregate"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args()
-    sources = sys.stdin.read().splitlines()
     try:
+        inventory = read_inventory(sys.stdin.read().splitlines())
         if args.mode == "prepare":
-            prepare(args.root, sources)
+            for gate, sources in inventory.items():
+                prepare(args.root, gate, sources)
             return 0
-        return collect(args.root, sources)
+        if args.mode == "assert":
+            return max(
+                collect(args.root, gate, sources) for gate, sources in inventory.items()
+            )
+        return aggregate(args.root, inventory)
     except (ValueError, OSError, json.JSONDecodeError) as error:
         print(
             f"E2E report validation failed ({type(error).__name__}); prepare the run before executing tests",

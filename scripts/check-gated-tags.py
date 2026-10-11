@@ -55,13 +55,16 @@ def annotation_string_argument(
     return string_literal_content(parsed, value)
 
 
+# The order `just e2e` runs them in. Cloud Tasks comes first, as it did when the other suites
+# waited for its fixture; nothing waits for it now, but its short run surfaces a fixture problem
+# early.
 E2E_GATES = (
+    "CLOUDTASKS_IT_PROJECT",
     "BQ_IT_PROJECT",
     "PUBSUB_IT_PROJECT",
     "BIGTABLE_IT_PROJECT",
     "SPANNER_IT_PROJECT",
     "FIRESTORE_IT_PROJECT",
-    "CLOUDTASKS_IT_PROJECT",
 )
 
 
@@ -125,6 +128,13 @@ def check(root: Path) -> tuple[int, int, list[str]]:
                 'resources. Add @Tag("gated") beside the gate, or remove the gate '
                 "if the class is not part of a gated suite."
             )
+        e2e_gates = [gate for gate in E2E_GATES if gate in environment_gates]
+        if len(e2e_gates) > 1:
+            problems.append(
+                f"{relative} is gated on {' and '.join(e2e_gates)}, so the E2E run, "
+                "which runs each gate on its own, would run it more than once. Gate it "
+                "on one of them."
+            )
         if gated and not environment_gate:
             problems.append(
                 f'{relative} carries @Tag("gated") but no '
@@ -168,24 +178,35 @@ def check(root: Path) -> tuple[int, int, list[str]]:
 def gated_sources(
     root: Path, only_gate: str | None, except_gate: str | None
 ) -> list[Path]:
-    selected = [
-        gate
-        for gate in E2E_GATES
+    return sorted(
+        path
+        for gate, path in inventory(root)
         if (only_gate is None or gate == only_gate)
         and (except_gate is None or gate != except_gate)
-    ]
-    by_gate: dict[str, list[Path]] = {gate: [] for gate in selected}
+    )
+
+
+def inventory(root: Path) -> list[tuple[str, Path]]:
+    """Every gated class with the one E2E gate it runs under, in E2E_GATES order."""
+    by_gate: dict[str, list[Path]] = {gate: [] for gate in E2E_GATES}
     for source in test_sources(root):
         gates, _, _ = tags(source, root)
-        for gate in gates & by_gate.keys():
-            by_gate[gate].append(source.relative_to(root))
+        selected = [gate for gate in E2E_GATES if gate in gates]
+        if len(selected) > 1:
+            raise ValueError(
+                f"{source.relative_to(root)} is gated on {' and '.join(selected)}, so the E2E "
+                "run, which runs each gate on its own, would run it more than once; gate it "
+                "on one of them"
+            )
+        if selected:
+            by_gate[selected[0]].append(source.relative_to(root))
     missing = next((gate for gate, paths in by_gate.items() if not paths), None)
     if missing is not None:
         raise ValueError(
             f"no test class is gated on {missing}; the gating annotation moved "
             "or the tree layout changed"
         )
-    return sorted({path for paths in by_gate.values() for path in paths})
+    return [(gate, path) for gate, paths in by_gate.items() for path in sorted(paths)]
 
 
 def main() -> int:
@@ -194,18 +215,23 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--for-gate", choices=E2E_GATES)
     mode.add_argument("--except-gate", choices=E2E_GATES)
-    mode.add_argument("--modules-for-gate", choices=E2E_GATES)
+    mode.add_argument("--gates", action="store_true")
+    mode.add_argument("--inventory", action="store_true")
     mode.add_argument("--check", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     try:
-        if args.modules_for_gate:
-            # One line per module: its directory, then its classes comma-joined for -Dtest=.
-            by_module: dict[str, list[str]] = {}
-            for source in gated_sources(root, args.modules_for_gate, None):
-                by_module.setdefault(module_of(source), []).append(source.stem)
-            for module, classes in sorted(by_module.items()):
-                print(module, ",".join(classes))
+        if args.inventory:
+            # One `GATE<TAB>MODULE<TAB>SOURCE` line per gated class: e2e-gated-its.sh runs
+            # each module's classes from it, and e2e-reports.py validates their reports.
+            for gate, path in inventory(root):
+                print(f"{gate}\t{module_of(path)}\t{path}")
+            return 0
+        if args.gates:
+            # The E2E gates, one per line, once every one of them has been seen to select a
+            # class; e2e.yaml builds its job matrix from this.
+            inventory(root)
+            print("\n".join(E2E_GATES))
             return 0
         if not args.check:
             sources = gated_sources(root, args.for_gate, args.except_gate)

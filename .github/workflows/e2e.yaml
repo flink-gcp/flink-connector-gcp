@@ -20,29 +20,41 @@ name: E2E
 # column-type fidelity, ordered Pub/Sub dispatch and dead-letter forwarding,
 # Cloud Tasks App Engine dispatch and routing, which statuses Bigtable
 # rejects a mutation with, and the Tier-3 BigQuery application's FILE_LOADS
-# savepoint restore; see each connector's testing section). The whole
-# run is `just e2e`, which also
-# asserts the gated classes actually executed: @EnabledIfEnvironmentVariable
-# makes a missing variable a silent skip, so a workflow that lost its
-# credentials would otherwise go green — the worst failure mode for this job.
+# savepoint restore; see each connector's testing section).
 #
-# The Cloud Tasks half starts its fixed B1 App Engine version only around its
-# own class and verifies zero instances before the other connector suites run.
-# Bigtable creates and deletes a one-node instance per gated class, so this job
-# costs service runtime on top of runner minutes.
+# One job per gate, in parallel, each running `just e2e-gate <gate>`: the
+# connector suites share nothing at run time, so running them one after
+# another only added their durations (about 45 minutes on 2026-10-10, against a
+# 60-minute ceiling, before Firestore joined). Bigtable, the longest, is the
+# floor. Each job asserts its own classes actually executed:
+# @EnabledIfEnvironmentVariable makes a missing variable a silent skip, so a
+# workflow that lost its credentials would otherwise go green — the worst
+# failure mode for this workflow. The last job then reads every gate's evidence
+# back against the whole inventory, so a gate whose job was cancelled, skipped
+# or never started fails the run instead of leaving its classes out of it.
 #
-# Weekly rather than nightly, and no push trigger, both on cost: the repository
-# is private, so runner minutes are billed, and the per-PR emulator coverage in
-# verify.yaml already carries the fast-feedback load. The WIF binding also permits
-# `push` on main (opentofu/flink-gcp/e2e-sa.tf), so adding that trigger later
-# is a one-line change here.
+# The Cloud Tasks job starts its fixed B1 App Engine version only around its
+# own class and verifies zero instances afterwards. No other job waits for
+# that: each billed fixture has a lifecycle of its own, and the post-E2E sweep
+# (sweep-e2e.yaml) runs once the whole workflow, every job included, has
+# finished. Bigtable and Spanner create and delete an instance per gated class,
+# and Firestore a database, so this workflow costs service runtime.
 #
-# No GitHub Environment gate: protection rules are unavailable on a private
-# free-plan repository, and fork safety already rests on three WIF layers —
-# GitHub grants no id-token to fork pull requests, the provider condition pins
-# the immutable repository/owner IDs, and the service-account binding admits
-# only schedule/workflow_dispatch/push on refs/heads/main. Revisit when the
-# repository goes public under an organization.
+# Weekly rather than nightly, and no push trigger, on that service cost: the
+# repository is public, so standard runners cost nothing, and the per-PR
+# emulator coverage in verify.yaml already carries the fast-feedback load. The
+# WIF binding also permits `push` on main (opentofu/flink-gcp/e2e-sa.tf), so
+# adding that trigger later is a one-line change here.
+#
+# No GitHub Environment gate, by decision (ADR-0063, 2026-10-11), although the
+# repository is now public and protection rules are available. A branch rule
+# would repeat what the WIF binding below already enforces on the Google Cloud
+# side, and a required reviewer would hold every scheduled run until someone
+# approved it, which defeats running it unattended. Fork safety rests on three
+# WIF layers — GitHub grants no id-token to fork pull requests, the provider
+# condition pins the immutable repository/owner IDs, and the service-account
+# binding admits only push/schedule/workflow_dispatch/workflow_run on
+# refs/heads/main.
 on:
   schedule:
     # Saturdays. Off the hour, because everything scheduled at :00 lands on
@@ -61,20 +73,51 @@ permissions:
   id-token: write
 
 jobs:
-  real_gcp:
+  gates:
     # Scheduled workflows are inherited by forks; this keeps them from running
     # there (a fork could not authenticate anyway — see the WIF note above).
     # The immutable ID of flink-gcp/flink-connector-gcp, not the owner name: a
     # fork gets its own ID, while a transfer or a rename changes the name and
     # would switch a name guard off silently, leaving the job green and idle.
     if: github.repository_id == '1305440656'
-    name: Real-GCP gated ITCases
+    name: Discover the E2E gates
     runs-on: ubuntu-latest
-    # Raised from 30 when the Bigtable suite joined, and again when Spanner's
-    # did: each gated class of either waits on an instance being provisioned
-    # before its first test runs, and the Spanner classes seed and read a few
-    # thousand rows on top. This bounds the whole CI window and how long a hung
-    # App Engine fixture can stay serving before the post-E2E sweep restores its
+    timeout-minutes: 10
+    outputs:
+      gates: ${{ steps.gates.outputs.gates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # The gate list comes from the same locked Java parser as the class
+      # inventory, so a new gate gets a job here without a workflow edit, and a
+      # gate that selects no class fails before any billed job starts.
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with:
+          install_args: uv
+
+      - name: List the gates
+        id: gates
+        run: |
+          gates=$(mise x uv -- uv run --locked scripts/e2e-gated-its.sh --gates)
+          echo "gates=$(jq -cnR '[inputs | select(length > 0)]' <<< "$gates")" >> "$GITHUB_OUTPUT"
+
+  real_gcp:
+    needs: gates
+    name: Real-GCP gated ITCases (${{ matrix.gate }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Every gate runs to its end whatever another one does; the last job
+      # reports them together.
+      fail-fast: false
+      matrix:
+        gate: ${{ fromJSON(needs.gates.outputs.gates) }}
+    # Per gate. The longest, Bigtable, took about 16 minutes on 2026-10-10:
+    # each of its classes, like Spanner's, waits on an instance being
+    # provisioned before its first test runs. This bounds how long a hung App
+    # Engine fixture can stay serving before the post-E2E sweep restores its
     # stopped state. Bigtable and Spanner in-use instance age is bounded
     # separately by the integration-test fork's default 90-minute ceiling, so
     # their two-hour age gates are not coupled to this job value.
@@ -129,18 +172,90 @@ jobs:
       # Not secrets: the values name resources declared in opentofu/flink-gcp
       # (it-resources.tf, main.tf). Set here rather than in repository
       # variables so the workflow file is the single place that says what this
-      # job runs against.
-      - name: Run the real-GCP gated ITCases
+      # workflow runs against. Every gate is named after the variable holding
+      # its project, so the job sets that one from the gate's name, and a new
+      # gate needs a line here only for a companion variable, as BigQuery's
+      # dataset and bucket are. Each job demands and reads only its own gate's.
+      - name: Run the gate's real-GCP ITCases
         env:
-          BQ_IT_PROJECT: flink-gcp
+          GATE: ${{ matrix.gate }}
           BQ_IT_DATASET: flink_gcp_it
           BQ_IT_GCS_BUCKET: flink-gcp
-          PUBSUB_IT_PROJECT: flink-gcp
-          BIGTABLE_IT_PROJECT: flink-gcp
-          SPANNER_IT_PROJECT: flink-gcp
-          FIRESTORE_IT_PROJECT: flink-gcp
-          CLOUDTASKS_IT_PROJECT: flink-gcp
-        run: just e2e
+        run: |
+          export "$GATE=flink-gcp"
+          just e2e-gate "$GATE"
+
+      - name: Publish the gate's summary
+        if: always()
+        env:
+          GATE: ${{ matrix.gate }}
+        run: |
+          if [ -f "target/e2e/evidence/$GATE/summary.md" ]; then
+            cat "target/e2e/evidence/$GATE/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The directory holds only this gate's evidence, under its gate's name,
+      # so the last job's download recreates target/e2e/evidence/<gate>/.
+      # Artifacts are immutable, so overwrite is what keeps a re-run of a
+      # failed job from failing on a name an earlier attempt already used.
+      - name: Retain the gate's evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-evidence-${{ matrix.gate }}
+          path: target/e2e/evidence/
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
+
+  e2e_passed:
+    # always(), so that a cancelled, failed or skipped gate job — or a failed
+    # discovery, which skips every one — still reaches the check that names it.
+    needs: [gates, real_gcp]
+    if: always() && github.repository_id == '1305440656'
+    name: E2E passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with:
+          install_args: uv
+
+      # Whatever evidence the gate jobs left. A missing artifact, or none at
+      # all, is not this step's failure to report: the aggregation below
+      # derives the gates and their classes from the tree, and names every gate
+      # that left nothing.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: e2e-evidence-*
+          path: target/e2e/evidence/
+          merge-multiple: true
+
+      - name: Check every gate's evidence
+        run: mise x uv -- uv run --locked scripts/e2e-gated-its.sh --aggregate
+
+      # The evidence cannot show everything. A gate can fail after its tests
+      # passed (the App Engine fixture's stop, say) and still upload passing
+      # evidence, and which earlier attempt's artifacts a re-run can still see
+      # is GitHub's artifact behaviour, not something this workflow controls.
+      # The jobs' own results depend on neither; a re-run of only the failed
+      # jobs carries the passed ones over as successes.
+      - name: Require every gate job to have succeeded
+        if: always()
+        env:
+          GATES_RESULT: ${{ needs.gates.result }}
+          REAL_GCP_RESULT: ${{ needs.real_gcp.result }}
+        run: |
+          if [ "$GATES_RESULT" != success ] || [ "$REAL_GCP_RESULT" != success ]; then
+            echo "::error::gate discovery ended '$GATES_RESULT' and the gate jobs '$REAL_GCP_RESULT'"
+            exit 1
+          fi
 
       - name: Publish E2E summary
         if: always()
@@ -149,6 +264,8 @@ jobs:
             cat target/e2e/evidence/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # Every gate's evidence and the combined result, as this attempt saw
+      # them; the per-gate artifacts above are replaced by a re-run.
       - name: Retain E2E evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

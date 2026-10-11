@@ -80,7 +80,8 @@ if os.environ.get("BLOCK") == phase:
     pathlib.Path("child-pid").write_text(str(os.getpid()))
     while True:
         time.sleep(.01)
-status = 9 if os.environ.get("FAIL") == phase else 0
+# FAIL names a phase, or a phase and the -pl it was given ("compile:flink-connector-gcp-pubsub").
+status = 9 if os.environ.get("FAIL") in (phase, phase + ":" + module) else 0
 if phase not in ("install", "compile"):
     assert "-Dsurefire.rerunFailingTestsCount=0" in args
     names = next(a for a in args if a.startswith("-Dtest=")).removeprefix("-Dtest=").split(",")
@@ -117,9 +118,9 @@ sys.exit(status)
     }
     command = [str(scripts / "e2e-gated-its.sh"), "--run", "--", str(maven)]
 
-    def run(**overrides):
+    def run(*mode, **overrides):
         return subprocess.run(
-            command,
+            [command[0], *mode, "--", str(maven)] if mode else command,
             cwd=tmp_path,
             env=env | overrides,
             capture_output=True,
@@ -144,10 +145,24 @@ sys.exit(status)
     run.env = env
     run.command = command
     run.calls = lambda: (tmp_path / "calls").read_text().splitlines()
-    run.results = lambda: json.loads(
-        (tmp_path / "target/e2e/evidence/results.json").read_text()
+    run.results = lambda gate=None: json.loads(
+        (tmp_path / "target/e2e/evidence" / (gate or "") / "results.json").read_text()
     )
+    run.evidence = tmp_path / "target/e2e/evidence"
     return run
+
+
+# The gates in check-gated-tags.py's order, which is the order --run takes them in, each with
+# the phases the synthetic Maven and fixture record for it.
+GATE_PHASES = (
+    ("CLOUDTASKS_IT_PROJECT", ["compile", "fixture-run", "cloudtasks", "fixture-stop"]),
+    ("BQ_IT_PROJECT", ["compile", "bigquery"]),
+    ("PUBSUB_IT_PROJECT", ["compile", "pubsub"]),
+    ("BIGTABLE_IT_PROJECT", ["compile", "bigtable"]),
+    ("SPANNER_IT_PROJECT", ["compile", "spanner"]),
+    ("FIRESTORE_IT_PROJECT", ["compile", "firestore"]),
+)
+EVERY_PHASE = ["install"] + [phase for _, phases in GATE_PHASES for phase in phases]
 
 
 @pytest.mark.parametrize(
@@ -157,42 +172,44 @@ sys.exit(status)
 def test_independent_connectors_run_even_after_a_test_failure(suite, failed):
     result = suite(FAIL=failed)
     assert result.returncode == (1 if failed else 0), result.stderr
-    assert suite.calls() == [
-        "install",
-        "compile",
-        "fixture-run",
-        "cloudtasks",
-        "fixture-stop",
-        "bigquery",
-        "pubsub",
-        "bigtable",
-        "spanner",
-        "firestore",
-    ]
+    assert suite.calls() == EVERY_PHASE
     results = suite.results()
     assert len(results) == 6
     assert sum(row["status"] == "FAILED" for row in results) == bool(failed)
 
 
-def test_unconfirmed_idle_fixture_prevents_later_billed_suites(suite):
+def test_an_unconfirmed_idle_fixture_fails_the_run_but_holds_back_no_gate(suite):
+    # Each billed fixture has a lifecycle of its own, so the App Engine stop no longer gates the
+    # other connectors, which run after it; it fails the Cloud Tasks gate, and with it the run.
     result = suite(STOP_STATUS="8")
-    assert result.returncode == 8
-    assert suite.calls() == [
-        "install",
-        "compile",
-        "fixture-run",
-        "cloudtasks",
-        "fixture-stop",
-    ]
-    assert sum(row["status"] == "NOT_RUN" for row in suite.results()) == 5
+    assert result.returncode == 1, result.stderr
+    assert suite.calls() == EVERY_PHASE
+    assert all(row["status"] == "PASSED" for row in suite.results())
 
 
-@pytest.mark.parametrize("phase", ["install", "compile"])
-def test_build_failure_still_reports_unexecuted_classes(suite, phase):
-    result = suite(FAIL=phase)
+def test_a_failed_shared_install_stops_the_run_and_reports_every_class(suite):
+    result = suite(FAIL="install")
     assert result.returncode == 9
+    assert suite.calls() == ["install"]
+    assert all(row["status"] == "NOT_RUN" for row in suite.results())
+
+
+def test_a_failed_compile_fails_its_gate_before_any_fixture_starts(suite):
+    result = suite(FAIL="compile")
+    assert result.returncode == 1, result.stderr
     assert all(row["status"] == "NOT_RUN" for row in suite.results())
     assert "fixture-run" not in suite.calls()
+
+
+def test_a_failed_compile_fails_only_its_own_gate(suite):
+    result = suite(FAIL="compile:flink-connector-gcp-pubsub")
+
+    assert result.returncode == 1, result.stderr
+    assert "pubsub" not in suite.calls()
+    assert {row["class"]: row["status"] for row in suite.results()} == {
+        f"p.{module.title()}ITCase": "NOT_RUN" if module == "pubsub" else "PASSED"
+        for module in MODULES
+    }
 
 
 def test_an_earlier_pass_cannot_cover_a_failed_build(suite):
@@ -221,6 +238,7 @@ def test_termination_reaches_active_child_and_finalizes_reports(suite):
         assert process.returncode == 143
         assert (suite.root / "child-stopped").exists()
         assert "bigtable" not in suite.calls()
+        # Pub/Sub and every gate after it.
         assert sum(row["status"] == "NOT_RUN" for row in suite.results()) == 4
     finally:
         child_pid = suite.root / "child-pid"
@@ -234,6 +252,127 @@ def test_termination_reaches_active_child_and_finalizes_reports(suite):
         process.communicate(timeout=5)
 
 
+@pytest.mark.parametrize(("gate", "phases"), GATE_PHASES)
+def test_a_gate_runs_alone_and_leaves_only_its_own_evidence(suite, gate, phases):
+    result = suite("--run-gate", gate)
+
+    assert result.returncode == 0, result.stderr
+    assert suite.calls() == ["install", *phases]
+    [row] = suite.results(gate)
+    assert row["status"] == "PASSED"
+    assert [path.name for path in suite.evidence.iterdir()] == [gate]
+
+
+def test_a_gate_demands_only_its_own_variables(suite):
+    without_bigtable = {"BIGTABLE_IT_PROJECT": ""}
+    result = suite("--run-gate", "PUBSUB_IT_PROJECT", **without_bigtable)
+    assert result.returncode == 0, result.stderr
+    (suite.root / "calls").unlink()
+
+    result = suite("--run-gate", "BQ_IT_PROJECT", BQ_IT_GCS_BUCKET="")
+
+    assert result.returncode == 1, result.stderr
+    assert "BQ_IT_GCS_BUCKET is not set" in result.stderr
+    assert suite.results("BQ_IT_PROJECT")[0]["status"] == "NOT_RUN"
+    # Refused before any build minutes are spent.
+    assert not (suite.root / "calls").exists()
+
+
+def test_a_gate_failure_is_its_own(suite):
+    result = suite("--run-gate", "SPANNER_IT_PROJECT", FAIL="spanner")
+
+    assert result.returncode == 1, result.stderr
+    assert suite.results("SPANNER_IT_PROJECT")[0]["status"] == "FAILED"
+
+
+def test_an_unknown_gate_is_a_usage_error(suite):
+    result = suite("--run-gate", "NOPE_IT_PROJECT")
+
+    assert result.returncode == 2
+    assert not (suite.root / "calls").exists()
+
+
+def run_every_gate_apart(suite):
+    """What e2e.yaml's matrix leaves behind: each gate's evidence, from a run of its own."""
+    for gate, _ in GATE_PHASES:
+        result = suite("--run-gate", gate)
+        assert result.returncode == 0, f"{gate}: {result.stderr}"
+
+
+def aggregate(suite):
+    return subprocess.run(
+        [suite.command[0], "--aggregate"],
+        cwd=suite.root,
+        env=suite.env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def test_aggregation_accepts_every_gate_passing_apart(suite):
+    run_every_gate_apart(suite)
+
+    result = aggregate(suite)
+
+    assert result.returncode == 0, result.stderr
+    assert [row["status"] for row in suite.results()] == ["PASSED"] * 6
+    assert "6 of 6 gated classes passed across 6 gates" in result.stdout
+
+
+def test_aggregation_fails_when_a_gate_left_no_evidence(suite):
+    # A cancelled or skipped matrix job uploads nothing; its classes must not simply vanish.
+    # --run leaves the same per-gate evidence a job per gate does.
+    assert suite().returncode == 0
+    for path in (suite.evidence / "SPANNER_IT_PROJECT").iterdir():
+        path.unlink()
+    (suite.evidence / "SPANNER_IT_PROJECT").rmdir()
+
+    result = aggregate(suite)
+
+    assert result.returncode == 1, result.stderr
+    assert "SPANNER_IT_PROJECT: no evidence" in result.stderr
+    assert "p.SpannerITCase: NOT_RUN" in result.stderr
+    assert (
+        "SPANNER_IT_PROJECT: no evidence" in (suite.evidence / "summary.md").read_text()
+    )
+
+
+def test_aggregation_fails_on_a_gate_that_prepared_but_never_ran(suite):
+    # A job that dies after preparing still uploads its initial NOT_RUN inventory.
+    # --run leaves the same per-gate evidence a job per gate does.
+    assert suite().returncode == 0
+    assert suite("--run-gate", "PUBSUB_IT_PROJECT", FAIL="install").returncode == 9
+
+    result = aggregate(suite)
+
+    assert result.returncode == 1, result.stderr
+    assert "p.PubsubITCase: NOT_RUN" in result.stderr
+
+
+def test_aggregation_fails_when_a_class_joined_after_its_gate_ran(suite):
+    # --run leaves the same per-gate evidence a job per gate does.
+    assert suite().returncode == 0
+    suite.add("flink-connector-gcp-bigtable", "LateITCase", "BIGTABLE_IT_PROJECT")
+
+    result = aggregate(suite)
+
+    assert result.returncode == 1, result.stderr
+    assert "p.LateITCase: NOT_RUN" in result.stderr
+
+
+def test_aggregation_fails_on_a_gate_that_ran_and_failed(suite):
+    # The common case: the gate's job uploaded evidence, and it shows a failure.
+    assert suite(FAIL="spanner").returncode == 1
+
+    result = aggregate(suite)
+
+    assert result.returncode == 1, result.stderr
+    assert "p.SpannerITCase: FAILED" in result.stderr
+    assert "5 of 6 gated classes passed" in result.stdout
+
+
 def surefire_calls(argv):
     """Every module's test invocation as a (module, -Dtest) pair, repeats kept."""
     return sorted(
@@ -243,19 +382,39 @@ def surefire_calls(argv):
     )
 
 
-def test_the_shared_build_compiles_every_module_holding_gated_classes(suite):
-    # The runner compiles the connector modules once, by a list it names, before it runs any of
-    # them; a module missing from that list has its gated classes run uncompiled, which no other
-    # test here notices, because the synthetic Maven writes the reports either way.
+def test_every_module_holding_gated_classes_is_compiled_before_it_runs(suite):
+    # Each gate compiles the modules it derives before running them; a module missing from that
+    # derivation has its gated classes run uncompiled, which no other test here notices,
+    # because the synthetic Maven writes the reports either way.
+    suite.add("flink-connector-gcp-extra", "ExtraITCase", "PUBSUB_IT_PROJECT")
+
     assert suite().returncode == 0
-    (compile_call,) = [
-        call
-        for call in suite.argv()
-        if "test-compile" in call and "surefire:test@integration-tests" not in call
-    ]
-    assert set(option(compile_call, "-pl").split(",")) == {
-        f"flink-connector-gcp-{module}" for module in MODULES
-    }
+    argv = suite.argv()
+    for module in [f"flink-connector-gcp-{name}" for name in MODULES] + [
+        "flink-connector-gcp-extra"
+    ]:
+        compiled = next(
+            (
+                i
+                for i, call in enumerate(argv)
+                if "test-compile" in call
+                and "surefire:test@integration-tests" not in call
+                and module in option(call, "-pl").split(",")
+            ),
+            None,
+        )
+        ran = next(
+            (
+                i
+                for i, call in enumerate(argv)
+                if "surefire:test@integration-tests" in call
+                and option(call, "-pl") == module
+            ),
+            None,
+        )
+        assert compiled is not None, f"{module} was never compiled"
+        assert ran is not None, f"{module} never ran"
+        assert compiled < ran, f"{module} ran before it was compiled"
 
 
 def option(call, name):
@@ -302,10 +461,10 @@ def test_a_cloud_tasks_class_outside_its_fixture_module_is_refused(suite):
 
     result = suite()
 
-    assert result.returncode != 0
+    assert result.returncode == 1, result.stderr
     assert "CLOUDTASKS_IT_PROJECT gates classes outside" in result.stderr
     assert "fixture-run" not in suite.calls()
-    assert all(
-        module != "flink-connector-gcp-cloudtasks"
-        for module, _ in surefire_calls(suite.argv())
-    )
+    ran = {module for module, _ in surefire_calls(suite.argv())}
+    assert "flink-connector-gcp-cloudtasks" not in ran
+    # The refusal fails its own gate; the gates after it still run.
+    assert "flink-connector-gcp-firestore" in ran

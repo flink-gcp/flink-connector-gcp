@@ -78,7 +78,7 @@ just e2e
 
 It needs an authenticated `gcloud` CLI besides the environment gates — the one tool this
 page names that mise does not install; the App Engine fixture and `just sweep-e2e` both call
-it. It refuses to start unless the environment gates are set, runs the gated classes its five
+it. It refuses to start unless the environment gates are set, runs the gated classes its six
 per-service gates select, and asserts afterwards that they actually ran, so a silently skipped
 suite cannot pass as a green one. A few deliberately manual cases — slow schema-propagation
 observations — sit behind gates of their own, outside `just e2e`.
@@ -86,10 +86,24 @@ observations — sit behind gates of their own, outside `just e2e`.
 The gated classes of the Tier-3 applications under `kubernetes/apps` join the same run.
 Each application sits outside the default reactor, so the recipe installs its connector from the working tree and then builds it behind its `tier3-<name>` profile; the BigQuery application's FILE_LOADS savepoint restore is one such class.
 
-Each connector runs even when an earlier connector test fails, provided the App Engine fixture has returned to its stopped, zero-instance state.
-The recipe removes selected old reports before starting and validates the full XML reports against that run's inventory at exit, including on failure.
-Missing, stale, truncated, mismatched, failed or skipped results fail the run.
-`target/e2e/evidence/` contains the per-class results and summary retained by GitHub Actions for 14 days.
+One gate runs alone with its gate variable as the argument, which requires only that gate's variables and builds only its modules:
+
+```sh
+just e2e-gate PUBSUB_IT_PROJECT
+```
+
+`scripts/e2e-gated-its.sh --gates` lists the gates.
+
+`just e2e` runs the gates one after another, and each gate runs even when an earlier one fails.
+It does not run them in parallel, because each module's integration tests keep two JVMs with a 2 GiB heap each, and six modules at once would need about 24 GiB on a workstation.
+The E2E workflow runs one job per gate in parallel instead, so a run takes about as long as the Bigtable suite, the longest.
+No gate waits for another: the Cloud Tasks gate starts and stops its App Engine fixture around its own class and then verifies the stopped, zero-instance state, and a failed verification fails that gate rather than holding back the rest.
+
+Each gate removes its selected old reports before starting and validates its full XML reports against its own inventory at exit, including on failure.
+Missing, stale, truncated, mismatched, failed or skipped results fail the gate.
+The run then reads every gate's evidence back against the whole inventory, so a gate whose job was cancelled, skipped or never started fails the run instead of being left out of it.
+In CI it also requires every gate's job to have succeeded, because evidence alone cannot show a gate that failed after its tests passed, such as a failed App Engine stop.
+`target/e2e/evidence/<gate>/` contains each gate's per-class results and summary, and `target/e2e/evidence/` the combined results and summary; GitHub Actions retains both for 14 days.
 The exported evidence contains selected method names, outcomes and Java stack frames; it omits report properties, environment values and arbitrary test output.
 Full test output remains in the job log.
 
