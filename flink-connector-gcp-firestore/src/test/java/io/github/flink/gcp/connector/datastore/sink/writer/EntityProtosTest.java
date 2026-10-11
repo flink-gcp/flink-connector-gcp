@@ -86,7 +86,7 @@ class EntityProtosTest {
     }
 
     @Test
-    void everyValueTypeReadsBackAsTheSameEntityAtTheLibrarysSize() {
+    void everyValueTypeReadsBackAsTheSameEntityAtTheLibrarysSize() throws Exception {
         Entity entity = everyValueType();
         Set<ValueType> covered = EnumSet.noneOf(ValueType.class);
         collectTypes(entity, covered);
@@ -97,6 +97,10 @@ class EntityProtosTest {
 
         assertThat(Entity.fromPb(proto)).isEqualTo(entity);
         assertThat(proto.getSerializedSize()).isEqualTo(Entity.calculateSerializedSize(entity));
+        // Through the wire form too, which a value the encoding wraps rather than copies (a blob)
+        // takes a path of its own to.
+        assertThat(Entity.fromPb(com.google.datastore.v1.Entity.parseFrom(proto.toByteArray())))
+                .isEqualTo(entity);
     }
 
     @Test

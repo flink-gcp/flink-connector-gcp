@@ -90,7 +90,7 @@ class MutationSizeEstimatorTest {
         long without = header(DATABASE).build().getSerializedSize();
         long with = header(DATABASE).addMutations(proto).build().getSerializedSize();
 
-        assertThat(MutationSizeEstimator.sizeOf(mutation))
+        assertThat(EncodedMutation.of(mutation).getSize())
                 .as(mutation.getOperation().name())
                 .isEqualTo(with - without);
     }

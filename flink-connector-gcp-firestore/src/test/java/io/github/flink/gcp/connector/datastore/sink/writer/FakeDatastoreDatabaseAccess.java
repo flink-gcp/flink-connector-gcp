@@ -24,6 +24,7 @@ import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
+import com.google.datastore.v1.Mutation;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
 import javax.annotation.Nullable;
@@ -55,6 +56,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     private final Deque<Scripted> nextCommitFailures = new ArrayDeque<>();
     private final Deque<StatusCode.Code> nextLookupFailures = new ArrayDeque<>();
     private final List<List<Key>> requests = new ArrayList<>();
+    private final List<List<Mutation>> encodings = new ArrayList<>();
     private final Map<Key, DatastoreMutation> applied = new LinkedHashMap<>();
     private final List<DatastoreMutation> appliedInOrder = new ArrayList<>();
     private final List<Key> lookups = new ArrayList<>();
@@ -131,20 +133,20 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     }
 
     @Override
-    public void commit(List<DatastoreMutation> writes) {
-        List<Key> keys = new ArrayList<>();
-        for (DatastoreMutation write : writes) {
-            keys.add(write.getKey());
+    public void commit(List<EncodedMutation> batch) {
+        record(batch);
+        // The request in the writer's order, as the writes it carries.
+        List<DatastoreMutation> request = new ArrayList<>();
+        for (EncodedMutation encoded : batch) {
+            request.add(encoded.getWrite());
         }
-        requests.add(keys);
         Scripted scripted = nextCommitFailures.poll();
         if (scripted != null) {
             if (scripted.applyFirst) {
-                apply(writes);
+                apply(request);
             }
             throw scripted.failure;
         }
-        List<DatastoreMutation> request = new ArrayList<>(writes);
         if (servesLikeTheService) {
             commitAsTheService(request);
             return;
@@ -160,7 +162,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
                 throw rpcFailure(refused);
             }
         }
-        apply(writes);
+        apply(request);
     }
 
     private void commitAsTheService(List<DatastoreMutation> request) {
@@ -273,9 +275,26 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         closeCalls++;
     }
 
+    /** Records a commit request without deciding it, for a wrapper that refuses it itself. */
+    void record(List<EncodedMutation> request) {
+        List<Key> keys = new ArrayList<>();
+        List<Mutation> sent = new ArrayList<>();
+        for (EncodedMutation encoded : request) {
+            keys.add(encoded.getWrite().getKey());
+            sent.add(encoded.getEncoding());
+        }
+        requests.add(keys);
+        encodings.add(sent);
+    }
+
     /** Every commit request, as the keys it carried. */
     List<List<Key>> requests() {
         return requests;
+    }
+
+    /** Every commit request, as the encodings it carried, in the instances the writer passed. */
+    List<List<Mutation>> encodings() {
+        return encodings;
     }
 
     /** The last write applied to each key. */

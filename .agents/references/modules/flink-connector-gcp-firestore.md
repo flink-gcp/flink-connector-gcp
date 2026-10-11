@@ -185,10 +185,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The writer is synchronous** (Spanner shape): one non-transactional `CommitRequest` at a time,
   encoded by `EntityProtos` in the writer's order and sent through the client's `DatastoreRpc`, on
   the task thread. `Batch` is not used: it cannot carry `Mutation.property_mask`, which
-  `upsertMerge` needs. **It commits before a key repeats** — the API refuses a non-transactional
-  commit naming a key twice — and that rule is also what keeps one subtask's writes to a key in
-  order (barring a timed-out attempt the service applies late). Do not let a batch hold a key
-  twice.
+  `upsertMerge` needs. **Each write is encoded once**, when it enters the buffer
+  (`EncodedMutation`, #1744): its size is taken from that encoding, and every commit carrying it,
+  retries and solo re-sends included, sends the same instance. `DatastoreDatabaseAccess.commit`
+  takes the encodings; do not encode again behind it, and keep the write beside its encoding, since
+  `FailedMutation` carries the serializer's own write. **It commits before a key repeats** — the
+  API refuses a non-transactional commit naming a key twice — and that rule is also what keeps one
+  subtask's writes to a key in order (barring a timed-out attempt the service applies late). Do
+  not let a batch hold a key twice.
 - **`upsertMerge` masks every value the entity holds** (`EntityProtos.mergePaths`): one
   `PropertyPaths.segment` per name, recursing into an embedded entity (an empty one adds no path,
   as Firestore's merge treats an empty map), stopping at an array (the mask cannot enter one) and a

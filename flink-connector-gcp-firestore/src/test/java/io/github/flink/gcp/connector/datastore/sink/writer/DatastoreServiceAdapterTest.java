@@ -34,14 +34,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Holds the {@code CommitRequest} the adapter sends: the emulator serves any database id and the
- * gated suite is the only other reader of the request's fields, so the header and the order are
- * checked here against a recording RPC object.
+ * gated suite is the only other reader of the request's fields, so the header, the order and the
+ * encodings are checked here against a recording RPC object.
  */
 class DatastoreServiceAdapterTest {
 
     @Test
     void aCommitIsOneNonTransactionalRequestToTheClientsDatabaseInTheWritersOrder()
             throws Exception {
+        // The adapter encodes nothing: it sends the encodings the writer made when it buffered
+        // the writes, the same instances, which is what keeps a write encoded once.
         List<CommitRequest> sent = new ArrayList<>();
         DatastoreRpc rpc =
                 (DatastoreRpc)
@@ -69,11 +71,12 @@ class DatastoreServiceAdapterTest {
                         .build();
         Key first = Key.newBuilder("p", "K", "b", "orders-db").build();
         Key second = Key.newBuilder("p", "K", "a", "orders-db").build();
-        List<DatastoreMutation> writes =
+        List<EncodedMutation> writes =
                 List.of(
-                        DatastoreMutation.delete(first),
-                        DatastoreMutation.upsertMerge(
-                                Entity.newBuilder(second).set("v", 1L).build()));
+                        EncodedMutation.of(DatastoreMutation.delete(first)),
+                        EncodedMutation.of(
+                                DatastoreMutation.upsertMerge(
+                                        Entity.newBuilder(second).set("v", 1L).build())));
 
         try (DatastoreServiceAdapter adapter = new DatastoreServiceAdapter(options.getService())) {
             adapter.commit(writes);
@@ -86,8 +89,10 @@ class DatastoreServiceAdapterTest {
                                 .setProjectId("p")
                                 .setDatabaseId("orders-db")
                                 .setMode(CommitRequest.Mode.NON_TRANSACTIONAL)
-                                .addMutations(EntityProtos.mutation(writes.get(0)))
-                                .addMutations(EntityProtos.mutation(writes.get(1)))
+                                .addMutations(EntityProtos.mutation(writes.get(0).getWrite()))
+                                .addMutations(EntityProtos.mutation(writes.get(1).getWrite()))
                                 .build());
+        assertThat(sent.get(0).getMutations(0)).isSameAs(writes.get(0).getEncoding());
+        assertThat(sent.get(0).getMutations(1)).isSameAs(writes.get(1).getEncoding());
     }
 }

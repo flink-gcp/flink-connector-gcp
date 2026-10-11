@@ -18,9 +18,9 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.datastore.v1.Mutation;
 import com.google.protobuf.CodedOutputStream;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
-import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
 import java.nio.charset.StandardCharsets;
 
@@ -28,8 +28,8 @@ import java.nio.charset.StandardCharsets;
  * The size a mutation adds to a {@code Commit} request on the wire, which the writer bounds a batch
  * by, and the size of the request's own fields.
  *
- * <p>A mutation's size is that of the protobuf the writer commits ({@link EntityProtos}), property
- * mask included, framed as the request's {@code mutations} field.
+ * <p>A mutation's size is that of the protobuf the writer commits ({@link EncodedMutation}),
+ * property mask included, framed as the request's {@code mutations} field.
  */
 @Internal
 final class MutationSizeEstimator {
@@ -37,13 +37,13 @@ final class MutationSizeEstimator {
     private MutationSizeEstimator() {}
 
     /**
-     * Returns the bytes the mutation adds to a {@code Commit} request.
+     * Returns the bytes the encoded mutation adds to a {@code Commit} request.
      *
-     * @param mutation the mutation
+     * @param mutation the mutation as the request carries it
      * @return its size on the wire, framing included
      */
-    static long sizeOf(DatastoreMutation mutation) {
-        return framed(EntityProtos.mutation(mutation).getSerializedSize());
+    static long sizeOf(Mutation mutation) {
+        return framed(mutation.getSerializedSize());
     }
 
     /**

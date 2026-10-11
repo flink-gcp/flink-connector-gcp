@@ -22,6 +22,7 @@ import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
+import com.google.datastore.v1.Mutation;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreMetricNames;
@@ -78,8 +79,8 @@ class DatastoreWriterTest {
         assertThat(metrics.counterValue(TestSinkWriterMetricGroup.NUM_RECORDS_SEND)).isEqualTo(2);
         assertThat(metrics.counterValue(TestSinkWriterMetricGroup.NUM_BYTES_SEND))
                 .isEqualTo(
-                        MutationSizeEstimator.sizeOf(upsert("a"))
-                                + MutationSizeEstimator.sizeOf(DatastoreMutation.delete(key("b"))));
+                        EncodedMutation.of(upsert("a")).getSize()
+                                + EncodedMutation.of(DatastoreMutation.delete(key("b"))).getSize());
         assertThat(metrics.counterValue(DatastoreMetricNames.BATCHES_SENT)).isEqualTo(1);
         assertThat((Integer) metrics.gaugeValue(DatastoreMetricNames.BUFFERED_MUTATIONS)).isZero();
         assertThat((Long) metrics.gaugeValue(DatastoreMetricNames.BUFFERED_BYTES)).isZero();
@@ -320,7 +321,7 @@ class DatastoreWriterTest {
         assertThat(access.requests()).containsExactly(List.of(key("a"), key("b")));
 
         FakeDatastoreDatabaseAccess sized = new FakeDatastoreDatabaseAccess();
-        long one = MutationSizeEstimator.sizeOf(upsert("d"));
+        long one = EncodedMutation.of(upsert("d")).getSize();
         DatastoreWriter<DatastoreMutation> bySize =
                 new DatastoreWriter<>(
                         config(
@@ -434,6 +435,48 @@ class DatastoreWriterTest {
         assertThat(metrics.counterValue(TestSinkWriterMetricGroup.NUM_RECORDS_SEND)).isEqualTo(3);
         assertThat(metrics.counterValue(TestSinkWriterMetricGroup.NUM_RECORDS_SEND_ERRORS))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void aWriteIsEncodedOnceForEveryCommitThatCarriesIt() throws Exception {
+        access.failNextCommits(StatusCode.Code.UNAVAILABLE)
+                .refuse(key("bad"), StatusCode.Code.INVALID_ARGUMENT);
+        DatastoreWriter<DatastoreMutation> writer = writer(fastRetries(10), dropping());
+        DatastoreMutation bad = upsert("bad");
+        writer.write(upsert("a"), TestContexts.NO_OP);
+        writer.write(bad, TestContexts.NO_OP);
+        writer.write(upsert("c"), TestContexts.NO_OP);
+        List<Mutation> buffered = new ArrayList<>();
+        for (EncodedMutation encoded : writer.buffered()) {
+            buffered.add(encoded.getEncoding());
+        }
+        writer.flush(false);
+
+        // The batch, its retry, then each write alone: every request carries the instances the
+        // writer encoded when it buffered the writes, so neither the flush, a retry nor a solo
+        // re-send encodes a write again.
+        assertThat(access.requests())
+                .containsExactly(
+                        List.of(key("a"), key("bad"), key("c")),
+                        List.of(key("a"), key("bad"), key("c")),
+                        List.of(key("a")),
+                        List.of(key("bad")),
+                        List.of(key("c")));
+        List<List<Mutation>> sent = access.encodings();
+        for (int i = 0; i < 3; i++) {
+            Mutation encoding = buffered.get(i);
+            assertThat(sent.get(0).get(i)).as("write %d in the batch", i).isSameAs(encoding);
+            assertThat(sent.get(1).get(i)).as("write %d in its retry", i).isSameAs(encoding);
+            assertThat(sent.get(2 + i))
+                    .as("write %d sent alone", i)
+                    .singleElement()
+                    .isSameAs(encoding);
+        }
+        // The write routed is the serializer's own, not one decoded back from its encoding.
+        assertThat(handler.routed)
+                .singleElement()
+                .extracting(FailedMutation::getMutation)
+                .isSameAs(bad);
     }
 
     @Test
@@ -898,7 +941,7 @@ class DatastoreWriterTest {
 
     @Test
     void theRequestsOwnFieldsCountTowardTheByteCap() throws Exception {
-        long one = MutationSizeEstimator.sizeOf(upsert("a"));
+        long one = EncodedMutation.of(upsert("a")).getSize();
         long header = MutationSizeEstimator.requestHeaderSize(DATABASE);
         FakeDatastoreDatabaseAccess fits = new FakeDatastoreDatabaseAccess();
         DatastoreWriter<DatastoreMutation> exactly =
@@ -1194,11 +1237,12 @@ class DatastoreWriterTest {
         }
 
         @Override
-        public void commit(List<DatastoreMutation> writes) {
-            for (DatastoreMutation write : writes) {
+        public void commit(List<EncodedMutation> writes) {
+            for (EncodedMutation encoded : writes) {
+                DatastoreMutation write = encoded.getWrite();
                 if (write.getOperation() == DatastoreMutation.Operation.INSERT
                         && delegate.applied().containsKey(write.getKey())) {
-                    delegate.requests().add(List.of(write.getKey()));
+                    delegate.record(List.of(encoded));
                     throw FakeDatastoreDatabaseAccess.failure(StatusCode.Code.ALREADY_EXISTS);
                 }
             }
@@ -1233,7 +1277,7 @@ class DatastoreWriterTest {
         }
 
         @Override
-        public void commit(List<DatastoreMutation> writes) {
+        public void commit(List<EncodedMutation> writes) {
             if (writes.size() == 1 && !failed) {
                 failed = true;
                 throw FakeDatastoreDatabaseAccess.failure(StatusCode.Code.UNAVAILABLE);

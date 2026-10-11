@@ -22,9 +22,9 @@ limitations under the License.
   2026-10-03 against
   `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by [#1651]
   (writer-side id allocation for the table sink) and 2026-10-11 by [#1707] (the service's answers,
-  and an insert a refused commit already wrote) and [#1729] (a commit the writer encodes, and the
-  merge operation)
-- Issues: [#1542], [#355], [#1546], [#1651], [#1707], [#1729]
+  and an insert a refused commit already wrote), [#1729] (a commit the writer encodes, and the
+  merge operation) and [#1744] (each write encoded once)
+- Issues: [#1542], [#355], [#1546], [#1651], [#1707], [#1729], [#1744]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -128,6 +128,57 @@ The writer gained one internal capability: it allocates ids (`AllocateIds`), `id
 
 The merge was measured on the emulator and on the service (`DatastoreWriterITCase`, `DatastoreTableSinkITCase`, `DatastoreTableRealGcpITCase`, one run each): an undeclared property, top-level or inside an embedded entity, kept its value; a masked property was replaced, an array whole; names holding a dot, a backquote or a backslash addressed one property each; and a mask of no path, the merge of an entity without properties, created a missing entity and left a stored one as it was, which `datastore.proto` does not describe. On the emulator only, a masked path into a property that held a string replaced it with an embedded entity, and a merged value marked excluded from indexes kept the mark while the stored embedded entity and its other properties kept theirs.
 
+### Each write encoded once ([#1744], 2026-10-11)
+
+After [#1729] the writer encoded every write twice on its way to a successful commit: once to size it against `maxBatchBytes` when it entered the buffer, and again when the access built the `CommitRequest`.
+A retried commit encoded the whole batch again on every attempt, and a solo re-send encoded its write a third time.
+The writer now encodes a write once, when it enters the buffer, and keeps that encoding beside the write (`EncodedMutation`, `@Internal`).
+The size is taken from it, and `DatastoreDatabaseAccess.commit` takes the encodings, so every commit carrying the write, retries and solo re-sends included, sends the same message instance.
+`DatastoreWriterTest` holds that the instances buffered by `write()` are the ones a batch, its retry and its confirmation pass send (re-encoding at the flush or on an attempt fails it), and `DatastoreServiceAdapterTest` holds that the adapter sends the instances it is given.
+That the size comes from the buffered encoding rather than from a second, equal one is held by the code's shape only: encoding is deterministic, so no test can tell the two apart without counting encodings.
+The public SPI is unchanged, and `FailedMutation` still carries the write the serializer returned.
+
+A JMH benchmark run outside the repository measured the change on one workstation (JDK 17, protobuf-java 4.33.6, google-cloud-datastore 3.7.0, two forks of five iterations, 2026-10-11).
+It took a batch of 500 writes of a ten-property entity (a 500-character unindexed string, an array, an embedded entity) from `write()` to the bytes of the request, the serialization both paths share included:
+
+| Operation | Attempts | Before, per write | After, per write |
+|---|---|---|---|
+| `upsert` | 1 | 3.5 µs, 11.5 KB allocated | 2.3 µs, 6.4 KB |
+| `upsertMerge` | 1 | 5.0 µs, 14.5 KB | 2.9 µs, 7.7 KB |
+| `upsert` | 3 | 8.1 µs, 24.2 KB | 4.0 µs, 9.8 KB |
+| `upsertMerge` | 3 | 11.2 µs, 29.7 KB | 5.1 µs, 10.4 KB |
+
+The saving is 1.3 to 2.1 µs of CPU and about half the allocation per write on a commit that succeeds first time, and more on a retried one.
+Against the service it is not measurable: the keyed table measured about 1.5 ms per row per subtask end to end (ADR-0184), so the saving is about 0.1% of a row's time, well inside the spread of an end-to-end run.
+It was therefore not run on the Tier-3 rig; the change is kept for the CPU and the garbage it removes, a cost that grows with entity size.
+
+Holding the encoding beside the write does not raise the buffer's peak heap, because the commit already held both: the access built the whole request while the batch still held the writes.
+What changes is that the encoding now lives from `write()` to the commit instead of for the commit alone, and one consequence of that adds to the peak: a write whose arrival flushes the buffer is encoded, to be sized, before the batch it overflows is committed, so its encoding lives through that commit and its retries, where the sizing encoding used to be garbage by then.
+That is one write's encoding beside a full buffer's: for an entity the service accepts, at most 1 MiB on the wire, about 1 MiB of heap for large values and about 14 MiB for an array of small longs, the encoding's share of the ratio measured below; a larger write, which the writer still sends alone for the service to refuse, adds its own encoding at that size.
+JOL measured the retained heap of a full buffer, an object both forms share counted once:
+
+| Buffer | Wire size | Writes alone | Writes and encodings |
+|---|---|---|---|
+| 500 of the entity above | 0.39 MB | 0.95 MB | 2.2 MB (2.6 MB merged) |
+| 9 entities of a 1,000,000-character string | 9.0 MB | 9.0 MB | 9.2 MB |
+| 9 entities of a 1,000,000-byte blob | 9.0 MB | 9.0 MB | 9.2 MB (18.2 MB before this change) |
+| 300 entities of a 30,000-character string | 9.1 MB | 9.4 MB | 10.3 MB |
+| 200 entities of 4,000 unindexed long properties | 13.4 MB | 89 MB | 178 MB |
+| 100 entities of 4,000 null or boolean properties | 6.3 MB | 35 MB | 71 MB |
+| 100 entities of one array of 4,000 longs | 2.0 MB | 24 MB | 51 MB |
+
+The encoding shares the entity's strings, so a large string value costs its bytes once.
+It used to copy a blob's bytes; `EntityProtos` now wraps them (`UnsafeByteOperations.unsafeWrap` over the blob's read-only buffer, since the library's `Blob` is immutable and its `ByteString` accessor package-private), so a blob costs its bytes once too, which also halves the commit's peak for blob-heavy batches.
+That holds for a blob in one piece, which every factory of the library's `Blob` makes; a blob read back with `Value.fromPb` from a protobuf whose bytes are a concatenation keeps that `RopeByteString`, whose read-only buffer is a copy (protobuf-java 4.33.6), so it is held twice, as the old encoding held it.
+What cannot be shared is the objects each value takes.
+Held both ways, entities of small top-level values (longs, booleans, nulls) took 11 to 13 times their wire size, against 6 to 7 times for the writes alone, and an array of small longs, whose elements carry no name on the wire, about 26 times, against 12; a merge's mask paths add to the wire size, so a merged write's ratio is lower (11 times for the longs).
+So a full buffer holds about `maxBatchBytes` of heap when large values fill it, and up to about 26 times `maxBatchBytes` (about 230 MB per subtask at the default) when arrays of small numbers do; the docs state the range and name `maxBatchBytes` as the lever.
+
+Two alternatives were declined on these measurements.
+
+- **Keeping only the encoding**, and rebuilding the `DatastoreMutation` from it (`Entity.fromPb`) for a routed write or the `ALREADY_EXISTS` lookup's comparison. It would lower the peak for small long properties by about 28% (128 MB of the 178 MB above) and a large-value one not at all. In exchange the handler would receive a decoded copy rather than the write the serializer returned, its fidelity resting on `EntityProtosTest` alone, and an `upsertMerge` of an entity without properties would be told from an `upsert` only by the presence of an empty mask.
+- **Sizing without building a message**, as the Native-mode `DocumentSizeEstimator` does, and encoding at the commit. The commit would still hold both forms, so the peak would be the same but for the one write that overflows a batch, which it would not encode until after that commit, while a second walk of every value type would have to stay equal to `EntityProtos`, and retries and solo re-sends would still need the commit's encodings kept.
+
 ## Consequences
 
 - A refused commit costs one solo commit per write, sequentially on the task thread, plus one lookup per update refused with `NOT_FOUND` and per insert refused with `ALREADY_EXISTS`; `mutationsConfirmedAlone` counts each mutation re-sent alone, once; retries of those solo commits count in `batchesSent`.
@@ -152,3 +203,4 @@ The merge was measured on the emulator and on the service (`DatastoreWriterITCas
 [#1651]: https://github.com/flink-gcp/flink-connector-gcp/issues/1651
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1729]: https://github.com/flink-gcp/flink-connector-gcp/issues/1729
+[#1744]: https://github.com/flink-gcp/flink-connector-gcp/issues/1744

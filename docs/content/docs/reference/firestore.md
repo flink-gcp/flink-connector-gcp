@@ -136,7 +136,7 @@ Every knob is defaulted, so `DatastoreWriterOptions.defaults()` is the same as n
 | Option | Default | What it does |
 |---|---|---|
 | `maxBatchMutations` | `500` | Caps the mutations in one commit. Datastore documents no count for a non-transactional commit; the default is Apache Beam's ceiling on its adaptive batch size |
-| `maxBatchBytes` | `9,000,000` | Caps the protobuf size of one commit request, its project, database and mode fields included, **at most 10 MiB**, Datastore's request limit. A single larger mutation is still sent, alone |
+| `maxBatchBytes` | `9,000,000` | Caps the protobuf size of one commit request, its project, database and mode fields included, **at most 10 MiB**, Datastore's request limit. A single larger mutation is still sent, alone. A full buffer's heap is a multiple of it, largest for small values ([How the Datastore sink writes]({{< relref "docs/connectors/datastream/firestore" >}}#how-the-datastore-sink-writes)) |
 | `requestTimeout` | `60 s` | Timeout of one commit attempt, and of the lookup that checks a `NOT_FOUND`. The client makes one attempt per call; the `recovery*` options own every retry |
 | `recoveryInitialBackoff` | `500 ms` | First backoff of the writer's retry loop |
 | `recoveryMaxBackoff` | `10 s` | Cap on the backoff, at least `recoveryInitialBackoff`. Backoffs are jittered by ±25% |
