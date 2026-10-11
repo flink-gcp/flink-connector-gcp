@@ -12,20 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Cloud Tasks evidence: reconcile a cell's rows and receipts, then export them.
+"""Cloud Tasks evidence: reconcile a cell's rows and receipts.
 
 The measurement application leaves gzip CSV parts under ``rows/`` and JSON
-receipts under ``receipts/`` in the one-day benchmark bucket. The collector
-streams them once, decides whether they form a complete observation, copies
-them server-side into the retained evidence bucket, verifies the copies, and
-only then writes an ``exported.json`` marker and releases the benchmark prefix.
-Nothing here accumulates rows: per-sequence state lives in bitmaps and a fixed
-array sized from the cell's record limit.
+receipts under ``receipts/`` below its evidence root. The reconciler streams
+them once and decides whether they form a complete observation. Nothing here
+accumulates rows: per-sequence state lives in bitmaps and a fixed array sized
+from the cell's record limit.
 """
 
 from __future__ import annotations
 
-import base64
 import gzip
 import hashlib
 import json
@@ -36,30 +33,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-import google_crc32c
-
 from ..common import Failure, utc
-from ..model import cell_records
-from ..policy import BENCHMARK, CLOUDTASKS_CEILINGS, EVIDENCE, MIB
+from ..policy import MIB
+from .protocol import cell_records
 
 ROWS = "rows/"
 RECEIPTS = "receipts/"
-MARKER = "exported.json"
 # The row grammar of ObservationLog: the marker plus fifteen fields.
 ROW_MARKER = "CT1246"
 ROW_FIELDS = 16
 PART_CEILING = 64 * MIB
 RECEIPT_CEILING = 64 * 1024
-LISTING_MAXIMUM = 100000
 # A row is about 400 bytes. A part that decodes without a newline inside four
-# kibibytes is a decompression bomb rather than evidence, and the supervisor
-# has 2 GiB.
+# kibibytes is a decompression bomb rather than evidence.
 ROW_CEILING = 4096
 READ_CHUNK = 256 * 1024
 # Receipt counts bound allocations and comparisons downstream, so a count no
-# session can have produced is rejected with the receipt.
+# cell can have produced is rejected with the receipt.
 COUNT_CEILING = 3 * 10_000_000
-# 8 MiB or sixty seconds per part over a five-hour session, with room to spare.
+# 8 MiB or sixty seconds per part over the longest run, with room to spare.
 PARTS_CEILING = 100000
 KINDS = ("main", "calibration", "interrupt-control")
 # Statuses after which a later ALREADY_EXISTS for the same name is the
@@ -111,37 +103,18 @@ def cell_prefix(run_id, cell_id):
 
 
 def cell_kind(cell):
-    """The measurement kind a session cell's controls imply."""
+    """The measurement kind a cell's controls imply."""
     if cell.get("control_delay_millis", 0) == 0 and cell.get("emit_attempts", True):
         return "main"
     return "calibration"
 
 
 class Source(Protocol):
-    """Where a cell's objects are read from: the benchmark bucket or a mirror."""
+    """Where a cell's objects are read from."""
 
     def list(self, prefix) -> list[dict]: ...
 
     def open(self, name, generation): ...
-
-
-class GcsSource:
-    """Objects of one bucket; every listing and open ticks ``reads`` once."""
-
-    def __init__(self, storage, bucket=BENCHMARK, reads=None):
-        self.storage, self.bucket, self.reads = storage, bucket, reads
-
-    def _tick(self):
-        if self.reads is not None:
-            self.reads()
-
-    def list(self, prefix):
-        self._tick()
-        return self.storage.objects(prefix, self.bucket, LISTING_MAXIMUM)
-
-    def open(self, name, generation):
-        self._tick()
-        return self.storage.open(name, generation, self.bucket)
 
 
 class DirectorySource:
@@ -226,32 +199,11 @@ def part_index(name):
     return match[1], int(match[2])
 
 
-class Digests:
-    """SHA-256 for the marker, MD5 and CRC32C for the copy verification."""
-
-    def __init__(self):
-        self.sha256 = hashlib.sha256()
-        self.md5 = hashlib.md5()
-        self.crc32c = google_crc32c.Checksum()
-
-    def update(self, data):
-        self.sha256.update(data)
-        self.md5.update(data)
-        self.crc32c.update(data)
-
-    def result(self):
-        return {
-            "sha256": self.sha256.hexdigest(),
-            "md5": base64.b64encode(self.md5.digest()).decode(),
-            "crc32c": base64.b64encode(self.crc32c.digest()).decode(),
-        }
-
-
 class _Tap:
-    """Feeds every raw byte to a digest and bounds the transfer by the listing."""
+    """Bounds the transfer of one object by the size its listing reported."""
 
-    def __init__(self, raw, digest, limit, name):
-        self.raw, self.digest, self.limit, self.name = raw, digest, limit, name
+    def __init__(self, raw, limit, name):
+        self.raw, self.limit, self.name = raw, limit, name
         self.count = 0
 
     def read(self, size=-1):
@@ -259,8 +211,6 @@ class _Tap:
         self.count += len(data)
         if self.count > self.limit:
             raise Failure("Part is longer than its listing: " + self.name)
-        if self.digest is not None and data:
-            self.digest.update(data)
         return data
 
     def readable(self):
@@ -273,13 +223,11 @@ class _Tap:
         self.raw.close()
 
 
-def read_object(source, obj, ceiling, digest=None):
+def read_object(source, obj, ceiling):
     """Whole bytes of one small object, refused before download above ``ceiling``."""
     if int(obj["size"]) > ceiling:
         raise Failure("Object exceeds its size ceiling: " + obj["name"])
-    tap = _Tap(
-        source.open(obj["name"], obj["generation"]), digest, ceiling, obj["name"]
-    )
+    tap = _Tap(source.open(obj["name"], obj["generation"]), ceiling, obj["name"])
     try:
         chunks = []
         while chunk := tap.read(65536):
@@ -292,12 +240,10 @@ def read_object(source, obj, ceiling, digest=None):
     return data
 
 
-def iter_rows(source, run_id, cell_id, hasher=None, parts=None, order=None):
+def iter_rows(source, run_id, cell_id, parts=None, order=None):
     """Stream ``(part_name, Row)`` over the cell's parts in incarnation order.
 
-    ``hasher(part_name)`` may return an object whose ``update`` receives the
-    raw compressed bytes of that part. ``parts`` is an optional listing already
-    taken; ``order`` an optional incarnation sequence that ranks parts before
+    ``parts`` is an optional listing already taken; ``order`` an optional incarnation sequence that ranks parts before
     the UUID order. Parts are decoded incrementally and never held whole.
     """
     if parts is None:
@@ -312,8 +258,7 @@ def iter_rows(source, run_id, cell_id, hasher=None, parts=None, order=None):
         name, size = obj["name"], int(obj["size"])
         if size > PART_CEILING:
             raise Failure("Part exceeds its size ceiling: " + name)
-        digest = hasher(name) if hasher is not None else None
-        tap = _Tap(source.open(name, obj["generation"]), digest, size, name)
+        tap = _Tap(source.open(name, obj["generation"]), size, name)
         try:
             with gzip.GzipFile(fileobj=tap, mode="rb") as unzipped:
                 for number, line in enumerate(_lines(unzipped, name), start=1):
@@ -362,20 +307,12 @@ class Reconciliation:
     reasons: list = field(default_factory=list)
     counts: dict = field(default_factory=dict)
     receipts: dict = field(default_factory=dict)
-    objects: list = field(default_factory=list)
 
     def flag(self, status, reason):
         if PRECEDENCE[status] > PRECEDENCE[self.status]:
             self.status = status
         if reason not in self.reasons:
             self.reasons.append(reason)
-
-    def summary(self):
-        return {
-            "status": self.status,
-            "reasons": list(self.reasons),
-            "counts": dict(self.counts),
-        }
 
 
 class _Sequences:
@@ -505,16 +442,7 @@ class Reconciler:
 
     def _receipt(self, obj):
         role, incarnation, phase = RECEIPT.search(obj["name"]).groups()
-        digest = Digests()
-        data = read_object(self.source, obj, RECEIPT_CEILING, digest)
-        self.result.objects.append(
-            {
-                "name": obj["name"],
-                "size": int(obj["size"]),
-                "generation": obj["generation"],
-                **digest.result(),
-            }
-        )
+        data = read_object(self.source, obj, RECEIPT_CEILING)
         try:
             receipt = json.loads(data)
         except ValueError as error:
@@ -678,7 +606,6 @@ class Reconciler:
         )
         rank = {incarnation: index for index, incarnation in enumerate(order)}
         sequences = _Sequences(cell["record_limit"])
-        digests = {}
         rows_by_incarnation = dict.fromkeys(order, 0)
         counts = {
             "rows": 0,
@@ -701,13 +628,9 @@ class Reconciler:
             "out_of_order": 0,
         }
 
-        def hasher(name):
-            digests[name] = Digests()
-            return digests[name]
-
         current_part, current_incarnation = None, None
         previous_minimum, current_minimum = None, None
-        rows = iter_rows(self.source, self.run_id, cell["id"], hasher, parts, order)
+        rows = iter_rows(self.source, self.run_id, cell["id"], parts, order)
         try:
             for part, row in rows:
                 if part != current_part:
@@ -785,18 +708,6 @@ class Reconciler:
         finally:
             rows.close()
         counts["distinct_ok"] = sequences.ok_count
-        for obj in parts:
-            digest = digests.get(obj["name"])
-            if digest is None:
-                continue  # A non-strict decode failure stopped before this part.
-            result.objects.append(
-                {
-                    "name": obj["name"],
-                    "size": int(obj["size"]),
-                    "generation": obj["generation"],
-                    **digest.result(),
-                }
-            )
         for incarnation in order:
             terminal = self.creators[incarnation].get("terminal")
             if terminal is None:
@@ -834,268 +745,3 @@ def _bounded(terminal):
         <= (PARTS_CEILING if name == "parts_closed" else COUNT_CEILING)
         for name in TERMINAL_COUNTS
     )
-
-
-def manifest_sha256(objects):
-    lines = sorted(f"{obj['name']} {obj['sha256']}" for obj in objects)
-    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
-
-
-class _Reads:
-    """Counts one export's read operations and charges them to the session meter."""
-
-    def __init__(self, meter=None):
-        self.meter, self.count = meter, 0
-
-    def tick(self, count=1):
-        self.count += count
-        if self.meter is not None:
-            self.meter.tick("read_ops", count)
-
-
-class Collector:
-    """Export each cell's evidence into the retained bucket and release the source."""
-
-    def __init__(self, env, storage):
-        self.env, self.storage = env, storage
-        self.failed = {}
-
-    @property
-    def meter(self):
-        return None if self.env.queues is None else self.env.queues.meter
-
-    def marker_name(self, cell_id):
-        return cell_prefix(self.env.approval.run_id, cell_id) + MARKER
-
-    def marker(self, cell_id, reads=None):
-        """The verified export marker in the evidence bucket, or None."""
-        (reads or _Reads(self.meter)).tick()
-        value, _ = self.storage.read(self.marker_name(cell_id), EVIDENCE)
-        if value is None:
-            return None
-        if (
-            not isinstance(value, dict)
-            or value.get("version") != 1
-            or value.get("run_id") != self.env.approval.run_id
-            or value.get("cell_id") != cell_id
-        ):
-            raise Failure("Export marker belongs to another run or cell")
-        return value
-
-    def exported(self, cell_id):
-        return self.marker(cell_id) is not None
-
-    def export(self, cell, outcome="completed"):
-        """Reconcile, copy, verify and mark one cell; returns the marker written."""
-        cell_id, run_id = cell["id"], self.env.approval.run_id
-        reads = _Reads(self.meter)
-        existing = self.marker(cell_id, reads)
-        if existing is not None:
-            return existing
-        kind = cell_kind(cell)
-        source = GcsSource(self.storage, BENCHMARK, reads.tick)
-        reconciliation = Reconciler(source, run_id, cell, kind).run()
-        total = sum(obj["size"] for obj in reconciliation.objects)
-        control = self.env.refresh()
-        if control.evidence_bytes + total > CLOUDTASKS_CEILINGS["evidence_bytes"]:
-            raise Failure(
-                f"Session evidence ceiling reached: {cell_id} adds {total} bytes to "
-                f"{control.evidence_bytes} of {CLOUDTASKS_CEILINGS['evidence_bytes']}"
-            )
-        exported = []
-        for obj in reconciliation.objects:
-            name = obj["name"]
-            self.storage.rewrite(BENCHMARK, name, obj["generation"], name, EVIDENCE)
-            reads.tick()
-            metadata = self.storage.metadata(name, EVIDENCE)
-            if metadata is None or int(metadata["size"]) != obj["size"]:
-                raise Failure("Exported object differs from its source: " + name)
-            checked = [
-                key
-                for key in ("crc32c", "md5")
-                if metadata.get(key) is not None and obj.get(key) is not None
-            ]
-            if not checked:
-                raise Failure("Exported object reports no checksum: " + name)
-            for key in checked:
-                if metadata[key] != obj[key]:
-                    raise Failure("Exported object differs from its source: " + name)
-            exported.append(
-                {
-                    "name": name,
-                    "size": obj["size"],
-                    "sha256": obj["sha256"],
-                    "source_generation": obj["generation"],
-                    "destination_generation": metadata["generation"],
-                }
-            )
-        marker = {
-            "version": 1,
-            "run_id": run_id,
-            "cell_id": cell_id,
-            "kind": kind,
-            "arm": cell["arm"],
-            "outcome": outcome,
-            "at": utc(self.env.clock()),
-            "reconciliation": reconciliation.summary(),
-            "objects": exported,
-            "manifest_sha256": manifest_sha256(exported),
-            "evidence_bytes": total,
-            "read_ops": reads.count,
-        }
-        summary = {
-            key: marker[key]
-            for key in (
-                "cell_id",
-                "kind",
-                "outcome",
-                "at",
-                "reconciliation",
-                "manifest_sha256",
-                "evidence_bytes",
-                "read_ops",
-            )
-        }
-        summary["objects"] = len(exported)
-        # Account for the bytes before the marker authorizes their release: a
-        # crash between the two may over-count the session, never under-count.
-        self.env.records.record_export(cell_id, summary)
-        name = self.marker_name(cell_id)
-        self.storage.write(name, marker, "0", EVIDENCE)
-        self.storage.write(name, marker, "0", BENCHMARK)
-        self.env.emit("cell-exported", summary)
-        return marker
-
-    # -- session hooks -------------------------------------------------------
-
-    def poll(self, session, cell, app, pods):
-        """Rows travel through storage; nothing to observe per poll."""
-
-    def after_cell(self, session, cell, outcome):
-        try:
-            self.export(cell, outcome)
-        except Failure as error:
-            self.failed[cell["id"]] = str(error)
-            self.env.evidence_failed = True
-            # The session stops here and never reaches its end hook; release
-            # what earlier cells already exported so idle verification holds.
-            try:
-                self.release()
-            except Failure as release_error:
-                self.env.emit("benchmark-release-failed", {"cause": str(release_error)})
-            raise
-
-    def at_session_end(self, session, outcomes):
-        for cell in self.env.approval.cells:
-            cell_id = cell["id"]
-            if cell_id in self.failed or self.exported(cell_id):
-                continue
-            prefix = cell_prefix(self.env.approval.run_id, cell_id)
-            reads = _Reads(self.meter)
-            reads.tick()
-            objects = self.storage.objects(prefix, BENCHMARK, LISTING_MAXIMUM)
-            if not any(
-                obj["name"][len(prefix) :].startswith((ROWS, RECEIPTS))
-                for obj in objects
-            ):
-                continue
-            try:
-                self.export(cell, outcomes.get(cell_id, "interrupted"))
-            except Failure as error:
-                self.failed[cell_id] = str(error)
-                self.env.evidence_failed = True
-        retained = self.release()
-        if retained:
-            self.env.emit("benchmark-evidence-retained", retained)
-
-    def release(self):
-        """Delete the benchmark prefix of every cell with a verified marker.
-
-        Returns what remains for cells without one, keyed by cell ID.
-        """
-        return release_exported(self.env, self.storage, self.failed, self.meter)
-
-
-def release_exported(env, storage, failed=(), meter=None):
-    """Generation-checked release of exported benchmark prefixes; see Collector.
-
-    Only what the marker authorizes is deleted: each evidence object at the
-    exact generation that was copied and verified, the job's own state, and
-    the benchmark copy of the marker. An object the export refused, and one
-    replaced after the export read it, are kept and reported, because the
-    downloaded evidence cannot reproduce a reason about an object that no
-    longer exists.
-    """
-    run_id = env.approval.run_id
-    retained = {}
-    for cell_id in env.approval.cell_ids:
-        prefix = cell_prefix(run_id, cell_id)
-        reads = _Reads(meter)
-        reads.tick()
-        objects = storage.objects(prefix, BENCHMARK, LISTING_MAXIMUM)
-        if not objects:
-            continue
-        reads.tick()
-        marker, _ = storage.read(prefix + MARKER, EVIDENCE)
-        if (
-            cell_id in failed
-            or marker is None
-            or marker.get("version") != 1
-            or marker.get("run_id") != run_id
-            or marker.get("cell_id") != cell_id
-        ):
-            retained[cell_id] = {
-                "objects": len(objects),
-                "bytes": sum(int(obj["size"]) for obj in objects),
-            }
-            continue
-        released, keep = authorized_release(marker, objects, prefix)
-        released.sort(key=lambda obj: _release_order(obj, prefix))
-        for obj in released:
-            storage.delete(obj["name"], obj["generation"], BENCHMARK)
-        if keep:
-            retained[cell_id] = {
-                "objects": len(keep),
-                "bytes": sum(int(obj["size"]) for obj in keep),
-                "unauthorized": sorted(obj["name"][len(prefix) :] for obj in keep),
-            }
-        env.emit(
-            "benchmark-prefix-released",
-            {"cell": cell_id, "objects": len(released), "retained": len(keep)},
-        )
-    return retained
-
-
-def authorized_release(marker, objects, prefix):
-    """Split a cell's benchmark objects into what a marker releases and the rest.
-
-    A marker releases its own exported objects, each at the generation that was
-    copied and verified, the job's checkpoint state and the benchmark copy of
-    the marker. Anything else was never this export's to delete, and so is
-    never its to prove released either: idle verification uses the same split.
-    """
-    authorized = {
-        (obj.get("name"), str(obj.get("source_generation")))
-        for obj in marker.get("objects", [])
-    }
-    released, retained = [], []
-    for obj in objects:
-        relative = obj["name"][len(prefix) :]
-        target = (
-            relative.startswith("state/")
-            or relative == MARKER
-            or (obj["name"], str(obj["generation"])) in authorized
-        )
-        (released if target else retained).append(obj)
-    return released, retained
-
-
-def _release_order(obj, prefix):
-    """State first, then rows and receipts, the marker last."""
-    relative = obj["name"][len(prefix) :]
-    if relative == MARKER:
-        return 4, relative
-    for index, group in enumerate(("state/", ROWS, RECEIPTS)):
-        if relative.startswith(group):
-            return index, relative
-    return 3, relative

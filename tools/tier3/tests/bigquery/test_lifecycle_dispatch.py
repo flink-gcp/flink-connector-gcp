@@ -131,7 +131,6 @@ def test_an_expiry_that_would_not_bound_the_run_is_refused(slack):
     "change, env_change, match",
     [
         ({"approve": cli.APPROVAL}, {}, "explicitly approve"),
-        ({"approve": cli.CLOUDTASKS_APPROVAL}, {}, "explicitly approve"),
         # The old phrase carried an amount; it no longer approves anything.
         (
             {"approve": "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD 3.00"},

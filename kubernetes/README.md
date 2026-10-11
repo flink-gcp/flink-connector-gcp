@@ -31,7 +31,6 @@ kubernetes/
   pkg/flink/application.cue      # Standard Flink application defaults
   pkg/smoke/application.cue      # Generic stateful smoke application contract
   pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
-  pkg/cloudtasks/application.cue # Cloud Tasks measurement cell contract
   pkg/pubsub/application.cue     # Pub/Sub recovery contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
@@ -41,8 +40,7 @@ kubernetes/
   cli_tool.cue                   # The render command
   runs/common.cue                # Run inputs and environment constraints
   lifecycle/delivery.cue         # Shared lifecycle ConfigMap and supervisor
-  lifecycle/{smoke,cloudtasks,bigquery,pubsub}.cue # Scenario inputs and applications
-  lifecycle/sessions/            # Reviewed Cloud Tasks session files
+  lifecycle/{smoke,bigquery,pubsub}.cue # Scenario inputs and applications
   tests/                         # CI delivery discovery and synthetic regression cases
   upstream.toml                  # Operator chart version, URL and SHA-512
 ```
@@ -113,8 +111,8 @@ The package deliberately leaves image, ServiceAccount and application-specific f
 An upgrade requiring state preservation must explicitly select its upgrade mode and recovery inputs.
 
 The root supplies common project labels.
-`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-cloudtasks`, `tier3-bigquery` or `tier3-pubsub`) to resource metadata.
-For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`, while in `tier3-cloudtasks` it requires the `cloudtasks-benchmark` ServiceAccount, parallelism 1, 4 or 16 and `v1_20` or `v2_2`.
+`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-bigquery` or `tier3-pubsub`) to resource metadata.
+For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism two and `v2_2`.
 The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one or two and `v2_2`.
 The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its [offline proposal](apps/pubsub/README.md#offline-trial-proposal) renders a reviewable delivery, and [dispatch](apps/pubsub/README.md#approval-dispatch) runs a reviewed trial through the runner's [admission](apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](apps/pubsub/README.md#recovery-exercise).
@@ -216,7 +214,7 @@ The bootstrap runbook documents credentials, RBAC, initial administrator permiss
 The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
 The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`.
 All four application namespaces retain zero Pod/PVC quotas until separately approved admission.
-A `cloudtasks` dispatch admits its workload as one [session](lifecycle/README.md#cloud-tasks-session); after calibration sessions on this cluster, the final performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records.
+No delivery admits a workload to `tier3-cloudtasks`: after calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed; the namespace and its identity remain for [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362).
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
 
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).

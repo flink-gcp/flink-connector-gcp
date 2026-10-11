@@ -57,7 +57,8 @@ import tempfile
 from pathlib import Path
 
 from ..common import Failure, digest, json_bytes, utc
-from ..policy import CELL_ID, RUN_ID
+from ..policy import RUN_ID
+from .protocol import CELL_ID
 
 #: A claim whose owner has not written a heartbeat for this long is expired.
 #:

@@ -64,7 +64,8 @@ limitations under the License.
 - Updated: 2026-10-10 (a restarted control-record read waits too)
 - Updated: 2026-10-10 (Pub/Sub publications carry up to 1,000 messages)
 - Updated: 2026-10-11 (Pub/Sub deployed trial findings)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691)
+- Updated: 2026-10-11 (Cloud Tasks session path removed from the cluster rig)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md), [Pub/Sub trial findings](evidence/0165-pubsub-trial-findings-1361.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -357,6 +358,8 @@ Review those counts against CI plans before merge, then collect successful apply
 These persistent grants prepare a separately reviewed runtime; they start no queue or workload and authorize no paid measurement.
 
 ### Cloud Tasks session admission
+
+Superseded by the [session path's removal](#cloud-tasks-session-path-removed); this section records what the cluster ran until then.
 
 The third lifecycle scenario admits one Cloud Tasks measurement session: an ordered cell list from a reviewed session file, executed as one FlinkDeployment at a time in `tier3-cloudtasks` under one environment lock of at most five hours.
 One approval per cell would have needed several hundred dispatches for the preregistered 420-cell assessment, so the session is the approval unit and a campaign ledger in `_control/campaigns/` records every cell's outcome across sessions and refuses to run a completed or running cell again.
@@ -1179,3 +1182,23 @@ The phases still fit the window: 1200 seconds to input, 180 of warmup, 600 of ba
 The BigQuery state grant also covers `.inprogress/flink-gcp-tier3-bigquery/runs/`, and BigQuery cleanup deletes the run's objects there.
 Flink's GCS recoverable writer stages each upload under `.inprogress/<bucket>/<object>/` in the same bucket before composing it into place, so a `runs/`-only condition refused pilot `bq1312-alo-10-a5`'s first checkpoint `_metadata` with 403; the job restarted without a checkpoint, and the supervisor stopped the run on the fresh input lineage.
 The staging prefix repeats the run path, so the grant stays run-scoped; the other scenarios' workloads hold unconditional Object User on their buckets and never met the condition.
+
+### Cloud Tasks session path removed
+
+The cluster rig no longer admits a Cloud Tasks measurement session ([#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723)).
+[ADR-0162](0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) moved the assessment wholly to a single VM on 2026-09-21, and the session path had no use after that.
+It still made up about a fifth of the rig: the session admission, queue lifecycle, campaign ledger, per-poll cell observation and evidence export, their branches in the shared runner, supervisor and cleanup, the version 3 approval, the session ceilings in `policy.toml`, the CUE cell delivery and its contract test, and the `cloudtasks` choice of the run workflow.
+All of that is removed, and so is the session decision above.
+
+The single-host rig stays, because it reproduces the finished assessment.
+What it took from the removed modules moved into its own package: the evidence reconciler without the export and its copy-verification hashes, and the row analysis and grouping of the cluster analyzer; the single-host analyzer never passed a probe cell to the capacity search, which the owner dropped from the assessment, so it went with the rest.
+The run discovery that the BigQuery and Pub/Sub analyses share moved out of the analyzer into its own module, and `flink-tier3 analyze` now reads only deployed BigQuery and Pub/Sub runs.
+
+What only the session used goes with it: the runner's and supervisor's queue-control custom roles and benchmark-bucket bindings, and the publication of the measurement images, whose published versions expire under the seven-day cleanup policy.
+The `tier3-cloudtasks` namespace, its `cloudtasks-benchmark` workload identity and the benchmark bucket stay, because the cluster recovery scenario of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) runs a job there that needs an identity and checkpoint storage.
+That scenario is built anew on the shared lifecycle rather than on the removed session, and adds the queue control and image it needs then.
+Every run's inventory still lists the namespace.
+
+Archived session evidence is read with the revision that produced it, as for the BigQuery verdict above; the analyzer at a later revision no longer reads a cell.
+Every scenario's control record carried the session's fields, empty outside a session, so the record reader drops them rather than refusing a record written before the change; otherwise recovery of any run that spans the merge, or of a lock it stranded, would fail on the record itself.
+A stranded Cloud Tasks session is no longer recoverable from `main`, because its approval names a scenario that no longer exists; none has run since the 2026-09-21 move.

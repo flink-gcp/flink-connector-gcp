@@ -21,17 +21,6 @@ on:
         description: Full reviewed main commit to publish
         required: true
         type: string
-      cloudtasks_flink_version:
-        description: Flink runtime for the Cloud Tasks payload
-        required: true
-        type: choice
-        default: '2.2.1'
-        # 1.20.4 is weekly.yaml's FLINK_LTS. A module offered at 1.20 here is
-        # also listed in lts_tier3_modules (scripts/config/flink-api-tiers.toml),
-        # so the tier audit reads its imports at that version too.
-        options:
-          - '2.2.1'
-          - '1.20.4'
 
 permissions:
   contents: read
@@ -52,10 +41,9 @@ jobs:
       GAR: us-central1-docker.pkg.dev/flink-gcp/flink-tier3
       OPERATOR_IMAGE: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator:1.15.0
       FLINK_IMAGE: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink:2.2.1
-      # Single-platform linux/amd64 manifests: Operator 1.15.0 and Flink 2.2.1/1.20.4, Java 17.
+      # Single-platform linux/amd64 manifests: Operator 1.15.0 and Flink 2.2.1, Java 17.
       OPERATOR_SOURCE: docker.io/apache/flink-kubernetes-operator@sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78
       FLINK_SOURCE: docker.io/library/flink@sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd
-      FLINK_120_SOURCE: docker.io/library/flink@sha256:912157e4e22718a5fa712cd3d3ce90fe0be10679b40fcb56aeaae42aad19f254
     steps:
       - name: Check the reviewed revision
         env:
@@ -89,28 +77,6 @@ jobs:
       - name: Verify the Pub/Sub recovery payload
         run: just tier3-pubsub-verify
 
-      - name: Select the reviewed Cloud Tasks runtime
-        id: cloudtasks_base
-        env:
-          FLINK_VERSION: ${{ inputs.cloudtasks_flink_version }}
-        run: |
-          case "$FLINK_VERSION" in
-            2.2.1) source="$FLINK_SOURCE"; package=cloudtasks-measurement ;;
-            1.20.4) source="$FLINK_120_SOURCE"; package=cloudtasks-measurement-flink120 ;;
-            *) echo 'Unsupported Cloud Tasks Flink runtime' >&2; exit 1 ;;
-          esac
-          {
-            printf 'version=%s\n' "$FLINK_VERSION"
-            printf 'source=%s\n' "$source"
-            printf 'image=%s/flink@%s\n' "$GAR" "${source##*@}"
-            printf 'package=%s\n' "$package"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Verify the selected Cloud Tasks measurement payload
-        env:
-          FLINK_VERSION: ${{ steps.cloudtasks_base.outputs.version }}
-        run: just verify-flink "$FLINK_VERSION" -P tier3-cloudtasks -pl kubernetes/apps/cloudtasks -am clean
-
       - name: Export the locked lifecycle dependencies
         run: just tier3-lifecycle-requirements
 
@@ -142,15 +108,9 @@ jobs:
           password: ${{ steps.auth.outputs.access_token }}
 
       - name: Mirror Operator and Flink
-        env:
-          CLOUDTASKS_SOURCE: ${{ steps.cloudtasks_base.outputs.source }}
-          CLOUDTASKS_FLINK_VERSION: ${{ steps.cloudtasks_base.outputs.version }}
         run: |
           crane copy "$OPERATOR_SOURCE" "$OPERATOR_IMAGE"
           crane copy "$FLINK_SOURCE" "$FLINK_IMAGE"
-          if [ "$CLOUDTASKS_FLINK_VERSION" != '2.2.1' ]; then
-            crane copy "$CLOUDTASKS_SOURCE" "$GAR/flink:$CLOUDTASKS_FLINK_VERSION"
-          fi
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
@@ -176,24 +136,6 @@ jobs:
           push: true
           tags: ${{ steps.smoke_meta.outputs.tags }}
           labels: ${{ steps.smoke_meta.outputs.labels }}
-
-      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        id: cloudtasks_meta
-        with:
-          images: ${{ env.GAR }}/${{ steps.cloudtasks_base.outputs.package }}
-          tags: type=sha,format=long
-
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        id: cloudtasks_build
-        with:
-          context: kubernetes/apps/cloudtasks
-          platforms: linux/amd64
-          build-args: |
-            FLINK_IMAGE=${{ steps.cloudtasks_base.outputs.image }}
-            FLINK_VERSION=${{ steps.cloudtasks_base.outputs.version }}
-          push: true
-          tags: ${{ steps.cloudtasks_meta.outputs.tags }}
-          labels: ${{ steps.cloudtasks_meta.outputs.labels }}
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: bigquery_meta
@@ -235,12 +177,9 @@ jobs:
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
           SMOKE_DIGEST: ${{ steps.smoke_build.outputs.digest }}
-          CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
           BIGQUERY_DIGEST: ${{ steps.bigquery_build.outputs.digest }}
           RECOVERY_BASE: ${{ steps.recovery_base.outputs.image }}
           PUBSUB_DIGEST: ${{ steps.pubsub_build.outputs.digest }}
-          CLOUDTASKS_BASE: ${{ steps.cloudtasks_base.outputs.image }}
-          CLOUDTASKS_PACKAGE: ${{ steps.cloudtasks_base.outputs.package }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
@@ -249,8 +188,6 @@ jobs:
           {
             printf '%s/lifecycle-tools@%s\n' "$GAR" "$LIFECYCLE_DIGEST"
             printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST"
-            printf '%s\n' "$CLOUDTASKS_BASE"
-            printf '%s/%s@%s\n' "$GAR" "$CLOUDTASKS_PACKAGE" "$CLOUDTASKS_DIGEST"
             printf '%s\n' "$RECOVERY_BASE"
             printf '%s/bigquery-recovery@%s\n' "$GAR" "$BIGQUERY_DIGEST"
             printf '%s/pubsub-recovery@%s\n' "$GAR" "$PUBSUB_DIGEST"

@@ -13,9 +13,7 @@
 # limitations under the License.
 """Fault injection for lifecycle admission, settlement, ownership and release."""
 
-import base64
 import copy
-import hashlib
 import io
 import json
 import subprocess
@@ -23,7 +21,6 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-import google_crc32c
 import pytest
 import requests
 import urllib3
@@ -152,20 +149,6 @@ class Store:
             raise rt.Failure("Prefix inventory exceeds ceiling")
         return result
 
-    def metadata(self, name, bucket=rt.EVIDENCE):
-        data = self._bytes(name, bucket)
-        if data is None:
-            return None
-        return {
-            "size": str(len(data)),
-            "crc32c": base64.b64encode(
-                google_crc32c.value(data).to_bytes(4, "big")
-            ).decode(),
-            "md5": base64.b64encode(hashlib.md5(data).digest()).decode(),
-            "generation": self._generation(name, bucket),
-            "created": self.created,
-        }
-
     def open(self, name, generation, bucket=rt.EVIDENCE, chunk_size=None):
         data = self._bytes(name, bucket)
         if data is None:
@@ -173,23 +156,6 @@ class Store:
         if str(generation) != self._generation(name, bucket):
             raise rt.ApiError(412, "GET", name)
         return io.BytesIO(data)
-
-    def rewrite(
-        self,
-        source_bucket,
-        source_name,
-        source_generation,
-        destination_name,
-        destination_bucket=rt.EVIDENCE,
-    ):
-        data = self._bytes(source_name, source_bucket)
-        if data is None:
-            raise rt.ApiError(404, "POST", destination_name)
-        if str(source_generation) != self._generation(source_name, source_bucket):
-            raise rt.ApiError(412, "POST", destination_name)
-        if self._generation(destination_name, destination_bucket) != "0":
-            return self.metadata(destination_name, destination_bucket)
-        return self.write_bytes(destination_name, data, destination_bucket)
 
 
 def obj(kind, name, namespace=rt.SMOKE, owner=None):
@@ -2493,20 +2459,15 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     schedule = rt.Approval.from_dict(env[2]).schedule
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     timeout = workflow["jobs"]["lifecycle"]["timeout-minutes"]
-    # The workflow selects a longer timeout for Cloud Tasks sessions and for
-    # BigQuery trials; a timeout shorter than a window kills the job mid-run.
+    # The workflow selects a longer timeout for BigQuery trials; a timeout
+    # shorter than a window kills the job mid-run.
     match = re.fullmatch(
-        r"\$\{\{ inputs\.scenario == 'cloudtasks' && (\d+) "
-        r"\|\| inputs\.scenario == 'bigquery-recovery' && (\d+) \|\| (\d+) \}\}",
+        r"\$\{\{ inputs\.scenario == 'bigquery-recovery' && (\d+) \|\| (\d+) \}\}",
         str(timeout),
     )
     assert match, timeout
-    session_minutes, trial_minutes, smoke_minutes = (int(m) for m in match.groups())
+    trial_minutes, smoke_minutes = (int(m) for m in match.groups())
     assert schedule.serial_budget <= smoke_minutes * 60
-    longest = rt.Schedule.for_window(
-        env[3](), env[3]() + rt.CLOUDTASKS_CEILINGS["session_seconds"]
-    )
-    assert longest.serial_budget <= session_minutes * 60
     from flink_tier3.policy import BIGQUERY_CEILINGS
 
     trial = rt.Schedule.for_window(env[3](), env[3]() + BIGQUERY_CEILINGS["seconds"])
@@ -2537,7 +2498,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     # can only name its place; the ceilings around it are the policy's.
     pubsub = cli.pubsub_phrase({"records_per_subscription": "R"})
     assert inputs["approval"]["description"] == (
-        f"Type {cli.APPROVAL}, or {cli.CLOUDTASKS_APPROVAL}, or "
+        f"Type {cli.APPROVAL}, or "
         f"{cli.BIGQUERY_APPROVAL}, or {pubsub} with the pubsub_trial file's "
         "record count; spend is approved beforehand from the estimate"
     )
@@ -2546,6 +2507,25 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         in (inputs["pubsub_trial"]["description"])
     )
     assert inputs["pubsub_trial"]["default"] == ""
+
+
+def test_a_record_written_before_the_session_removal_is_still_read():
+    """Every scenario's record carried the session fields, empty, until #1723."""
+    written = {
+        **rt.RunRecord("nonce", phase=rt.Phase.RUNNING).to_dict(),
+        "queue_intent": False,
+        "queue": None,
+        "cells": {},
+        "cell_intent": None,
+        "operations": {},
+        "exports": {},
+        "evidence_bytes": 0,
+    }
+    assert rt.RunRecord.from_dict(written) == rt.RunRecord(
+        "nonce", phase=rt.Phase.RUNNING
+    )
+    with pytest.raises(rt.Failure, match="Invalid run control record"):
+        rt.RunRecord.from_dict({**written, "unknown": 1})
 
 
 def test_record_phase_transitions_and_wire_round_trip():
@@ -2561,6 +2541,14 @@ def test_record_phase_transitions_and_wire_round_trip():
     with pytest.raises(rt.Failure, match="transition"):
         record.set_phase(rt.Phase.RUNNING)
     record.set_phase(rt.Phase.CLEANED)
+
+
+def evidence_events(env, actor="supervisor"):
+    return [
+        d["event"]
+        for (b, n), (d, _g) in env[1].data.items()
+        if b == rt.EVIDENCE and n.startswith(f"runs/test-1310/{actor}/")
+    ]
 
 
 def seed_record(env, **fields):
@@ -3007,7 +2995,6 @@ def test_supervisor_source_identity_covers_every_delivered_module_and_policy(tmp
     assert {
         "runtime.py",
         "supervisor.py",
-        "cloudtasks/session.py",
         "bigquery/__init__.py",
         "bigquery/actors.py",
         "bigquery/auth.py",
@@ -3377,14 +3364,6 @@ def test_evidence_failure_wins_the_creation_intent_cas_race(env):
 WORKFLOW_INPUTS = {
     "smoke": [],
     "generic-recovery": [],
-    "cloudtasks": [
-        "--session",
-        "calibration-1246",
-        "--flink-version",
-        "2.2.1",
-        "--application-digest",
-        "sha256:" + "d" * 64,
-    ],
     "bigquery-recovery": [
         "--trial",
         "alo-10",
@@ -3433,14 +3412,9 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
             r'"\$SCENARIO" = ([a-z-]+) \]; then\s+start\+=\(([^)]*)\)', step["run"]
         )
     )
-    assert set(branches) == {"cloudtasks", "bigquery-recovery", "pubsub-recovery"}
+    assert set(branches) == {"bigquery-recovery", "pubsub-recovery"}
     # Each flag with the workflow input it carries, not only its name.
     expected = {
-        "cloudtasks": [
-            ("--session", "SESSION"),
-            ("--flink-version", "FLINK_VERSION"),
-            ("--application-digest", "APPLICATION_DIGEST"),
-        ],
         "bigquery-recovery": [
             ("--trial", "TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
@@ -3486,12 +3460,6 @@ def test_cli_start_accepts_the_inputs_the_workflow_passes(
     [
         ("bigquery-recovery", ["--trial", "alo-10"]),
         ("bigquery-recovery", ["--application-digest", "sha256:" + "d" * 64]),
-        (
-            "bigquery-recovery",
-            [*WORKFLOW_INPUTS["bigquery-recovery"], "--session", "x"],
-        ),
-        ("cloudtasks", WORKFLOW_INPUTS["cloudtasks"][:4]),
-        ("cloudtasks", [*WORKFLOW_INPUTS["cloudtasks"], "--trial", "alo-10"]),
         ("smoke", ["--application-digest", "sha256:" + "d" * 64]),
         ("generic-recovery", ["--trial", "alo-10"]),
         ("pubsub-recovery", ["--pubsub-trial", "example-wiring"]),
@@ -3509,7 +3477,7 @@ def test_cli_start_accepts_the_inputs_the_workflow_passes(
             ["--pubsub-trial", "", "--application-digest", "sha256:" + "d" * 64],
         ),
         # Supplied but empty: still another scenario's input, or still missing.
-        ("smoke", ["--session", ""]),
+        ("smoke", ["--application-digest", ""]),
         (
             "bigquery-recovery",
             ["--trial", "", "--application-digest", "sha256:" + "d" * 64],
@@ -3927,3 +3895,67 @@ def test_every_command_dispatches_to_its_handler(monkeypatch, argv, handler):
         )
     cli.main(argv)
     assert called == [(handler, "store")]
+
+
+@pytest.mark.parametrize("settled", [False, True])
+def test_lock_scan_reads_two_objects_per_run_however_large_the_run_is(settled):
+    store = Store()
+    store.write("runs/other/approval.json", {"run_id": "other"})
+    if settled:
+        store.write("runs/other/result.json", {"success": True})
+    prefix = "runs/other/cells/c/rows/part-"
+    for index in range(200_000):
+        store.blobs[rt.EVIDENCE, f"{prefix}{index:06d}.csv.gz"] = (b"x", "1")
+    listed = []
+    original = store.objects
+
+    def objects(prefix, bucket=rt.EVIDENCE, maximum=20000):
+        listed.append(prefix)
+        return original(prefix, bucket, maximum)
+
+    store.objects = objects
+    lock = rt.EnvironmentLock(store)
+    if settled:
+        assert lock.acquire({"nonce": "n"}) != "0"
+    else:
+        with pytest.raises(rt.Failure, match="lacks a final idle receipt"):
+            lock.acquire({"nonce": "n"})
+    assert listed == ["_control/runs/"]
+
+
+def test_storage_sdk_prefixes():
+    store, adapter = sdk_store(
+        [(200, {"prefixes": ["runs/a/", "runs/b/"], "items": []})]
+    )
+    assert store.prefixes("runs/") == {"runs/a/", "runs/b/"}
+    request = adapter.calls[0][0]
+    assert "delimiter=%2F" in request.url and "prefix=runs%2F" in request.url
+    assert all(options["timeout"] == rt.HTTP_TIMEOUT for _, options in adapter.calls)
+
+
+def test_storage_sdk_list_reports_creation_time():
+    store, _ = sdk_store(
+        [
+            (
+                200,
+                {
+                    "items": [
+                        {
+                            "name": "runs/one",
+                            "generation": "17",
+                            "size": "2",
+                            "timeCreated": "2026-09-19T01:02:03.456Z",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    assert store.objects("runs/") == [
+        {
+            "name": "runs/one",
+            "generation": "17",
+            "size": "2",
+            "created": "2026-09-19T01:02:03.456Z",
+        }
+    ]

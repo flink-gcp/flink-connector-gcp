@@ -70,7 +70,7 @@ The [successful foundation apply](https://github.com/flink-gcp/flink-connector-g
 After verification of the runner's new read permissions, that extension added Cloud Tasks to the common bootstrap helper and the [Helm root](../tier3-operator/README.md), keeping zero replicas.
 BigQuery subsequently extended the helper to four namespaces and the watch set to three application namespaces; Pub/Sub acceptance below establishes the current five-namespace preflight and four-namespace watch set.
 The smoke runner still admits only its existing smoke scenarios.
-Application publication, Cloud Tasks admission, queue creation and performance measurements follow separately reviewed changes and numeric execution approval.
+The cluster measurement session that ran here was removed by [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723) after the assessment moved to a single VM; the namespace, KSA and job Role remain for the recovery scenario of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362).
 
 ### Administrator prerequisites for the namespace extension
 

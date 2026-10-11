@@ -30,8 +30,8 @@ final class MeasurementOptions implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * Where a cluster session's evidence goes. It is the default because the reviewed session file
-     * carries no such field: only a rig that writes elsewhere passes {@code --evidence-root}.
+     * Where a cluster session's evidence went. It was the default because a session file carried no
+     * such field: only a rig that writes elsewhere passes {@code --evidence-root}.
      */
     private static final String CLUSTER_EVIDENCE_ROOT = "gs://flink-gcp-cloudtasks-benchmark/runs/";
 

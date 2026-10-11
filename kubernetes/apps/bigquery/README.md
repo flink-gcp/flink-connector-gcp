@@ -521,7 +521,7 @@ They do not establish a functioning quiescence barrier or live service acceptanc
 
 Authenticated actors, writer fencing, evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
 The four allowances are entries under `[bigquery_ceilings]`, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
-Those documents — the approval, the application and upgrade manifests, the image receipts, the session file and the final result — are weighed against that last allowance before each write, so the run's documents stay inside what it was approved to retain.
+Those documents — the approval, the application and upgrade manifests, the image receipts and the final result — are weighed against that last allowance before each write, so the run's documents stay inside what it was approved to retain.
 Only the documents directly under the run prefix count against it; the per-actor receipts and the query artifacts live in subdirectories and answer to their own entries.
 The count comes from a fixed roster of those document names rather than from listing the prefix: the prefix also holds every receipt, whose object count reaches the listing's twenty-thousand ceiling long before its byte ceiling, and this accounting runs when the final result is written, so a listing here would fail a run at its last step.
 

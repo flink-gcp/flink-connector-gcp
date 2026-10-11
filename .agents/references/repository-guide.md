@@ -619,12 +619,10 @@ top-level type carries a tier annotation, and an unstable Flink import needs its
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
 The parameterized lifecycle delivery uses `flink-tier3 render` to supply package-source JSON;
-see `kubernetes/lifecycle/README.md` for the complete offline command. The `cloudtasks` scenario
-renders one FlinkDeployment per cell of a reviewed session file under
-`kubernetes/lifecycle/sessions/`; before changing the cell vocabulary, the queue lifecycle or the
-session ceilings, read that runbook's session section, `kubernetes/apps/cloudtasks/README.md` and
-ADR-0165, and keep `kubernetes/pkg/cloudtasks/application.cue`, `flink_tier3/cloudtasks/session.py` and
-`policy.toml` in agreement. The `pubsub-recovery` dispatch names a reviewed trial file under
+see `kubernetes/lifecycle/README.md` for the complete offline command. The cluster rig has no
+Cloud Tasks scenario; the `tier3-cloudtasks` namespace, its workload identity and its bucket remain
+for #1362, and a scenario that admits work there is built anew on the shared lifecycle
+(ADR-0165). The `pubsub-recovery` dispatch names a reviewed trial file under
 `kubernetes/lifecycle/pubsub-trials/`; read the [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials)
 and `kubernetes/apps/pubsub/README.md` before adding one. Create the directory with its first
 reviewed trial, and keep it TOML so it carries the licence

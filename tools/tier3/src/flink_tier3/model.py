@@ -17,12 +17,10 @@
 from __future__ import annotations
 
 import copy
-import math
 import re
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from decimal import Decimal
 from enum import Enum
-from fractions import Fraction
 from typing import ClassVar
 
 from .common import Failure, json_bytes, quantity, timestamp
@@ -30,49 +28,16 @@ from .policy import (
     BIGQUERY,
     BIGQUERY_CEILINGS,
     CEILINGS,
-    CELL_ID,
-    CLOUDTASKS,
-    CLOUDTASKS_CEILINGS,
-    CLOUDTASKS_POD_RESOURCES,
-    CLOUDTASKS_POLICY,
     COST_RATES,
-    FLINK_LINES,
     GAR,
     POD_RESOURCES,
-    PROJECT,
     PUBSUB,
     PUBSUB_CEILINGS,
     RECOVERY,
-    REGION,
     RUN_ID,
     SHA,
     SMOKE,
     SYSTEM,
-)
-
-ARMS = (
-    "UNNAMED",
-    "NAMED_HASH",
-    "NAMED_RANDOM_CONTROL",
-    "STAGED_HASH",
-    "STAGED_RANDOM",
-)
-CELL_FIELDS = (
-    "id",
-    "arm",
-    "body_bytes",
-    "parallelism",
-    "concurrency",
-    "checkpoint_seconds",
-    "channel_pool_size",
-    "distribution",
-    "offered_rate",
-    "warmup_seconds",
-    "observation_seconds",
-    "record_limit",
-    "attempt_limit",
-    "control_delay_millis",
-    "emit_attempts",
 )
 
 
@@ -104,181 +69,6 @@ def _hourly(shapes):
     return sum(
         resources[key] / (1024**3 if key != "cpu" else 1) * rate
         for key, rate in COST_RATES.items()
-    )
-
-
-def taskmanager_class(parallelism):
-    return "p" + str(parallelism)
-
-
-def largest_parallelism(cells):
-    return max((int(cell["parallelism"]) for cell in cells), default=1)
-
-
-def session_shapes(cells, shapes=CLOUDTASKS_POD_RESOURCES):
-    """JobManager and TaskManager shapes a session's largest cell needs."""
-    return (
-        shapes["jobmanager"],
-        shapes["taskmanager"][taskmanager_class(largest_parallelism(cells))],
-    )
-
-
-def estimated_session_cost(seconds, cells):
-    """Compute, task-operation and reserve cost of one Cloud Tasks session."""
-    shapes = [
-        POD_RESOURCES["supervisor"],
-        POD_RESOURCES["operator"],
-        *session_shapes(cells),
-    ]
-    compute = _hourly(shapes) * Decimal(str(seconds)) / 3600
-    creations = sum(cell_creations(cell) for cell in cells)
-    operations = (
-        Decimal(creations)
-        * Decimal(CLOUDTASKS_POLICY["task_operation_usd_per_million"])
-        / 10**6
-    )
-    return compute + operations + Decimal("0.25")
-
-
-def cell_creations(cell):
-    """Planning bound on task creations: every subtask exhausts its attempt
-    allowance in every incarnation one JobMaster's restart strategy permits.
-
-    A JobManager failover resets that restart budget, so the cell deadline and
-    the paused queue, not this number, cap what a broken cell can spend.
-    """
-    return (
-        int(cell["attempt_limit"])
-        * int(cell["parallelism"])
-        * (1 + CLOUDTASKS_POLICY["restart_attempts"])
-    )
-
-
-def creator_share(cell, records):
-    """Records the busiest creator maps: all of them at parallelism 1, nine
-    tenths under the skewed distribution, an even share otherwise."""
-    if int(cell["parallelism"]) == 1:
-        return records
-    if cell["distribution"] == "skew":
-        return math.ceil(Fraction(records) * Fraction(9, 10))
-    return math.ceil(Fraction(records, int(cell["parallelism"])))
-
-
-def cell_records(cell):
-    return math.ceil(
-        int(cell["offered_rate"])
-        * (
-            int(cell["warmup_seconds"])
-            + int(cell["observation_seconds"])
-            + 2 * int(cell["checkpoint_seconds"])
-            + 1
-        )
-    )
-
-
-def cell_nominal_seconds(cell):
-    return (
-        int(cell["warmup_seconds"])
-        + int(cell["observation_seconds"])
-        + 2 * int(cell["checkpoint_seconds"])
-        + 1
-    )
-
-
-def cell_budget_seconds(cell):
-    return (
-        CLOUDTASKS_POLICY["cell_startup_seconds"]
-        + cell_nominal_seconds(cell)
-        + CLOUDTASKS_POLICY["cell_teardown_seconds"]
-    )
-
-
-def session_plan(cells):
-    """Serial seconds the approved cells need at their nominal pace."""
-    return sum(cell_budget_seconds(cell) for cell in cells)
-
-
-def validate_cell(cell, manifest=True):
-    """Check one cell against the measurement application's input domains."""
-    expected = set(CELL_FIELDS) | ({"manifest_sha256"} if manifest else set())
-    if not isinstance(cell, dict) or set(cell) != expected:
-        raise Failure("Cell fields differ from the measurement input contract")
-    if not isinstance(cell["id"], str) or not CELL_ID.fullmatch(cell["id"]):
-        raise Failure("Invalid cell ID")
-    for key in CELL_FIELDS:
-        if key in ("id", "arm", "distribution", "emit_attempts"):
-            continue
-        if isinstance(cell[key], bool) or not isinstance(cell[key], int):
-            raise Failure(f"Cell {key} must be an integer")
-    domains = {
-        "arm": ARMS,
-        "body_bytes": (1024, 65536),
-        "parallelism": (1, 4, 16),
-        "concurrency": (1, 4, 16),
-        "checkpoint_seconds": (1, 10, 60),
-        "channel_pool_size": (1, 4, 8),
-        "distribution": ("even", "skew"),
-        "control_delay_millis": (0, 100),
-        "emit_attempts": (True, False),
-    }
-    for key, allowed in domains.items():
-        if cell[key] not in allowed or type(cell[key]) is not type(allowed[0]):
-            raise Failure(f"Cell {key} is outside its enumerated domain")
-    if not 1 <= cell["offered_rate"] <= 10000:
-        raise Failure("Cell offered_rate must be 1..10000")
-    if not 1 <= cell["warmup_seconds"] <= 120:
-        raise Failure("Cell warmup_seconds must be 1..120")
-    if not 1 <= cell["observation_seconds"] <= 600:
-        raise Failure("Cell observation_seconds must be 1..600")
-    records = cell_records(cell)
-    if not records <= cell["record_limit"] <= 10000000:
-        raise Failure("Cell record_limit must cover the window and stay <= 10000000")
-    share = creator_share(cell, records)
-    if not share <= cell["attempt_limit"] <= 3 * records:
-        raise Failure(
-            "Cell attempt_limit must cover one creator's record share and stay <= 3 * records"
-        )
-    if cell["control_delay_millis"] and (
-        cell["arm"] != "UNNAMED"
-        or cell["parallelism"] != 1
-        or cell["concurrency"] != 1
-        or not cell["emit_attempts"]
-    ):
-        raise Failure(
-            "Delay control requires UNNAMED, parallelism/concurrency 1 and CSV"
-        )
-    if manifest and not re.fullmatch(r"[0-9a-f]{64}", str(cell["manifest_sha256"])):
-        raise Failure("Cell must pin its rendered manifest")
-
-
-def validate_cells(cells, manifest=True):
-    """Validate a session's cell list and return its derived expectations."""
-    if not isinstance(cells, list) or not cells:
-        raise Failure("A session needs at least one cell")
-    if len(cells) > CLOUDTASKS_CEILINGS["cells"]:
-        raise Failure("Session exceeds the cell ceiling")
-    for cell in cells:
-        validate_cell(cell, manifest)
-    ids = [cell["id"] for cell in cells]
-    if len(set(ids)) != len(ids):
-        raise Failure("Session cell IDs must be unique")
-    creations = sum(cell_creations(cell) for cell in cells)
-    if creations > CLOUDTASKS_CEILINGS["task_creations"]:
-        raise Failure("Session exceeds the task creation ceiling")
-    return {
-        "cells": len(cells),
-        "task_creations": creations,
-        "records": sum(cell_records(cell) for cell in cells),
-        "plan_seconds": session_plan(cells),
-        "largest_parallelism": largest_parallelism(cells),
-    }
-
-
-def queue_name(run_id):
-    return (
-        f"projects/{PROJECT}/locations/{REGION}/queues/"
-        + CLOUDTASKS_POLICY["queue_prefix"]
-        + run_id
     )
 
 
@@ -316,19 +106,18 @@ def validate_approval(approval, now=None):
     if scenario not in (
         "smoke",
         "generic-recovery",
-        "cloudtasks",
         "bigquery-recovery",
         "pubsub-recovery",
     ):
         raise Failure("Unknown approved scenario")
+    if not approval.keys() <= {item.name for item in fields(Approval)}:
+        raise Failure("Approval carries fields outside its schema")
     recovery = scenario == "generic-recovery"
-    cloudtasks = scenario == "cloudtasks"
     bigquery = scenario == "bigquery-recovery"
     pubsub = scenario == "pubsub-recovery"
     versions = {
         "smoke": 1,
         "generic-recovery": 2,
-        "cloudtasks": 3,
         "bigquery-recovery": 5,
         "pubsub-recovery": 5,
     }
@@ -359,44 +148,21 @@ def validate_approval(approval, now=None):
     if not (bigquery or pubsub) and approval.get("ceilings") != CEILINGS:
         raise Failure("Approval does not match the fixed resource ceilings")
     start, end = timestamp(approval["started_at"]), timestamp(approval["expires_at"])
-    if cloudtasks:
-        _validate_session(approval, start, end)
-    else:
-        for key in (
-            "campaign",
-            "flink_version",
-            "queue",
-            "target",
-            "cells",
-            "cloudtasks_ceilings",
-            "cloudtasks_pod_resources",
-        ):
-            if approval.get(key):
-                raise Failure("Smoke approvals cannot carry Cloud Tasks session fields")
-        if bigquery:
-            _validate_bigquery(approval, start, end)
-        elif pubsub:
-            _validate_pubsub(approval, start, end)
-        elif (
-            not 900 < end - start <= 3600
-            or timestamp(approval["cleanup_at"]) != end - 900
-        ):
-            raise Failure(
-                "Approval must reserve 15 minutes of the one-hour window for cleanup"
-            )
+    if bigquery:
+        _validate_bigquery(approval, start, end)
+    elif pubsub:
+        _validate_pubsub(approval, start, end)
+    elif (
+        not 900 < end - start <= 3600 or timestamp(approval["cleanup_at"]) != end - 900
+    ):
+        raise Failure(
+            "Approval must reserve 15 minutes of the one-hour window for cleanup"
+        )
     if now is not None and (
         now < start - 30 or now >= timestamp(approval["cleanup_at"])
     ):
         raise Failure("Approval is outside its admission window")
-    application = (
-        PUBSUB
-        if pubsub
-        else CLOUDTASKS
-        if cloudtasks
-        else BIGQUERY
-        if bigquery
-        else SMOKE
-    )
+    application = PUBSUB if pubsub else BIGQUERY if bigquery else SMOKE
     if set(approval["namespaces"]) != {application, SYSTEM}:
         raise Failure("Approval must name its application and control namespaces")
     for saved in approval["namespaces"].values():
@@ -410,9 +176,7 @@ def validate_approval(approval, now=None):
                 "Approval requires observed zero Pod/PVC quotas and namespace UIDs"
             )
     roles = {"operator": "operator", "supervisor": "lifecycle-tools"}
-    if cloudtasks:
-        roles["application"] = FLINK_LINES[approval["flink_version"]][0]
-    elif pubsub:
+    if pubsub:
         roles["application"] = "pubsub-recovery"
     elif bigquery:
         roles["application"] = "bigquery-recovery"
@@ -480,40 +244,6 @@ def _validate_bigquery(approval, start, end):
         )
 
 
-def _validate_session(approval, start, end):
-    for key in ("campaign", "flink_version", "queue", "target", "cells"):
-        if key not in approval:
-            raise Failure("Incomplete Cloud Tasks session approval")
-    if approval.get("recovery_policy") or approval.get("upgrade_application_sha256"):
-        raise Failure("A Cloud Tasks session cannot authorize recovery operations")
-    if not RUN_ID.fullmatch(str(approval["campaign"])):
-        raise Failure("Invalid campaign identity")
-    if approval["flink_version"] not in FLINK_LINES:
-        raise Failure("Unsupported Flink line for the measurement application")
-    if approval["queue"] != queue_name(approval["run_id"]):
-        raise Failure("Approved queue must be the run's own ct1246 queue")
-    if approval["target"] != CLOUDTASKS_POLICY["target"]:
-        raise Failure("Approved target differs from the reviewed policy")
-    if (
-        approval.get("cloudtasks_ceilings") != CLOUDTASKS_CEILINGS
-        or approval.get("cloudtasks_pod_resources") != CLOUDTASKS_POD_RESOURCES
-    ):
-        raise Failure("Approval does not match the fixed session ceilings and shapes")
-    plan = validate_cells(approval["cells"])
-    ceilings = CLOUDTASKS_CEILINGS
-    cleanup = ceilings["cleanup_seconds"]
-    window = end - start
-    if (
-        window > ceilings["session_seconds"]
-        or window < plan["plan_seconds"] + cleanup
-        or window > plan["plan_seconds"] + cleanup + 600
-        or timestamp(approval["cleanup_at"]) != end - cleanup
-    ):
-        raise Failure(
-            "Session window must cover the cell plan plus cleanup without over-reservation"
-        )
-
-
 @dataclass(frozen=True)
 class Schedule:
     """Absolute run deadlines and the serial recovery budget."""
@@ -539,20 +269,6 @@ class Schedule:
     def from_approval(cls, approval):
         return cls.for_window(
             timestamp(approval.started_at), timestamp(approval.expires_at)
-        )
-
-    def cell_deadline(self, now, cell):
-        """Latest moment a cell may still run before the session must tear down.
-
-        A slower arm consumes its finite input more slowly than the offered
-        rate; four nominal windows cover the constrained-support ratio.
-        """
-        return min(
-            now
-            + CLOUDTASKS_POLICY["cell_startup_seconds"]
-            + 4 * cell_nominal_seconds(cell)
-            + CLOUDTASKS_POLICY["cell_teardown_seconds"],
-            self.cleanup_at,
         )
 
     def active_seconds(self, now):
@@ -607,13 +323,6 @@ class Approval:
     scenario: str = "smoke"
     recovery_policy: dict = field(default_factory=dict)
     upgrade_application_sha256: str = ""
-    campaign: str = ""
-    flink_version: str = ""
-    queue: str = ""
-    target: str = ""
-    cells: list = field(default_factory=list)
-    cloudtasks_ceilings: dict = field(default_factory=dict)
-    cloudtasks_pod_resources: dict = field(default_factory=dict)
     bigquery_trial: dict = field(default_factory=dict)
     pubsub_trial: dict = field(default_factory=dict)
 
@@ -632,7 +341,7 @@ class Approval:
             return PUBSUB
         if self.scenario == "bigquery-recovery":
             return BIGQUERY
-        return CLOUDTASKS if self.scenario == "cloudtasks" else SMOKE
+        return SMOKE
 
     @property
     def bigquery_plan(self):
@@ -669,33 +378,12 @@ class Approval:
             raise Failure("Approval does not describe a Pub/Sub trial")
         validate_approval(self.to_dict())
 
-    @property
-    def cell_ids(self):
-        return [cell["id"] for cell in self.cells]
-
-    def cell(self, cell_id):
-        for cell in self.cells:
-            if cell["id"] == cell_id:
-                return cell
-        raise Failure("Cell is not part of this approval")
-
     def to_dict(self):
         value = asdict(self)
         if self.scenario != "pubsub-recovery":
             value.pop("pubsub_trial")
         if self.scenario != "bigquery-recovery":
             value.pop("bigquery_trial")
-        if self.scenario != "cloudtasks":
-            for key in (
-                "campaign",
-                "flink_version",
-                "queue",
-                "target",
-                "cells",
-                "cloudtasks_ceilings",
-                "cloudtasks_pod_resources",
-            ):
-                value.pop(key)
         return value
 
 
@@ -722,7 +410,7 @@ def open_for_replacement(record):
     The measured preemption lands in a Pod's first seconds, and the runner can
     reach `RUNNING` while the Pod it took is still terminating, so the window
     runs to the holder's first act of supervision rather than to admission.
-    After that the run's cells, recovery stages and polling state belong to
+    After that the run's recovery stages and polling state belong to
     the holder, and none of them can be resumed by another process. A run
     already stopping has nothing for a replacement to carry on.
     """
@@ -732,6 +420,22 @@ def open_for_replacement(record):
         and not record.evidence_failed
         and not record.supervision_started
     )
+
+
+# Fields the removed Cloud Tasks session added to every control record (#1723).
+# A record written before then still carries them, empty for any other scenario,
+# and recovery of a run that spans the change must be able to read it.
+RETIRED_RECORD_FIELDS = frozenset(
+    {
+        "queue_intent",
+        "queue",
+        "cells",
+        "cell_intent",
+        "operations",
+        "exports",
+        "evidence_bytes",
+    }
+)
 
 
 @dataclass
@@ -759,21 +463,15 @@ class RunRecord:
     supervisor_pod: str | None = None
     supervisor_claimed_at: str | None = None
     supervision_started: bool = False
-    queue_intent: bool = False
-    queue: dict | None = None
-    cells: dict = field(default_factory=dict)
-    cell_intent: dict | None = None
-    operations: dict = field(default_factory=dict)
-    exports: dict = field(default_factory=dict)
-    evidence_bytes: int = 0
     bigquery: dict | None = None
     pubsub: dict | None = None
 
     @classmethod
     def from_dict(cls, value):
         try:
-            return cls(**{**value, "phase": Phase(value["phase"])})
-        except (TypeError, KeyError, ValueError) as error:
+            kept = {k: v for k, v in value.items() if k not in RETIRED_RECORD_FIELDS}
+            return cls(**{**kept, "phase": Phase(value["phase"])})
+        except (TypeError, KeyError, ValueError, AttributeError) as error:
             raise Failure("Invalid run control record") from error
 
     def to_dict(self):

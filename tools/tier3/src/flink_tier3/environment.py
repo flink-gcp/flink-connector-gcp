@@ -37,12 +37,8 @@ class Environment:
         clock=time.time,
         sleep=time.sleep,
         actor="supervisor",
-        queues=None,
-        ledger=None,
     ):
         self.kube, self.store = kube, store
-        # Cloud Tasks session collaborators; None for the smoke scenarios.
-        self.queues, self.ledger = queues, ledger
         self.approval = (
             approval if isinstance(approval, Approval) else Approval.from_dict(approval)
         )

@@ -17,7 +17,6 @@ import flink_tier3 as rt
 
 from .bigquery.exercise import require_handoff
 from .bigquery.handoff import require_bigquery_clean
-from .cloudtasks.session import admission_budget_open, admit_queue
 from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
 from .pubsub.admission import admit, require_admission
 from .pubsub.guard import admission_deadline
@@ -47,10 +46,6 @@ class Runner:
         self.cleanup = rt.Cleanup(env)
 
     @property
-    def cloudtasks(self):
-        return self.env.approval.scenario == "cloudtasks"
-
-    @property
     def namespace(self):
         return self.env.approval.application_namespace
 
@@ -72,10 +67,6 @@ class Runner:
             self.env.clock() >= admission_deadline(self.env)
         ):
             raise rt.Failure("Pub/Sub admission deadline expired")
-        # Admission may spend at most one cell's startup allowance, so the
-        # first cell keeps the budget the session plan reserved for it.
-        if self.cloudtasks:
-            admission_budget_open(self.env)
 
     def supervisor_open(self):
         """Refuse further admission once the supervisor Job has ended.
@@ -274,26 +265,19 @@ class Runner:
         )
         self.admission_open()
         self.supervisor_open()
-        if self.cloudtasks:
-            self.cleanup.quota(self.namespace, "session")
+        if self.env.approval.scenario == "bigquery-recovery":
+            self.bigquery.initialize()
+            self.bigquery.provision()
             self.admission_open()
-            self.env.ledger.admit(self.env.approval.cell_ids)
-            admit_queue(self.env)
-            self.env.records.operations("runner", self.env.queues.meter.snapshot())
+            self.supervisor_open()
+        if pubsub:
+            # Opens the application quota itself, for the probe Pod.
+            admit(self, probe)
+            self.admission_open()
+            self.supervisor_open()
         else:
-            if self.env.approval.scenario == "bigquery-recovery":
-                self.bigquery.initialize()
-                self.bigquery.provision()
-                self.admission_open()
-                self.supervisor_open()
-            if pubsub:
-                # Opens the application quota itself, for the probe Pod.
-                admit(self, probe)
-                self.admission_open()
-                self.supervisor_open()
-            else:
-                self.cleanup.quota(self.namespace, "run")
-            self.create_application(application)
+            self.cleanup.quota(self.namespace, "run")
+        self.create_application(application)
         self.admission_open()
         self.env.records.set_phase(rt.Phase.RUNNING)
 
@@ -434,10 +418,6 @@ class Runner:
             if not application:
                 raise rt.Failure("Missing immutable application intent")
             self.adopt_application(application)
-        if control.cell_intent and "cell:" + control.cell_intent["cell"] not in (
-            self.env.roots
-        ):
-            self.cleanup.adopt_intended_cell(self.cleanup.inventory())
         # A success receipt fixed the verdict when it was written, and a
         # finalization retry compares it with the one the record derives. A
         # failure of this settlement's own writes is not the run's, so it must
@@ -537,8 +517,6 @@ class Runner:
         if self.cleanup.remaining_state():
             raise rt.Failure("Run state remains after cleanup")
         self.env.emit("idle", snapshot)
-        if self.cloudtasks:
-            self.env.records.operations("runner", self.env.queues.meter.snapshot())
         self.env.records.settled(self.env.evidence_failed and not keep_verdict)
         if keep_verdict and self.env.evidence_failed:
             raise rt.Failure(
@@ -553,7 +531,6 @@ class Runner:
 
     def receipt(self, control, plans):
         """The final receipt this run control record and plans produce."""
-        cells = control.cells
         result = {
             "nonce": self.env.approval.nonce,
             "sha": self.env.approval.sha,
@@ -565,11 +542,6 @@ class Runner:
                 and not self.env.evidence_failed
                 and (
                     self.env.approval.scenario == "smoke"
-                    or (
-                        self.cloudtasks
-                        and set(cells) == set(self.env.approval.cell_ids)
-                        and all(c.get("status") == "completed" for c in cells.values())
-                    )
                     or (
                         self.env.approval.scenario == "generic-recovery"
                         and (control.recovery or {}).get("stage") == "complete"
@@ -604,33 +576,6 @@ class Runner:
                 scenario=self.env.approval.scenario,
                 bigquery_trial=self.env.approval.bigquery_trial,
                 recovery=control.recovery,
-            )
-        if self.cloudtasks:
-            result.update(
-                scenario=self.env.approval.scenario,
-                campaign=self.env.approval.campaign,
-                flink_version=self.env.approval.flink_version,
-                queue={"name": self.env.approval.queue, "admitted": control.queue},
-                cells=cells,
-                operations=control.operations,
-                benchmark_evidence_retained=self.cleanup.retained_evidence(),
-                # The session-level export summary, which the control record
-                # carries and this receipt outlives: `finalize` deletes the
-                # control record once the receipt is written.
-                exported={
-                    cell_id: {
-                        key: summary.get(key)
-                        for key in ("outcome", "objects", "evidence_bytes")
-                    }
-                    | {
-                        "reconciliation": (summary.get("reconciliation") or {}).get(
-                            "status"
-                        ),
-                        "manifest_sha256": summary.get("manifest_sha256"),
-                    }
-                    for cell_id, summary in sorted(control.exports.items())
-                },
-                evidence_bytes=control.evidence_bytes,
             )
         if control.pubsub is not None:
             result["pubsub"] = control.pubsub

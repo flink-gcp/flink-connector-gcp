@@ -32,7 +32,6 @@ from flink_tier3.policy import BIGQUERY, BIGQUERY_CEILINGS, BIGQUERY_STATE, RECO
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
-from ..cloudtasks.test_session import session_approval
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, rt
 from .test_lifecycle import Resources
@@ -431,13 +430,12 @@ def test_a_valid_bigquery_delivery_is_admitted_by_the_entrypoint(prepared, tmp_p
     """
     environment, application, upgrade, _ = prepared
     mount(tmp_path, environment, application, upgrade)
-    _, approved, mounted_application, mounted_upgrade, cells = runtime.verify_delivery(
+    _, approved, mounted_application, mounted_upgrade = runtime.verify_delivery(
         tmp_path
     )
     assert approved.scenario == "bigquery-recovery"
     assert mounted_application == application
     assert mounted_upgrade == upgrade
-    assert cells is None
     # Off-cluster, the next thing it does is read its service account: the
     # delivery is not what stops it.
     with pytest.raises(FileNotFoundError, match="serviceaccount"):
@@ -495,7 +493,7 @@ def test_live_inventory_scope_matches_approval(application):
     assert {namespace for _, namespace in calls} == {rt.SMOKE, rt.CLOUDTASKS, rt.SYSTEM}
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2])
 def test_legacy_recovery_keeps_its_original_inventory_baseline(env, version):
     kube, store, approval, clock = env
     if version == 2:
@@ -505,8 +503,6 @@ def test_legacy_recovery_keeps_its_original_inventory_baseline(env, version):
             recovery_policy=copy.deepcopy(RECOVERY),
             upgrade_application_sha256="f" * 64,
         )
-    elif version == 3:
-        session_approval(env)
     existing = obj("ConfigMap", "kube-root-ca.crt", BIGQUERY)
     kube.put(existing)
     environment = Environment(kube, store, approval, clock, clock.sleep)

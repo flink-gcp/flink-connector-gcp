@@ -617,7 +617,7 @@ def test_a_directory_without_a_bigquery_run_reports_no_section(tmp_path):
     value = record()
     run_dir = write_run(tmp_path, value, receipt_for(value))
     (run_dir / "approval.json").write_text(
-        json.dumps({"run_id": RUN, "scenario": "cloudtasks", "cells": []})
+        json.dumps({"run_id": RUN, "scenario": "smoke"})
     )
     report = analyze.analyze(tmp_path)
     assert report["bigquery"] == []

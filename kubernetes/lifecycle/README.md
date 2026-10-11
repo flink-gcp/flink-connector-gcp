@@ -20,10 +20,8 @@ limitations under the License.
 lifecycle/
   delivery.cue       # Shared inputs, ConfigMap and supervisor Job
   smoke.cue          # Smoke and generic recovery applications
-  cloudtasks.cue     # Cloud Tasks session inputs and applications
   bigquery.cue       # BigQuery trial inputs and applications
   pubsub.cue         # Pub/Sub trial inputs, applications and access probe
-  sessions/          # Reviewed Cloud Tasks session files
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
@@ -33,7 +31,7 @@ The `Tier-3 run` workflow admits one generic smoke application and returns the e
 Its `scenario` input selects ordinary completion (`smoke`, the default) or the fixed `generic-recovery` exercise below.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
-BigQuery, Pub/Sub, and Cloud Tasks each have a service subpackage; shared lifecycle and infrastructure modules remain at the package root.
+BigQuery and Pub/Sub each have a service subpackage, and the single-host Cloud Tasks rig of [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) has its own; shared lifecycle and infrastructure modules remain at the package root.
 The delivered source inventory uses relative paths, including subdirectories.
 ConfigMap keys replace `/` with `.`, and volume projection restores the directories before the supervisor imports them.
 Source relocation changes the approval's source pins; existing approvals and measurement records keep their historical hashes, and a new-layout run requires a new approval.
@@ -47,9 +45,9 @@ Adding a module the entrypoint reaches includes it in both the delivery and its 
 The rendered-payload test runs the projected directory, which catches a module missing at import time; a module reached only by a deferred import inside a function is delivered by the walk but not exercised there.
 The Pod's command is fixed by this manifest, and `bundle.POD_COMMANDS` names it, because the CLI resolves a command to its module through a computed import that no walk can follow.
 Every command but `supervisor` and the offline analyses reads the repository from `repository.ROOT`, which the CLI sets from `--repository`; the CLI does not import the modules those commands use, and the cluster client and root plans live in `lifecycle`, their only caller, so nothing delivered reaches `bootstrap`, `lifecycle` or `schemas`.
-The 32-cell fixture keeps UTF-8 ConfigMap data below 768 KiB, reserving 256 KiB below the [Kubernetes data ceiling](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/apis/core/validation/validation.go); it also keeps the serialized JSON below 1 MiB.
+Every lifecycle scenario's rendered ConfigMap keeps UTF-8 data below 768 KiB, reserving 256 KiB below the [Kubernetes data ceiling](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/apis/core/validation/validation.go); it also keeps the serialized JSON below 1 MiB.
 The data budget counts values as Kubernetes does, excluding the extra quoting and escaping in JSON.
-Data headroom and JSON overhead are guarded separately, because JSON quoting and escaping can push the wire form over a 768 KiB guard the data stays under: with the Pub/Sub handoff module the fixture measured 737,522 data bytes and 789,286 JSON bytes.
+Data headroom and JSON overhead are guarded separately, because JSON quoting and escaping can push the wire form over a 768 KiB guard the data stays under: with the Pub/Sub handoff module a 32-cell Cloud Tasks delivery measured 737,522 data bytes and 789,286 JSON bytes, and after that scenario's removal the smoke delivery measured 526,309 and 553,425.
 Third-party dependencies remain preinstalled in the pinned image; package source changes need no image rebuild or startup installation.
 
 | File | Responsibility |
@@ -63,11 +61,8 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
 | `flink_tier3/exercise.py` | One savepoint upgrade, one JM Pod deletion and phase-specific recovery evidence |
-| `flink_tier3/cloudtasks/session.py` | Cloud Tasks queue ownership, campaign ledger, session files and cell manifest checks |
-| `flink_tier3/cloudtasks/protocol.py`, `cloudtasks/protocol_1246.toml` | The pinned #1246 measurement protocol and the quantities sessions derive from it |
-| `flink_tier3/cloudtasks/observe.py` | Per-poll Flink REST, TaskManager, queue and Pod observations of a running cell, and the interrupt control |
-| `flink_tier3/cloudtasks/evidence.py` | Row and receipt reconciliation, verified export to durable evidence and benchmark prefix release |
-| `flink_tier3/analyze.py` | Offline analysis of downloaded evidence: windows, throughput, p95, verdicts and calibration checks |
+| `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery and Pub/Sub runs |
+| `flink_tier3/cloudtasks/` | The single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
 | `flink_tier3/bigquery/plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
 | `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after the quiescence barrier |
@@ -99,7 +94,7 @@ Merging this implementation does not authorize a dispatch.
 ## Execution approval
 
 A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, the ceilings below and the run's cost estimate; spend is approved from that estimate before dispatch, and nothing at run time compares spend against it.
-The estimate is `estimated_cost` over the window for smoke and generic recovery, `estimated_session_cost` over a session's cells, which its preregistration states, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
+The estimate is `estimated_cost` over the window for smoke and generic recovery, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
 Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
 The run workflow can check out another rig commit through `rig_sha`, which must equal the approved `reviewed_sha` and head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
@@ -107,7 +102,6 @@ The Job replaces a disrupted supervisor Pod, and the replacement carries the run
 The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES` verbatim.
 Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
 The last 15 minutes are reserved for cleanup, leaving at most 45 minutes for startup and the 30-minute smoke job.
-A Cloud Tasks session's evidence is downloaded and analyzed after the run; see [Local verification and evidence](#local-verification-and-evidence).
 
 After obtaining that separate execution approval, use the Actions UI or this command with the approved values:
 
@@ -124,7 +118,8 @@ This authorizes one savepoint upgrade and one deletion of the owned JobManager P
 Ordinary smoke approvals retain version 1, while recovery approvals use version 2 and pin the recovery policy and both application manifests.
 Recovery tooling can settle either version; it never resumes the exercise or repeats an injected disruption.
 
-A Cloud Tasks measurement session is the third scenario; its dispatch, ceilings and queue lifecycle are in [Cloud Tasks session](#cloud-tasks-session) below.
+The cluster rig has no Cloud Tasks scenario.
+Its measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM; the `tier3-cloudtasks` namespace and its workload identity remain for a later recovery scenario ([#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362)), and every run's inventory still lists that namespace.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -148,8 +143,8 @@ The Operator uses its tracked normal-capacity template.
 
 `tier3-system` is sized for a third Pod of the Operator's shape, and nothing runs in it.
 A preempted Pod holds its quota until it finishes terminating, so without that slot the Deployment's own replacement is refused.
-The Spot namespaces get no such slot on purpose, for a reason of cost rather than of detection: a replacement TaskManager of the largest approved class would nearly double what the session quota enforces.
-What a replacement costs the measurement is scenario-specific; for a Cloud Tasks cell the restart that accompanies it already invalidates the cell, and for a smoke run an owned replacement that restores the same lineage can finish successfully.
+The Spot namespaces get no such slot on purpose, for a reason of cost rather than of detection: a slot for a replacement TaskManager would raise every application quota by a Pod the run rarely needs.
+What a replacement costs the measurement is scenario-specific; for a smoke run an owned replacement that restores the same lineage can finish successfully.
 
 | Budget | Ceiling or stop condition |
 | --- | --- |
@@ -211,7 +206,7 @@ The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint obs
 Every log read retains up to 1 MiB: the first the startup history, later ones what arrived since the previous observation, which can still be a whole startup when the first read came before the container printed it.
 Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.
 Every measurement Pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: false`.
-Autopilot's autoscaler repacks Pods off an under-used node, and the end of a cell leaves exactly that; measured on 2026-09-20, two JobManagers were replaced two and five minutes after the previous cell's Pods went away, restarting jobs that were otherwise healthy and invalidating both cells.
+Autopilot's autoscaler repacks Pods off an under-used node, and the end of one Cloud Tasks measurement cell left exactly that; measured on 2026-09-20, two JobManagers were replaced two and five minutes after the previous cell's Pods went away, restarting jobs that were otherwise healthy and invalidating both cells.
 The annotation is the supported way to say a Pod must not be moved for consolidation; it does not stop a `system-cluster-critical` preemption or a Spot reclamation, which no workload setting can.
 The JobManager also runs on normal capacity while the TaskManagers stay on Spot, because losing it restarts the job rather than costing slots.
 
@@ -273,86 +268,6 @@ An interrupted or insufficiently observed trial is never reported as steady-stat
 Before approving dispatch, verify the three applied infrastructure roots and their empty refreshed plans, the idle Helm release, workload KSA/GSA binding and state-bucket grant, and live image retention through expiry plus 24 hours.
 Do not merge infrastructure changes while the run holds the shared lock.
 The [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran this procedure, under its then four-Pod approval, on 2026-09-17; a later change to this procedure supplies no GKE execution result by itself.
-
-## Cloud Tasks session
-
-A `cloudtasks` dispatch admits one measurement session for [issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246): an ordered list of cells from a reviewed session file, executed one FlinkDeployment at a time in `tier3-cloudtasks`.
-The workflow input must contain `APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES` verbatim, and the dispatch names `session` (a file under [sessions/](sessions/) without its `.toml` suffix), `flink_version` (`2.2.1` or `1.20.4`) and `application_digest` (the published `sha256:` digest of that line's measurement application package).
-Expiry must cover the session plan plus 15 minutes of cleanup and lie within ten minutes of that sum, at most 300 minutes ahead; the plan is the sum over cells of ten minutes of startup, the nominal input window and three minutes of teardown.
-After obtaining that separate execution approval and a published digest, dispatch with the approved values:
-
-```sh
-gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
-  -f scenario=cloudtasks -f session=APPROVED_SESSION_NAME \
-  -f flink_version=2.2.1 -f application_digest=sha256:PUBLISHED_DIGEST \
-  -f run_id=APPROVED_RUN_ID -f reviewed_sha=APPROVED_MAIN_SHA \
-  -f expires_at=APPROVED_UTC_EXPIRY \
-  -f 'approval=APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES'
-```
-
-The application digest is verified live against Artifact Registry with the same 24-hour retention margin as the other images; it is never pinned in `images/pins.cue`, and a digest for the wrong line's package is refused.
-Merging this implementation authorizes no dispatch.
-The measurement application is published for both lines from `339d0a90675dffee74305cebe021093c6a1f9b4b`, by [the 2.2.1 run](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474382654) and [the 1.20.4 run](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35474834488); the calibration preregistration records the two digests, and each session still needs its own approved dispatch.
-
-| Budget | Ceiling or stop condition |
-| --- | --- |
-| Duration | Absolute expiry within 300 minutes; begin cleanup 15 minutes before it |
-| Cells | At most 20 per session, each with a unique ID that is not `running` or `completed` in the campaign ledger |
-| Pods | Five total: JobManager and TaskManager in `tier3-cloudtasks`, Operator and supervisor in `tier3-system`, and one slot a replacement occupies while the Pod it replaces terminates; a supervisor attempt the Job retains once terminal holds no capacity and is not counted |
-| Task creations | Planning bound over the session: each cell's per-creator attempt limit times its subtasks times the four incarnations one JobMaster's fixed-delay strategy allows, at most 12,000,000; the expected count is the cells' record totals, and an attempt limit must at least cover the busiest creator's records (all of them at parallelism 1, nine tenths under skew, an even share otherwise) |
-| Queue administration | At most six queue writes per actor (create, pause and delete are the only ones issued, none retried); zero dispatches, checked on every poll |
-| Reads | At most 60,000 metered Cloud Tasks, Flink REST and evidence-storage requests per actor, counted one per listing, receipt, part and rewrite; the chunk reads behind a part and the metadata read after a rewrite are not counted separately. A poll costs about ten, a session about 12,000 |
-| State | Stop on observed checkpoint state above 1 GiB or 20,000 objects under the current cell |
-| Logs | Stop collecting at 100 MiB; a truncated read is recorded, not fatal, because evidence rows travel through storage |
-| Durable evidence | 4 GiB per session for the exported rows and receipts; supervisor receipts 256 MiB, runner receipts 32 MiB |
-| Cost estimate | `estimated_session_cost` over the session window: compute at the policy rates, the task-creation planning bound at USD 0.40 per million and a USD 0.25 reserve, approved before dispatch |
-
-The TaskManager shape follows the cell's parallelism class: 1 CPU/4 GiB for parallelism 1, 2 CPU/8 GiB for 4 and 4 CPU/16 GiB for 16, each with one slot per parallel subtask; the JobManager is 1 CPU/2 GiB.
-The TaskManager selects Spot and the JobManager normal capacity; the session quota admits two Pods sized for the largest approved class.
-The approval embeds the session ceilings and shapes byte for byte from `policy.toml`, the queue name, the target URL, the Flink line and every cell with the SHA-256 of its rendered manifest.
-
-The runner creates `projects/flink-gcp/locations/us-central1/queues/ct1246-RUN_ID` only after a read proves it absent, with its rate limits, retry configuration and one-hour tombstone in the create request, then pauses it and reads back `PAUSED`, the submitted configuration and zero dispatch statistics.
-Project IAM does not restrict the queue prefix, so the client is bound to that exact name and refuses any other.
-A name the service still tombstones fails either the create or the readback that follows, and with it the run; the name is never changed or retried, and unique run IDs keep the runtime from tombstoning its own names.
-A queue is not readable the instant it is created: for as much as a minute the service answers a transient status or nothing at all, and reports the state the queue held before the pause for a moment after it. Admission therefore waits up to two minutes for the paused readback to settle, recording `queue-initializing` when it had to, and the read before the create is repeated on the same terms; neither window outlives the session's admission budget, which the whole admission shares, and each re-read rechecks that admission is still open. A readback that names another queue, carries a configuration outside the approved one, shows any dispatch, or reports a state that is neither the pause nor the `RUNNING` the queue held before it, is a deviation the moment it arrives and is never waited out.
-The supervisor re-reads the queue on every poll and stops the session on any state change or nonzero dispatch count.
-Cleanup pauses and deletes the queue and proves it absent; a remaining queue blocks the idle receipt and retains the environment lock.
-Cleanup touches the name only after this run persisted its intent to create it; a run refused because the name already existed leaves that queue alone and records `queue-retained-unowned` when one is present.
-A JobManager failover resets the restart budget the creation bound assumes, so the bound is a planning figure: the cell deadline and the paused queue, not the bound, cap what a misbehaving cell can spend.
-
-Each cell is a rendered FlinkDeployment named after the cell, with the approval nonce, scenario and cell annotations, the measurement application's arguments in a fixed order and checkpoint state under `gs://flink-gcp-cloudtasks-benchmark/runs/RUN_ID/cells/CELL_ID/state/`.
-The CLI validates the session file's cell vocabulary before rendering, and the CUE delivery refuses duplicate IDs and unknown keys on its output path because the pinned CUE evaluator does not report closedness errors away from that path.
-The supervisor verifies every delivered manifest against the approval before touching the cluster, then for each cell in order: rechecks the queue, claims the cell in the campaign ledger, persists the creation intent, creates the deployment, observes it through its owner-verified REST Service until `FINISHED`, a terminal state or the cell deadline, deletes it, waits for its Pods and HA metadata to disappear, and deletes the cell's checkpoint state.
-The cell deadline allows ten minutes of startup, four nominal input windows and three minutes of teardown, so an arm that sustains a quarter of the offered rate still finishes its finite input.
-A cell whose job fails or exceeds its deadline is recorded as `failed` and the session continues; a cell whose budget no longer fits before cleanup is recorded as `skipped` and never started.
-A queue deviation, evidence failure, stop request or lost workload ends the session immediately, and cleanup marks the running cell `interrupted`.
-Cleanup checks the persisted cell intent against the inventory on every pass and adopts a deployment that landed after the stop when its nonce and approved manifest match, so a create in flight at the moment of the stop is still removed; the runner's cleanup also waits for such an intent while the supervisor Job is still active, up to the force window.
-When the approved manifest cannot be read, the object is neither adopted nor deleted; it is reported as `cell-adoption-refused` and the idle check then retains the lock for an operator.
-The first cell is credited with the time since the approval's start, up to its startup allowance, so a session approved with the minimum window still runs it.
-The session succeeds only when every approved cell completed.
-
-The campaign ledger `_control/campaigns/CAMPAIGN.json` records each cell's status, run, nonce, attempt count and reason across sessions.
-`completed` records that the cell's job finished, its workload was removed and its evidence was exported; the collector's verdict on whether those rows and receipts are complete travels with the export and never reopens the ledger entry.
-Admission refuses a session whose cells are already `completed` or `running`; a `failed` or `interrupted` cell can be claimed again by a later reviewed session, and the attempt count records that repetition.
-A cell cut short by the session's cleanup deadline rather than its own is recorded as `failed` with the reason `session window`.
-A queue read that fails transiently is recorded as `queue-read-unavailable`; the third consecutive failure stops the session, and any readback that shows a resumed or dispatching queue stops it at once.
-Mutable control records are outside automatic expiry; the ledger is the durable record that a cell already ran.
-
-Evidence under `runs/RUN_ID/` additionally holds `session.json`, `application.json` as the array of cell manifests, `queue-admitted`, `queue-deviation`, `queue-deleted`, `cell-start`, `cell-status`, `cell-finished` and `cell-skipped` receipts, one `observation` receipt per poll, and a final receipt with the campaign, queue readback, per-cell outcomes, each actor's operation counters, the exported cells and their evidence bytes.
-
-While a cell runs, the supervisor records one `observation` per poll: the job state and timestamps with the JobManager clock offset, checkpoint counts and the latest completed and restored checkpoints with at most two new checkpoint details per poll, the sink and source vertex metrics (including the connector's staged-task, staged-byte and replay-budget gauges when the arm registers them), each TaskManager's heap and garbage-collection figures, the last queue readback, and the Pods' phases, restarts and effective resources.
-The sink vertex resolves on the first poll that reaches the job, but its metric identifiers do not: a task registers its own metrics when it deploys and the sink's operators register theirs when they open, so every poll of warm-up lists the vertex again and adds what it selects to the set that poll samples.
-The end of warm-up settles that set and records it as `cell-metrics-discovered` with the number of listings that answered; a cell that resolved its vertices and then ended before warm-up settles when its evidence is collected, while one whose job never answered resolved nothing and records nothing, and a staged arm whose gauges are missing from the settled set is marked `metrics-unavailable`.
-The JobManager's clock is compared with the supervisor's only through the offset each observation records, and monotonic values are never compared across processes; the TaskManager wall clock that stamps receipts and rows carries no recorded offset, so the analyzer compares it with the supervisor domain as it is and says so in its report.
-A cell whose ID ends in `-k11` is the interrupt control: 60 seconds after its warm-up the supervisor persists an `interrupt-intent` receipt and deletes the TaskManager Pod without a grace period, once, to produce an incarnation without a terminal receipt.
-
-After each cell and before the campaign ledger settles it, the collector reconciles the cell's rows and receipts in the benchmark bucket before anything is copied: every creator registration needs a terminal receipt, part indices are contiguous per incarnation, rows decode and belong to the cell, sequences lie within the source's mapped range, duplicate `(sequence, attempt)` rows within an incarnation and unexplained `ALREADY_EXISTS` outcomes invalidate the cell, and row counts must equal the terminal counts.
-The verdict is `complete`, `incomplete`, `restarted` or `invalid` with its reasons; every verdict is exported.
-Objects are copied with server-side rewrites into `runs/RUN_ID/cells/CELL_ID/` under the evidence bucket, each verified by size and by a checksum the destination must report, against the bytes streamed during reconciliation, within the session evidence ceiling checked before the first copy; the run record then gains the export and its bytes, and `exported.json` records the verdict, the object hashes and a manifest hash in both buckets.
-Only after that marker exists is the cell's benchmark prefix (state, rows, receipts and finally the marker) released, and the release deletes only what the marker authorizes: each evidence object at the generation that was copied and verified, the job's own checkpoint state, and the benchmark copy of the marker.
-An object the reconciliation refused, and one replaced after the export read it, are kept and named in `benchmark-evidence-retained`, because evidence that no longer exists cannot reproduce the reason recorded about it.
-A cell whose export failed keeps its objects for the bucket's one-day expiry and is listed there too.
-An export failure stops the session and leaves the cell running in the ledger, so cleanup marks it interrupted and a later reviewed session may claim it again; an exported cell whose prefix still holds objects blocks the idle receipt.
 
 ## SDK transport
 
@@ -493,13 +408,9 @@ Run evidence becomes deletion-eligible after 30 days; mutable `_control/` record
 An unsuccessful run can still have an idle result: check both `success` and `idle`, together with the three plan receipts.
 After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
 Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
-A Cloud Tasks session's download also holds `cells/CELL_ID/{rows,receipts,exported.json}`; `just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` verifies every exported object against the hash its own marker records, re-runs the reconciliation, selects each cell's observation window, computes unique-record throughput and per-repetition p95, applies the preregistered verdict rules and writes `report.json` and `report.md` into an `analysis` directory beside the run, without contacting any service.
-The marker is not signed, so the analysis proves the mirror matches what the session recorded, not that the mirror is the session's.
-The same command reports a deployed BigQuery run's verdict, recomputed from its exported `recovery-complete` record rather than read from its receipt, with the reasons behind it; a verdict the record's own stored inputs do not support, an evidence set without the run's account of itself and a receipt disagreeing with the evidence beside it are excluded under the same statuses, while a run that simply did not complete is inconclusive rather than excluded.
-A cell carries a steady-state result only when the supervisor's outcome for it was `completed`, its evidence reconciles complete and matches its marker, it did not restart, its observed window holds the required checkpoints and, when its ID names a protocol entry, its executed conditions match that entry; anything else is reported with its reason and contributes to no group verdict, capacity decision, or pacing, delay or steady-state acceptance item.
-The acceptance items about metric discovery and task-name shape ask only that the cell's evidence was exported and matches its marker, because neither reads a rate or a window.
-Calibration acceptance is reported once per campaign and Flink line, because the 1.20.4 session repeats `k01` to `k04` under the same identifiers.
-The analyzer's rules are part of the package `runtime_sha256` covers, so the approval still pins the protocol document and the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set that `delivery_sha256` pins.
+`just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` writes `report.json` and `report.md` into an `analysis` directory beside the run, without contacting any service.
+It reports a deployed BigQuery run's verdict, recomputed from its exported `recovery-complete` record rather than read from its receipt, with the reasons behind it; a verdict the record's own stored inputs do not support, an evidence set without the run's account of itself and a receipt disagreeing with the evidence beside it are excluded under the same statuses, while a run that simply did not complete is inconclusive rather than excluded.
+The analyzer's rules are part of the package `runtime_sha256` covers, so the approval still pins the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set that `delivery_sha256` pins.
 Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs such as the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) can show.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
@@ -512,14 +423,12 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 
 This prints JSON resources for inspection; its synthetic inputs do not authorize admission.
 Add `--scenario generic-recovery` to render the recovery payload and both manifests.
-For a Cloud Tasks session, add `--scenario cloudtasks --cells-file kubernetes/lifecycle/sessions/example-wiring.toml --application-image IMAGE` with a digest-form image reference; `--expression cellManifests` prints the per-cell manifests instead of the supervisor bundle.
-A synthetic digest renders locally but never passes the live registry check that admission performs.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
 The version 5 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
-A BigQuery trial is dispatched beside the Cloud Tasks session: the run workflow takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
+A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
 A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's record count, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 
 ## Reviewed Pub/Sub trials

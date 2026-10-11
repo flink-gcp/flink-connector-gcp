@@ -28,11 +28,7 @@ def owned_writers(env, seen=None):
     load-bearing on its own: `env.observed` is not scoped, and carries the
     supervisor's uids because the cleanup inventory seeds from every root.
     """
-    roots = {
-        ref["uid"]
-        for key, ref in env.roots.items()
-        if key == "application" or key.startswith("cell:")
-    }
+    roots = {ref["uid"] for key, ref in env.roots.items() if key == "application"}
     items = namespace_writers(env)
     known = ownership(items, roots | set(env.observed) | set(seen or ()))
     if seen is not None:

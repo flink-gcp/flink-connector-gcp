@@ -14,8 +14,7 @@
 # limitations under the License.
 """Writer listings and the retrying quiescence poll the service barriers share."""
 
-from .cloudtasks.session import transient
-from .common import Failure
+from .common import Failure, transient
 from .policy import POLL
 
 # Kinds that can carry or restore a writer. A Pod runs one; the controllers

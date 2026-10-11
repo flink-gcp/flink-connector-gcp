@@ -37,7 +37,6 @@ from .policy import (
     EVIDENCE,
     GENERATION_RACES,
     HTTP_TIMEOUT,
-    MIB,
     PROJECT,
     RACE_BACKOFF_CAP,
     RACE_BACKOFF_FIRST,
@@ -215,75 +214,6 @@ class Storage:
                 raise Failure("Prefix inventory exceeds its count ceiling")
             return set(iterator.prefixes)
 
-    def metadata(self, name, bucket=EVIDENCE):
-        """Size, checksums, generation and creation time, or None when absent."""
-        try:
-            with self.operation("GET", name):
-                blob = self.client.bucket(bucket).blob(name)
-                blob.reload(timeout=HTTP_TIMEOUT, retry=None)
-        except ApiError as error:
-            if error.status == 404:
-                return None
-            raise
-        return _metadata(blob)
-
-    def open(self, name, generation, bucket=EVIDENCE, chunk_size=MIB):
-        """A binary stream over one observed generation; a replacement fails it."""
-        if not generation or str(generation) == "0":
-            raise Failure("Streaming requires an observed object generation")
-        with self.operation("GET", name):
-            blob = self.client.bucket(bucket).blob(name)
-            reader = blob.open(
-                "rb",
-                chunk_size=chunk_size,
-                if_generation_match=int(generation),
-                timeout=HTTP_TIMEOUT,
-                retry=None,
-            )
-        return _TranslatedStream(self, name, reader)
-
-    def rewrite(
-        self,
-        source_bucket,
-        source_name,
-        source_generation,
-        destination_name,
-        destination_bucket=EVIDENCE,
-    ):
-        """Server-side copy of one source generation into an absent destination.
-
-        Returns the new destination generation as a string. When the
-        destination already exists, returns its metadata dict instead so the
-        caller can verify it; a 412 without a destination is the source's.
-        """
-        if not source_generation or str(source_generation) == "0":
-            raise Failure("Rewrite requires an observed source generation")
-        source = self.client.bucket(source_bucket).blob(
-            source_name, generation=int(source_generation)
-        )
-        destination = self.client.bucket(destination_bucket).blob(destination_name)
-        token = None
-        try:
-            with self.operation("POST", destination_name):
-                while True:
-                    token, _rewritten, _total = destination.rewrite(
-                        source,
-                        token=token,
-                        if_generation_match=0,
-                        if_source_generation_match=int(source_generation),
-                        timeout=HTTP_TIMEOUT,
-                        retry=None,
-                    )
-                    if token is None:
-                        return str(destination.generation)
-        except ApiError as error:
-            if error.status != 412:
-                raise
-            existing = self.metadata(destination_name, destination_bucket)
-            if existing is None:
-                raise
-            return existing
-
 
 def _created(blob):
     """The RFC 3339 creation time at the API's millisecond precision."""
@@ -295,39 +225,3 @@ def _created(blob):
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
-
-
-def _metadata(blob):
-    return {
-        "size": str(blob.size),
-        "crc32c": blob.crc32c,
-        "md5": blob.md5_hash,
-        "generation": str(blob.generation),
-        "created": _created(blob),
-    }
-
-
-class _TranslatedStream:
-    """A read-only binary stream whose SDK errors become lifecycle failures."""
-
-    def __init__(self, storage, name, reader):
-        self.storage, self.name, self.reader = storage, name, reader
-
-    def read(self, size=-1):
-        with self.storage.operation("GET", self.name):
-            return self.reader.read(size)
-
-    def readable(self):
-        return True
-
-    def seekable(self):
-        return False
-
-    def close(self):
-        self.reader.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        self.close()
