@@ -199,8 +199,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `AbstractDatastoreEmulatorITCase`) applies nothing of a refused commit except, for an oversized
   entity, the writes ahead of it in the request, which `Batch` orders by operation (so a refused
   commit can be partly applied), serves any database id
-  and enforces no request size; `DatastoreRejectionITCase` pins each fact it asserts. The lookup
-  discriminator and request size belong to the gated suite (#1546).
+  and enforces no request size; `DatastoreRejectionITCase` pins each fact it asserts. The service
+  (#1707, `DatastoreRejectionRealGcpITCase`) differs: a commit refused with `ALREADY_EXISTS` or
+  `NOT_FOUND` applies EVERY other write, one refused with `INVALID_ARGUMENT` applies none, a 10.5 MiB
+  commit is applied, and a missing or malformed database refuses update and lookup with `NOT_FOUND`.
+  So the confirmation pass meets inserts the refused commit already wrote: an insert's
+  `ALREADY_EXISTS` counts as applied when `lookup` (which returns the stored `Entity`, or null when
+  missing, deferred or unreadable) finds exactly the insert's entity (`storedAsWritten`); a
+  different entity, null, or a lookup that fails after its transient retries routes it. Either
+  way the run of rejections is left as it was. The unit-test fake models the emulator by default
+  and the service under `servesLikeTheService()`; test a routing change under both.
 
 ## Datastore-mode source (`docs/adr/0177`)
 
@@ -214,19 +222,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   library's retry settings (`callTimeout` null; `LazyDatastoreClientTest` pins it).
 - **The splitter's ranges are rebuilt in the service's key order** (`KeyRanges`; owner's decision,
   2026-10-03): its comparator orders names by UTF-16 code unit, the service by UTF-8 byte
-  (measured on the emulator), and misordered boundaries make ranges overlap. Do not hand the
+  (measured on the emulator and the service), and misordered boundaries make ranges overlap. Do not hand the
   splitter's output to readers directly. `datastore-v1-proto-client` is not managed by
   libraries-bom; it arrives through `google-cloud-datastore`, never at a hand-kept version.
 - **`SplittableQueries` is the splittability rule, stricter than the splitter's**: one kind, no
   order/limit/offset/cursor/`DISTINCT ON`, filters only `EQUAL` and `HAS_ANCESTOR` under `AND`,
-  none of no type. Anything else is one split. `SplittableQueriesTest` iterates every operator.
+  none of no type, and no projection other than keys-only (the service refuses a key range on a
+  projection of properties without a composite index; #1707). Anything else is one split. `SplittableQueriesTest` iterates every operator.
   A nearest-neighbour search is refused outright (`whyNotReadable`): paging would change what it
   finds. So are the metadata kinds `__namespace__`, `__kind__` and `__property__`
   (`whyKindNotReadable`, exact names; #1690, owner's decision 2026-10-10): the source can neither
   page through nor resume their results. Google documents them as "generated dynamically, based on
   the current state of your database"; on the emulator `__kind__` and `__namespace__` answer without
-  per-entity or end cursors (`__property__` returned nothing); the service's answer is unmeasured
-  (#1546). `kind(...)` and `query(...)` refuse at build, a GQL query in
+  per-entity or end cursors (`__property__` returned nothing), while the service carries both
+  cursors and resumes (#1707); whether to lift the refusal is #1717. `kind(...)` and `query(...)` refuse at build, a GQL query in
   `ClientQueryPlanner.parseGql`. Statistics kinds (`__Stat_*__`) stay readable. Key-based resume
   is deferred and a split replayed from its beginning declined (ADR-0177 revision); read the
   revision before adding either.

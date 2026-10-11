@@ -16,13 +16,9 @@
 
 package io.github.flink.gcp.connector.datastore.source;
 
-import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.connector.source.Source;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.ExceptionUtils;
 
@@ -96,16 +92,7 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
                                         .deserializer(deserializer)
                                         .emulatorEndpoint(emulatorEndpoint()))
                         .build();
-        StreamExecutionEnvironment env =
-                StreamExecutionEnvironment.createLocalEnvironment(new Configuration());
-        env.setParallelism(parallelism);
-        List<T> records = new ArrayList<>();
-        try (CloseableIterator<T> collected =
-                env.fromSource(source, WatermarkStrategy.noWatermarks(), "datastore")
-                        .executeAndCollect()) {
-            collected.forEachRemaining(records::add);
-        }
-        return records;
+        return TestSources.collect(source, parallelism);
     }
 
     /** Writes entities named {@code e000}.., each with {@code n} and {@code k = n % 3}. */

@@ -152,6 +152,27 @@ class DatastoreSourceBuilderTest {
     }
 
     @Test
+    void refusesASplitCountForAProjectionOfProperties() {
+        com.google.datastore.v1.Query projection =
+                SplittableQueries.ofKind("Task").toBuilder()
+                        .addProjection(
+                                com.google.datastore.v1.Projection.newBuilder()
+                                        .setProperty(
+                                                com.google.datastore.v1.PropertyReference
+                                                        .newBuilder()
+                                                        .setName("done")))
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                TestSources.source(
+                                        builder -> builder.query(projection).splitCount(4)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("splitCount(...)")
+                .hasMessageContaining("because it projects properties");
+    }
+
+    @Test
     void takesASplitCountForAGqlQueryWhichIsCheckedWhenItIsParsed() {
         assertThat(
                         TestSources.source(

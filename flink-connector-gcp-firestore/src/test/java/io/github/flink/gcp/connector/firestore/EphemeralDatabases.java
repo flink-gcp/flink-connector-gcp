@@ -35,8 +35,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Creates, deletes and sweeps the ephemeral named databases the gated real-service suite runs in
- * (#1546). Public, and the mode a parameter, because the Datastore-mode harness of #1707 is to
- * share this naming scheme and this sweep from the other package root.
+ * (#1546). Public, and the mode a parameter, because the Datastore-mode harness shares this naming
+ * scheme and this sweep from the other package root.
  *
  * <p>A database is created per gated class rather than kept standing, for the reasons {@code
  * docs/adr/0044} gives for Bigtable: a crashed run leaves nothing that the next one reads, two

@@ -25,7 +25,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * <p>The policy covers exactly that refusal: {@code FAILED_PRECONDITION} answering a write that
  * carries a precondition. The same status answering a write <em>without</em> one always fails the
  * job, because it then says something about the database rather than about the record — a database
- * in Datastore mode is reported to refuse every Firestore API write with it.
+ * in Datastore mode refuses every Firestore API write with it (measured 2026-10-10).
  *
  * <p>This is a policy rather than a fixed rule because both readings of the refusal are defensible,
  * and only the pipeline's owner knows which applies. A pipeline that writes conditionally usually

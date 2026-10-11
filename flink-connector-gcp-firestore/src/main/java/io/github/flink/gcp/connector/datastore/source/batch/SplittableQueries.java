@@ -45,13 +45,7 @@ import java.util.Set;
 @Internal
 public final class SplittableQueries {
 
-    /**
-     * The metadata kinds. Google's documentation says their entities are generated dynamically,
-     * based on the database's current state. On the emulator, a query of {@code __kind__} or {@code
-     * __namespace__} answers without the per-entity and end cursors the source pages and resumes
-     * by, and one of {@code __property__} returned nothing; the service's answer is unmeasured
-     * (#1546).
-     */
+    /** The metadata kinds, refused for the reason {@link #whyKindNotReadable(String)} gives. */
     private static final Set<String> METADATA_KINDS =
             Set.of("__namespace__", "__kind__", "__property__");
 
@@ -115,9 +109,9 @@ public final class SplittableQueries {
      * database's current state, so a result need not be a snapshot at the read time that a
      * restarted read could page through or replay. On the emulator, a query of {@code __kind__} or
      * {@code __namespace__} answers without the per-entity and end cursors the source pages and
-     * resumes by, although {@code query.proto} documents a cursor on every query result, and one of
-     * {@code __property__} returned nothing; the service's answer is unmeasured (#1546, {@code
-     * docs/adr/0177}). The statistics kinds, such as {@code __Stat_Kind__}, are not refused.
+     * resumes by, and one of {@code __property__} returned nothing; the service carries both
+     * cursors for all three (measured 2026-10-11), and whether the refusal should stand is #1717.
+     * The statistics kinds, such as {@code __Stat_Kind__}, are not refused.
      *
      * @param kind the kind
      * @return the reason, phrased to follow "the source cannot read the kind because", or {@code
@@ -161,7 +155,19 @@ public final class SplittableQueries {
         if (query.getDistinctOnCount() > 0) {
             return "it is a distinct query";
         }
+        if (query.getProjectionCount() > 0 && !isKeysOnly(query)) {
+            // Measured 2026-10-11: the service refuses a projection of a property with a key
+            // range ANDed on, asking for a composite index of __key__ and the property, although
+            // the projection alone is served by the built-in indexes.
+            return "it projects properties, and a key range ANDed onto such a projection needs a"
+                    + " composite index the query alone does not";
+        }
         return query.hasFilter() ? whyNotSplittable(query.getFilter()) : null;
+    }
+
+    private static boolean isKeysOnly(Query query) {
+        return query.getProjectionCount() == 1
+                && "__key__".equals(query.getProjection(0).getProperty().getName());
     }
 
     @Nullable

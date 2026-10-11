@@ -42,8 +42,7 @@ import java.util.Set;
  *       per-mutation status, so the writer confirms which mutation earned it by re-sending each
  *       alone before anything is routed, and then routes it only for an operation that can earn it.
  *   <li>{@link Kind#FATAL} — everything else, including {@code INTERNAL}, {@code
- *       PERMISSION_DENIED}, {@code FAILED_PRECONDITION} (reported, not yet measured, to be what a
- *       database in Native mode answers the Datastore API with) and a failure carrying no status.
+ *       PERMISSION_DENIED}, {@code FAILED_PRECONDITION} and a failure carrying no status.
  * </ul>
  *
  * <p>The classification takes <b>both halves</b> of the cause chain, read differently on purpose,

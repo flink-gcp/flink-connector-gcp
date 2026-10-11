@@ -19,9 +19,13 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.DatastoreException;
+import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -33,10 +37,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A {@link DatastoreDatabaseAccess} that decides each commit <b>per request</b>, as the service
- * does: a commit holding a key the test refused fails whole with that key's status and applies
- * nothing, as the emulator measured. A test sets up which keys are refused and lets the writer's
- * solo confirmation emerge, rather than scripting it.
+ * A {@link DatastoreDatabaseAccess} that decides each commit <b>per request</b>: a commit holding a
+ * key the test refused fails whole with that key's status and, by default, applies nothing, as the
+ * emulator measured. {@link #servesLikeTheService()} switches to what the service measured instead.
+ * A test sets up which keys are refused and lets the writer's solo confirmation emerge, rather than
+ * scripting it.
  *
  * <p>Failures are thrown in the client library's shape: a {@link DatastoreException} whose cause is
  * the gax exception carrying the status.
@@ -64,6 +69,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     private boolean answersShort;
     private int closeCalls;
     private boolean appliesWritesBeforeARefusal;
+    private boolean servesLikeTheService;
 
     /** Refuses every commit that holds the key, with the status, until told otherwise. */
     FakeDatastoreDatabaseAccess refuse(Key key, StatusCode.Code code) {
@@ -78,6 +84,23 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
      */
     FakeDatastoreDatabaseAccess applyWritesBeforeARefusal() {
         appliesWritesBeforeARefusal = true;
+        return this;
+    }
+
+    /**
+     * Makes the fake answer as the service measured (2026-10-11): an insert of a key that holds an
+     * entity is refused with {@code ALREADY_EXISTS} and an update of a key that holds none with
+     * {@code NOT_FOUND}; a commit refused only with those applies every write it carries that is
+     * not refused itself, and a commit holding any other refusal applies nothing.
+     */
+    FakeDatastoreDatabaseAccess servesLikeTheService() {
+        servesLikeTheService = true;
+        return this;
+    }
+
+    /** Stores the entity under its key, as if written before the test, without a request. */
+    FakeDatastoreDatabaseAccess store(FullEntity<Key> entity) {
+        applied.put(entity.getKey(), DatastoreMutation.upsert(entity));
         return this;
     }
 
@@ -128,8 +151,12 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         }
         List<DatastoreMutation> request = new ArrayList<>(writes);
         request.sort(Comparator.comparingInt(write -> BATCH_ORDER.indexOf(write.getOperation())));
+        if (servesLikeTheService) {
+            commitAsTheService(request);
+            return;
+        }
         for (int i = 0; i < request.size(); i++) {
-            StatusCode.Code refused = refusedKeys.get(request.get(i).getKey());
+            StatusCode.Code refused = refusalOf(request.get(i));
             if (refused != null) {
                 if (appliesWritesBeforeARefusal) {
                     apply(request.subList(0, i));
@@ -140,6 +167,59 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         apply(writes);
     }
 
+    private void commitAsTheService(List<DatastoreMutation> request) {
+        StatusCode.Code first = null;
+        boolean onlyStateRefusals = true;
+        List<DatastoreMutation> accepted = new ArrayList<>();
+        for (DatastoreMutation write : request) {
+            StatusCode.Code refused = refusalOf(write);
+            if (refused == null) {
+                accepted.add(write);
+                continue;
+            }
+            if (first == null) {
+                first = refused;
+            }
+            onlyStateRefusals &=
+                    refused == StatusCode.Code.ALREADY_EXISTS
+                            || refused == StatusCode.Code.NOT_FOUND;
+        }
+        if (first == null) {
+            apply(request);
+            return;
+        }
+        if (onlyStateRefusals) {
+            apply(accepted);
+        }
+        throw failure(first);
+    }
+
+    @Nullable
+    private StatusCode.Code refusalOf(DatastoreMutation write) {
+        StatusCode.Code refused = refusedKeys.get(write.getKey());
+        if (refused != null || !servesLikeTheService) {
+            return refused;
+        }
+        if (write.getOperation() == DatastoreMutation.Operation.INSERT
+                && stored(write.getKey()) != null) {
+            return StatusCode.Code.ALREADY_EXISTS;
+        }
+        if (write.getOperation() == DatastoreMutation.Operation.UPDATE
+                && stored(write.getKey()) == null) {
+            return StatusCode.Code.NOT_FOUND;
+        }
+        return null;
+    }
+
+    /** The entity the key holds, or {@code null}. */
+    @Nullable
+    private Entity stored(Key key) {
+        DatastoreMutation last = applied.get(key);
+        return last == null || last.getOperation() == DatastoreMutation.Operation.DELETE
+                ? null
+                : Entity.newBuilder(key, last.getEntity()).build();
+    }
+
     private void apply(List<DatastoreMutation> writes) {
         for (DatastoreMutation write : writes) {
             applied.put(write.getKey(), write);
@@ -148,12 +228,14 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     }
 
     @Override
-    public void lookup(Key key) {
+    @Nullable
+    public Entity lookup(Key key) {
         lookups.add(key);
         StatusCode.Code scripted = nextLookupFailures.poll();
         if (scripted != null) {
             throw failure(scripted);
         }
+        return stored(key);
     }
 
     /** Fails the next id allocations, one per code. */

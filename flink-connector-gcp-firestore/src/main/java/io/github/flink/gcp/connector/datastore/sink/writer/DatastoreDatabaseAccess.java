@@ -18,9 +18,12 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
+
+import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -49,13 +52,16 @@ public interface DatastoreDatabaseAccess extends AutoCloseable {
     void commit(List<DatastoreMutation> writes);
 
     /**
-     * Looks the key up, returning normally whether or not an entity is there. The writer reads
-     * nothing from the answer: that the service answered at all is what it asks, because a missing
-     * database refuses the lookup the way it refused the update before it.
+     * Looks the key up in one bounded call, returning normally whether or not an entity is there.
+     * That the service answered at all tells the writer the database is there, because a missing
+     * database refuses the lookup the way it refused the write before it.
      *
      * @param key the key
+     * @return the entity stored under the key, or {@code null} when there is none, the service
+     *     deferred the key, or the client library cannot read the stored entity
      */
-    void lookup(Key key);
+    @Nullable
+    Entity lookup(Key key);
 
     /**
      * Allocates one id per incomplete key in one {@code AllocateIds} call.
