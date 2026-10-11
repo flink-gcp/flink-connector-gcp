@@ -21,13 +21,11 @@ import uuid
 
 import pytest
 import requests
-from flink_tier3.common import Failure
+from flink_tier3.common import Failure, TransportError
 from flink_tier3.model import Phase
 from flink_tier3.policy import HTTP_TIMEOUT
-from flink_tier3.pubsub.handoff import CohortUnstarted
 from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
 from flink_tier3.pubsub.output import OutputCollector, parse
-from flink_tier3.pubsub.traffic import TrafficLimits
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
@@ -43,25 +41,7 @@ FIRST, REPLAY, LAST = COHORTS
 
 @pytest.fixture
 def run(env):
-    return composed(env, publish_calls=20)
-
-
-@pytest.fixture
-def scarce(env):
-    """Publication calls for two cohorts of the three."""
-    return composed(env, publish_calls=4)
-
-
-def composed(env, *, publish_calls):
-    clock = env[3]
-    a = compose(
-        env,
-        "running",
-        records=RECORDS,
-        limits=TrafficLimits(
-            publish_calls, 20, 40, 2000, 400, 100, 200000, clock() + 1000
-        ),
-    )
+    a = compose(env, "running", records=RECORDS)
     messages = a.service.messages
     original = messages.request
     a.published = []
@@ -268,13 +248,14 @@ def test_a_request_whose_write_response_was_lost_is_confirmed_by_a_retry(run):
     assert a.sender.serve() == REPLAY
 
 
-def test_an_exhausted_publication_budget_fails_the_cohort_and_stops(scarce):
-    a = scarce
+def test_a_failed_publication_fails_the_cohort_and_stops(run):
+    a = run
     first(a)
     a.observer.request_cohort(REPLAY, deadline=a.clock() + 100)
     assert a.sender.serve() == REPLAY
     a.observer.request_cohort(LAST, deadline=a.clock() + 100)
-    with pytest.raises(Failure, match="budget exhausted: publish_calls"):
+    a.service.messages.responses.append(requests.Timeout())
+    with pytest.raises(TransportError):
         a.sender.serve()
     value = cohorts(a)[LAST]
     assert value["started_at"] is not None and value["published_at"] is None
@@ -330,47 +311,6 @@ def test_each_side_keeps_its_own_role(run):
         a.sender.request_cohort(REPLAY, deadline=a.clock() + 100)
     with pytest.raises(ValueError):
         a.observer.request_cohort(FIRST, deadline=a.clock() + 100)
-
-
-@pytest.mark.parametrize(
-    "tamper",
-    [
-        lambda c: c.update(unknown=dict(c[FIRST])),
-        lambda c: c[FIRST].update(requested_at=1),
-        lambda c: c[FIRST].update(started_at=None),
-        lambda c: c[FIRST].pop("deadline"),
-        lambda c: c[FIRST].update(deadline=math.nan),
-        lambda c: c[FIRST].update(deadline=True),
-        lambda c: c[FIRST].update(published_at=math.inf),
-        # A later cohort exists only as requested, after the one before it.
-        lambda c: c.update(
-            after_checkpoint={
-                "deadline": 1,
-                "requested_at": None,
-                "started_at": None,
-                "published_at": None,
-            }
-        ),
-        lambda c: c.update(
-            after_recovery={
-                "deadline": 1,
-                "requested_at": 1,
-                "started_at": None,
-                "published_at": None,
-            }
-        ),
-    ],
-)
-def test_a_malformed_cohort_record_is_refused(run, tamper):
-    a = run
-    first(a)
-
-    def edit(record):
-        tamper(record.pubsub["cohorts"])
-
-    a.sender.env.records._change(edit)
-    with pytest.raises(Failure, match="cohort record"):
-        a.observer.cohorts()
 
 
 def sleeping(a, steps):
@@ -527,20 +467,6 @@ def test_a_stop_between_the_poll_and_the_start_is_a_close_not_a_failure(run):
     assert "pubsub-publication-failed" not in runner_events(a)
     control = a.sender.env.refresh()
     assert control.idle and control.success
-
-
-def test_a_replaced_traffic_binding_is_a_failure_not_a_close(run):
-    a = run
-    first(a)
-    a.observer.request_cohort(REPLAY, deadline=a.clock() + 100)
-
-    def edit(record):
-        record.pubsub["traffic"]["binding"]["records_per_subscription"] = 9
-
-    a.sender.env.records._change(edit)
-    with pytest.raises(Failure, match="traffic binding") as raised:
-        a.sender.publish_cohort(REPLAY)
-    assert not isinstance(raised.value, CohortUnstarted)
 
 
 def test_an_unresolved_publication_keeps_its_marker_and_the_lock(run):

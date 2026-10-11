@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Per-method operation bounds reserved before each Pub/Sub lifecycle method."""
+"""The production guard: each Pub/Sub service request against its deadline."""
 
 import time
 from dataclasses import replace
@@ -22,11 +22,9 @@ from flink_tier3.common import ApiError, Failure
 from flink_tier3.environment import Environment
 from flink_tier3.model import Phase
 from flink_tier3.policy import HTTP_TIMEOUT
-from flink_tier3.pubsub import guard as guards
 from flink_tier3.pubsub.guard import PubSubGuard
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle
-from flink_tier3.pubsub.traffic import PubSubTraffic
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
@@ -39,7 +37,7 @@ from .test_runtime_approval import prepared as prepared  # noqa: PLC0414
 class Chain:
     """Both actors, each with its own production guard, over one service."""
 
-    def __init__(self, environment, application, deadline, settled=None):
+    def __init__(self, environment, deadline, settled=None):
         self.environment, self.service = environment, Service()
         self.guards, self.actors = {}, {}
         for role, token in (("runner", "b" * 32), ("supervisor", "c" * 32)):
@@ -55,82 +53,48 @@ class Chain:
                     actor="supervisor",
                 )
             )
-            guard = PubSubGuard(env, deadline=deadline)
-            controller = PubSubLifecycle(env, self.service, application, guard)
+            guard = PubSubGuard(env)
+            guard.deadline = deadline
             self.guards[role] = guard
             self.actors[role] = PubSubHandoff(
-                PubSubTraffic(
-                    controller, application, env.approval.pubsub_traffic_limits
-                ),
+                PubSubLifecycle(env, self.service, guard),
                 actor_token=token,
                 settled=settled,
             )
 
-    def used(self, role):
-        return self.guards[role].last["used"]
-
 
 @pytest.fixture
 def chain(prepared):
-    environment, application = prepared
-    return Chain(environment, application, environment.clock() + 900)
+    environment, _ = prepared
+    return Chain(environment, environment.clock() + 900)
 
 
 def run_lifecycle(chain):
     runner, supervisor = chain.actors["runner"], chain.actors["supervisor"]
     records = chain.environment.records
-    used = {}
     runner.initialize()
-    used["initialize"] = chain.used("runner")
     runner.prepare()
-    used["prepare"] = chain.used("runner")
     records.set_phase(Phase.READY)
     runner.verify()
-    used["verify"] = chain.used("runner")
     supervisor.join()
-    used["join"] = chain.used("supervisor")
     chain.service.messages.responses.append(Response({"messageIds": ["a"]}))
     runner.publish(0, 0, 1)
-    used["publish"] = chain.used("runner")
     records.set_phase(Phase.RUNNING)
     chain.service.messages.responses.extend(
         [Response({"receivedMessages": [output()]}), Response({})]
     )
     supervisor.collect("one", max_messages=1)
-    used["collect"] = chain.used("supervisor")
     runner.release()
-    used["release"] = chain.used("runner")
-    supervisor.released()
-    used["released"] = chain.used("supervisor")
+    assert not supervisor.released()
     supervisor.release()
     supervisor.cleanup(lambda: True)
-    used["cleanup"] = chain.used("supervisor")
     assert chain.environment.refresh().pubsub["stage"] == "cleaned"
-    return used
 
 
-def within(used, method):
-    bounds = guards.METHOD_BOUNDS[method]
-    assert set(used) <= set(bounds), method
-    assert all(count <= bounds[key] for key, count in used.items()), method
-
-
-def test_a_whole_lifecycle_runs_within_every_reserved_bound(chain):
-    used = run_lifecycle(chain)
-    for method, counts in used.items():
-        within(counts, method)
-    # The resource helpers' callbacks are exactly the runbook's table.
-    assert {k: v for k, v in used["prepare"].items() if "control" not in k} == {
-        "provision": 20,
-        "inspect": 21,
-        "grant": 42,
-        "inspect-grants": 12,
-    }
-    assert {k: v for k, v in used["verify"].items() if "control" not in k} == {
-        "inspect": 7,
-        "inspect-grants": 12,
-    }
-    assert used["cleanup"]["cleanup"] == 26
+def test_a_whole_lifecycle_runs_under_the_production_guards(chain):
+    run_lifecycle(chain)
+    deletes = [c for c in chain.service.resources.calls if c[0] == "DELETE"]
+    assert len(deletes) == 6
 
 
 def conflicting(chain, monkeypatch, exhaust=lambda: False):
@@ -167,14 +131,10 @@ def conflicting(chain, monkeypatch, exhaust=lambda: False):
     return lost
 
 
-def test_control_conflicts_on_every_write_stay_within_the_bounds(chain, monkeypatch):
+def test_control_conflicts_on_every_write_do_not_stop_the_lifecycle(chain, monkeypatch):
     lost = conflicting(chain, monkeypatch)
-    used = run_lifecycle(chain)
+    run_lifecycle(chain)
     assert lost and all(count == 19 for count in lost)
-    for method, counts in used.items():
-        within(counts, method)
-        # Each update then takes all twenty-seven of its callbacks.
-        assert counts.get("control-UPDATE", 0) % 27 == 0, method
 
 
 def exhausting_finish(handoff, monkeypatch):
@@ -200,16 +160,21 @@ def exhausting_finish(handoff, monkeypatch):
 
 @pytest.fixture
 def settling(prepared):
-    environment, application = prepared
-    chain = Chain(environment, application, environment.clock() + 900, lambda: True)
-    runner = chain.actors["runner"]
-    runner.initialize()
+    environment, _ = prepared
+    chain = Chain(environment, environment.clock() + 900, lambda: True)
+    chain.actors["runner"].initialize()
     return chain
 
 
-def test_a_failed_publication_s_worst_case_fits_its_bound(settling, monkeypatch):
-    """Batch, POST, two uploads, a failure record, a stop and three
-    completion attempts: every update the bound allows for."""
+def inflight(chain, role="runner"):
+    actors = chain.environment.refresh().pubsub["handoff"]["actors"]
+    return actors[role]["inflight"]
+
+
+def test_a_failed_publication_records_it_and_releases_its_settled_marker(
+    settling, monkeypatch
+):
+    """Under conflicts, and with the completion losing every race twice."""
     chain, runner = settling, settling.actors["runner"]
     runner.prepare()
     chain.environment.records.set_phase(Phase.READY)
@@ -225,15 +190,15 @@ def test_a_failed_publication_s_worst_case_fits_its_bound(settling, monkeypatch)
     chain.service.messages.responses.append(Response({"messageIds": ["a"]}))
     with pytest.raises(Failure, match="response upload lost"):
         runner.publish(0, 0, 1)
-    # Twenty-seven callbacks for each of ten updates; a smaller bound refuses
-    # the last completion attempt, which keeps the marker.
-    assert chain.used("runner")["control-UPDATE"] == 27 * 10
     assert lost.count(20) == 2
-    assert chain.environment.refresh().evidence_failed
+    control = chain.environment.refresh()
+    assert control.evidence_failed and control.stop_requested
     assert inflight(chain) is None
 
 
-def test_a_failed_collection_s_worst_case_fits_its_bound(settling, monkeypatch):
+def test_a_failed_collection_records_it_and_releases_its_settled_marker(
+    settling, monkeypatch
+):
     chain = settling
     runner, supervisor = chain.actors["runner"], chain.actors["supervisor"]
     runner.prepare()
@@ -254,78 +219,15 @@ def test_a_failed_collection_s_worst_case_fits_its_bound(settling, monkeypatch):
     )
     with pytest.raises(Failure, match="receipt upload lost"):
         supervisor.collect("one", max_messages=1)
-    # Batch, pull, three uploads, acknowledgement, receipt, failure record,
-    # stop and three completion attempts.
-    assert chain.used("supervisor")["control-UPDATE"] == 27 * 13
     assert lost.count(20) == 2
-    actors = chain.environment.refresh().pubsub["handoff"]["actors"]
-    assert actors["supervisor"]["inflight"] is None
-
-
-def test_a_preparation_failing_at_its_last_update_fits_its_bound(settling, monkeypatch):
-    chain, runner = settling, settling.actors["runner"]
-    lost = conflicting(chain, monkeypatch, exhausting_finish(runner, monkeypatch))
-    traffic = runner.traffic
-
-    def initialize():
-        raise Failure("traffic binding lost")
-
-    monkeypatch.setattr(traffic, "initialize", initialize)
-    with pytest.raises(Failure, match="traffic binding lost"):
-        runner.prepare()
-    within(chain.used("runner"), "prepare")
-    assert lost.count(20) == 2
-    assert inflight(chain) is None
-    assert chain.environment.refresh().pubsub["stage"] == "prepared"
-
-
-def test_an_operation_outside_a_reserved_method_is_refused(chain):
-    controller = chain.actors["runner"].controller
-    with pytest.raises(Failure, match="outside a reserved method"):
-        controller.initialize()
-    assert chain.environment.refresh().pubsub is None
-
-
-def test_a_phase_the_method_does_not_use_is_refused(chain):
-    runner = chain.actors["runner"]
-    with (
-        runner.controller.reserve("join"),
-        pytest.raises(Failure, match="exceeded its reserved provision"),
-    ):
-        runner.controller.before_operation("provision", "GET", "projects/p/topics/t")
-
-
-def inflight(chain):
-    return chain.environment.refresh().pubsub["handoff"]["actors"]["runner"]["inflight"]
-
-
-def test_a_method_past_its_bound_is_refused_before_the_request(chain, monkeypatch):
-    runner = chain.actors["runner"]
-    runner.initialize()
-    # Each policy preflight takes two callbacks: the ownership read and the GET.
-    bounds = dict(guards.METHOD_BOUNDS["prepare"], grant=3)
-    monkeypatch.setitem(guards.METHOD_BOUNDS, "prepare", bounds)
-    with pytest.raises(Failure, match="exceeded its reserved grant"):
-        runner.prepare()
-    policies = [c for c in chain.service.resources.calls if ":" in c[1]]
-    assert [c[0] for c in policies] == ["GET"]
-    assert chain.environment.stopping
-    # Without a settled-call check every failure keeps its marker.
-    assert inflight(chain) is not None
-
-
-def test_unknown_methods_are_refused(chain):
-    with (
-        pytest.raises(Failure, match="Unknown Pub/Sub lifecycle method"),
-        chain.guards["runner"].method("provision"),
-    ):
-        pass
+    assert chain.environment.refresh().evidence_failed
+    assert inflight(chain, "supervisor") is None
 
 
 @pytest.mark.parametrize("margin", [HTTP_TIMEOUT, HTTP_TIMEOUT - 1])
 def test_a_request_too_close_to_the_deadline_is_refused(prepared, margin):
-    environment, application = prepared
-    chain = Chain(environment, application, environment.clock() + margin)
+    environment, _ = prepared
+    chain = Chain(environment, environment.clock() + margin)
     runner = chain.actors["runner"]
     runner.initialize()
     if margin < HTTP_TIMEOUT:
@@ -341,6 +243,51 @@ def test_a_request_too_close_to_the_deadline_is_refused(prepared, margin):
     assert environment.refresh().stop_requested
 
 
+def test_every_resource_request_is_checked_against_the_deadline(prepared):
+    """Not once per phase: the last request that fits is the last one sent."""
+    environment, _ = prepared
+    deadline = environment.clock() + 900
+    chain = Chain(environment, deadline, lambda: True)
+    runner = chain.actors["runner"]
+    runner.initialize()
+    sent = []
+
+    def slow(_method, _name):
+        sent.append(environment.clock())
+        environment.clock.now += 30  # a slow request
+
+    chain.service.resources.before = slow
+    with pytest.raises(Failure, match="too close to its deadline"):
+        runner.prepare()
+    assert sent
+    assert all(at + HTTP_TIMEOUT <= deadline for at in sent)
+    assert sent[-1] + 30 + HTTP_TIMEOUT > deadline
+
+
+def test_a_slow_begin_marker_counts_against_the_publication_deadline(
+    chain, monkeypatch
+):
+    """The check is taken just before the POST, after the call's begin write."""
+    runner, environment = chain.actors["runner"], chain.environment
+    runner.initialize()
+    runner.prepare()
+    environment.records.set_phase(Phase.READY)
+    deadline = environment.clock() + HTTP_TIMEOUT + 10
+    store, path = environment.store, environment.records.path
+    original = store.write
+
+    def slow(name, value, generation=None, **kwargs):
+        if name == path:
+            environment.clock.now += 15  # a slow control write
+        return original(name, value, generation, **kwargs)
+
+    monkeypatch.setattr(store, "write", slow)
+    chain.service.messages.responses.append(Response({"messageIds": ["a"]}))
+    with pytest.raises(Failure, match="too close to its deadline"):
+        runner.publish(0, 0, 1, deadline=deadline)
+    assert chain.service.messages.calls == []
+
+
 def test_a_request_under_an_approval_that_no_longer_validates_is_refused(chain):
     runner = chain.actors["runner"]
     runner.initialize()
@@ -351,18 +298,30 @@ def test_a_request_under_an_approval_that_no_longer_validates_is_refused(chain):
     assert chain.service.resources.calls == []
 
 
+def test_a_held_deadline_is_restored_after_its_block(chain):
+    guard = chain.guards["runner"]
+    admission = guard.deadline
+    with guard.until(None):
+        guard("cleanup", "DELETE", "projects/p/topics/t")
+        with guard.until(1), pytest.raises(Failure, match="too close"):
+            guard("publish", "POST", "projects/p/topics/t:publish")
+        assert guard.deadline is None
+    assert guard.deadline == admission
+    # Storage and control operations are never held to a deadline.
+    with guard.until(1):
+        guard("publish", "PUT", "runs/r/pubsub/messages/intent.json")
+
+
 @pytest.mark.parametrize("settled", [True, False])
 def test_a_settled_failure_releases_its_marker_so_the_run_can_clean(prepared, settled):
-    environment, application = prepared
+    environment, _ = prepared
     seen = []
 
     def check():
         seen.append(inflight(chain))
         return settled
 
-    chain = Chain(
-        environment, application, environment.clock() + HTTP_TIMEOUT - 1, check
-    )
+    chain = Chain(environment, environment.clock() + HTTP_TIMEOUT - 1, check)
     runner, supervisor = chain.actors["runner"], chain.actors["supervisor"]
     runner.initialize()
     with pytest.raises(Failure, match="too close to its deadline"):
@@ -384,13 +343,8 @@ def test_a_settled_failure_releases_its_marker_so_the_run_can_clean(prepared, se
 def test_a_lost_marker_release_keeps_the_marker_and_the_original_error(
     prepared, monkeypatch
 ):
-    environment, application = prepared
-    chain = Chain(
-        environment,
-        application,
-        environment.clock() + HTTP_TIMEOUT - 1,
-        lambda: True,
-    )
+    environment, _ = prepared
+    chain = Chain(environment, environment.clock() + HTTP_TIMEOUT - 1, lambda: True)
     runner = chain.actors["runner"]
     runner.initialize()
 
@@ -399,6 +353,24 @@ def test_a_lost_marker_release_keeps_the_marker_and_the_original_error(
 
     monkeypatch.setattr(runner, "_finish", lost)
     with pytest.raises(Failure, match="too close to its deadline"):
+        runner.prepare()
+    assert inflight(chain) is not None
+
+
+def test_the_stop_is_written_before_a_settled_failure_releases_its_marker(
+    prepared, monkeypatch
+):
+    """A marker released first would leave a cleared call on a running run."""
+    environment, _ = prepared
+    chain = Chain(environment, environment.clock() + HTTP_TIMEOUT - 1, lambda: True)
+    runner = chain.actors["runner"]
+    runner.initialize()
+
+    def lost():
+        raise Failure("stop write lost")
+
+    monkeypatch.setattr(runner, "stop", lost)
+    with pytest.raises(Failure, match="stop write lost"):
         runner.prepare()
     assert inflight(chain) is not None
 
@@ -465,15 +437,17 @@ def test_verification_requires_open_prepared_admission(chain, state):
         runner.stop()
     if state == "running":
         chain.environment.records.set_phase(Phase.RUNNING)
+    before = len(chain.service.resources.calls)
     with pytest.raises(Failure, match="not prepared|has stopped"):
         runner.verify()
+    assert len(chain.service.resources.calls) == before
 
 
 def test_a_publication_given_the_admission_deadline_stops_at_it(ready):
     runner, supervisor = ready.actors["runner"], ready.actors["supervisor"]
     environment, messages = ready.environment, ready.service.messages
     supervisor.join()
-    admission = runner.controller.before_operation.deadline
+    admission = ready.guards["runner"].deadline
     environment.clock.now = admission
     with pytest.raises(Failure, match="too close to its deadline"):
         runner.publish(0, 0, 1, deadline=admission)
@@ -485,7 +459,7 @@ def test_later_cohorts_and_collection_use_the_traffic_window(ready):
     environment, messages = ready.environment, ready.service.messages
     supervisor.join()
     environment.records.set_phase(Phase.RUNNING)
-    environment.clock.now = runner.controller.before_operation.deadline
+    environment.clock.now = ready.guards["runner"].deadline
     messages.responses.extend([Response({"messageIds": ["a"]}), Response({})])
     runner.publish(0, 0, 1)
     supervisor.collect("one", max_messages=1)
@@ -501,7 +475,7 @@ def test_the_evidence_of_a_request_already_sent_is_kept_past_the_deadline(ready)
     runner, supervisor = ready.actors["runner"], ready.actors["supervisor"]
     environment, messages = ready.environment, ready.service.messages
     supervisor.join()
-    deadline = runner.controller.before_operation.deadline
+    deadline = ready.guards["runner"].deadline
     environment.clock.now = deadline - HTTP_TIMEOUT - 1
     original = messages.request
 
@@ -514,37 +488,18 @@ def test_the_evidence_of_a_request_already_sent_is_kept_past_the_deadline(ready)
     messages.responses.append(Response({"messageIds": ["a"]}))
     assert runner.publish(0, 0, 1, deadline=deadline)["message_ids"] == ["a"]
     assert not environment.evidence_failed
-    assert (
-        environment.refresh().pubsub["handoff"]["actors"]["runner"]["inflight"] is None
-    )
+    assert inflight(ready) is None
 
 
-def test_a_stop_during_verification_refuses_its_remaining_reads(ready):
-    service = ready.service.resources
-    before = len(service.calls)
-
-    def stop(method, name):
-        service.before = lambda method, name: None
-        ready.actors["supervisor"].stop()
-
-    service.before = stop
-    with pytest.raises(Failure, match="has stopped"):
-        ready.actors["runner"].verify()
-    assert len(service.calls) - before == 1
-
-
-def test_reclaiming_an_abandoned_runner_fits_its_bound_under_conflicts(
-    ready, monkeypatch
-):
+def test_reclaiming_an_abandoned_runner_succeeds_under_conflicts(ready, monkeypatch):
     supervisor = ready.actors["supervisor"]
     supervisor.join()
     lost = conflicting(ready, monkeypatch)
     supervisor.stop()
     supervisor.reclaim(lambda snapshot: True)
-    within(ready.used("supervisor"), "reclaim")
-    assert ready.used("supervisor")["cleanup"] == 26
     assert all(count == 19 for count in lost)
     assert ready.environment.refresh().pubsub["stage"] == "cleaned"
+    assert not ready.service.resources.resources
 
 
 def test_a_cleanup_before_creation_intent_sends_nothing(chain):
@@ -552,7 +507,6 @@ def test_a_cleanup_before_creation_intent_sends_nothing(chain):
     runner.initialize()
     runner.release()
     supervisor.cleanup(lambda: True)
-    assert "cleanup" not in chain.used("supervisor")
     assert chain.service.resources.calls == []
     assert chain.environment.refresh().pubsub["stage"] == "cleaned"
 
@@ -574,96 +528,10 @@ def test_settlement_outlives_the_admission_deadline_and_the_approval(ready):
 
 def test_verification_stops_at_the_admission_deadline(ready):
     runner = ready.actors["runner"]
-    deadline = runner.controller.before_operation.deadline
+    deadline = ready.guards["runner"].deadline
     ready.environment.clock.now = deadline - HTTP_TIMEOUT + 1
     calls = ready.service.resources.calls
     before = len(calls)
     with pytest.raises(Failure, match="too close to its deadline"):
         runner.verify()
     assert len(calls) == before
-
-
-def test_the_stop_is_written_before_a_settled_failure_releases_its_marker(
-    prepared, monkeypatch
-):
-    """A marker released first would leave a cleared call on a running run."""
-    environment, application = prepared
-    chain = Chain(
-        environment,
-        application,
-        environment.clock() + HTTP_TIMEOUT - 1,
-        lambda: True,
-    )
-    runner = chain.actors["runner"]
-    runner.initialize()
-
-    def lost():
-        raise Failure("stop write lost")
-
-    monkeypatch.setattr(runner, "stop", lost)
-    with pytest.raises(Failure, match="stop write lost"):
-        runner.prepare()
-    assert inflight(chain) is not None
-
-
-def test_a_nested_method_cannot_set_its_own_deadline(chain):
-    guard = chain.guards["runner"]
-    with (
-        guard.method("release"),
-        pytest.raises(Failure, match="nested Pub/Sub method cannot set a deadline"),
-        guard.method("publish", deadline=1),
-    ):
-        pass
-    with guard.method("release"), guard.method("stop"):
-        pass
-
-
-def test_control_io_before_a_resource_request_counts_against_its_deadline(
-    prepared, monkeypatch
-):
-    """The check is taken after the control reads, just before the send."""
-    environment, application = prepared
-    deadline = environment.clock() + 900
-    chain = Chain(environment, application, deadline, lambda: True)
-    runner = chain.actors["runner"]
-    runner.initialize()
-    store, path = environment.store, environment.records.path
-    original, sent = store.read, []
-
-    def slow(name, *args, **kwargs):
-        if name == path:
-            environment.clock.now += 30  # a slow control read
-        return original(name, *args, **kwargs)
-
-    monkeypatch.setattr(store, "read", slow)
-    chain.service.resources.before = lambda method, name: sent.append(
-        environment.clock()
-    )
-    with pytest.raises(Failure, match="too close to its deadline"):
-        runner.prepare()
-    assert sent
-    assert all(at + HTTP_TIMEOUT <= deadline for at in sent)
-
-
-def test_a_reservation_before_a_publication_counts_against_its_deadline(
-    ready, monkeypatch
-):
-    runner, environment = ready.actors["runner"], ready.environment
-    # Three control writes (the call's begin, the batch and the intent's
-    # evidence) precede the POST's own reservation: a check taken before that
-    # reservation, at +45 s, would pass; the one taken after it, at +60 s,
-    # must not.
-    deadline = environment.clock() + HTTP_TIMEOUT + 50
-    store, path = environment.store, environment.records.path
-    original = store.write
-
-    def slow(name, value, generation=None, **kwargs):
-        if name == path:
-            environment.clock.now += 15  # a slow reservation write
-        return original(name, value, generation, **kwargs)
-
-    monkeypatch.setattr(store, "write", slow)
-    ready.service.messages.responses.append(Response({"messageIds": ["a"]}))
-    with pytest.raises(Failure, match="too close to its deadline"):
-        runner.publish(0, 0, 1, deadline=deadline)
-    assert ready.service.messages.calls == []

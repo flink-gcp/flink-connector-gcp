@@ -24,7 +24,6 @@ from flink_tier3.common import INCONCLUSIVE
 from flink_tier3.policy import PUBSUB, PUBSUB_STATE
 from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
 from flink_tier3.pubsub.observe import SINK_METRICS, SOURCE_METRICS
-from flink_tier3.pubsub.plan import COUNTER_CEILINGS
 from flink_tier3.pubsub.verdict import MEASUREMENT_EVENT
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
@@ -46,11 +45,10 @@ INTERVAL = 120
 )
 def trial(request):
     return {
-        "version": 4,
+        "version": 5,
         "trial": request.param,
         "entry_point": "datastream",
         "records_per_subscription": RECORDS,
-        "traffic_limits": dict(COUNTER_CEILINGS),
     }
 
 

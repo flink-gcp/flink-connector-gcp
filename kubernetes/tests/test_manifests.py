@@ -1852,11 +1852,10 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
         revision="b" * 40,
         application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         trial={
-            "version": 4,
+            "version": 5,
             "trial": "jm-replacement",
             "entry_point": "datastream",
             "records_per_subscription": 1000,
-            "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
         },
     )
     probe = bundle["delivery"]["probe"]
@@ -1911,11 +1910,10 @@ def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_
     monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     pubsub_trial = {
-        "version": 4,
+        "version": 5,
         "trial": trial,
         "entry_point": entry_point,
         "records_per_subscription": 1000,
-        "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
     }
     application_image = GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST
     bundle = pubsub_plan.prepare(
@@ -2014,11 +2012,10 @@ def test_pubsub_proposal_from_real_cue(
         "revision": "b" * 40,
         "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         "trial": {
-            "version": 4,
+            "version": 5,
             "trial": trial,
             "entry_point": entry_point,
             "records_per_subscription": records,
-            "traffic_limits": dict(pubsub_plan.COUNTER_CEILINGS),
         },
     }
     bundle = pubsub_plan.prepare(**inputs)

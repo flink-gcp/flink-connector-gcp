@@ -29,11 +29,10 @@ from flink_tier3.pubsub import plan
 @pytest.fixture
 def trial():
     return {
-        "version": 4,
+        "version": 5,
         "trial": "rescale-out",
-        "entry_point": "datastream",
+        "entry_point": "table",
         "records_per_subscription": 1000,
-        "traffic_limits": dict(plan.COUNTER_CEILINGS),
     }
 
 
@@ -255,7 +254,7 @@ def _tamper(job, change):
             "--records-per-subscription": lambda: "999",
             "--parallelism": lambda: str(3 - int(value)),
             "--require-restored": lambda: "false" if value == "true" else "true",
-            "--entry-point": lambda: "table",
+            "--entry-point": lambda: "datastream",
         }[flag]()
         job["args"][index] = flag + "=" + flipped
 
@@ -313,9 +312,10 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         ("records_per_subscription", 10001),
         ("records_per_subscription", 2.0),
         ("records_per_subscription", True),
-        ("traffic_limits", {}),
-        ("traffic_limits", []),
         ("version", 3),
+        ("version", 4),
+        # Version 5 removed the runtime traffic limits.
+        ("traffic_limits", {}),
         ("total_request_limit", 100000),
         # Spend is approved from the estimate before dispatch, not proposed here.
         ("additional_cost_usd", "10.00"),
@@ -327,49 +327,11 @@ def test_invalid_trial_refused_before_render(inputs, field, value):
         plan.prepare(**inputs)
 
 
-@pytest.mark.parametrize("counter", plan.COUNTER_CEILINGS)
-@pytest.mark.parametrize("value", [True, 0, -1, 1000000000])
-def test_invalid_counter_refused(inputs, counter, value):
-    inputs["trial"]["traffic_limits"][counter] = value
-    with pytest.raises(Failure, match="traffic limit"):
-        plan.prepare(**inputs)
-
-
-@pytest.mark.parametrize(
-    "counter,value",
-    [
-        ("input_messages", 1999),
-        ("input_bytes", 1),
-        # Three cohorts of 333, 333 and 334: one publication each per input,
-        # and seven pulls each for both inputs' output, beside the exercise's
-        # one pull per poll for 2,700 seconds, 180; each pull reserves a whole
-        # batch of 100, and a nonempty one also acknowledges.
-        ("publish_calls", 5),
-        ("output_messages", 20099),
-        ("pull_calls", 200),
-        ("pubsub_requests", 227),
-    ],
-)
-def test_incomplete_pass_cannot_be_proposed(inputs, counter, value):
-    inputs["trial"]["traffic_limits"][counter] = value
-    with pytest.raises(Failure, match="complete input/output pass"):
-        plan.prepare(**inputs)
-
-
-def test_the_minimum_complete_pass_is_accepted(trial):
-    trial["traffic_limits"].update(
-        publish_calls=6, pull_calls=201, pubsub_requests=228, output_messages=20100
-    )
+def test_the_planned_pass_publishes_each_cohort_in_one_batch(trial):
     planned = plan.input_plan("proposal-1361", trial)
+    # Three cohorts of 333, 333 and 334, one publication each per input.
     assert planned["publish_calls"] == 6
     assert (planned["publish_batch_size"], planned["pull_batch_size"]) == (1000, 100)
-
-
-def test_each_cohort_needs_a_separate_output_pull(inputs):
-    inputs["trial"]["records_per_subscription"] = 3
-    inputs["trial"]["traffic_limits"]["pull_calls"] = 2
-    with pytest.raises(Failure, match="complete input/output pass"):
-        plan.prepare(**inputs)
 
 
 @pytest.mark.parametrize(
@@ -416,8 +378,8 @@ def test_duplicate_keys_and_size_guard_on_otherwise_valid_input(trial, tmp_path)
     for text, reason in (
         ('{"version": 1, ' + valid[1:], "Duplicate trial field: version"),
         (
-            valid.replace('"pull_calls":', '"pull_calls": 1, "pull_calls":'),
-            "Duplicate trial field: pull_calls",
+            valid.replace('"trial":', '"trial": "jm-replacement", "trial":'),
+            "Duplicate trial field: trial",
         ),
         (valid.ljust(8193), "Trial input exceeds 8 KiB"),
     ):

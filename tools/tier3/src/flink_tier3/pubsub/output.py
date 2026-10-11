@@ -92,8 +92,8 @@ def parse(line, run_id, records):
 class OutputCollector:
     """Pull the output subscription through the supervisor's handoff.
 
-    Every pull goes through the shared reservations and leaves the message
-    helper's evidence. The parsed observations are kept in this process for
+    Every pull is a call the handoff marks, and leaves the message helper's
+    evidence. The parsed observations are kept in this process for
     the exercise; they are not the evidence, and a replacement supervisor,
     which never collects, does not rebuild them. Batch IDs carry a random
     prefix per collector, because the evidence they name is create-only, so
@@ -103,7 +103,7 @@ class OutputCollector:
     def __init__(self, handoff):
         self.handoff, self.env = handoff, handoff.env
         self.run_id = self.env.approval.run_id
-        self.records = handoff.traffic.records
+        self.records = handoff.records_per_subscription
         self.prefix = "out-" + uuid.uuid4().hex[:8]
         self.batches = 0
         self.observations = []

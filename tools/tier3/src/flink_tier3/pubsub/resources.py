@@ -218,13 +218,11 @@ def _validate_policy(policy, bindings):
 class Resources:
     """Prepare, inspect and clean a recorded plan; never admit a Flink workload.
 
-    ``before_operation(phase, method, name)`` is mandatory. The caller must
-    prove current approval, exclusive environment ownership and the appropriate
-    admission/cleanup budget before each Pub/Sub request or logical storage call.
-    Storage GET denotes one adapter read (up to forty GCS data requests on generation
-    churn), and storage PUT denotes one create upload (HTTP POST). The guard must
-    reserve the whole adapter call's request/time budget, not count callbacks as
-    HTTP requests; credential refresh and guard I/O need their own caller budget.
+    ``before_operation(phase, method, name)`` is mandatory and runs before each
+    Pub/Sub request or logical storage call; the caller keeps exclusive
+    environment ownership. Storage GET denotes one adapter read (up to forty
+    GCS data requests on generation churn), and storage PUT denotes one create
+    upload (HTTP POST), so callbacks are not HTTP requests.
     HTTP must be the shared authorized session (no automatic retries); store is
     the shared GCS adapter. Construction performs no authentication or network I/O.
     """
@@ -426,7 +424,7 @@ class Resources:
         One guarded manifest read selects the path. A present manifest uses
         strict cleanup with its own ownership reads; a missing manifest permits
         only six guarded name reads and refuses any remaining resource. Neither
-        path adopts resources. The caller still owns quiescence and budgets.
+        path adopts resources. The caller still owns quiescence.
         """
         manifest, generation = self._record("cleanup")
         if manifest is None and str(generation) == "0":

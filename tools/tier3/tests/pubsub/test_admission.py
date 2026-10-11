@@ -16,22 +16,20 @@
 
 import copy
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from flink_tier3 import runtime
-from flink_tier3.common import ApiError, Failure, TransportError, digest
+from flink_tier3.common import ApiError, Failure, TransportError
 from flink_tier3.environment import Environment
 from flink_tier3.model import Phase
 from flink_tier3.policy import PUBSUB, SYSTEM
-from flink_tier3.pubsub.access import CONSUME, MEMBERS, PUBLISH, expectations, pulls
+from flink_tier3.pubsub.access import CONSUME, MEMBERS, PUBLISH, pulls
 from flink_tier3.pubsub.guard import PubSubGuard, admission_deadline
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle
 from flink_tier3.pubsub.quiesce import barrier
 from flink_tier3.pubsub.resources import BASE
-from flink_tier3.pubsub.traffic import PubSubTraffic
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
@@ -45,8 +43,6 @@ from .test_messages import Response
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 from .test_plan import trial as trial  # noqa: PLC0414
-
-STAMP = "2026-09-21T00:00:00Z "
 
 
 class Identity:
@@ -105,35 +101,14 @@ class Identity:
         return self.service.request(method, url, **kwargs)
 
 
-def workload_log(plan, **change):
-    """The lines a passing probe Pod prints, as the log API returns them."""
-    expected = expectations(plan, "workload")
-    lines = [
-        {"event": "identity", "email": MEMBERS["workload"]},
-        {
-            "event": "attempt",
-            "attempt": 1,
-            "seen": {name: want["held"] for name, want in expected.items()},
-        },
-        *({"event": "pulled", "name": name} for name in pulls(plan, "workload")),
-        {"event": "passed", "attempts": 1},
-    ]
-    for line in lines:
-        line.update(change.get(line["event"], {}))
-    return "".join(STAMP + json.dumps(line) + "\n" for line in lines).encode()
+# A passing probe Pod's last line, as the log API returns it; the runner keeps
+# the log as evidence and reads only the Pod's exit status.
+PROBE_LOG = b'2026-09-21T00:00:00Z {"attempts": 1, "event": "passed"}\n'
 
 
-def actor(environment, application, http, token):
-    controller = PubSubLifecycle(
-        environment, http, application, PubSubGuard(environment)
-    )
-    return PubSubHandoff(
-        PubSubTraffic(
-            controller, application, environment.approval.pubsub_traffic_limits
-        ),
-        actor_token=token,
-        settled=lambda: True,
-    )
+def actor(environment, http, token):
+    controller = PubSubLifecycle(environment, http, PubSubGuard(environment))
+    return PubSubHandoff(controller, actor_token=token, settled=lambda: True)
 
 
 @pytest.fixture
@@ -149,12 +124,8 @@ def admitting(prepared, monkeypatch):
         environment.sleep,
         actor="supervisor",
     )
-    sender = actor(
-        environment, application, Identity(service, "runner", events), "b" * 32
-    )
-    receiver = actor(
-        observer, application, Identity(service, "supervisor", events), "c" * 32
-    )
+    sender = actor(environment, Identity(service, "runner", events), "b" * 32)
+    receiver = actor(observer, Identity(service, "supervisor", events), "c" * 32)
     runner = Runner(environment, pubsub=sender)
     supervisor = Supervisor(
         observer,
@@ -162,7 +133,7 @@ def admitting(prepared, monkeypatch):
         pubsub=receiver,
         quiesce=barrier(observer),
     )
-    probe_log = {"text": workload_log(environment.approval.pubsub_plan)}
+    probe_log = {"text": PROBE_LOG}
     create = kube.create
 
     def created(manifest, dry_run=False):
@@ -204,7 +175,7 @@ def admitting(prepared, monkeypatch):
     def sleep(seconds):
         original_sleep(seconds)
         state = environment.refresh().pubsub or {}
-        if not participated and state.get("traffic") is not None:
+        if not participated and state.get("stage") == "prepared":
             participated.append(True)
             supervisor.participate()
             events.append(("supervisor", "participated"))
@@ -271,7 +242,9 @@ def test_admission_runs_the_ordered_preparation_before_the_application(admitting
         <= cohorts["before_checkpoint"]["published_at"]
     )
     access = control.pubsub["access"]
-    assert set(access) == {"runner", "workload", "supervisor"}
+    # The workload's probe Pod is judged by its exit status; its log is kept
+    # as evidence, not recorded as access.
+    assert set(access) == {"runner", "supervisor"}
     assert access["supervisor"]["pulled"] == pulls(
         a.environment.approval.pubsub_plan, "supervisor"
     )
@@ -362,28 +335,17 @@ def test_access_an_identity_must_not_have_is_refused_without_waiting(admitting):
 
 @pytest.mark.parametrize(
     "change, match",
-    [
-        ({"identity": {"email": MEMBERS["runner"]}}, "did not pass"),
-        ({"passed": {"event": "refused"}}, "did not pass"),
-        ({"attempt": {"seen": {}}}, "other resources"),
-        ({"pulled": {"name": "projects/p/subscriptions/other"}}, "do not meet"),
-        ("failed", "did not succeed"),
-        ("oversized", "read ceiling"),
-        ("malformed", "malformed"),
-    ],
+    [("failed", "did not succeed"), ("oversized", "read ceiling")],
 )
-def test_the_runner_judges_the_workload_probe_by_its_own_reading(
+def test_the_runner_judges_the_workload_probe_by_its_exit_status(
     admitting, monkeypatch, change, match
 ):
+    """The probe program exits non-zero on any refusal, so a Pod that
+    succeeded passed; its log is read only to be kept."""
     a = admitting
-    plan = a.environment.approval.pubsub_plan
     if change == "oversized":
         a.probe_log["text"] = b"x" * (64 * 1024)
-    elif change == "malformed":
-        a.probe_log["text"] = (STAMP + "not json\n").encode()
-    elif change != "failed":
-        a.probe_log["text"] = workload_log(plan, **change)
-    if change == "failed":
+    else:
         create = a.environment.kube.create
 
         def failing(manifest, dry_run=False):
@@ -416,64 +378,20 @@ def test_drift_found_by_the_final_readback_stops_before_any_input(admitting):
     assert not kinds(a.events, "publish")
 
 
-@pytest.mark.parametrize(
-    "tamper, match",
-    [
-        ("probe-args", "access probe differs"),
-        ("probe-command", "access probe differs"),
-        ("probe-account", "access probe differs"),
-        ("probe-namespace", "access probe differs"),
-        ("probe-name", "access probe differs"),
-        ("probe-restart", "access probe differs"),
-        ("probe-image", "image differs"),
-        ("probe-resources", "resources exceed or differ"),
-        ("probe-spot", "Spot"),
-        ("probe-missing", "access probe differs"),
-        ("application", "Application differs from the approved manifest"),
-        ("recovery", "Application differs from the approved manifest"),
-        ("unguarded", "authenticated, guarded handoff"),
-        ("unsettled", "authenticated, guarded handoff"),
-    ],
-)
-def test_tampered_admission_inputs_are_refused_before_any_write(
-    admitting, tamper, match
+@pytest.mark.parametrize("tamper", ["unguarded", "unsettled"])
+def test_an_unguarded_or_unsettled_handoff_is_refused_before_any_write(
+    admitting, tamper
 ):
+    """The manifests are the approval bundle's, which the runner's
+    construction re-rendered and checked; the handoff is the runner's own."""
     a = admitting
-    config, job, application, probe = a.args
-    container = probe["spec"]["containers"][0]
-    if tamper == "probe-args":
-        container["args"] = ["{}"]
-    elif tamper == "probe-command":
-        container["command"] = ["python3", "-c", "print(1)"]
-    elif tamper == "probe-account":
-        probe["spec"]["serviceAccountName"] = "default"
-    elif tamper == "probe-namespace":
-        probe["metadata"]["namespace"] = SYSTEM
-    elif tamper == "probe-name":
-        probe["metadata"]["name"] += "-2"
-    elif tamper == "probe-restart":
-        probe["spec"]["restartPolicy"] = "OnFailure"
-    elif tamper == "probe-image":
-        container["image"] += "0"
-    elif tamper == "probe-resources":
-        container["resources"]["limits"]["cpu"] = "2"
-    elif tamper == "probe-spot":
-        del probe["spec"]["affinity"]
-    elif tamper == "probe-missing":
-        probe = None
-    elif tamper == "application":
-        application = {**application, "spec": {**application["spec"], "extra": 1}}
-    elif tamper == "recovery":
-        recovery = json.loads(config["data"]["upgrade-application.json"])
-        recovery["spec"]["job"]["parallelism"] = 9
-        config["data"]["upgrade-application.json"] = json.dumps(recovery)
-    elif tamper == "unguarded":
+    if tamper == "unguarded":
         a.sender.controller.before_operation = lambda *args: None
     else:
         a.sender.settled = None
     before = a.environment.refresh().to_dict()
-    with pytest.raises(Failure, match=match):
-        a.runner.start(config, job, application, probe)
+    with pytest.raises(Failure, match="authenticated, guarded handoff"):
+        a.runner.start(*a.args)
     assert a.environment.refresh().to_dict() == before
     assert not a.events
 
@@ -568,12 +486,7 @@ def replacement(a):
         a.environment.clock.sleep,
         actor="supervisor",
     )
-    handoff = actor(
-        observer,
-        a.args[2],
-        Identity(a.service, "supervisor", a.events),
-        "d" * 32,
-    )
+    handoff = actor(observer, Identity(a.service, "supervisor", a.events), "d" * 32)
     return Supervisor(
         observer,
         json.loads(a.args[0]["data"]["upgrade-application.json"]),
@@ -683,19 +596,6 @@ def prepare_for_supervisor(a):
     a.environment.records.set_phase(Phase.READY)
 
 
-@pytest.mark.parametrize(
-    "who, role",
-    [("receiver", "workload"), ("receiver", "runner"), ("sender", "supervisor")],
-)
-def test_access_is_recorded_only_by_the_identity_s_prober(admitting, who, role):
-    a = admitting
-    prepare_for_supervisor(a)
-    controller = getattr(a, who).controller
-    with controller.reserve("record"), pytest.raises(Failure, match="recorded by"):
-        controller.record_access(role, {"attempts": 1})
-    assert "access" not in a.environment.refresh().pubsub
-
-
 def failed_probe(a, monkeypatch):
     create = a.environment.kube.create
 
@@ -777,21 +677,6 @@ def test_the_application_waits_until_the_probe_pod_is_gone(admitting, monkeypatc
     monkeypatch.setattr(a.environment, "sleep", sleep)
     a.runner.start(*a.args)
     assert a.environment.refresh().phase == Phase.RUNNING
-
-
-def test_a_recovery_manifest_repinned_but_running_another_job_is_refused(admitting):
-    """A digest pins a manifest; only the trial's job says the manifest is right."""
-    a = admitting
-    config, job, application, probe = a.args
-    recovery = json.loads(config["data"]["upgrade-application.json"])
-    recovery["spec"]["job"]["args"][-1] = "--entry-point=table"
-    config["data"]["upgrade-application.json"] = json.dumps(recovery)
-    a.environment.approval = replace(
-        a.environment.approval, upgrade_application_sha256=digest(recovery)
-    )
-    with pytest.raises(Failure, match="approved trial"):
-        a.runner.start(config, job, application, probe)
-    assert not a.events
 
 
 def test_cleanup_deletes_a_left_probe_before_forcing_anything(admitting, monkeypatch):
@@ -914,17 +799,19 @@ def test_a_released_actor_cannot_probe_and_access_is_recorded_once_prepared(
     admitting,
 ):
     a = admitting
+    deadline = admission_deadline(a.environment)
     a.sender.initialize()
-    with (
-        a.sender.controller.reserve("record"),
-        pytest.raises(Failure, match="not prepared"),
-    ):
-        a.sender.controller.record_access("runner", {"attempts": 1})
+    with pytest.raises(Failure, match="not prepared"):
+        a.sender.access(deadline=deadline)
     a.sender.prepare()
     a.environment.records.set_phase(Phase.READY)
     a.sender.release()
-    with pytest.raises(Failure, match="released"):
-        a.sender.access(deadline=admission_deadline(a.environment))
+    before = len(a.service.resources.calls)
+    # A release stops the run first, which closes admission.
+    with pytest.raises(Failure, match="has stopped"):
+        a.sender.access(deadline=deadline)
+    assert len(a.service.resources.calls) == before
+    assert "access" not in a.environment.refresh().pubsub
 
 
 def test_participation_stops_on_a_stop_and_does_not_probe_twice(admitting):

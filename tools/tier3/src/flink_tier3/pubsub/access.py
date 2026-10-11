@@ -14,8 +14,6 @@
 # limitations under the License.
 """What each identity must and must not be able to do on the run's resources."""
 
-import json
-
 from ..common import ApiError, Failure, utc
 from ..policy import HTTP_TIMEOUT, PROJECT, PUBSUB_ADMISSION
 
@@ -81,7 +79,7 @@ def _attempt_budget(expected):
     return len(expected) * HTTP_TIMEOUT
 
 
-def wait_for_access(env, resources, role, *, deadline):
+def wait_for_access(env, resources, role, *, deadline, check=None):
     """Poll permission tests until every grant holds, then pull each subscription.
 
     A grant that is missing may still be propagating, so the round is retried
@@ -91,7 +89,8 @@ def wait_for_access(env, resources, role, *, deadline):
     403 is retried the same way, because the data plane can see a grant later
     than the permission test does. Nothing here changes a resource; a pull
     still counts as a write to the session's unsettled-write latch, because
-    it could lease a message. A local stop ends the wait.
+    it could lease a message. A local stop ends the wait, and so does a
+    refusal from ``check``, which runs before each round and each pull.
     """
     expected = expectations(env.approval.pubsub_plan, role)
     attempts, first = 0, utc(env.clock())
@@ -99,6 +98,8 @@ def wait_for_access(env, resources, role, *, deadline):
     def open_or_stop():
         if env.stopping or env.evidence_failed:
             raise Failure("Pub/Sub admission has stopped")
+        if check is not None:
+            check()
 
     while True:
         open_or_stop()
@@ -154,47 +155,4 @@ def probe_spec(plan, schedule):
         "pulls": pulls(plan, "workload"),
         "deadline": admission_until(schedule),
         "interval": INTERVAL,
-    }
-
-
-def evaluate_workload_log(plan, text):
-    """Re-derive the workload's access from the probe Pod's own observations.
-
-    The Pod's exit status is not taken on trust: the log must name the
-    workload identity, end with a pass, and show a last attempt that meets
-    every expectation, and an empty pull of every subscription the workload
-    reads.
-    """
-    try:
-        events = [json.loads(line) for line in text.splitlines() if line.strip()]
-    except ValueError as error:
-        raise Failure("Pub/Sub workload probe log is malformed") from error
-    if not all(isinstance(event, dict) for event in events):
-        raise Failure("Pub/Sub workload probe log is malformed")
-    expected = expectations(plan, "workload")
-    identities = [e for e in events if e.get("event") == "identity"]
-    attempts = [e for e in events if e.get("event") == "attempt"]
-    if (
-        len(identities) != 1
-        or identities[0].get("email") != MEMBERS["workload"]
-        or not attempts
-        or not events
-        or events[-1].get("event") != "passed"
-        or any(e.get("event") == "refused" for e in events)
-    ):
-        raise Failure("Pub/Sub workload probe did not pass as the workload identity")
-    seen = attempts[-1].get("seen")
-    if not isinstance(seen, dict) or set(seen) != set(expected):
-        raise Failure("Pub/Sub workload probe tested other resources")
-    missing, extra = compare(expected, seen)
-    pulled = [e.get("name") for e in events if e.get("event") == "pulled"]
-    if missing or extra or pulled != pulls(plan, "workload"):
-        raise Failure("Pub/Sub workload probe observations do not meet the plan")
-    return {
-        "attempts": len(attempts),
-        "pull_attempts": sum(
-            e.get("event") in ("pulled", "pull-refused") for e in events
-        ),
-        "granted": sorted(name for name, held in seen.items() if held),
-        "pulled": pulled,
     }

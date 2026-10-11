@@ -83,7 +83,8 @@ def test_runner_and_supervisor_bind_distinct_authenticated_actors(prepared, wire
         assert isinstance(guard, PubSubGuard) and guard.deadline == deadline
         assert handoff.settled == handoff.controller.http.settled
         assert handoff.controller.http.principal == PRINCIPALS["runner"]
-        assert handoff.traffic.limits == env.approval.pubsub_traffic_limits
+        trial = env.approval.pubsub_trial
+        assert handoff.records_per_subscription == trial["records_per_subscription"]
         assert env.refresh().pubsub is None
         assert [call[1] for call in wire.calls] == [USERINFO]
     assert wire.closed
@@ -161,7 +162,7 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
         recovery["changed"] = True
     elif change == "application-args":
         # A digest pins a manifest; only the trial says what it must run.
-        application["spec"]["job"]["args"][-1] = "--entry-point=table"
+        application["spec"]["job"]["args"][-1] = "--entry-point=datastream"
         repin(env, "application", application)
     elif change == "recovery-args":
         recovery["spec"]["job"]["args"][1] = "--phase=initial"
@@ -262,7 +263,7 @@ def test_a_stop_during_authentication_prevents_the_runner(prepared, wire):
     assert wire.closed
 
 
-def test_a_spent_admission_budget_refuses_before_any_credential_call(prepared, wire):
+def test_a_passed_admission_deadline_refuses_before_any_credential_call(prepared, wire):
     env, bundle = prepared
     wire.responses = [identity()]
     env.clock.now = admission_deadline(env)

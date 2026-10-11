@@ -14,7 +14,6 @@
 """Serialized Pub/Sub trial binding and shared cleanup without cloud access."""
 
 import copy
-from dataclasses import asdict, replace
 
 import pytest
 from flink_tier3.cleanup import Cleanup, verify_idle
@@ -25,7 +24,6 @@ from flink_tier3.policy import PUBSUB, PUBSUB_CEILINGS, PUBSUB_STATE, RECOVERY
 from flink_tier3.pubsub import plan
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle
-from flink_tier3.pubsub.traffic import PubSubTraffic
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
@@ -81,16 +79,12 @@ def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
     approval = Approval.from_dict(value, environment.clock())
     assert Approval.from_dict(approval.to_dict()) == approval
     assert approval.pubsub_trial["entry_point"] == entry_point
-    value["pubsub_trial"]["traffic_limits"]["publish_calls"] = 1
-    assert approval.pubsub_trial["traffic_limits"]["publish_calls"] == 20000
+    value["pubsub_trial"]["records_per_subscription"] = 4
+    assert approval.pubsub_trial["records_per_subscription"] == records
     resources = approval.pubsub_plan.manifest()
     assert resources["run_id"] == approval.run_id
     assert resources["nonce"] == approval.nonce
     assert len(resources["topics"]) == len(resources["subscriptions"]) == 3
-    assert asdict(approval.pubsub_traffic_limits) == {
-        **approval.pubsub_trial["traffic_limits"],
-        "admit_until": rt.timestamp(approval.cleanup_at),
-    }
     assert approval.application_namespace == PUBSUB
     assert approval.schedule.active_seconds(approval.schedule.started) == 3420
 
@@ -127,6 +121,8 @@ def test_incompatible_approval_refused(prepared, key, value):
         # Three cohorts, each nonempty.
         ("records_per_subscription", 2),
         ("records_per_subscription", 10001),
+        ("version", 4),
+        # Version 5 removed the runtime traffic limits.
         ("traffic_limits", {}),
         ("total_request_limit", 100000),
         ("additional_cost_usd", "10.00"),
@@ -140,21 +136,20 @@ def test_invalid_trial_refused(prepared, key, value):
         Approval.from_dict(data)
 
 
-@pytest.mark.parametrize(
-    "counter,value",
-    [
-        ("input_messages", 1999),
-        ("input_bytes", 1),
-        ("publish_calls", 5),
-        ("output_messages", 1999),
-        ("pull_calls", 19),
-        ("pubsub_requests", 59),
-    ],
-)
-def test_serialized_trial_requires_one_feasible_pass(prepared, counter, value):
+def test_an_approval_stored_before_trial_version_5_is_still_read(prepared):
+    """Recovery reads it to settle a run that spans the change."""
     data = prepared[0].approval.to_dict()
-    data["pubsub_trial"]["traffic_limits"][counter] = value
-    with pytest.raises(Failure, match="complete input/output pass"):
+    data["pubsub_trial"].update(version=4, traffic_limits={"publish_calls": 20000})
+    approval = Approval.from_dict(data)
+    assert approval.pubsub_plan.manifest()["run_id"] == approval.run_id
+    # Rendering, dispatch and the actors' manifest checks still refuse it.
+    with pytest.raises(Failure, match="version 5 schema"):
+        plan.validate_trial(approval.pubsub_trial)
+    with pytest.raises(Failure, match="version 5 schema"):
+        plan.manifest_jobs(approval.run_id, approval.pubsub_trial)
+    # Only version 4's exact fields are read.
+    data["pubsub_trial"].pop("traffic_limits")
+    with pytest.raises(Failure, match="version 5 schema"):
         Approval.from_dict(data)
 
 
@@ -220,35 +215,13 @@ def test_smoke_roundtrip_cannot_carry_pubsub_trial(env, trial):
         Approval.from_dict(value)
 
 
-@pytest.mark.parametrize(
-    "change", ["none", "limits", "deadline", "records", "invalid-approval"]
-)
-def test_helpers_bind_version_five_before_any_io(prepared, change):
-    environment, application = prepared
-    limits = environment.approval.pubsub_traffic_limits
-    if change == "limits":
-        limits = replace(limits, publish_calls=limits.publish_calls - 1)
-    elif change == "deadline":
-        limits = replace(limits, admit_until=limits.admit_until - 1)
-    elif change == "records":
-        application["spec"]["job"]["args"][-1] = "--records-per-subscription=999"
-        environment.approval = replace(
-            environment.approval, application_sha256=digest(application)
-        )
-    elif change == "invalid-approval":
-        environment.approval = replace(environment.approval, pubsub_trial={})
-
-    def construct():
-        controller = PubSubLifecycle(
-            environment, None, application, lambda *a: pytest.fail("Unexpected I/O")
-        )
-        return PubSubTraffic(controller, application, limits)
-
-    if change == "none":
-        assert construct().records == 1000
-    else:
-        with pytest.raises(Failure):
-            construct()
+def test_the_handoff_takes_its_input_domain_from_the_approval(prepared):
+    environment, _ = prepared
+    controller = PubSubLifecycle(
+        environment, None, lambda *a: pytest.fail("Unexpected I/O")
+    )
+    handoff = PubSubHandoff(controller, actor_token="b" * 32)
+    assert handoff.records_per_subscription == 1000
 
 
 def test_application_replacement_and_control_quotas(prepared):
@@ -282,7 +255,7 @@ def test_entrypoints_refuse_without_their_handoff(prepared):
 
 
 def settled(prepared, service_intent):
-    environment, application = prepared
+    environment, _ = prepared
     runner = Runner(environment)
     if not service_intent:
         runner.cleanup.run("stopped before creation")
@@ -298,11 +271,8 @@ def settled(prepared, service_intent):
     )
 
     def actor(env, token):
-        controller = PubSubLifecycle(env, service, application, lambda *a: None)
-        return PubSubHandoff(
-            PubSubTraffic(controller, application, env.approval.pubsub_traffic_limits),
-            actor_token=token,
-        )
+        controller = PubSubLifecycle(env, service, lambda *a: None)
+        return PubSubHandoff(controller, actor_token=token)
 
     sender, observer = actor(environment, "b" * 32), actor(supervisor, "c" * 32)
     sender.initialize()

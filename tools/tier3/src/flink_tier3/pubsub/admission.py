@@ -14,28 +14,22 @@
 # limitations under the License.
 """Admit a Pub/Sub recovery run: the ordered preparation before its application."""
 
-import json
-
-from ..common import Failure, digest
-from .access import evaluate_workload_log
+from ..common import Failure
 from .guard import PubSubGuard, admission_deadline
 from .messages import COHORTS
-from .plan import require_probe, require_trial_jobs
 
 # The probe prints one short line per attempt; a longer log is refused after
 # it is read, which `Kubernetes.logs` requests with a 1 MiB `limitBytes`.
 PROBE_LOG_BYTES = 64 * 1024
 
 
-def require_admission(runner, config, application, probe):
-    """Refuse admission inputs that are not exactly the approved ones.
+def require_admission(runner):
+    """Refuse admission without the production handoff.
 
-    The handoff must be the production one, guarded and able to tell a
-    settled failure, and every manifest the runner is about to submit must be
-    the approved one: both job manifests by digest and by the trial's job,
-    and the probe by the plan it tests and the program it runs.
+    It must be guarded and able to tell a settled failure. The manifests the
+    runner submits are the approval bundle's, which `pubsub_actors.runner`
+    re-rendered against the approval and the rendering checked.
     """
-    approval = runner.env.approval
     handoff = runner.pubsub
     if (
         handoff is None
@@ -43,24 +37,14 @@ def require_admission(runner, config, application, probe):
         or handoff.settled is None
     ):
         raise Failure("Pub/Sub admission requires its authenticated, guarded handoff")
-    recovery = config.get("data", {}).get("upgrade-application.json")
-    try:
-        recovery = json.loads(recovery)
-    except (TypeError, ValueError) as error:
-        raise Failure("Pub/Sub delivery lacks its recovery manifest") from error
-    if (
-        digest(application) != approval.application_sha256
-        or digest(recovery) != approval.upgrade_application_sha256
-    ):
-        raise Failure("Application differs from the approved manifest")
-    require_trial_jobs(approval.run_id, approval.pubsub_trial, application, recovery)
-    require_probe(
-        probe, approval.pubsub_plan, runner.env.schedule, approval.images["supervisor"]
-    )
 
 
 def run_probe(runner, probe, deadline):
-    """Create the workload's probe Pod, read what it saw, then remove it."""
+    """Create the workload's probe Pod, keep its log, then remove it.
+
+    The Pod's program exits non-zero on any refusal, so its success is the
+    result; the log is kept as evidence of what it saw.
+    """
     env = runner.env
     runner.create_root("probe", probe)
 
@@ -94,7 +78,6 @@ def run_probe(runner, probe, deadline):
     )
     if pod.get("status", {}).get("phase") != "Succeeded":
         raise Failure("Access probe Pod did not succeed")
-    runner.pubsub.record_workload(evaluate_workload_log(env.approval.pubsub_plan, text))
     env.kube.delete(pod)
 
     def gone():

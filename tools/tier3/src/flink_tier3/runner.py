@@ -212,7 +212,7 @@ class Runner:
     def start(self, config, job, application, probe=None):
         pubsub = self.env.approval.scenario == "pubsub-recovery"
         if pubsub:
-            require_admission(self, config, application, probe)
+            require_admission(self)
             self.admission_open()
         if self.env.approval.scenario == "bigquery-recovery":
             if self.bigquery is None:

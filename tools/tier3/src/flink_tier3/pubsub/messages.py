@@ -100,9 +100,9 @@ class Messages:
     """Internal helper; construction does not authenticate or admit a run.
 
     The caller authenticates ``actor``, freezes the logical input domain, and
-    proves ownership, prepared resources, exclusive actor authority, and budgets
-    through ``before_operation(phase, method, name)`` before every operation.
-    The guard must reserve each complete call, including credential and guard I/O.
+    checks prepared resources, exclusive actor authority and admission before
+    each call; ``before_operation(phase, method, name)`` runs before every
+    operation.
     Use the shared authorized HTTP session without retries and the GCS adapter.
     Evidence objects are create-only and must survive until final assessment.
     """
@@ -179,7 +179,7 @@ class Messages:
         """Publish one logical interval once; an existing intent refuses replay.
 
         Different overlapping intervals can publish duplicate logical inputs.
-        The caller freezes disjoint cohorts or explicitly budgets such repeats.
+        The caller freezes disjoint cohorts.
         A missing response receipt is an unknown outcome, never proof of absence.
         """
         self._role("runner")

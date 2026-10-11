@@ -260,7 +260,6 @@ class Supervisor:
             return (
                 control.phase in (Phase.READY, Phase.RUNNING)
                 and state.get("stage") == "prepared"
-                and state.get("traffic") is not None
             )
 
         self.env.wait(prepared, deadline)

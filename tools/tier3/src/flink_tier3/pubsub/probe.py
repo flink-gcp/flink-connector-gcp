@@ -18,8 +18,8 @@ The runner cannot act as the workload's service account, which only a Pod
 running as the namespace's `pubsub` Kubernetes service account reaches. This
 program is that Pod's whole command, passed inline because a Pod cannot mount
 a ConfigMap from another namespace, so it imports nothing from this package.
-It prints one JSON line per observation; the runner re-evaluates them rather
-than trusting the exit status.
+It prints one JSON line per observation, which the runner keeps as evidence,
+and exits non-zero on any refusal, which is the result the runner reads.
 """
 
 import json

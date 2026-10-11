@@ -152,19 +152,15 @@ def test_an_internally_consistent_bundle_cannot_supply_its_own_approval(approval
         bundles.validate(value, approval)
 
 
-@pytest.mark.parametrize("changed_after_render", [False, True])
-def test_checkout_drift_refuses_preparation(
-    approval, monkeypatch, changed_after_render
-):
-    checks = []
-
+def test_checkout_drift_refuses_preparation_before_rendering(approval, monkeypatch):
     def check(revision):
         assert revision == approval["sha"]
-        checks.append(revision)
-        if len(checks) > int(changed_after_render):
-            raise Failure("Checkout changed")
+        raise Failure("Checkout changed")
 
     monkeypatch.setattr(approval_bundle, "check_revision", check)
+    monkeypatch.setattr(
+        plan, "prepare", lambda **kwargs: pytest.fail("Rendered a drifted checkout")
+    )
     with pytest.raises(Failure, match="Checkout changed"):
         bundles.prepare(approval, prepared_at=approval["started_at"])
 

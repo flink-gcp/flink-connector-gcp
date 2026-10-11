@@ -37,15 +37,12 @@ class Environment:
             run_id="lifecycle-1361",
             nonce="a" * 32,
             application_sha256=digest(application),
+            pubsub_trial={"records_per_subscription": 1000},
         )
-        self.actor, self.owner = "runner", True
+        self.actor = "runner"
         self.store = Store()
         self.records = Records(self.store, self.approval, lambda: 1800000000)
         self.store.write(self.records.path, RunRecord(self.approval.nonce).to_dict())
-
-    def assert_owner(self):
-        if not self.owner:
-            raise Failure("Environment ownership lost")
 
     def refresh(self):
         return self.records.read()[0]
@@ -53,20 +50,17 @@ class Environment:
 
 @pytest.fixture
 def setup():
-    app = {
-        "metadata": {"name": "lifecycle-1361", "namespace": "tier3-pubsub"},
-        "spec": {"job": {"args": ["--run-id=lifecycle-1361", "--phase=initial"]}},
-    }
+    app = {"metadata": {"name": "lifecycle-1361", "namespace": "tier3-pubsub"}}
     env, http, guarded = Environment(app), FakeIamHttp(), []
-    controller = PubSubLifecycle(env, http, app, lambda *args: guarded.append(args))
+    controller = PubSubLifecycle(env, http, lambda *args: guarded.append(args))
     controller.initialize()
-    return controller, env, http, app, guarded
+    return controller, env, http, guarded
 
 
 def restart(setup):
-    _, env, http, app, guarded = setup
+    _, env, http, guarded = setup
     env.records = Records(env.store, env.approval, lambda: 1800000000)
-    return PubSubLifecycle(env, http, app, lambda *args: guarded.append(args))
+    return PubSubLifecycle(env, http, lambda *args: guarded.append(args))
 
 
 def stop(env):
@@ -81,43 +75,14 @@ def test_old_record_and_absent_lifecycle_preserve_settlement():
     require_pubsub_clean(record)
 
 
-@pytest.mark.parametrize("field", ["scenario", "run_id", "nonce", "application_sha256"])
-def test_approval_identity_cannot_change(setup, field):
-    controller, env, http, _, _ = setup
-    setattr(env.approval, field, "b" * 32 if field == "nonce" else "wrong")
-    with pytest.raises(
-        Failure, match="approved application|replaced Pub/Sub|replaced run control"
-    ):
-        restart(setup).initialize()
-    assert not http.calls
-    assert env.store.read(controller.plan.manifest_path)[0] is None
-
-
-@pytest.mark.parametrize("change", ["namespace", "name", "args", "duplicate", "split"])
-def test_matching_digest_does_not_bypass_identity_binding(setup, change):
-    _, env, http, app, _ = setup
-    if change in ("namespace", "name"):
-        app["metadata"][change] = "wrong"
-    elif change == "duplicate":
-        app["spec"]["job"]["args"].append("--run-id=lifecycle-1361")
-    elif change == "split":
-        app["spec"]["job"]["args"] += ["--run-id", "foreign"]
-    else:
-        app["spec"]["job"]["args"] = ["--run-id=foreign"]
-    env.approval.application_sha256 = digest(app)
-    with pytest.raises(Failure, match="approved application"):
-        restart(setup)
-    assert not http.calls
-
-
 def test_guard_is_mandatory(setup):
-    _, env, http, app, _ = setup
+    _, env, http, _ = setup
     with pytest.raises(Failure, match="guard"):
-        PubSubLifecycle(env, http, app, None)
+        PubSubLifecycle(env, http, None)
 
 
 def test_preparation_preserves_service_settings_and_explicit_policies(setup):
-    controller, env, http, _, guarded = setup
+    controller, env, http, guarded = setup
 
     def before(method, _name):
         state = env.refresh().pubsub
@@ -136,7 +101,8 @@ def test_preparation_preserves_service_settings_and_explicit_policies(setup):
     assert {r["name"]: r for r in saved["resources"]} == http.resources
     assert {p["name"]: p["policy"] for p in saved["policies"]} == http.policies
     assert len(saved["resources"]) == len(saved["policies"]) == 6
-    assert any(g[0] == "control" for g in guarded)
+    # The guard sees every service request, and control I/O is not one.
+    assert not any(g[0] == "control" for g in guarded)
     for method, name, _ in http.calls:
         assert any(g[1:] == (method, name) for g in guarded)
     with pytest.raises(Failure, match="cannot be resumed"):
@@ -146,7 +112,7 @@ def test_preparation_preserves_service_settings_and_explicit_policies(setup):
 
 @pytest.mark.parametrize("actor", ["supervisor", "workload", "recovery"])
 def test_preparation_is_runner_only(setup, actor):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     env.actor = actor
     for operation in (controller.initialize, controller.prepare):
         with pytest.raises(Failure, match="submitting runner"):
@@ -155,7 +121,7 @@ def test_preparation_is_runner_only(setup, actor):
 
 
 def test_cas_conflict_allows_only_one_preparation_attempt(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     env.store.before_write = lambda: restart(setup).prepare()
     with pytest.raises(Failure, match="cannot be resumed"):
         controller.prepare()
@@ -165,7 +131,7 @@ def test_cas_conflict_allows_only_one_preparation_attempt(setup):
 
 
 def test_stop_racing_claim_prevents_service_io(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     env.store.before_write = lambda: stop(env)
     with pytest.raises(Failure, match="admission has stopped"):
         controller.prepare()
@@ -173,18 +139,13 @@ def test_stop_racing_claim_prevents_service_io(setup):
     assert not http.calls
 
 
-@pytest.mark.parametrize(
-    "event", ["stop_requested", "evidence_failed", "owner", "phase"]
-)
-def test_guard_rechecks_control_after_each_service_operation(setup, event):
-    controller, env, http, _, _ = setup
+@pytest.mark.parametrize("event", ["stop_requested", "evidence_failed", "phase"])
+def test_a_stop_during_preparation_keeps_it_from_being_marked_prepared(setup, event):
+    """Preparation checks the stop between its steps, not before each request."""
+    controller, env, http, _ = setup
 
     def after(method, _name):
-        if method != "PUT":
-            return
-        if event == "owner":
-            env.owner = False
-        else:
+        if method == "PUT" and len(http.resources) == 1:
             env.records._change(
                 lambda r: setattr(
                     r, event, Phase.CLEANING if event == "phase" else True
@@ -192,15 +153,20 @@ def test_guard_rechecks_control_after_each_service_operation(setup, event):
             )
 
     http.after = after
-    with pytest.raises(Failure, match="stopped|ownership lost"):
+    with pytest.raises(Failure, match="stopped"):
         controller.prepare()
-    assert len(http.resources) == 1
     assert env.refresh().pubsub["stage"] == "preparing"
+    # The step under way finishes; the next one, installing grants, is refused.
+    assert len(http.resources) == 6 and not http.policies
+    http.after = lambda *args: None
+    env.actor = "supervisor"
+    assert restart(setup).cleanup(lambda: True)
+    assert not http.resources
 
 
 @pytest.mark.parametrize("method", ["PUT", "POST"])
 def test_lost_mutation_response_is_not_resumed_but_supervisor_can_clean(setup, method):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
 
     def lost(current, _name):
         if current == method:
@@ -224,7 +190,7 @@ def test_lost_mutation_response_is_not_resumed_but_supervisor_can_clean(setup, m
 
 
 def test_preflight_collision_is_not_adopted_or_deleted(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     foreign = controller.plan.topics()[0]
     http.resources[foreign["name"]] = foreign
     with pytest.raises(Failure, match="refusing adoption"):
@@ -237,7 +203,7 @@ def test_preflight_collision_is_not_adopted_or_deleted(setup):
 
 @pytest.mark.parametrize("result", [False, None, 1])
 def test_cleanup_requires_true_external_barrier_after_durable_stop(setup, result):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     controller.prepare()
     http.calls.clear()
 
@@ -252,22 +218,8 @@ def test_cleanup_requires_true_external_barrier_after_durable_stop(setup, result
     assert env.refresh().pubsub["stage"] == "cleaning"
 
 
-def test_lost_owner_during_barrier_blocks_deletion(setup):
-    controller, env, http, _, _ = setup
-    controller.prepare()
-    http.calls.clear()
-
-    def quiesce():
-        env.owner = False
-        return True
-
-    with pytest.raises(Failure, match="ownership lost"):
-        controller.cleanup(quiesce)
-    assert not http.calls
-
-
 def test_cleanup_retries_ambiguous_delete_and_rechecks_absence(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     controller.prepare()
 
     def lost(method, _name):
@@ -290,7 +242,7 @@ def test_cleanup_retries_ambiguous_delete_and_rechecks_absence(setup):
 
 @pytest.mark.parametrize("change", ["missing", "foreign", "float-version"])
 def test_missing_or_foreign_manifest_retains_active_control(setup, change):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     controller.prepare()
     path = controller.plan.manifest_path
     value, generation = env.store.read(path)
@@ -310,28 +262,19 @@ def test_missing_or_foreign_manifest_retains_active_control(setup, change):
     assert env.store.read(env.records.path)[0] is not None
 
 
-@pytest.mark.parametrize("value", [None, {}, {"intent": {}}, {"stage": "cleaned"}])
-def test_missing_or_foreign_run_intent_refuses_all_controller_operations(setup, value):
-    controller, env, http, _, _ = setup
-    env.records._change(lambda r: setattr(r, "pubsub", value))
+def test_uninitialized_control_refuses_all_controller_operations(setup):
+    controller, env, http, _ = setup
+    env.records._change(lambda r: setattr(r, "pubsub", None))
     for operation in (controller.prepare, lambda: controller.cleanup(lambda: True)):
-        with pytest.raises(Failure, match="resource intent"):
+        with pytest.raises(Failure, match="not initialized"):
             operation()
-    assert not http.calls
-
-
-def test_json_number_equality_does_not_adopt_replaced_intent(setup):
-    controller, env, http, _, _ = setup
-    env.records._change(lambda r: r.pubsub["intent"]["manifest"].update(version=2.0))
-    with pytest.raises(Failure, match="resource intent"):
-        controller.initialize()
     assert not http.calls
 
 
 def test_observation_limit_leaves_owned_partial_work_cleanable(setup, monkeypatch):
     import flink_tier3.pubsub.lifecycle as module
 
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     monkeypatch.setattr(
         module, "MAX_CONTROL_BYTES", len(json_bytes(env.refresh().pubsub)) + 50
     )
@@ -344,14 +287,14 @@ def test_observation_limit_leaves_owned_partial_work_cleanable(setup, monkeypatc
     assert not http.resources
 
 
-def test_budget_guard_can_stop_policy_write_and_cleanup_io(setup):
-    controller, env, http, app, _ = setup
+def test_a_refusing_guard_can_stop_policy_write_and_cleanup_io(setup):
+    controller, env, http, _ = setup
 
     def refuse(phase, method, _name):
         if method in ("POST", "DELETE"):
             raise Failure("Budget exhausted")
 
-    controller = PubSubLifecycle(env, http, app, refuse)
+    controller = PubSubLifecycle(env, http, refuse)
     with pytest.raises(Failure, match="Budget exhausted"):
         controller.prepare()
     assert not http.policies
@@ -361,22 +304,24 @@ def test_budget_guard_can_stop_policy_write_and_cleanup_io(setup):
     assert env.refresh().pubsub["stage"] == "cleaning"
 
 
-def test_control_budget_denial_precedes_any_transition(setup):
-    _, env, http, app, _ = setup
-    before = copy.deepcopy(env.store.data)
+def test_a_refused_first_request_leaves_nothing_to_clean(setup):
+    _, env, http, _ = setup
 
     def refuse(*_args):
-        raise Failure("Control budget exhausted")
+        raise Failure("Request refused")
 
-    controller = PubSubLifecycle(env, http, app, refuse)
-    with pytest.raises(Failure, match="Control budget exhausted"):
+    controller = PubSubLifecycle(env, http, refuse)
+    with pytest.raises(Failure, match="Request refused"):
         controller.prepare()
-    assert env.store.data == before
+    state = env.refresh().pubsub
+    assert (state["stage"], state["creation_intent"]) == ("preparing", False)
+    assert not http.calls
+    assert restart(setup).cleanup(lambda: True)
     assert not http.calls
 
 
 def test_lost_control_claim_response_refuses_restart_before_any_service_call(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     original = env.store.write
 
     def accepted(name, value, generation="0", **kwargs):
@@ -399,7 +344,7 @@ def test_lost_control_claim_response_refuses_restart_before_any_service_call(set
 
 @pytest.mark.parametrize("actor", ["workload", "recovery", "unknown"])
 def test_cleanup_refuses_non_lifecycle_actor_before_control_or_service_io(setup, actor):
-    controller, env, http, _, guarded = setup
+    controller, env, http, guarded = setup
     before = copy.deepcopy(env.store.data)
     guarded.clear()
     env.actor = actor
@@ -410,7 +355,7 @@ def test_cleanup_refuses_non_lifecycle_actor_before_control_or_service_io(setup,
 
 
 def test_cleanup_requires_callable_barrier_before_stop(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     with pytest.raises(Failure, match="quiescence barrier"):
         controller.cleanup(None)
     assert not env.refresh().stop_requested
@@ -418,7 +363,7 @@ def test_cleanup_requires_callable_barrier_before_stop(setup):
 
 
 def test_lost_creation_intent_response_can_settle_by_absence_without_manifest(setup):
-    controller, env, http, _, _ = setup
+    controller, env, http, _ = setup
     original = env.store.write
 
     def accepted(name, value, generation="0", **kwargs):
@@ -446,7 +391,7 @@ def test_lost_creation_intent_response_can_settle_by_absence_without_manifest(se
 def test_missing_manifest_absence_check_refuses_uncertainty_without_deleting(
     setup, fault
 ):
-    controller, env, http, app, _ = setup
+    controller, env, http, _ = setup
     env.records._change(
         lambda r: r.pubsub.update(stage="preparing", creation_intent=True)
     )
@@ -466,7 +411,7 @@ def test_missing_manifest_absence_check_refuses_uncertainty_without_deleting(
             if name == last["name"]:
                 raise Failure("Absence budget exhausted")
 
-        controller = PubSubLifecycle(env, http, app, refuse)
+        controller = PubSubLifecycle(env, http, refuse)
     with pytest.raises(Failure):
         controller.cleanup(lambda: True)
     assert all(c[0] == "GET" for c in http.calls)
@@ -476,7 +421,7 @@ def test_missing_manifest_absence_check_refuses_uncertainty_without_deleting(
 
 
 def test_failed_recheck_recloses_settlement_after_previous_cleanup(setup):
-    controller, env, http, app, _ = setup
+    controller, env, http, _ = setup
     controller.prepare()
     controller.cleanup(lambda: True)
     require_pubsub_clean(env.refresh())
@@ -485,7 +430,7 @@ def test_failed_recheck_recloses_settlement_after_previous_cleanup(setup):
         if phase == "cleanup" and name.startswith("projects/"):
             raise Failure("Recheck budget exhausted")
 
-    controller = PubSubLifecycle(env, http, app, refuse)
+    controller = PubSubLifecycle(env, http, refuse)
     with pytest.raises(Failure, match="Recheck budget"):
         controller.cleanup(lambda: True)
     with pytest.raises(Failure, match="cleanup is incomplete"):

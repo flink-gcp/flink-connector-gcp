@@ -27,7 +27,6 @@ from flink_tier3.model import Approval, Phase
 from flink_tier3.policy import BIGQUERY, PUBSUB, PUBSUB_STATE, inventory_namespaces
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle, require_pubsub_clean
-from flink_tier3.pubsub.traffic import PubSubTraffic, TrafficLimits
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
@@ -42,7 +41,7 @@ def runtime(env, request):
     return compose(env, getattr(request, "param", "running"))
 
 
-def compose(env, stage, *, records=1000, limits=None):
+def compose(env, stage, *, records=1000):
     """Both actors over one synthetic service, at ``stage`` of preparation."""
     kube, store, value, clock = env
     approved_smoke = Approval.from_dict(value)
@@ -78,20 +77,16 @@ def compose(env, stage, *, records=1000, limits=None):
             **approved_smoke.images,
             "application": application["spec"]["image"],
         },
+        pubsub_trial={"records_per_subscription": records},
     )
     service, guards = Service(), []
-    if limits is None:
-        limits = TrafficLimits(4, 4, 4, 1000, 4, 10, 200000, clock() + 1000)
 
     def make(role, token):
         environment = Environment(kube, store, approval, clock, clock.sleep, actor=role)
         controller = PubSubLifecycle(
-            environment, service, application, lambda *args: guards.append(args)
+            environment, service, lambda *args: guards.append(args)
         )
-        handoff = PubSubHandoff(
-            PubSubTraffic(controller, application, limits), actor_token=token
-        )
-        return handoff
+        return PubSubHandoff(controller, actor_token=token)
 
     sender = make("runner", "b" * 32)
     observer = make("supervisor", "c" * 32)
@@ -194,7 +189,6 @@ def test_runner_releases_before_supervisor_cleanup_and_complete_settlement(runti
     assert events.index("operator-stop") > events.index("service-delete")
     assert not a.service.resources.resources and operator_replicas(a) == 0
     assert a.sender.env.refresh().idle and a.sender.env.refresh().success
-    assert a.sender.env.refresh().pubsub["traffic"]["used"]["input_messages"] == 1
     saved = copy.deepcopy(a.sender.env.refresh().pubsub)
     # Settlement success is not a deployed recovery verdict: the receipt reports
     # success only for a usable verdict, which this run's record carries none of.
