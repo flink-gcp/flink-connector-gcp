@@ -148,8 +148,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (`java_ast.API_TIER_SOURCE_PATTERNS`, the Tier-3 job modules under `kubernetes/apps/` included)
   by its class-level stability annotation, read from the `-sources.jar`s at the pom-pinned
   `flink.version` (never class files: their constant pool lists method-level annotations too,
-  the #103 miscount). A Tier-3 module pinning another `flink.version` stops it with exit 2, since
-  its imports would be classified at the wrong version. `@Internal`, `@Experimental` and
+  the #103 miscount). Each import is classified at the floor `flink.version` and at
+  `weekly.yaml`'s `FLINK_LTS` wherever its source root is compiled at them, and the weakest tier
+  governs (#1714); `source_versions()` holds the per-root map, and the TOML's
+  `lts_tier3_modules` names the Tier-3 modules also built at the LTS. The weekly ceiling and
+  snapshot builds are not classified. A Tier-3 module pinning another `flink.version` stops it
+  with exit 2, since its imports would be classified at the wrong version. `@Internal`, `@Experimental` and
   unannotated types each need a reasoned allowlist entry in `scripts/config/flink-api-tiers.toml`;
   a new one — or a stale entry — fails.
   Runs as its own `verify.yaml` job, not in `lint.yaml` and not inside `just lint` (ADR-0058),
@@ -757,7 +761,9 @@ facts); the rules a session needs:
   (`src/main/java-flink1`/`java-flink2`), `just verify-flink 1.20.x` selects it locally, the
   weekly `lts` row verifies it, and no cross-major binary claim is made — the one-artifact
   claim spans the 2.x range only. A 1.20 patch bump is a hand edit to `FLINK_LTS` in
-  `weekly.yaml` (dependabot does not see workflow env). **A cross-major API difference goes in
+  `weekly.yaml` (dependabot does not see workflow env); `release.yaml` and
+  `check-flink-api-tiers` read it from there, so the audit re-tiers the imports at the new
+  patch in the same PR. **A cross-major API difference goes in
   the roots** — every connector's `CrossVersionSink`, base's package-private `CrossVersionSink`
   and `CrossVersionSource` for its Table lineage adapters (#1635), and
   BigQuery's `CrossVersionCheckpointId` (#404), which is what keeps a Flink method

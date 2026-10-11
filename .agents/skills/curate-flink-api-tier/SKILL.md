@@ -64,7 +64,21 @@ pinned `flink.version`, the import itself is wrong for the supported range.
 ## When the supported range moves
 
 Re-tiering surfaces here: a floor bump reclassifies every import at the new
-version, so a type Flink promoted or demoted shows up as unlisted or stale in
-the range-move PR. Handle each through the ladders above in that same PR —
-the range move is not complete while this check is red, same rule as
+version, and so does a `FLINK_LTS` bump in `weekly.yaml` for every import a
+1.x-built root carries, so a type Flink promoted or demoted shows up as unlisted
+or stale in the range-move PR. Handle each through the ladders above in that
+same PR — the range move is not complete while this check is red, same rule as
 re-running `just binary-compat` against the new ceiling.
+
+## Failure: a tier that differs by version
+
+An import is classified at the floor and at the 1.x LTS wherever its source
+root is compiled at them (#1714), and the weakest tier governs. A failure
+naming two tiers, as in `is Internal (Public at 2.2.1, Internal at 1.20.4)`,
+needs its entry under the weaker one, and the reason says which version needs
+it. Putting the dependency behind the compat roots instead (the stable 2.x form
+in `java-flink2`, a 1.x alternative in `java-flink1`, ADR-0054) is the
+cross-major form of rung 1.
+
+A Tier-3 job module is read at the LTS only when `lts_tier3_modules` names it;
+name one there exactly when `tier3-images.yaml` builds it at 1.20.

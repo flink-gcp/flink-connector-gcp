@@ -499,18 +499,22 @@ jobs:
         with:
           tool: just
 
-      # The audit fetches the sources jars of exactly flink.version, so that —
-      # not the whole pom.xml — keys the cache below: hashing the pom would
-      # save a duplicate immutable entry on every unrelated dependency bump
-      # that reaches main, against a quota already near its ceiling (see the
-      # Maven cache note above). Read through the script so its parsing has
-      # one owner and this step cannot drift from it.
-      - name: Read flink.version
+      # The audit fetches the sources jars of exactly flink.version and the
+      # weekly.yaml FLINK_LTS (#1714), so those two — not the whole pom.xml or
+      # weekly.yaml — key the cache below: hashing either file would save a
+      # duplicate immutable entry on every unrelated edit that reaches main,
+      # against a quota already near its ceiling (see the Maven cache note
+      # above). Read through the script so its parsing has one owner and this
+      # step cannot drift from it.
+      - name: Read flink.version and the LTS
         id: flink_version
         run: |
           version="$(mise x uv -- uv run --locked scripts/check-flink-api-tiers.py --print-flink-version)"
+          lts="$(mise x uv -- uv run --locked scripts/check-flink-api-tiers.py --print-lts-version)"
           test -n "$version"
+          test -n "$lts"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "lts=$lts" >> "$GITHUB_OUTPUT"
 
       # Maven Central rate-limits the shared egress IPs of GitHub-hosted
       # runners, and a 429 here fails the lane on changes that touched nothing
@@ -518,13 +522,18 @@ jobs:
       # Central requests. Restore always, save only on main, for the Maven
       # cache's reason above. No bare restore-keys fallback across
       # flink.version: another version's jars have different filenames, so
-      # restoring them buys nothing.
+      # restoring them buys nothing. The second key does fall back across
+      # FLINK_LTS, because the flink.version half of such an entry still
+      # matches by filename; the audit deletes the old LTS's jars before the
+      # save, so the entry does not grow with each LTS bump.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: tier_jars
         with:
           path: target/flink-api-tiers
-          key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
-          restore-keys: api-tier-jars-${{ steps.flink_version.outputs.version }}-
+          key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ steps.flink_version.outputs.lts }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
+          restore-keys: |
+            api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ steps.flink_version.outputs.lts }}-
+            api-tier-jars-${{ steps.flink_version.outputs.version }}-
 
       - name: Audit the Flink API tiers the main sources depend on
         run: just check-flink-api-tiers
@@ -542,7 +551,7 @@ jobs:
           && steps.tier_jars.outputs.cache-hit != 'true'
         with:
           path: target/flink-api-tiers
-          key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
+          key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ steps.flink_version.outputs.lts }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
 
       # Runs whatever the steps above did: it needs no Maven Central, and a pull
       # request that trips both audits sees both failures in one run.

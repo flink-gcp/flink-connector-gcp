@@ -38,6 +38,7 @@ import pytest
 POM = "<project><properties>{property}</properties></project>"
 FLINK_VERSION_PROPERTY = "<flink.version>{version}</flink.version>"
 VERSION = "9.9.9"
+LTS = "8.8.8"
 
 
 def java(name, annotations="", kind="class", package="org.apache.flink.demo"):
@@ -57,6 +58,9 @@ def root(tmp_path, check_flink_api_tiers, monkeypatch):
     (tmp_path / "pom.xml").write_text(
         POM.format(property=FLINK_VERSION_PROPERTY.format(version=VERSION))
     )
+    # The LTS equals flink.version unless a test says otherwise, so every
+    # import is classified once and each test seeds one set of jars.
+    write_weekly(tmp_path, VERSION)
     cache = tmp_path / "cache"
     cache.mkdir()
     monkeypatch.setattr(check_flink_api_tiers, "ROOT", tmp_path)
@@ -65,6 +69,17 @@ def root(tmp_path, check_flink_api_tiers, monkeypatch):
     monkeypatch.setattr(check_flink_api_tiers.urllib.request, "urlopen", no_network)
     monkeypatch.setattr("sys.argv", ["check-flink-api-tiers.py"])
     return tmp_path
+
+
+def write_weekly(root, lts):
+    weekly = root / ".github" / "workflows" / "weekly.yaml"
+    weekly.parent.mkdir(parents=True, exist_ok=True)
+    weekly.write_text(f"env:\n  FLINK_LTS: '{lts}'\n  OTHER: 'x'\n")
+
+
+def collect(module, lts=VERSION, lts_modules=()):
+    """The imports collect_imports() finds, with the versions each is read at."""
+    return module.collect_imports(VERSION, lts, set(lts_modules))
 
 
 def write_import(root, fqcn, module="conn", tree="java", name="User.java"):
@@ -214,7 +229,7 @@ def test_imports_are_collected_from_every_per_major_source_root(
     write_import(root, "org.apache.flink.demo.Two", tree="java-flink2", name="A.java")
     write_import(root, "org.apache.flink.demo.One", tree="java-flink1", name="B.java")
     write_import(root, "static org.apache.flink.demo.Util.check", name="C.java")
-    assert check_flink_api_tiers.collect_imports() == {
+    assert set(collect(check_flink_api_tiers)) == {
         "org.apache.flink.demo.One",
         "org.apache.flink.demo.Two",
         "org.apache.flink.demo.Util.check",
@@ -225,7 +240,7 @@ def test_imports_are_collected_from_the_tier3_job_modules(root, check_flink_api_
     # Issue #1567: the Tier-3 jobs sit one directory deeper than the connectors.
     write_import(root, "org.apache.flink.demo.One", module="kubernetes/apps/smoke")
     write_import(root, "org.apache.flink.demo.Two", module="tools/nested")
-    assert check_flink_api_tiers.collect_imports() == {"org.apache.flink.demo.One"}
+    assert set(collect(check_flink_api_tiers)) == {"org.apache.flink.demo.One"}
 
 
 def test_import_whitespace_does_not_hide_a_flink_import(root, check_flink_api_tiers):
@@ -234,7 +249,7 @@ def test_import_whitespace_does_not_hide_a_flink_import(root, check_flink_api_ti
     source.write_text(
         "package io.github;\n\nimport\torg.apache.flink.demo.One;\n\nclass X {}\n"
     )
-    assert check_flink_api_tiers.collect_imports() == {"org.apache.flink.demo.One"}
+    assert set(collect(check_flink_api_tiers)) == {"org.apache.flink.demo.One"}
 
 
 def test_a_flink_wildcard_import_names_the_fixable_source_error(
@@ -243,7 +258,7 @@ def test_a_flink_wildcard_import_names_the_fixable_source_error(
     write_import(root, "org.apache.flink.demo.*")
 
     with pytest.raises(SystemExit) as error:
-        check_flink_api_tiers.collect_imports()
+        collect(check_flink_api_tiers)
 
     stderr = capsys.readouterr().err
     assert error.value.code == 2
@@ -257,7 +272,7 @@ def test_an_unreadable_source_is_an_infrastructure_error(
     # The glob matches a directory named like a source; reading it fails.
     (root / "conn/src/main/java/Odd.java").mkdir(parents=True)
     with pytest.raises(SystemExit) as error:
-        check_flink_api_tiers.collect_imports()
+        collect(check_flink_api_tiers)
     assert error.value.code == 2
     assert "Odd.java could not be read" in capsys.readouterr().err
 
@@ -267,7 +282,7 @@ def test_a_tree_with_no_flink_imports_is_an_infrastructure_error(
 ):
     write_import(root, "java.util.List")
     with pytest.raises(SystemExit) as error:
-        check_flink_api_tiers.collect_imports()
+        collect(check_flink_api_tiers)
     assert error.value.code == 2
 
 
@@ -637,10 +652,366 @@ def test_the_ci_cache_wiring_matches_this_scripts_constants(check_flink_api_tier
     cache_dir = check_flink_api_tiers.CACHE.relative_to(module_root).as_posix()
     config = check_flink_api_tiers.CONFIG.relative_to(module_root).as_posix()
     version = "${{ steps.flink_version.outputs.version }}"
-    key = "api-tier-jars-" + version + "-${{ hashFiles('" + config + "') }}"
+    lts = "${{ steps.flink_version.outputs.lts }}"
+    key = f"api-tier-jars-{version}-{lts}-" + "${{ hashFiles('" + config + "') }}"
     # Counted, not just present: restore and save each repeat the path and
     # the key, so a substring match would hold while one of the pair drifts.
     assert text.count(f"path: {cache_dir}") == 2
     assert text.count(f"key: {key}") == 2
-    assert f"restore-keys: api-tier-jars-{version}-" in text
-    assert "--print-flink-version" in text
+    assert (
+        f"restore-keys: |\n"
+        f"            api-tier-jars-{version}-{lts}-\n"
+        f"            api-tier-jars-{version}-\n"
+    ) in text
+    # The outputs the key reads, not just the flags: a dropped echo keys the
+    # cache on an empty string, which is the silent drift this test guards.
+    assert 'echo "version=$version" >> "$GITHUB_OUTPUT"' in text
+    assert 'echo "lts=$lts" >> "$GITHUB_OUTPUT"' in text
+    assert (
+        'version="$(mise x uv -- uv run --locked '
+        'scripts/check-flink-api-tiers.py --print-flink-version)"'
+    ) in text
+    assert (
+        'lts="$(mise x uv -- uv run --locked '
+        'scripts/check-flink-api-tiers.py --print-lts-version)"'
+    ) in text
+
+
+# --- classification at every version a root builds against (issue #1714) ---
+
+
+def test_the_lts_comes_from_weekly_yaml(
+    root, check_flink_api_tiers, monkeypatch, capsys
+):
+    # CI keys the sources-jar cache on it through this flag; release.yaml
+    # reads the same line.
+    write_weekly(root, LTS)
+    monkeypatch.setattr("sys.argv", ["check-flink-api-tiers.py", "--print-lts-version"])
+    assert exit_code(check_flink_api_tiers) == 0
+    assert capsys.readouterr().out.strip() == LTS
+
+
+def test_a_weekly_yaml_without_flink_lts_is_an_infrastructure_error(
+    root, check_flink_api_tiers
+):
+    (root / ".github" / "workflows" / "weekly.yaml").write_text("env:\n  OTHER: 'x'\n")
+    with pytest.raises(SystemExit) as error:
+        check_flink_api_tiers.lts_version()
+    assert error.value.code == 2
+
+
+def test_each_source_root_is_read_at_the_versions_that_build_it(
+    root, check_flink_api_tiers
+):
+    write_import(root, "org.apache.flink.demo.Shared")
+    write_import(root, "org.apache.flink.demo.One", tree="java-flink1", name="B.java")
+    write_import(root, "org.apache.flink.demo.Two", tree="java-flink2", name="C.java")
+    write_import(root, "org.apache.flink.demo.Job", module="kubernetes/apps/smoke")
+    write_import(root, "org.apache.flink.demo.Lts", module="kubernetes/apps/cloudtasks")
+    assert collect(check_flink_api_tiers, lts=LTS, lts_modules=["cloudtasks"]) == {
+        "org.apache.flink.demo.Shared": {VERSION, LTS},
+        "org.apache.flink.demo.One": {LTS},
+        "org.apache.flink.demo.Two": {VERSION},
+        "org.apache.flink.demo.Job": {VERSION},
+        "org.apache.flink.demo.Lts": {VERSION, LTS},
+    }
+
+
+def test_an_import_from_two_roots_takes_both_roots_versions(
+    root, check_flink_api_tiers
+):
+    write_import(root, "org.apache.flink.demo.Demo", tree="java-flink1", name="B.java")
+    write_import(root, "org.apache.flink.demo.Demo", tree="java-flink2", name="C.java")
+    assert collect(check_flink_api_tiers, lts=LTS) == {
+        "org.apache.flink.demo.Demo": {VERSION, LTS}
+    }
+
+
+def test_a_source_root_with_no_known_version_is_an_infrastructure_error(
+    root, check_flink_api_tiers, capsys
+):
+    write_import(root, "org.apache.flink.demo.Demo", tree="java-flink3")
+    with pytest.raises(SystemExit) as error:
+        collect(check_flink_api_tiers, lts=LTS)
+    assert error.value.code == 2
+    assert "no Flink version is known for the source root java-flink3" in (
+        capsys.readouterr().err
+    )
+
+
+def audit_two_versions(
+    root,
+    tree,
+    tier_at_version,
+    tier_at_lts,
+    allowlist=None,
+    module="conn",
+    seed_lts=True,
+):
+    """One import whose tier differs between flink.version and the LTS.
+
+    Without seed_lts no LTS jar exists, so a run that reads the import at the
+    LTS fails on the no_network guard instead of passing by accident.
+    """
+    write_weekly(root, LTS)
+    write_import(root, "org.apache.flink.demo.Demo", module=module, tree=tree)
+    seeded = ((VERSION, tier_at_version), (LTS, tier_at_lts))
+    for version, tier in seeded if seed_lts else seeded[:1]:
+        annotations = "" if tier is None else f"@{tier}\n"
+        write_jar(
+            root,
+            "flink-core",
+            {"org/apache/flink/demo/Demo.java": java("Demo", annotations)},
+            version=version,
+        )
+    write_config(root, **(allowlist or {}))
+
+
+def test_an_import_unstable_only_at_the_lts_needs_an_entry(
+    root, check_flink_api_tiers, capsys
+):
+    audit_two_versions(root, "java", "Public", "Internal")
+    assert exit_code(check_flink_api_tiers) == 1
+    assert (
+        f"org.apache.flink.demo.Demo is Internal (Public at {VERSION}, Internal at "
+        f"{LTS}) but has no [internal] entry"
+    ) in capsys.readouterr().err
+
+
+def test_an_import_unstable_only_at_flink_version_needs_an_entry(
+    root, check_flink_api_tiers, capsys
+):
+    audit_two_versions(root, "java", None, "PublicEvolving")
+    assert exit_code(check_flink_api_tiers) == 1
+    err = capsys.readouterr().err
+    assert (
+        f"is unannotated (unannotated at {VERSION}, PublicEvolving at {LTS}) but has "
+        "no [unannotated] entry"
+    ) in err
+    assert f"Flink API tier audit failed against {VERSION} and {LTS}." in err
+
+
+@pytest.mark.parametrize(
+    ("at_version", "at_lts", "table"),
+    [
+        ("Experimental", "Internal", "internal"),
+        ("Internal", "Experimental", "internal"),
+        ("Internal", None, "unannotated"),
+        (None, "Experimental", "unannotated"),
+    ],
+)
+def test_the_weakest_of_two_unstable_tiers_names_the_table(
+    root, check_flink_api_tiers, capsys, at_version, at_lts, table
+):
+    audit_two_versions(root, "java", at_version, at_lts)
+    assert exit_code(check_flink_api_tiers) == 1
+    assert f"but has no [{table}] entry" in capsys.readouterr().err
+
+
+def test_the_weakest_tier_across_versions_takes_the_entry(
+    root, check_flink_api_tiers, capsys
+):
+    audit_two_versions(
+        root, "java", "Public", "Internal", {"internal": ["org.apache.flink.demo.Demo"]}
+    )
+    assert exit_code(check_flink_api_tiers) == 0
+    out = capsys.readouterr().out
+    assert f"classified against {VERSION} and {LTS}" in out
+    assert f"differs by version: org.apache.flink.demo.Demo (Public at {VERSION}" in out
+
+
+def test_a_java_flink2_import_is_not_read_at_the_lts(root, check_flink_api_tiers):
+    # No LTS jar is seeded: reading the import at the LTS would download one.
+    audit_two_versions(root, "java-flink2", "Public", "Internal", seed_lts=False)
+    assert exit_code(check_flink_api_tiers) == 0
+
+
+def test_a_java_flink2_import_beside_a_shared_one_is_not_read_at_the_lts(
+    root, check_flink_api_tiers
+):
+    # The shared import brings the LTS into the run; the java-flink2 one must
+    # still be classified at flink.version alone.
+    audit_two_versions(root, "java-flink2", "Public", "Internal")
+    write_import(root, "org.apache.flink.demo.Shared", name="Shared.java")
+    for version in (VERSION, LTS):
+        write_jar(
+            root,
+            "flink-runtime",
+            {"org/apache/flink/demo/Shared.java": java("Shared", "@Public\n")},
+            version=version,
+        )
+    write_config(root, artifacts=("flink-core", "flink-runtime"))
+    assert exit_code(check_flink_api_tiers) == 0
+
+
+def test_a_java_flink1_import_is_read_at_the_lts_alone(root, check_flink_api_tiers):
+    audit_two_versions(root, "java-flink1", "Internal", "Public")
+    assert exit_code(check_flink_api_tiers) == 0
+
+
+def test_an_import_missing_at_the_lts_names_the_version(
+    root, check_flink_api_tiers, capsys
+):
+    write_weekly(root, LTS)
+    audit_tree(root, "Public")
+    write_jar(
+        root, "flink-core", {"org/apache/flink/demo/Other.java": java("Other")}, LTS
+    )
+    assert exit_code(check_flink_api_tiers) == 2
+    assert f"resolves to no .java entry in any configured sources jar at {LTS}" in (
+        capsys.readouterr().err
+    )
+
+
+def test_a_tier3_module_named_for_the_lts_must_exist(
+    root, check_flink_api_tiers, capsys
+):
+    audit_tree(root, "Public")
+    with (root / "tiers.toml").open("a") as config:
+        config.write('lts_tier3_modules = ["gone"]\n')
+    assert exit_code(check_flink_api_tiers) == 2
+    assert "lts_tier3_modules names gone" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ['"cloudtasks"', "[1]"])
+def test_lts_tier3_modules_must_be_a_list_of_names(
+    root, check_flink_api_tiers, capsys, value
+):
+    audit_tree(root, "Public")
+    with (root / "tiers.toml").open("a") as config:
+        config.write(f"lts_tier3_modules = {value}\n")
+    assert exit_code(check_flink_api_tiers) == 2
+    assert "lts_tier3_modules must be a list of module names" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("alias", ["cloudtasks/", "./cloudtasks", "x/../cloudtasks"])
+def test_a_tier3_module_is_named_exactly_not_as_a_path(
+    root, check_flink_api_tiers, capsys, alias
+):
+    # Each alias resolves to the directory but would never equal the module
+    # name the version mapping compares, dropping the LTS without a word.
+    (root / "kubernetes/apps/cloudtasks/src/main").mkdir(parents=True)
+    audit_tree(root, "Public")
+    with (root / "tiers.toml").open("a") as config:
+        config.write(f'lts_tier3_modules = ["{alias}"]\n')
+    assert exit_code(check_flink_api_tiers) == 2
+    assert f"lts_tier3_modules names {alias}" in capsys.readouterr().err
+
+
+def test_a_tier3_module_named_for_the_lts_needs_main_sources(
+    root, check_flink_api_tiers, capsys
+):
+    (root / "kubernetes/apps/cloudtasks/src/test").mkdir(parents=True)
+    audit_tree(root, "Public")
+    with (root / "tiers.toml").open("a") as config:
+        config.write('lts_tier3_modules = ["cloudtasks"]\n')
+    assert exit_code(check_flink_api_tiers) == 2
+    assert "lts_tier3_modules names cloudtasks" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("module", "code"), [("cloudtasks", 1), ("smoke", 0)])
+def test_a_tier3_module_is_read_at_the_lts_only_when_listed(
+    root, check_flink_api_tiers, module, code
+):
+    audit_two_versions(
+        root, "java", "Public", "Internal", module=f"kubernetes/apps/{module}"
+    )
+    with (root / "tiers.toml").open("a") as config:
+        config.write('lts_tier3_modules = ["cloudtasks"]\n')
+    (root / "kubernetes/apps/cloudtasks/src/main").mkdir(parents=True, exist_ok=True)
+    assert exit_code(check_flink_api_tiers) == code
+
+
+def test_an_unlisted_tier3_modules_java_flink1_root_is_built_by_nothing(
+    root, check_flink_api_tiers, capsys
+):
+    write_import(
+        root,
+        "org.apache.flink.demo.Demo",
+        module="kubernetes/apps/pubsub",
+        tree="java-flink1",
+    )
+    with pytest.raises(SystemExit) as error:
+        collect(check_flink_api_tiers, lts=LTS)
+    assert error.value.code == 2
+    assert "nothing builds the java-flink1 root" in capsys.readouterr().err
+
+
+def test_a_top_level_kubernetes_module_is_not_a_tier3_job(root, check_flink_api_tiers):
+    # Only kubernetes/apps/<module> is a Tier-3 job; this is an ordinary module.
+    write_import(root, "org.apache.flink.demo.Demo", module="kubernetes", name="X.java")
+    assert collect(check_flink_api_tiers, lts=LTS) == {
+        "org.apache.flink.demo.Demo": {VERSION, LTS}
+    }
+
+
+def test_a_type_that_moved_between_artifacts_uses_both(root, check_flink_api_tiers):
+    # The 1.20 vs 2.x split of streaming.api.* between flink-streaming-java
+    # and flink-runtime: each artifact owns the type at one version only.
+    write_weekly(root, LTS)
+    write_import(root, "org.apache.flink.demo.Demo")
+    entry = {"org/apache/flink/demo/Demo.java": java("Demo", "@Public\n")}
+    write_jar(root, "flink-runtime", entry, version=VERSION)
+    write_jar(root, "flink-streaming-java", {}, version=VERSION)
+    write_jar(root, "flink-runtime", {}, version=LTS)
+    write_jar(root, "flink-streaming-java", entry, version=LTS)
+    write_config(root, artifacts=("flink-runtime", "flink-streaming-java"))
+    assert exit_code(check_flink_api_tiers) == 0
+
+
+def test_a_single_version_run_names_one_version(root, check_flink_api_tiers, capsys):
+    audit_tree(root, "Public")
+    assert exit_code(check_flink_api_tiers) == 0
+    assert f"classified against {VERSION}:" in capsys.readouterr().out
+
+
+def test_cached_jars_of_other_versions_are_pruned(root, check_flink_api_tiers):
+    audit_tree(root, "Public")
+    stale = write_jar(root, "flink-core", {}, version="7.7.7")
+    dropped = write_jar(root, "flink-gone", {}, version=VERSION)
+    assert exit_code(check_flink_api_tiers) == 0
+    assert not stale.exists() and not dropped.exists()
+    assert (root / "cache" / f"flink-core-{VERSION}-sources.jar").exists()
+
+
+def test_the_lts_line_is_read_as_release_yaml_reads_it(root, check_flink_api_tiers):
+    # Decoys release.yaml's anchored sed skips: a comment and a deeper indent.
+    (root / ".github/workflows/weekly.yaml").write_text(
+        "env:\n  # FLINK_LTS: '0.0.1'\n    FLINK_LTS: '0.0.2'\n  FLINK_LTS: ' 1.20.9'\n"
+    )
+    # Verbatim, like the sed: no stripping that one reader does and not the other.
+    assert check_flink_api_tiers.lts_version() == " 1.20.9"
+
+
+def test_a_crlf_lts_line_is_rejected_as_release_yaml_rejects_it(
+    root, check_flink_api_tiers
+):
+    (root / ".github/workflows/weekly.yaml").write_bytes(
+        b"env:\r\n  FLINK_LTS: '1.20.9'\r\n"
+    )
+    with pytest.raises(SystemExit) as error:
+        check_flink_api_tiers.lts_version()
+    assert error.value.code == 2
+
+
+def test_release_yaml_reads_flink_lts_with_the_same_pattern(check_flink_api_tiers):
+    # A wiring test on the real workflow, like the cache one below: the two
+    # readers are separate copies, and this is what keeps them one pattern.
+    release = (
+        check_flink_api_tiers.ROOT / ".github" / "workflows" / "release.yaml"
+    ).read_text()
+    assert check_flink_api_tiers.FLINK_LTS_LINE.pattern == r"^  FLINK_LTS: '(.*)'$"
+    assert (
+        """sed -n "s/^  FLINK_LTS: '\\(.*\\)'\\$/\\1/p" .github/workflows/weekly.yaml"""
+        in release
+    )
+
+
+def test_the_print_flags_are_exclusive(root, check_flink_api_tiers, monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check-flink-api-tiers.py", "--print-flink-version", "--print-lts-version"],
+    )
+    assert exit_code(check_flink_api_tiers) == 2
