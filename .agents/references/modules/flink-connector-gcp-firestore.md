@@ -234,8 +234,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`whyKindNotReadable`, exact names; #1690, kept by #1717 on 2026-10-11). The refusal is scope,
   not a service limit: the service carries both cursors and resumes (#1707), but the emulator
   answers `__kind__` and `__namespace__` without them (`__property__` returns nothing), so only
-  the gated suite could test such a read, and the read time is unmeasured for `__namespace__` and
-  `__property__`. The message gives no reason; do not reinstate "cannot page through or resume".
+  the gated suite could test such a read (the service honours the read time for all three; #1548).
+  The message gives no reason; do not reinstate "cannot page through or resume".
   `kind(...)` and `query(...)` refuse at build, a GQL query in `ClientQueryPlanner.parseGql`.
   Statistics kinds (`__Stat_*__`) stay readable. Key-based resume, a split replayed from its
   beginning, and a one-split read are declined (ADR-0177 revision); read it before adding any.

@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0168: Connector catalogs are read-only views of the service schema
 
 - Status: Accepted
-- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03)
-- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216)
-- Modules: base, bigquery, spanner, bigtable; each later connector catalog adds an adoption section here
-- Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog), [Bigtable catalog](../content/docs/connectors/table/bigtable.md#catalog)
+- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03), and by [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) (2026-10-11)
+- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216), [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548)
+- Modules: base, bigquery, spanner, bigtable, firestore (no catalog); each later connector catalog adds an adoption section here
+- Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog), [Bigtable catalog](../content/docs/connectors/table/bigtable.md#catalog), [connectors without a catalog](../content/docs/connectors/table/_index.md)
 
 ## Context
 
@@ -131,7 +131,7 @@ The catalog's `Option` table sits in that section, and its `[[config_options]]` 
 ## Alternatives declined
 
 - **Extending `AbstractCatalog`**: it is `@Internal`, so `check-flink-api-tiers` would need an entry for a convenience the read-only set does not need.
-- **A copy of the read-only part per catalog until a third catalog lands**: two catalogs already shared it line for line, and the Bigtable and Datastore catalogs ([#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216), [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548)) need the same methods, so each copy would only be a place for the contract to drift.
+- **A copy of the read-only part per catalog until a third catalog lands**: two catalogs already shared it line for line, and the Bigtable catalog ([#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216)) needs the same methods, so each copy would only be a place for the contract to drift.
 - **A table-layer module of its own**: it would keep `flink-table-common` out of base, at the price of a new artifact with its own shading, NOTICE and release entries for one abstract class and one value, where base already reaches every connector.
 - **Returning a `CatalogView` for a service view**: its expanded query must be Flink SQL, and no connector here can translate the service's SQL.
 - **Catalog-level tuning defaults**: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212) excluded them; hints cover tuning, and a default would be a second place a statement's configuration comes from.
@@ -143,6 +143,7 @@ The catalog's `Option` table sits in that section, and its `[[config_options]]` 
 - A catalog table behaves as the equivalent hand-written table, and a statement tunes it with hints.
 - Every statement naming a catalog table makes metadata requests at planning; `CREATE CATALOG` and `USE CATALOG` make none.
 - A new catalog follows this record and adds an adoption section; a deviation is a revision here.
+- A connector without a catalog records why in a section here, as Firestore's does.
 
 ## BigQuery adoption
 
@@ -163,3 +164,39 @@ It takes no `default-database`, since the instance it lists is Bigtable's only c
 A family whose value type it does not recognize resolves as `MAP<BYTES, BYTES>` rather than failing `getTable`, since `BYTES` returns a cell's stored bytes without decoding them; "fail on a type the connector cannot carry" holds where no type can.
 Its `key-type` option has a default, since it decides the schema, which no hint reaches; "no catalog option has a default" holds for the options that mirror the connector's.
 The type-mapping table gains no column: the catalog maps a family's value type, not a Flink type, so the Catalog section carries its own table from family value type to column type.
+
+## Firestore in Native and Datastore mode
+
+Neither `firestore` nor `datastore` has a catalog (owner's decision, 2026-10-11, on [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548)).
+A database in Native mode stores no schema, and its API has no counterpart to Datastore's property metadata.
+A database in Datastore mode answers the metadata kinds `__namespace__`, `__kind__` and `__property__`, and [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) proposed deriving each kind's schema from `__property__`, which lists a kind's properties with the representations of their values.
+That derivation cannot meet this record's schema rule, because `__property__` neither types every property it lists nor lists every property.
+
+The measurement was one run on 2026-10-11, by hand, against a temporary Datastore-mode database (Standard edition, `us-central1`, deleted afterwards), with GQL `SELECT * FROM __property__` sent through the REST API's `runQuery`.
+The kind probed for `__property__` held two entities, written to cover each value type below, and the listing facts further down come from kinds of one entity each; the probe script and its output are on [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548).
+
+- A timestamp is reported as `INT64`, the representation of an integer, and a blob as `STRING`, the representation of a string, as Google's [metadata queries](https://cloud.google.com/datastore/docs/concepts/metadataqueries) page documents.
+- An embedded entity is not listed itself, although that page maps it to `STRING`; each of its indexed values is listed under a dotted path (`e.x`, `ee.inner.z`, and `ae.q` for an array of embedded entities), which is spelled the same as a top-level property whose name contains a dot.
+- An array cannot be told from a single value, as the page documents: an array of strings, held by the one entity that had the property, was listed as `STRING`. An empty array was not listed.
+- An unindexed property is not listed, an unindexed embedded entity included, so a kind whose properties are all unindexed lists none.
+- A property holding an integer in one entity and a string in another was listed with both representations, and a property holding only null with `NULL` alone.
+- A geographical point is listed as `POINT` and a key as `REFERENCE`; the `datastore` table has no Flink type for either ([#1730](https://github.com/flink-gcp/flink-connector-gcp/issues/1730)).
+
+A derived table would therefore declare a timestamp as a `BIGINT`, a blob as a `STRING` and an array as its element type, each of which fails a scan that reads the column under the default `type-mismatch-policy`; it would declare an embedded entity's values as top-level columns named by their dotted paths, which hold no value; and it would lack every unindexed property.
+A property listed with representations no one Flink type holds, such as `INT64` and `STRING`, with `NULL` alone, or as a point or a key has no Flink type, so the schema rule would fail `getTable` for its kind; `NULL` beside one other representation, such as `BOOLEAN`, fits that representation's nullable type.
+The missing properties also make writing through such a table destructive.
+The `datastore` sink writes each row as an `upsert` of the whole entity (ADR-0184), so an `INSERT INTO` through a derived table would remove the missing properties from every entity it writes, including the columns the sink itself wrote under `sink.unindexed-columns`, and the catalog could not tell which properties it had missed.
+
+The listing side would have worked, and is recorded for a reopening.
+`__namespace__` lists the default namespace under the numeric id `1`.
+A kind or a namespace whose only entity was deleted dropped out of the listing, and a kind that appears only in the ancestor path of other kinds' keys is not listed.
+All three metadata kinds honoured the read time: a read at a time before the first write found nothing, and a read made after the deletes, at a time between the writes and the deletes, still listed the deleted kinds, their properties and the emptied namespace.
+Every result carried a cursor, every batch an end cursor, and `__property__` accepted an ancestor filter on a `__kind__` key combined with a `__key__` range.
+
+Two alternatives were declined with it:
+
+- **Sampling entities to refine the types**: reading the first entities of a kind would find timestamps, blobs, arrays and embedded entities, but not a property the sample lacks, so the write through a derived table stays destructive, and the schema would change with the data the sample reads. A projection query is a sample by another route: it marks a projected timestamp or blob (ADR-0177), but reads only the entities that hold an indexed value of the one property it projects. A sampling catalog would be designed for both modes at once, since sampling is one of the two forms a Native-mode catalog could take, the other being a fixed schema of the document id and the whole document in one column.
+- **Statistics** (`__Stat_PropertyType_PropertyName_Kind__`): Google's [statistics](https://cloud.google.com/datastore/docs/concepts/stats) page records an array under its element type and lists no embedded-entity type, and says Datastore drops some statistics for a database with many properties. A kind written since statistics were last computed has none either: a database created within a gated run had none (ADR-0177), and [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719) is waiting for a new database's first ones.
+
+The reopen condition is a service API that reports each property's value type, arrays, embedded entities and unindexed properties included.
+A merge write that leaves undeclared properties untouched ([#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729)) would remove the write hazard only, not the missing types.

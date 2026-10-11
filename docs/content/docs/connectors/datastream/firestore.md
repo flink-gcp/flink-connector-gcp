@@ -541,7 +541,7 @@ A keys-only projection is split like a kind, and `splitCount(...)` on a projecti
 A nearest-neighbour search (`find_nearest`) is refused when the source is built: the service applies a query's cursor and limit before the search, so the page limit and the resume cursor every read sets would change which entities it finds.
 
 The metadata kinds `__namespace__`, `__kind__` and `__property__` are refused too, by `kind(...)` and `query(...)` when they are called, with a message naming the kind.
-The service answers all three with a cursor on every result and an end cursor (measured 2026-10-11), but Google documents their entities as "generated dynamically, based on the current state of your database", and whether the service holds `__namespace__` and `__property__` to the read time is unmeasured.
+The service answers all three with a cursor on every result and an end cursor, and holds all three to the read time (both measured 2026-10-11), so the refusal is a choice of scope rather than a limit of the service.
 Read metadata with the client library instead, for example while the job is built, as Google's [metadata queries](https://cloud.google.com/datastore/docs/concepts/metadataqueries) page describes.
 The statistics kinds, such as `__Stat_Kind__` and `__Stat_Total__`, are stored entities and are not refused; the emulator keeps none, so how the service answers a read of one is unmeasured ([#1546]({{< param BookRepo >}}/issues/1546)).
 
