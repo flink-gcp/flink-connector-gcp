@@ -91,10 +91,15 @@ A geographical point and a key value share their Flink types with an ordinary em
 A path names a column, then a ROW field by `.name`; an `ARRAY` is passed through, so a path through an array names its elements, and an array of key values is an `ARRAY` of the key's `ROW`.
 A marker that names a path the table does not declare, a field of the wrong type, the PRIMARY KEY, or a path two fields share (a column named `a.b` beside a ROW `a` with a field `b`), is refused when the statement is planned, as are both markers on one path.
 
+In the example below, each `Delivery` entity holds its destination, a key value naming its customer and a list of key values naming its items.
+The customers are entities of their own kind, so a second table reads them, and the query follows each delivery's reference by joining on the key value's name.
+
 {{< sql-snippet file="flink/DatastoreTableReference.sql" tag="markers" >}}
 
 A key value's `ROW` holds the key's last path element: its `kind`, and exactly one of its `name` and its numeric `id`, the other NULL.
-The optional `ancestors` field holds the elements before it, root first, in the same form; without the field, the column holds keys without a parent.
+The kind is a value of each row, not part of the table's declaration, so one column can hold keys of several kinds, which is why the query above filters on `d.customer.kind`.
+Datastore has no foreign keys, and nothing checks that the entity a key value names exists: a reference to a missing customer simply joins no row.
+A key whose entity has a parent carries its ancestors too, and a column that reads or writes such keys adds an `ancestors` field after the three: `ROW<kind STRING, name STRING, id BIGINT, ancestors ARRAY<ROW<kind STRING, name STRING, id BIGINT>>>`, root first; without the field, the column holds keys without a parent.
 The sink builds the key in the table's own project, database and namespace.
 The service refused a key value in another database than its entity's, and one naming a project that does not exist.
 The namespace is the table's because the `ROW` has no field to name another, although the service stores a key value in another namespace.

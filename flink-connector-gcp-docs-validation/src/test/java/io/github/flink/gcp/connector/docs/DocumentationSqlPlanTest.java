@@ -754,9 +754,10 @@ public class DocumentationSqlPlanTest {
                                         + "CAST('2026-01-01 00:00:00.000000' "
                                         + "AS TIMESTAMP_LTZ(6)) AS updated_at"),
                         snippet("flink/DatastoreTableReference.sql", "overview")),
-                // The id-key, markers and unindexed regions declare a table and stop; the
-                // follow-up insert is what reaches the factory, which checks the key type, the
-                // namespace, the markers and the unindexed columns against the schema.
+                // The id-key and unindexed regions declare a table and stop; the follow-up
+                // insert is what reaches the factory, which checks the key type, the namespace
+                // and the unindexed columns against the schema. The markers region's own join
+                // reaches it through both scans.
                 scenario(
                         "Datastore table reference numeric id key",
                         withFollowup(
@@ -766,15 +767,7 @@ public class DocumentationSqlPlanTest {
                                         + " ARRAY[ROW('sku-1', CAST(2 AS BIGINT))];")),
                 scenario(
                         "Datastore table reference geographical points and key values",
-                        withFollowup(
-                                "flink/DatastoreTableReference.sql",
-                                "markers",
-                                "INSERT INTO deliveries SELECT 'd-1', ROW(35.68, 139.76),"
-                                        + " ROW('Customer', 'c-1', CAST(NULL AS BIGINT)),"
-                                        + " ROW('Line', CAST(NULL AS STRING), CAST(2 AS BIGINT),"
-                                        + " ARRAY[ROW('Invoice', CAST(NULL AS STRING),"
-                                        + " CAST(1001 AS BIGINT))]),"
-                                        + " ARRAY[ROW('depot', ROW(35.0, 139.0))];")),
+                        snippet("flink/DatastoreTableReference.sql", "markers")),
                 scenario(
                         "Datastore table reference unindexed columns",
                         withFollowup(

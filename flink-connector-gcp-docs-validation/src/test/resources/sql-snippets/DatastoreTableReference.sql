@@ -45,20 +45,35 @@ CREATE TABLE invoices (
 
 -- tag::markers[]
 CREATE TABLE deliveries (
-  delivery_id STRING NOT NULL,
+  delivery_id BIGINT NOT NULL,
+  status STRING,
   destination ROW<latitude DOUBLE, longitude DOUBLE>,
   customer ROW<kind STRING, name STRING, id BIGINT>,
-  invoice_line ROW<kind STRING, name STRING, id BIGINT,
-    ancestors ARRAY<ROW<kind STRING, name STRING, id BIGINT>>>,
-  stops ARRAY<ROW<label STRING, spot ROW<latitude DOUBLE, longitude DOUBLE>>>,
+  items ARRAY<ROW<kind STRING, name STRING, id BIGINT>>,
   PRIMARY KEY (delivery_id) NOT ENFORCED
 ) WITH (
   'connector' = 'datastore',
   'project' = 'my-project',
   'kind' = 'Delivery',
-  'geo-point-field-paths' = 'destination;stops.spot',
-  'reference-field-paths' = 'customer;invoice_line'
+  'geo-point-field-paths' = 'destination',
+  'reference-field-paths' = 'customer;items'
 );
+
+CREATE TABLE customers (
+  customer_id STRING NOT NULL,
+  name STRING,
+  PRIMARY KEY (customer_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Customer'
+);
+
+SELECT d.delivery_id, c.name, d.destination.latitude, d.destination.longitude,
+  CARDINALITY(d.items) AS item_count
+FROM deliveries AS d
+JOIN customers AS c ON d.customer.name = c.customer_id
+WHERE d.customer.kind = 'Customer' AND d.status = 'pending';
 -- end::markers[]
 
 -- tag::unindexed[]
