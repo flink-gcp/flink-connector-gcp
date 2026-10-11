@@ -106,11 +106,8 @@ public class DatastoreSourceBuilder<T> {
      * {@link #gqlQuery(String)}.
      *
      * <p>The metadata kinds {@code __namespace__}, {@code __kind__} and {@code __property__} are
-     * refused. Google documents their entities as generated dynamically from the database's current
-     * state, so a result need not be the snapshot at the read time that the source pages through
-     * and resumes in, and on the emulator a query of {@code __kind__} or {@code __namespace__}
-     * answers without the cursors the source pages and resumes by. Read metadata with the client
-     * library instead. The statistics kinds, such as {@code __Stat_Kind__}, are not refused.
+     * refused; read metadata with the client library instead. The statistics kinds, such as {@code
+     * __Stat_Kind__}, are not refused.
      *
      * @param kind the kind, for example {@code Task}
      * @return this builder

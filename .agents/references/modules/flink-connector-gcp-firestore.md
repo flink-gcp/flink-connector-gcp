@@ -231,14 +231,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   projection of properties without a composite index; #1707). Anything else is one split. `SplittableQueriesTest` iterates every operator.
   A nearest-neighbour search is refused outright (`whyNotReadable`): paging would change what it
   finds. So are the metadata kinds `__namespace__`, `__kind__` and `__property__`
-  (`whyKindNotReadable`, exact names; #1690, owner's decision 2026-10-10): the source can neither
-  page through nor resume their results. Google documents them as "generated dynamically, based on
-  the current state of your database"; on the emulator `__kind__` and `__namespace__` answer without
-  per-entity or end cursors (`__property__` returned nothing), while the service carries both
-  cursors and resumes (#1707); whether to lift the refusal is #1717. `kind(...)` and `query(...)` refuse at build, a GQL query in
-  `ClientQueryPlanner.parseGql`. Statistics kinds (`__Stat_*__`) stay readable. Key-based resume
-  is deferred and a split replayed from its beginning declined (ADR-0177 revision); read the
-  revision before adding either.
+  (`whyKindNotReadable`, exact names; #1690, kept by #1717 on 2026-10-11). The refusal is scope,
+  not a service limit: the service carries both cursors and resumes (#1707), but the emulator
+  answers `__kind__` and `__namespace__` without them (`__property__` returns nothing), so only
+  the gated suite could test such a read, and the read time is unmeasured for `__namespace__` and
+  `__property__`. The message gives no reason; do not reinstate "cannot page through or resume".
+  `kind(...)` and `query(...)` refuse at build, a GQL query in `ClientQueryPlanner.parseGql`.
+  Statistics kinds (`__Stat_*__`) stay readable. Key-based resume, a split replayed from its
+  beginning, and a one-split read are declined (ADR-0177 revision); read it before adding any.
 - **The estimated split count is Beam's (`entity_bytes`/64 MiB, 12..50,000) with the parallelism
   as a further floor.** Statistics failures fail planning; absent statistics take the floor.
 - **Projected index values are read back** (`ProjectedValues`, owner's decision 2026-10-03):

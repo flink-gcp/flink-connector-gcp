@@ -222,19 +222,21 @@ class DatastoreSourceBuilderTest {
     void refusesAMetadataKindAsAKindOrAsAQuery(String kind) {
         assertThatThrownBy(() -> DatastoreSource.<String>builder().kind(kind))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageStartingWith(
-                        "The source cannot read the kind: " + kind + " is a metadata kind")
-                .hasMessageContaining(
-                        "which the source can neither page through nor resume after a failure")
-                .hasMessageEndingWith("read metadata with the client library instead.");
+                .hasMessage(
+                        "The source cannot read the kind: "
+                                + kind
+                                + " is a metadata kind; read metadata with the client library"
+                                + " instead.");
         assertThatThrownBy(
                         () ->
                                 DatastoreSource.<String>builder()
                                         .query(SplittableQueries.ofKind(kind)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageStartingWith(
-                        "The source cannot read the query: " + kind + " is a metadata kind")
-                .hasMessageEndingWith("read metadata with the client library instead.");
+                .hasMessage(
+                        "The source cannot read the query: "
+                                + kind
+                                + " is a metadata kind; read metadata with the client library"
+                                + " instead.");
     }
 
     @ParameterizedTest

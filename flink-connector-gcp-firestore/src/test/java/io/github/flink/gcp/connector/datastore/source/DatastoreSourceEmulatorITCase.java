@@ -359,10 +359,12 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"__kind__", "__namespace__"})
+    @ValueSource(strings = {"__kind__", "__namespace__", "__property__"})
     void refusesAGqlQueryOfAMetadataKindWhenItPlans(String metadataKind) {
-        // Without the refusal, the reader fails on the first metadata entity, which the emulator
-        // answers without a cursor: seed a kind in a namespace so that both kinds have one.
+        // Without the refusal, the reader fails on the first __kind__ or __namespace__ entity,
+        // which the emulator answers without a cursor, and a read of __property__, which the
+        // emulator answers with nothing, succeeds empty: seed a kind in a namespace so that the
+        // first two have an entity.
         seed(uniqueKind(), "tenant", 1);
 
         assertThatThrownBy(() -> read(builder -> builder.gqlQuery("SELECT * FROM " + metadataKind)))
@@ -370,8 +372,8 @@ class DatastoreSourceEmulatorITCase extends AbstractDatastoreEmulatorITCase {
                 .hasStackTraceContaining(
                         "The source cannot read the query the GQL query parsed into: "
                                 + metadataKind
-                                + " is a metadata kind")
-                .hasStackTraceContaining("read metadata with the client library instead")
+                                + " is a metadata kind; read metadata with the client library"
+                                + " instead.")
                 .satisfies(
                         failure ->
                                 assertThat(ExceptionUtils.stringifyException(failure))
