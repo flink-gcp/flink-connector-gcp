@@ -21,11 +21,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The writer sends through the client library's `BulkWriter`, on an executor the writer owns,
   and never calls `BulkWriter.close()`** (it waits without a bound). Closing the access shuts the
   executor down.
-- **Two library defects are worked around, and `BulkWriterDefectsITCase` pins both**: a failed
-  write never releases its pending-operation slot (the writer replaces the `BulkWriter` before a
-  submission could reach 500), and a synchronous refusal corrupts its request (the closed
+- **Three library defects are worked around, and `BulkWriterDefectsITCase` pins all three**: a
+  failed write never releases its pending-operation slot (the writer replaces the `BulkWriter`
+  before a submission could reach 500), a synchronous refusal corrupts its request (the closed
   `FirestoreWrite` value vocabulary keeps it unreachable; a refusal that still arrives fails the
-  job). When that test fails after a BOM bump, re-examine the workaround rather than the test.
+  job), and a throttle ceiling below 20 never sends a first batch holding more writes than the
+  ceiling (the rate floor below). All three are reported upstream as issues (ADR-0171), but that
+  test, not the issues, reports a fix: when it fails after a BOM bump, re-examine the workaround
+  rather than the test.
 - **The library sends on no timer** — at 20 writes (10 with a retry) or on `flush()`, and a
   retried write joins whatever batch is open. Every pass of a wait that finds the mailbox empty
   asks it to send (`sendOutstanding`); asking once per wait can strand a retry. Never wait on the

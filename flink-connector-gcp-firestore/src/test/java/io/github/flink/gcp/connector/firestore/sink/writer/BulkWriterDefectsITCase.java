@@ -38,12 +38,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Pins the two {@code BulkWriter} defects {@link FirestoreWriter} works around, against the client
- * library as the build resolves it — so a release that fixes either fails here, and the workaround
- * is then re-examined rather than kept on faith (google-cloud-firestore 3.46.0, measured
- * 2026-09-27).
+ * Pins the three {@code BulkWriter} defects the sink works around, against the client library as
+ * the build resolves it — so a release that fixes one fails here, and the workaround is then
+ * re-examined rather than kept on faith. The first two are worked around by {@link FirestoreWriter}
+ * (google-cloud-firestore 3.46.0, measured 2026-09-27), the third by the options' rate floor
+ * (3.49.0, measured 2026-10-11).
  *
- * <p>Both are client-side logic, so the emulator is a faithful stage for them. Each asserts an
+ * <p>All three are client-side logic, so the emulator is a faithful stage for them. Each asserts an
  * absence with a short wait beside a positive control that completes in milliseconds on the same
  * emulator: the wait bounds how long the absence is observed, not how long a healthy write takes.
  */
@@ -123,6 +124,41 @@ class BulkWriterDefectsITCase extends AbstractFirestoreEmulatorITCase {
         assertThat(read(collection + "/after").exists()).isTrue();
     }
 
+    @Test
+    void aRateBelowTheBatchSizeNeverSendsTheFirstBatch() throws Exception {
+        int batchSize = BulkWriter.MAX_BATCH_SIZE;
+        BulkWriter atTheBatchSize = bulkWriter(batchSize);
+        List<ApiFuture<WriteResult>> control = new ArrayList<>();
+        for (int i = 0; i < batchSize; i++) {
+            control.add(
+                    atTheBatchSize.set(client().document(collection + "/c" + i), Map.of("v", 1L)));
+        }
+        atTheBatchSize.flush();
+        for (ApiFuture<WriteResult> future : control) {
+            assertThat(future.get(30, TimeUnit.SECONDS)).isNotNull();
+        }
+
+        String strandedCollection = collection + "/parent/stranded";
+        BulkWriter throttled = bulkWriter(batchSize - 1);
+        List<ApiFuture<WriteResult>> stranded = new ArrayList<>();
+        for (int i = 0; i < batchSize; i++) {
+            stranded.add(
+                    throttled.set(
+                            client().document(strandedCollection + "/s" + i), Map.of("v", 1L)));
+        }
+        throttled.flush();
+        assertThatThrownBy(() -> stranded.get(0).get(ABSENCE_SECONDS, TimeUnit.SECONDS))
+                .as("the first batch of %s writes under a rate of %s", batchSize, batchSize - 1)
+                .isInstanceOf(TimeoutException.class);
+        assertThat(
+                        client().collection(strandedCollection)
+                                .get()
+                                .get(30, TimeUnit.SECONDS)
+                                .isEmpty())
+                .as("documents the stranded batch applied although no future completed")
+                .isTrue();
+    }
+
     /** Sends {@code count} creates of seeded documents from {@code first}, each refused. */
     private void refuse(BulkWriter bulkWriter, int first, int count) {
         List<ApiFuture<WriteResult>> refused = new ArrayList<>();
@@ -138,5 +174,13 @@ class BulkWriterDefectsITCase extends AbstractFirestoreEmulatorITCase {
 
     private BulkWriter bulkWriter() {
         return client().bulkWriter(BulkWriterOptions.builder().setExecutor(executor).build());
+    }
+
+    private BulkWriter bulkWriter(int maxOpsPerSecond) {
+        return client().bulkWriter(
+                        BulkWriterOptions.builder()
+                                .setMaxOpsPerSecond(maxOpsPerSecond)
+                                .setExecutor(executor)
+                                .build());
     }
 }

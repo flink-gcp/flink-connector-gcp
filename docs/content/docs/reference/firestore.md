@@ -70,7 +70,7 @@ The client library refuses a rate set while throttling is disabled, and an initi
 | Option | Default | What it does |
 |---|---|---|
 | `throttlingEnabled` | `true` | Whether the client library throttles the writes it sends, ramping up by half every five minutes |
-| `initialOpsPerSecond` | *unset ⇒ the client library's `500`* | The rate the throttle starts at, **at least `20`**, the library's batch size, below which its first batch is never sent. Only with throttling enabled |
+| `initialOpsPerSecond` | *unset ⇒ the client library's `500`* | The rate the throttle starts at, **at least `20`**, the library's batch size: below it, a first batch larger than the rate is not sent until the ramp-up lifts the rate to the batch's size, and never under a lower ceiling. Only with throttling enabled |
 | `maxOpsPerSecond` | *unset ⇒ no ceiling* | The rate the throttle ramps up to, **at least `20`** and at least the initial rate. Only with throttling enabled |
 | `writeMaxAttempts` | `11` | How many attempts the `BulkWriter` gives a write refused with `RESOURCE_EXHAUSTED`, `UNAVAILABLE` or `ABORTED`, the first included: the client library's own ten retries. `1` disables these retries. Each attempt is one `BatchWrite` call, which the transport retries within the settings below |
 
