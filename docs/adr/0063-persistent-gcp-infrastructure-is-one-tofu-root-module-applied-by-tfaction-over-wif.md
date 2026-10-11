@@ -25,9 +25,10 @@ limitations under the License.
   deferred to go-public ([#177]) and adopted 2026-08-16 once the org existed ([#177],
   ADR-0121); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444]);
   extended for Tier-3 deployment infrastructure 2026-09-11 ([#38], [#1246]);
-  persistent App Engine deployment source retained 2026-10-04 ([#1604])
-- Issues: [#5], [#38], [#177], [#444], [#1246], [#1604]
-- Modules: opentofu, kubernetes
+  persistent App Engine deployment source retained 2026-10-04 ([#1604]); revised by [#1639]
+  (2026-10-11), keeping the E2E workflow without a GitHub Environment
+- Issues: [#5], [#38], [#177], [#444], [#1246], [#1604], [#1639]
+- Modules: opentofu, kubernetes, CI
 - Current behavior: `opentofu/README.md` (bootstrap, service-agent one-offs, credentials), `kubernetes/README.md` (manifest hierarchy, validation and rendering)
 
 ## Decision
@@ -241,9 +242,20 @@ The planned smoke runtime is Flink 2.2.1 on Java 17, selected through the chart'
 An expiry annotation alone stops nothing: the lifecycle stage must implement independent expiry enforcement before accepting a paid run.
 The [manifest README](../../kubernetes/README.md) records the current commands and what remains unapplied.
 
+## E2E workflow without a GitHub Environment (2026-10-11)
+
+The E2E workflow stays without a GitHub Environment, although the repository is now public and Environment protection rules are available to it.
+A deployment-branch rule would repeat what the E2E account's WIF binding already enforces on the Google Cloud side.
+A required reviewer would hold every scheduled run until someone approved it, which defeats running the suite unattended.
+The decision was taken with [#1639], which split that workflow into a job per gate.
+
+The E2E account's binding now admits `push`, `schedule`, `workflow_dispatch` and `workflow_run` on `main`; `workflow_run` joined for the post-E2E sweep ([#964]), which the account list in the decision above predates.
+
 [#5]: https://github.com/flink-gcp/flink-connector-gcp/issues/5
 [#38]: https://github.com/flink-gcp/flink-connector-gcp/issues/38
 [#177]: https://github.com/flink-gcp/flink-connector-gcp/issues/177
 [#444]: https://github.com/flink-gcp/flink-connector-gcp/issues/444
 [#1246]: https://github.com/flink-gcp/flink-connector-gcp/issues/1246
 [#1604]: https://github.com/flink-gcp/flink-connector-gcp/issues/1604
+[#964]: https://github.com/flink-gcp/flink-connector-gcp/issues/964
+[#1639]: https://github.com/flink-gcp/flink-connector-gcp/issues/1639

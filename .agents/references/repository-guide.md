@@ -103,19 +103,30 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   Reproducing a red weekly `binary_compat` is what it is for, and run by hand it
   primes `~/.m2` with `io.github.flink-gcp` SNAPSHOTs (the recipe comment has the cleanup line)
 - `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` / `BIGTABLE_IT_PROJECT` /
-  `SPANNER_IT_PROJECT` / `FIRESTORE_IT_PROJECT`
+  `SPANNER_IT_PROJECT` / `FIRESTORE_IT_PROJECT` / `CLOUDTASKS_IT_PROJECT`
   variables, **and the only thing that runs them** (#245; ADR-0065 records the per-shell
   incident and the marker mechanics): each gated class also carries `@Tag("gated")`, which the
   root pom excludes from every surefire execution, and this recipe is the opt-in that clears
   it. Its pre-flight makes a missing variable an error. The runner clears selected reports before
   execution and validates complete, fresh, passing XML on every normal or trapped exit. It runs
-  connector suites independently after confirming the App Engine fixture is stopped with zero
-  instances; a failed connector does not hide later results. The workflow retains the selected
-  metadata under `target/e2e/evidence/`, never raw reports or test output. Its `-pl`-scoped
-  builds install the base and test-utils modules first, for the same reactor-resolution reason
-  `binary-compat` installs (#27, #61). The weekly E2E workflow (`e2e.yaml`) runs this same
-  recipe via WIF; locally the variables come from the uncommitted `.env`, which a fresh
-  worktree does not have — run `just worktree-env` once there to symlink the main checkout's
+  the gates one after another, each independently; a failed gate does not hide later results,
+  and no gate waits on the App Engine fixture's stop, which fails only the Cloud Tasks gate.
+  `just e2e-gate <GATE>` runs one gate with only its variables and modules; the weekly E2E
+  workflow (`e2e.yaml`) runs it via WIF as one job per gate in parallel (#1639), and its last
+  job's `scripts/e2e-gated-its.sh --aggregate` fails when any gate's evidence is missing or not
+  passing, and that job also requires every gate job's success, so a cancelled, skipped or
+  late-failing job cannot read as green. A new gate is named after its project variable and
+  needs: `E2E_GATES` in `check-gated-tags.py`, `known_gate` in the script, `gate_variables` and
+  an `e2e.yaml` env line only for a companion variable, a `run_gate` branch only for a fixture
+  around its suite, the synthetic copies of the gate list in `scripts/tests/test_e2e_*.py`, the
+  E2E service account's grants in `opentofu/flink-gcp/e2e-sa.tf`, a `sweep-e2e` path if it
+  creates billed resources, and the prose that names the gates. The job matrix and the project
+  variable follow from the name. Local runs stay sequential on purpose: two `-Xmx2048m`
+  integration-test forks per module. The workflow retains the selected metadata under
+  `target/e2e/evidence/`, never raw reports or test output. Its
+  `-pl`-scoped builds install the base and test-utils modules first, for the same
+  reactor-resolution reason `binary-compat` installs (#27, #61). Locally the variables come
+  from the uncommitted `.env`, which a fresh worktree does not have — run `just worktree-env` once there to symlink the main checkout's
   copy (#156; the same link also carries credentials for local OpenTofu commands)
 - `just sweep-e2e [--dry-run]` — returns its three billed E2E fixture types to their idle state
   after a hard cancellation: stale Bigtable and Spanner instances are deleted, and the fixed Cloud

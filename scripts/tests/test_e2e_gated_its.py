@@ -41,12 +41,12 @@ POM_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 
 # The gates the E2E workflow sets, and the variables --require-env demands.
 E2E_GATES = (
+    "CLOUDTASKS_IT_PROJECT",
     "BQ_IT_PROJECT",
     "PUBSUB_IT_PROJECT",
     "BIGTABLE_IT_PROJECT",
     "SPANNER_IT_PROJECT",
     "FIRESTORE_IT_PROJECT",
-    "CLOUDTASKS_IT_PROJECT",
 )
 REQUIRED = (
     "BQ_IT_PROJECT",
@@ -366,16 +366,16 @@ def test_default_mode_is_fatal_when_a_gate_matches_nothing(tree):
     tree.add("BqITCase", gate="BQ_IT_PROJECT", tag=True)
     result = tree()
     assert result.returncode == 1
-    assert "PUBSUB_IT_PROJECT" in result.stderr
+    assert "no test class is gated on CLOUDTASKS_IT_PROJECT" in result.stderr
 
 
 def test_for_gate_prints_only_the_selected_classes(tree):
-    sources = full_suite(tree)
+    full_suite(tree)
 
     result = tree("--for-gate", "CLOUDTASKS_IT_PROJECT")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == sources[-1].stem
+    assert result.stdout.strip() == "CloudtasksITCase"
 
 
 def test_except_gate_omits_only_the_selected_classes(tree):
@@ -385,7 +385,7 @@ def test_except_gate_omits_only_the_selected_classes(tree):
 
     assert result.returncode == 0, result.stderr
     assert sorted(result.stdout.strip().split(",")) == sorted(
-        source.stem for source in sources[:-1]
+        source.stem for source in sources if source.stem != "CloudtasksITCase"
     )
 
 
@@ -433,6 +433,44 @@ def test_shell_gate_selector_mirrors_the_python_inventory(tree, check_gated_tags
     for gate in check_gated_tags.E2E_GATES:
         result = tree("--for-gate", gate)
         assert result.returncode == 0, result.stderr
+
+
+def test_gates_lists_every_gate_for_the_job_matrix(tree):
+    full_suite(tree)
+
+    result = tree("--gates")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == list(E2E_GATES)
+
+
+def test_gates_is_fatal_when_a_gate_matches_nothing(tree):
+    # A gate without a class would get a matrix job that runs nothing.
+    for source in full_suite(tree)[1:]:
+        source.unlink()
+
+    result = tree("--gates")
+
+    assert result.returncode == 1
+    assert "no test class is gated on BQ_IT_PROJECT" in result.stderr
+
+
+def test_a_class_under_two_gates_is_refused(tree):
+    # A job per gate would run it twice, and two jobs would write the same report.
+    full_suite(tree)
+    source = tree.add("TwiceITCase", gate="PUBSUB_IT_PROJECT", tag=True)
+    source.write_text(
+        source.read_text().replace(
+            "class TwiceITCase",
+            '@EnabledIfEnvironmentVariable(named = "SPANNER_IT_PROJECT", matches = ".+")\n'
+            "class TwiceITCase",
+        )
+    )
+
+    for mode in ("--check-tags", "--gates", "--prepare-reports", "--for-gate"):
+        result = tree(mode, *(["SPANNER_IT_PROJECT"] if mode == "--for-gate" else []))
+        assert result.returncode == 1
+        assert "gated on PUBSUB_IT_PROJECT and SPANNER_IT_PROJECT" in result.stderr
 
 
 def test_require_env_accepts_a_complete_environment(tree):

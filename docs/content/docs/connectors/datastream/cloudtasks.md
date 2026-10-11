@@ -939,7 +939,7 @@ before checking that it is `STOPPED` with zero instances.
 It preserves a test or signal exit status if cleanup also fails, while still surfacing a cleanup
 failure after a successful test.
 The scheduled sweep restores the stopped state after a hard cancellation that cannot run shell cleanup.
-The remaining gated suites run after the fixture has returned to its idle state.
+A failure to confirm that idle state fails the Cloud Tasks gate; the other connectors' gated suites do not wait for it.
 
 The checkpointed-creation recovery acceptance has a separate, manually approved
 [protocol]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0158-cloudtasks-recovery-1245.md).

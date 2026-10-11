@@ -308,18 +308,24 @@ worktree-env:
 # SPANNER_IT_PROJECT, FIRESTORE_IT_PROJECT and CLOUDTASKS_IT_PROJECT
 # variables: what they check is exactly what the emulators cannot (see the
 # testing sections of the connector documentation). The E2E workflow
-# (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally
-# the variables come from the uncommitted .env, which mise loads — and which a
-# fresh worktree does not have until `just worktree-env` links it (issue #156).
+# (.github/workflows/e2e.yaml) runs `e2e-gate` below weekly via WIF, one job per
+# gate in parallel, and then checks every gate's evidence together as this
+# recipe does; locally the variables come from the uncommitted .env, which mise
+# loads — and which a fresh worktree does not have until `just worktree-env`
+# links it (issue #156).
 #
-# scripts/e2e-gated-its.sh owns preparation, connector runs and final reporting. The Cloud
-# Tasks App Engine class runs first inside appengine-e2e-fixture.sh's exact
-# start/test/stop lifecycle; the other connectors start only after that script
-# has verified STOPPED with zero instances. Each subsequent connector runs even
-# if an earlier test failed; all failures are aggregated after report validation.
-# The pre-flight makes a missing variable an error before any build minutes are
-# spent, and the assertion afterwards proves the gated classes ran — without
-# it, @EnabledIfEnvironmentVariable turns lost credentials into a green run.
+# scripts/e2e-gated-its.sh owns preparation, connector runs and final reporting.
+# This recipe runs the gates one after another, never in parallel: each
+# module's integration-test execution keeps two forks at -Xmx2048m, so all six
+# at once would want about 24 GB of heap on a workstation. Each gate runs even if
+# an earlier one failed; all failures are aggregated after report validation.
+# The Cloud Tasks App Engine class runs inside appengine-e2e-fixture.sh's exact
+# start/test/stop lifecycle, which then verifies STOPPED with zero instances
+# again; no other gate waits for that, since each billed fixture has a
+# lifecycle of its own. The pre-flight makes a missing variable an error before
+# any build minutes are spent, and the assertion afterwards proves the gated
+# classes ran — without it, @EnabledIfEnvironmentVariable turns lost
+# credentials into a green run.
 #
 # The execution id on the runner's surefire:test calls is load-bearing, same as in
 # binary-compat: -Dtest overrides includes on *every* surefire execution, so
@@ -346,7 +352,7 @@ worktree-env:
 # Engine version, while Bigtable and Spanner create one ephemeral instance per
 # gated class. A killed run is bounded by the scheduled sweep rather than left
 # standing indefinitely; normal Cloud Tasks completion verifies zero running
-# App Engine instances before either of the longer suites begins. Firestore
+# App Engine instances. Firestore
 # creates an ephemeral database per gated class too, but a database bills only
 # for what it stores and the operations run on it, so the scheduled sweep
 # leaves an abandoned one to the next gated Firestore class's own sweep.
@@ -360,6 +366,15 @@ worktree-env:
 # Run the real-GCP gated ITCases and assert they actually ran.
 e2e:
     mise x uv -- uv run --locked scripts/e2e-gated-its.sh --run -- {{ mvn }}
+
+# One gate of `e2e` alone, with only that gate's variables required and only its
+# modules built — what each of e2e.yaml's parallel jobs runs, and the cheaper
+# acceptance when one connector changed. Its evidence lands under
+# target/e2e/evidence/<gate>/; `scripts/e2e-gated-its.sh --gates` lists the gates.
+#
+# Run one gate's real-GCP ITCases, e.g. `just e2e-gate PUBSUB_IT_PROJECT`.
+e2e-gate gate:
+    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --run-gate '{{ gate }}' -- {{ mvn }}
 
 # The two markers a gated real-GCP ITCase carries have to stay together: the
 # @EnabledIfEnvironmentVariable the E2E suite is discovered by, and the

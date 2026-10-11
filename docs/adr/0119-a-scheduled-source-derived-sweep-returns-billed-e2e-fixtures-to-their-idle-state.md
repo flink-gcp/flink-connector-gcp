@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02; revised by [#224] (2026-08-10), [#630] (2026-08-14), the interval change
-  of 2026-08-18, and [#1161] (2026-08-30)
-- Issues: [#224], [#246], [#630], [#1161]
+  of 2026-08-18, [#1161] (2026-08-30), and [#1639] (2026-10-11)
+- Issues: [#224], [#246], [#630], [#1161], [#1639]
 - Modules: bigtable, spanner, cloudtasks (tests), scripts, CI
 - Current behavior: [`sweep-e2e.sh`](../../scripts/sweep-e2e.sh),
   [sweep workflow](../../.github/workflows/sweep-e2e.yaml),
@@ -176,8 +176,28 @@ When completion races cancellation, a failed cancellation request is accepted on
 The second integrated run found a distinct readiness race in the native Bigtable staged-sink probe: all input admissions had been observed, but Flink rejected the initial stop-savepoint because a required execution vertex was not running yet.
 That probe now uses its existing all-vertices-running observation before each stop-savepoint request, preserving the held checkpoint interval and the no-effects-before-checkpoint assertion.
 
+## Per-gate parallel execution refinement (2026-10-11)
+
+[#1639] splits the E2E workflow into one job per gate, run in parallel, followed by a job that checks every gate's evidence together.
+Run one after another, the suites took about 45 minutes on 2026-10-10 against a 60-minute job ceiling, before the Firestore gate joined, and nearly all of it was suites waiting on one another without depending on one another.
+
+The 2026-09-19 refinement made the Cloud Tasks fixture's confirmed idle state a precondition for every later suite.
+That ordering was not a cost bound but a property of running in sequence: the App Engine version, the Bigtable and Spanner instances and the Firestore databases are separate resources, each with its own lifecycle cleanup and, for the first three, its own path in the shared sweep.
+A version left serving is no more likely and no more expensive because another connector's suite is running.
+The precondition is withdrawn; a failed stop confirmation now fails the Cloud Tasks gate alone, and the post-E2E sweep still runs once the whole workflow, every gate's job included, has finished, because `workflow_run` completes only then.
+
+Running the gates at once raises no service's peak.
+Each module's integration tests keep two forks, so at most two Bigtable instances and two Spanner instances exist at a time, as before; what is new is that they overlap with each other's, and they draw on different quotas.
+Read from the project on 2026-10-11, the Bigtable SSD-node quota is 30 per zone by default and 200 in each us-central1 zone, against two one-node instances, and the Spanner node quota is 5 per region (5,000 processing units), against two 100-unit instances, with instance creation at 5 a minute.
+
+The fork ceiling and the staleness threshold are unchanged, and so is their coupling: surefire fork pools stay module-local, each gate's job runs one module's pool at a time, and the 90-minute ceiling still bounds an instance's in-use age below two hours.
+The job ceiling of 60 minutes now applies per gate.
+
+Local runs keep running the gates in sequence and have no parallel mode, because two `-Xmx2048m` forks per module would come to about 24 GB of heap for six modules on one workstation.
+
 [#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
 [#246]: https://github.com/flink-gcp/flink-connector-gcp/issues/246
 [#630]: https://github.com/flink-gcp/flink-connector-gcp/issues/630
 [#959]: https://github.com/flink-gcp/flink-connector-gcp/issues/959
 [#1161]: https://github.com/flink-gcp/flink-connector-gcp/issues/1161
+[#1639]: https://github.com/flink-gcp/flink-connector-gcp/issues/1639
