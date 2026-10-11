@@ -224,7 +224,8 @@ class DatastoreQueryRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     @Test
     void metadataQueriesCarryCursorsAndResumeFromTheirEndCursor() {
         // The emulator answers __kind__ and __namespace__ without either cursor and __property__
-        // with nothing; the source refuses the three kinds on that evidence (#1717 reconsiders).
+        // with nothing, so only this suite could test a source reading them; the source refuses
+        // the three kinds (#1717).
         // Two kinds and two namespaces, so each metadata kind has more than the one result the
         // first page takes and its continuation has something to return.
         seed(uniqueKind(), 1);

@@ -541,10 +541,8 @@ A keys-only projection is split like a kind, and `splitCount(...)` on a projecti
 A nearest-neighbour search (`find_nearest`) is refused when the source is built: the service applies a query's cursor and limit before the search, so the page limit and the resume cursor every read sets would change which entities it finds.
 
 The metadata kinds `__namespace__`, `__kind__` and `__property__` are refused too, by `kind(...)` and `query(...)` when they are called, with a message naming the kind.
-Google documents that their entities are "generated dynamically, based on the current state of your database", so a result need not be the snapshot at the read time that the source pages through and resumes in.
-On the emulator, a query of `__kind__` or `__namespace__` also answers without the cursors the source pages and resumes by, and one of `__property__` returned nothing.
-The service carries a cursor on every result and an end cursor for all three, honours the read time for `__kind__` and scopes it to the namespace (measured 2026-10-11); whether the source should read these kinds is [#1717]({{< param BookRepo >}}/issues/1717).
-Read metadata with the client library instead, as Google's [metadata queries](https://cloud.google.com/datastore/docs/concepts/metadataqueries) page describes.
+The service answers all three with a cursor on every result and an end cursor (measured 2026-10-11), but Google documents their entities as "generated dynamically, based on the current state of your database", and whether the service holds `__namespace__` and `__property__` to the read time is unmeasured.
+Read metadata with the client library instead, for example while the job is built, as Google's [metadata queries](https://cloud.google.com/datastore/docs/concepts/metadataqueries) page describes.
 The statistics kinds, such as `__Stat_Kind__` and `__Stat_Total__`, are stored entities and are not refused; the emulator keeps none, so how the service answers a read of one is unmeasured ([#1546]({{< param BookRepo >}}/issues/1546)).
 
 {{< java-snippet file="DatastoreConnectorSource.java" tag="datastore-connector-source-query" >}}
@@ -656,7 +654,7 @@ Where the two disagree, the service decides.
 | `__scatter__` sampling finds no keys | The splitter's sampling query of a kind the source reads answers with no entity, so the splitter answers every request with the whole query. The Datastore source's emulator tests choose key-range boundaries themselves, so the service's sampling and its range counts are exercised only by the gated suite, where a kind of 3,000 entities came back in all eight ranges asked for |
 | No statistics | `__Stat_Total__` and `__Stat_Kind__` are empty, and so are a namespace's `__Stat_Ns_Total__` and `__Stat_Ns_Kind__`, so the split-count estimate always takes its lower bound against the emulator. Unit tests cover the estimate from statistics shaped as the service documents them; the estimate from real statistics belongs to the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) |
 | An offset-only batch carries no cursor | A `RunQuery` with an `offset` and a limit of zero reports the entities it skipped with neither a skipped cursor nor an end cursor, where the service documents a skipped cursor. No page the source reads asks for a limit of zero (only the GQL parse does, and it takes no cursor from the answer), and a batch of a kind the source reads that returned entities does carry its end cursor. The service carries the skipped cursor |
-| Metadata queries carry no cursor | `__kind__` and `__namespace__` answer without a per-result or an end cursor, and `__property__` with nothing, where the service carries both cursors for all three ([#1717]({{< param BookRepo >}}/issues/1717)) |
+| Metadata queries carry no cursor | `__kind__` and `__namespace__` answer without a per-result or an end cursor, and `__property__` with nothing, where the service carries both cursors for all three. The source refuses the three kinds, so its readers never page through one |
 
 ## Scope and provenance
 

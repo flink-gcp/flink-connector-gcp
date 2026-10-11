@@ -214,9 +214,9 @@ class SplittableQueriesTest {
         String reason = SplittableQueries.whyKindNotReadable(kind);
 
         assertThat(reason)
-                .startsWith(kind + " is a metadata kind")
-                .contains("which the source can neither page through nor resume after a failure")
-                .endsWith("read metadata with the client library instead");
+                .isEqualTo(
+                        kind
+                                + " is a metadata kind; read metadata with the client library instead");
         assertThat(SplittableQueries.whyNotReadable(SplittableQueries.ofKind(kind)))
                 .isEqualTo(reason);
         // The service takes at most one kind, but the rule does not depend on its position.

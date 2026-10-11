@@ -22,8 +22,9 @@ limitations under the License.
   against `google-cloud-cli:587.0.0-emulators` in Datastore mode, one run); revised 2026-10-10 by
   [#1652] (query-result metadata for the table scan), [#1690] (metadata kinds refused) and
   [#1689] (a configured read time is truncated to the microsecond), and 2026-10-11 by [#1707]
-  (the service's answers; a projection of properties read as one split)
-- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707]
+  (the service's answers; a projection of properties read as one split) and [#1717] (the
+  metadata kinds' refusal kept, on a corrected reason)
+- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707], [#1717]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -80,7 +81,7 @@ Measured against the emulator:
 
 The reader now keeps what each `EntityResult` carries beside the entity, its `version`, `create_time` and `update_time`, with the split's read time, as an `@Internal` `EntityMetadata` on the fetched entity. The emitter hands it to a deserializer implementing the `@Internal` `DatastoreEntityMetadataDeserializationSchema`, which the `datastore` table scan does to fill its metadata columns (ADR-0184); every other deserializer receives the entity alone, as before. The public SPI is unchanged.
 
-### Metadata kinds are refused ([#1690], 2026-10-10)
+### Metadata kinds are refused ([#1690], 2026-10-10; [#1717], 2026-10-11)
 
 Nothing refused a metadata kind, and on the emulator reading one failed after the job had started.
 Measured on 2026-10-10 against the pinned emulator in Datastore mode, one run:
@@ -92,22 +93,30 @@ Measured on 2026-10-10 against the pinned emulator in Datastore mode, one run:
 - Continuing a metadata query with `__key__ >` the last key read, one entity per page at the read time, read `__kind__` and `__namespace__` whole.
 
 Google's [metadata queries] page says the metadata entities are "generated dynamically, based on the current state of your database".
+The service answers otherwise than the emulator ([#1707], below): all three kinds come back with a cursor on every result and an end cursor, a query resumes from its end cursor, and `__kind__` honours the read time and is scoped to the namespace.
 
-**The source refuses the metadata kinds `__namespace__`, `__kind__` and `__property__`** (owner's decision, 2026-10-10), matched by exact name: `kind(...)` and `query(...)` when they are given one, and a GQL query when the planner has parsed it, since only then is its kind known.
+**The source refuses the metadata kinds `__namespace__`, `__kind__` and `__property__`** (owner's decision, 2026-10-10, kept by [#1717] on 2026-10-11 once the service had been measured), matched by exact name: `kind(...)` and `query(...)` when they are given one, and a GQL query when the planner has parsed it, since only then is its kind known.
 Every kind a query names is checked; a query naming no kind is read as before.
-The message names the kind, says that the source can neither page through it nor resume it after a failure, and says to read metadata with the client library instead; it states no cursor fact, because the service's answer was not measured.
-This is ADR-0127's third shape for the failure observed on the emulator: without the check the job failed after it had started, in the reader, with a message that named neither the kind nor the setter.
-How the service answers a metadata query was unmeasured then, so the refusal also rests on the documented dynamic generation; [#1707] measured it since (below).
+The message names the kind and says to read metadata with the client library instead.
+It states no reason, because the one it first gave, that the source can neither page through such a kind nor resume it, is true of the emulator and false of the service.
+On the emulator, the refusal is ADR-0127's third shape: without it the job failed after it had started, in the reader, with a message that named neither the kind nor the setter.
+The service answers with the cursors the reader keeps, measured on the raw `RunQuery` rather than through the source, so there the refusal is a choice of scope, resting on these:
+
+- **Only the gated suite could test such a read.** The emulator answers `__kind__` and `__namespace__` without either cursor and `__property__` with nothing, so the module's emulator tests could not read one at all, and the source's paging and resume over a metadata kind would be exercised against the service alone.
+- **The snapshot is half measured.** The service honoured the read time for `__kind__`, and was not measured for `__namespace__` or `__property__`.
+- **The source's planning would need measuring first.** A metadata query filters only by a `__key__` range, and `__property__` by an ancestor as well, and sorts only by ascending key, as Google's page documents. The splitter's `__scatter__` sampling, which the emulator answered for `__kind__` with every kind, is unmeasured on the service, and so is whether the statistics the split-count estimate reads describe a metadata kind.
+- **The client library serves the use.** Google's page says a metadata query returning N entities takes about as long as N ordinary queries, and a job that needs the metadata can read it while it is built.
+
 The statistics kinds (`__Stat_*__`) are not refused: they are stored entities, the source's own split estimate reads them, and nothing measured shows a read of one failing.
-Whether the service answers a metadata query with cursors was not measured; the refusal does not rest on it alone, because a result generated from the current state need not be the snapshot at the read time that the source promises (ADR-0173).
-Of the alternatives below, only resuming by key waits on that measurement; replaying a split is declined whatever it shows.
+Lifting the refusal later is compatible.
 
-Declined or deferred:
+Declined:
 
-- **One split replayed from its beginning after a failure** ([#1690]'s second option). A restore after a checkpoint taken mid-split would emit again every row the checkpoint had already passed, and the result is generated anew from the database's current state, which the emulator does not even pin to the read time, so the replay need not return the same rows. Declined.
-- **Resuming a metadata query by key**, with `__key__ >` the last key emitted in place of a cursor. It read `__kind__` and `__namespace__` whole on the emulator, but it adds a second resume mode beside the cursor, and it needs the service measured first: whether its metadata results carry cursors after all, whether it honours the read time, how the namespace scopes them, and whether `__property__`'s ancestor filter combines with a key range. Deferred until someone needs it.
+- **One split replayed from its beginning after a failure** ([#1690]'s second option). A restore after a checkpoint taken mid-split would emit again every row the checkpoint had already passed, and the result is generated anew from the database's current state, which the emulator does not even pin to the read time, so the replay need not return the same rows.
+- **Resuming a metadata query by key**, with `__key__ >` the last key emitted in place of a cursor. It read `__kind__` and `__namespace__` whole on the emulator, but it would add a second resume mode beside the cursor, which the service already carries, to serve only the emulator.
+- **Reading a metadata kind as one split** ([#1717]), with the splitter and the estimate skipped, `splitCount(...)` refused on one, and resume by the service's cursor. It would first need the read time measured for `__namespace__` and `__property__` and a gated test of a read and a restore, and it would leave the emulator's missing cursors as a limit of the emulator tests, for kinds the client library already reads.
 
-The emulator's metadata deviations are recorded here and not in the docs' deviation table, because the source no longer reads a metadata kind.
+The docs' deviation table records the emulator's missing cursors beside the service's answer.
 
 ### A configured read time is truncated to the microsecond ([#1689], 2026-10-10)
 
@@ -132,7 +141,7 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 - **Paging.** An offset-only batch carries a skipped cursor, which the emulator omits. A batch of twelve entities of 512 KiB came back short of its limit of twelve, `NOT_FINISHED`, with an end cursor.
 - **A missing index** fails planning with `FAILED_PRECONDITION`, and the message names the recommended index.
 - **Read times and versions.** Datastore mode answers like Native mode. A read time from before the database existed, or in the future, is refused with `INVALID_ARGUMENT`, and so is one finer than a microsecond. An entity's update time is a whole microsecond: a lookup at it finds the entity, and one a microsecond earlier does not. So the floored read time reads the data the time given names. A timestamp value is floored too, and an equality filter carrying the unfloored value matches it, unlike in Native mode.
-- **Metadata kinds.** `__kind__`, `__namespace__` and `__property__` all answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest. `__kind__` honoured the read time and was scoped to the namespace. The refusal above stands on the documented dynamic generation alone until [#1717] decides whether to lift it.
+- **Metadata kinds.** `__kind__`, `__namespace__` and `__property__` all answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest. `__kind__` honoured the read time and was scoped to the namespace. The decision on the metadata kinds above weighs these answers.
 - **Statistics** stay unmeasured: a database created within the run has none.
 
 ## Consequences

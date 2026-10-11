@@ -105,13 +105,8 @@ public final class SplittableQueries {
      * Returns why the source cannot read a kind, or {@code null} when it can.
      *
      * <p>The metadata kinds {@code __namespace__}, {@code __kind__} and {@code __property__} are
-     * refused. Google's documentation says their entities are generated dynamically, based on the
-     * database's current state, so a result need not be a snapshot at the read time that a
-     * restarted read could page through or replay. On the emulator, a query of {@code __kind__} or
-     * {@code __namespace__} answers without the per-entity and end cursors the source pages and
-     * resumes by, and one of {@code __property__} returned nothing; the service carries both
-     * cursors for all three (measured 2026-10-11), and whether the refusal should stand is #1717.
-     * The statistics kinds, such as {@code __Stat_Kind__}, are not refused.
+     * refused, a choice of scope rather than a limit of the service ({@code docs/adr/0177}). The
+     * statistics kinds, such as {@code __Stat_Kind__}, are not refused.
      *
      * @param kind the kind
      * @return the reason, phrased to follow "the source cannot read the kind because", or {@code
@@ -121,9 +116,7 @@ public final class SplittableQueries {
     public static String whyKindNotReadable(String kind) {
         Preconditions.checkNotNull(kind, "kind must not be null");
         return METADATA_KINDS.contains(kind)
-                ? kind
-                        + " is a metadata kind, which the source can neither page through nor"
-                        + " resume after a failure; read metadata with the client library instead"
+                ? kind + " is a metadata kind; read metadata with the client library instead"
                 : null;
     }
 

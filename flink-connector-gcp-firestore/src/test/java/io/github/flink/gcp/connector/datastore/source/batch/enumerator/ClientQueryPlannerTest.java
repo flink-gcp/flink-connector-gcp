@@ -145,9 +145,7 @@ class ClientQueryPlannerTest {
                 .isInstanceOf(IOException.class)
                 .hasMessage(
                         "The source cannot read the query the GQL query parsed into: __kind__ is a"
-                                + " metadata kind, which the source can neither page through nor"
-                                + " resume after a failure; read metadata with the client library"
-                                + " instead.");
+                                + " metadata kind; read metadata with the client library instead.");
         assertThat(rpc.requests())
                 .as("parseGql sends the parse request and nothing after it")
                 .singleElement()
@@ -180,9 +178,7 @@ class ClientQueryPlannerTest {
                 .isInstanceOf(IOException.class)
                 .hasMessage(
                         "The source cannot read the query the GQL query parsed into: __kind__ is a"
-                                + " metadata kind, which the source can neither page through nor"
-                                + " resume after a failure; read metadata with the client library"
-                                + " instead.");
+                                + " metadata kind; read metadata with the client library instead.");
         assertThat(rpc.requests())
                 .extracting(request -> request.getGqlQuery().getQueryString())
                 .containsExactly(
