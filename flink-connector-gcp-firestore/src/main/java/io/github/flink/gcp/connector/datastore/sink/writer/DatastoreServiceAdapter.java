@@ -17,21 +17,17 @@
 package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.datastore.Batch;
 import com.google.cloud.datastore.Datastore;
 import com.google.cloud.datastore.DatastoreOptions;
 import com.google.cloud.datastore.Entity;
-import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
-import com.google.cloud.datastore.PathElement;
 import com.google.cloud.datastore.spi.v1.DatastoreRpc;
+import com.google.datastore.v1.CommitRequest;
 import com.google.datastore.v1.LookupRequest;
 import com.google.datastore.v1.LookupResponse;
-import com.google.datastore.v1.PartitionId;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,11 +40,10 @@ import java.util.List;
  * The production {@link DatastoreDatabaseAccess}, over the client library's {@link Datastore},
  * which closing it releases.
  *
- * <p>A commit goes through the client's {@link Batch}, which sends every write in one {@code
- * Commit} request in non-transactional mode, grouped by operation (inserts, updates, upserts,
- * deletes) rather than in the order they were added. The batch refuses a second write to a key it
- * already holds, or merges the two; the writer never hands it one, because it flushes before a key
- * repeats.
+ * <p>A commit is one non-transactional {@code Commit} request, sent through the client's own RPC
+ * object, with the writes in the order they were given, each encoded by {@link EntityProtos}. The
+ * client library's {@code Batch} is not used: it cannot carry a merge's property mask. A request
+ * never holds two writes to one key, because the writer flushes before a key repeats.
  */
 @Internal
 final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
@@ -63,34 +58,20 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
 
     @Override
     public void commit(List<DatastoreMutation> writes) {
-        Batch batch = datastore.newBatch();
+        DatastoreOptions options = datastore.getOptions();
+        CommitRequest.Builder request =
+                CommitRequest.newBuilder()
+                        .setProjectId(options.getProjectId())
+                        .setDatabaseId(options.getDatabaseId())
+                        .setMode(CommitRequest.Mode.NON_TRANSACTIONAL);
         for (DatastoreMutation write : writes) {
-            switch (write.getOperation()) {
-                case UPSERT:
-                    batch.put(entity(write));
-                    break;
-                case INSERT:
-                    batch.add(entity(write));
-                    break;
-                case UPDATE:
-                    // The batch takes an update only as an Entity, the complete-key subtype; the
-                    // copy carries the same key and properties.
-                    batch.update(Entity.newBuilder(write.getKey(), entity(write)).build());
-                    break;
-                case DELETE:
-                    batch.delete(write.getKey());
-                    break;
-                default:
-                    throw new IllegalStateException(
-                            "Unknown Datastore operation " + write.getOperation());
-            }
+            request.addMutations(EntityProtos.mutation(write));
         }
-        batch.submit();
+        rpc().commit(request.build());
     }
 
-    private static FullEntity<Key> entity(DatastoreMutation write) {
-        return Preconditions.checkNotNull(
-                write.getEntity(), "A %s carries an entity", write.getOperation());
+    private DatastoreRpc rpc() {
+        return (DatastoreRpc) datastore.getOptions().getRpc();
     }
 
     /**
@@ -103,14 +84,12 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
     @Override
     @Nullable
     public Entity lookup(Key key) {
-        DatastoreOptions options = datastore.getOptions();
         LookupResponse response =
-                ((DatastoreRpc) options.getRpc())
-                        .lookup(
+                rpc().lookup(
                                 LookupRequest.newBuilder()
                                         .setProjectId(key.getProjectId())
                                         .setDatabaseId(key.getDatabaseId())
-                                        .addKeys(toProto(key))
+                                        .addKeys(EntityProtos.key(key))
                                         .build());
         if (response.getFoundCount() == 0) {
             return null;
@@ -130,42 +109,6 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
     @Override
     public List<Key> allocateIds(List<IncompleteKey> keys) {
         return datastore.allocateId(keys.toArray(new IncompleteKey[0]));
-    }
-
-    /**
-     * Encodes a key as the protobuf the client library would send for it; the library's own
-     * conversion is package-private.
-     */
-    @VisibleForTesting
-    static com.google.datastore.v1.Key toProto(Key key) {
-        com.google.datastore.v1.Key.Builder proto =
-                com.google.datastore.v1.Key.newBuilder()
-                        .setPartitionId(
-                                PartitionId.newBuilder()
-                                        .setProjectId(key.getProjectId())
-                                        .setDatabaseId(key.getDatabaseId())
-                                        .setNamespaceId(key.getNamespace()));
-        for (PathElement ancestor : key.getAncestors()) {
-            proto.addPath(
-                    element(
-                            ancestor.getKind(),
-                            ancestor.hasId() ? ancestor.getId() : null,
-                            ancestor.getName()));
-        }
-        proto.addPath(element(key.getKind(), key.hasId() ? key.getId() : null, key.getName()));
-        return proto.build();
-    }
-
-    private static com.google.datastore.v1.Key.PathElement element(
-            String kind, Long id, String name) {
-        com.google.datastore.v1.Key.PathElement.Builder element =
-                com.google.datastore.v1.Key.PathElement.newBuilder().setKind(kind);
-        if (id != null) {
-            element.setId(id);
-        } else if (name != null) {
-            element.setName(name);
-        }
-        return element.build();
     }
 
     @Override

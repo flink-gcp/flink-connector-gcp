@@ -47,6 +47,8 @@ class DatastoreMutationTest {
 
         assertThat(DatastoreMutation.upsert(entity).getOperation())
                 .isEqualTo(DatastoreMutation.Operation.UPSERT);
+        assertThat(DatastoreMutation.upsertMerge(entity).getOperation())
+                .isEqualTo(DatastoreMutation.Operation.UPSERT_MERGE);
         assertThat(DatastoreMutation.insert(entity).getOperation())
                 .isEqualTo(DatastoreMutation.Operation.INSERT);
         assertThat(DatastoreMutation.update(entity).getOperation())
@@ -70,6 +72,9 @@ class DatastoreMutationTest {
         FullEntity<Key> unkeyed = (FullEntity) FullEntity.newBuilder().set("v", 1L).build();
 
         assertThatThrownBy(() -> DatastoreMutation.upsert((FullEntity) incomplete))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("complete key");
+        assertThatThrownBy(() -> DatastoreMutation.upsertMerge((FullEntity) incomplete))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("complete key");
         assertThatThrownBy(() -> DatastoreMutation.insert(unkeyed))
@@ -117,6 +122,7 @@ class DatastoreMutationTest {
         for (DatastoreMutation write :
                 new DatastoreMutation[] {
                     DatastoreMutation.upsert(entity),
+                    DatastoreMutation.upsertMerge(entity),
                     DatastoreMutation.insert(entity),
                     DatastoreMutation.update(entity),
                     DatastoreMutation.delete(KEY)
@@ -134,6 +140,7 @@ class DatastoreMutationTest {
 
         assertThat(DatastoreMutation.upsert(one)).isEqualTo(DatastoreMutation.upsert(one));
         assertThat(DatastoreMutation.upsert(one)).isNotEqualTo(DatastoreMutation.insert(one));
+        assertThat(DatastoreMutation.upsert(one)).isNotEqualTo(DatastoreMutation.upsertMerge(one));
         assertThat(DatastoreMutation.upsert(one)).isNotEqualTo(DatastoreMutation.upsert(two));
         assertThat(DatastoreMutation.delete(KEY).toString()).contains("DELETE").contains("o-1");
     }

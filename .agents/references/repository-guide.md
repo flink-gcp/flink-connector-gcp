@@ -1019,8 +1019,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   `INVALID_ARGUMENT`, the routed set and `preconditionFailurePolicy`. Also the Native-mode bounded
   source (#1541): splits as a query's wire form plus one read time, the service-picked snapshot,
   cursor resume, and the client library's mid-stream retry the reader and planner guard against.
-  Also the Datastore-mode sink (#1542): non-transactional commits through the client's `Batch`,
-  the flush before a repeated key, the sink-owned retry loop, solo confirmation with a lookup
+  Also the Datastore-mode sink (#1542): non-transactional commits the writer encodes itself and
+  sends through the client's RPC object (#1729), the flush before a repeated key, the sink-owned retry loop, solo confirmation with a lookup
   before `NOT_FOUND` is routed, and ramp-up throttling. Also the Native-mode Table API sink and
   the SQL uber-jar (#1607): one collection keyed by document id, the type mapping and its two
   markers, the cross-checks restated in option keys, and the unkept same-document order.

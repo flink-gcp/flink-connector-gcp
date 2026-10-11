@@ -29,7 +29,7 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /**
- * One entity operation the Datastore sink applies: an upsert, insert or update carrying a whole
+ * One entity operation the Datastore sink applies: an upsert, merge, insert or update carrying an
  * entity, or a delete carrying a key.
  *
  * <p>The entity is the client library's {@link FullEntity} and the key its {@link Key}, both
@@ -52,11 +52,19 @@ public final class DatastoreMutation implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** The operation a write performs, named as the Datastore API names its mutations. */
+    /**
+     * The operation a write performs, named after the Datastore API's mutations: {@link
+     * #UPSERT_MERGE} is the API's {@code upsert} with a property mask.
+     */
     @PublicEvolving
     public enum Operation {
         /** Writes the entity, replacing whatever the key held. */
         UPSERT,
+        /**
+         * Merges the entity into the one the key holds, creating it when the key holds none: an
+         * upsert whose property mask names every value the entity holds.
+         */
+        UPSERT_MERGE,
         /** Writes the entity, refused with {@code ALREADY_EXISTS} when the key holds one. */
         INSERT,
         /** Replaces the entity, refused with {@code NOT_FOUND} when the key holds none. */
@@ -84,6 +92,28 @@ public final class DatastoreMutation implements Serializable {
      */
     public static DatastoreMutation upsert(FullEntity<Key> entity) {
         return withEntity(Operation.UPSERT, entity);
+    }
+
+    /**
+     * Creates a write that merges the entity into the one its key holds, creating it when the key
+     * holds none. Each property the entity holds replaces the stored property of that name, and
+     * properties the entity does not hold keep their values. An embedded entity is merged the same
+     * way, property by property, at any depth, so one without properties leaves the stored property
+     * as it is; an array, a {@code null} and every other value replace the stored property whole. A
+     * property can therefore be set, including to {@code null}, but not removed: use {@link
+     * #upsert(FullEntity)} to replace the whole entity.
+     *
+     * <p>The write is an {@code upsert} whose property mask names, for each value the entity holds,
+     * its path from the entity, so it is idempotent like {@link #upsert(FullEntity)}. A value that
+     * is excluded from indexes keeps that mark; whether a stored embedded entity's own mark changes
+     * when only some of its properties are written is the service's.
+     *
+     * @param entity the entity, with a complete key
+     * @return the write
+     * @throws IllegalArgumentException if the entity has no key or an incomplete one
+     */
+    public static DatastoreMutation upsertMerge(FullEntity<Key> entity) {
+        return withEntity(Operation.UPSERT_MERGE, entity);
     }
 
     /**

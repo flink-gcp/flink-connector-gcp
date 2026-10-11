@@ -18,9 +18,6 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.datastore.Entity;
-import com.google.cloud.datastore.FullEntity;
-import com.google.cloud.datastore.Key;
 import com.google.protobuf.CodedOutputStream;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
@@ -31,12 +28,8 @@ import java.nio.charset.StandardCharsets;
  * The size a mutation adds to a {@code Commit} request on the wire, which the writer bounds a batch
  * by, and the size of the request's own fields.
  *
- * <p>The client library exposes the protobuf size of an entity ({@link
- * Entity#calculateSerializedSize}) but not of a mutation or a key, so the rest is framing computed
- * here: a mutation is the entity — or, for a delete, the key — in a length-delimited field, and the
- * request holds the mutation in another. An entity holding only a key encodes that key exactly as a
- * delete mutation does, one length-delimited field with a single-byte tag, which is how a delete is
- * sized.
+ * <p>A mutation's size is that of the protobuf the writer commits ({@link EntityProtos}), property
+ * mask included, framed as the request's {@code mutations} field.
  */
 @Internal
 final class MutationSizeEstimator {
@@ -50,13 +43,7 @@ final class MutationSizeEstimator {
      * @return its size on the wire, framing included
      */
     static long sizeOf(DatastoreMutation mutation) {
-        FullEntity<Key> entity = mutation.getEntity();
-        long size =
-                entity == null
-                        ? Entity.calculateSerializedSize(
-                                Entity.newBuilder(mutation.getKey()).build())
-                        : framed(Entity.calculateSerializedSize(entity));
-        return framed(size);
+        return framed(EntityProtos.mutation(mutation).getSerializedSize());
     }
 
     /**

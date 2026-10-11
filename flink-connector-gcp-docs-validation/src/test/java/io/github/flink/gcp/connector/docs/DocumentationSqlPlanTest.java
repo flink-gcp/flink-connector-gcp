@@ -717,11 +717,12 @@ public class DocumentationSqlPlanTest {
                                 "INSERT INTO stores SELECT 'tokyo', 'Tokyo', ROW(35.68, 139.76),"
                                         + " 'staff/alice', ARRAY[ROW('Food', 'staff/bob')];")),
                 scenario(
-                        "Firestore table reference merge write mode",
+                        "Firestore table reference replace write mode",
                         withFollowup(
                                 "flink/FirestoreTableReference.sql",
-                                "merge",
-                                "INSERT INTO order_status SELECT 'o-1001', 'shipped';")),
+                                "replace",
+                                "INSERT INTO order_snapshots SELECT 'o-1001', 'shipped',"
+                                        + " CAST(12.34 AS DOUBLE);")),
                 scenario(
                         "Firestore table reference append-only table",
                         setup(
@@ -754,10 +755,10 @@ public class DocumentationSqlPlanTest {
                                         + "CAST('2026-01-01 00:00:00.000000' "
                                         + "AS TIMESTAMP_LTZ(6)) AS updated_at"),
                         snippet("flink/DatastoreTableReference.sql", "overview")),
-                // The id-key and unindexed regions declare a table and stop; the follow-up
-                // insert is what reaches the factory, which checks the key type, the namespace
-                // and the unindexed columns against the schema. The markers region's own join
-                // reaches it through both scans.
+                // The id-key, unindexed and replace regions declare a table and stop; the
+                // follow-up insert is what reaches the factory, which checks the key type, the
+                // namespace, the unindexed columns and the write mode against the schema. The
+                // markers region's own join reaches it through both scans.
                 scenario(
                         "Datastore table reference numeric id key",
                         withFollowup(
@@ -774,6 +775,13 @@ public class DocumentationSqlPlanTest {
                                 "flink/DatastoreTableReference.sql",
                                 "unindexed",
                                 "INSERT INTO articles SELECT 'a-1', 'Title', 'Body', X'0102';")),
+                scenario(
+                        "Datastore table reference replace write mode",
+                        withFollowup(
+                                "flink/DatastoreTableReference.sql",
+                                "replace",
+                                "INSERT INTO customer_snapshots SELECT 'c-1001', 'Alice',"
+                                        + " 'gold';")),
                 scenario(
                         "Datastore table reference append-only table",
                         setup(

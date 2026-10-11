@@ -40,9 +40,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * <p>Commits go through the production {@link DatastoreDatabaseAccess}, whose client makes one
  * attempt per call, so each outcome is the service's first answer. Emulator evidence only
- * (2026-10-03, google-cloud-cli 587.0.0-emulators in Datastore mode, google-cloud-datastore 3.4.0):
- * the real service's answers are the gated suite's to confirm, and the connector's docs page
- * records where the two are known to differ.
+ * (2026-10-03, google-cloud-cli 587.0.0-emulators in Datastore mode, google-cloud-datastore 3.4.0;
+ * the partial application re-measured 2026-10-11 against the pinned emulator once commits stopped
+ * going through the client's {@code Batch}, which had sent a refused insert or update ahead of
+ * every upsert): the real service's answers are the gated suite's to confirm, and the connector's
+ * docs page records where the two are known to differ.
  */
 class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
 
@@ -64,20 +66,20 @@ class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     @Test
-    void anInsertOfAnExistingKeyIsAlreadyExistsAndTheCommitAppliesNothing() {
+    void anInsertOfAnExistingKeyIsAlreadyExistsAndTheCommitAppliesOnlyTheWritesAheadOfIt() {
         assertThat(code(DatastoreMutation.insert(entity("existing")))).isEqualTo("ALREADY_EXISTS");
         assertThat(code(upsert("a1"), DatastoreMutation.insert(entity("existing")), upsert("a2")))
                 .isEqualTo("ALREADY_EXISTS");
-        assertThat(read(key(kind, "a1"))).isNull();
+        assertThat(read(key(kind, "a1"))).isNotNull();
         assertThat(read(key(kind, "a2"))).isNull();
     }
 
     @Test
-    void anUpdateOfAMissingKeyIsNotFoundAndTheCommitAppliesNothing() {
+    void anUpdateOfAMissingKeyIsNotFoundAndTheCommitAppliesOnlyTheWritesAheadOfIt() {
         assertThat(code(DatastoreMutation.update(entity("missing")))).isEqualTo("NOT_FOUND");
         assertThat(code(upsert("b1"), DatastoreMutation.update(entity("missing")), upsert("b2")))
                 .isEqualTo("NOT_FOUND");
-        assertThat(read(key(kind, "b1"))).isNull();
+        assertThat(read(key(kind, "b1"))).isNotNull();
         assertThat(read(key(kind, "b2"))).isNull();
     }
 
@@ -119,12 +121,12 @@ class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     /**
-     * The partial application follows the request's order, which the client's {@code Batch} groups
-     * by operation: the delete added first is sent last, after the oversized upsert that stops the
-     * commit, while the insert added last is sent first and applied.
+     * The partial application follows the request's order, which is the writer's: the delete given
+     * first is applied, and the insert given after the oversized upsert that stops the commit is
+     * not.
      */
     @Test
-    void aPartlyAppliedCommitFollowsTheRequestsOperationOrderNotTheWritersOrder() {
+    void aPartlyAppliedCommitFollowsTheWritersOrder() {
         client().put(Entity.newBuilder(key(kind, "to-delete")).set("v", 1L).build());
 
         assertThat(
@@ -136,8 +138,8 @@ class DatastoreRejectionITCase extends AbstractDatastoreEmulatorITCase {
                                                 .build()),
                                 DatastoreMutation.insert(entity("inserted"))))
                 .isEqualTo("INVALID_ARGUMENT");
-        assertThat(read(key(kind, "inserted"))).as("the insert, sent first").isNotNull();
-        assertThat(read(key(kind, "to-delete"))).as("the delete, sent last").isNotNull();
+        assertThat(read(key(kind, "to-delete"))).as("the delete, sent first").isNull();
+        assertThat(read(key(kind, "inserted"))).as("the insert, sent last").isNull();
     }
 
     @Test

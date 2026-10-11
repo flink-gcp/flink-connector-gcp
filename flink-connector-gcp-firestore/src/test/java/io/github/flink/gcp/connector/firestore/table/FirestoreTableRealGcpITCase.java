@@ -28,21 +28,76 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The {@code firestore} table against the real service, for what the emulator refuses: an array
+ * The {@code firestore} table against the real service: what the emulator refuses, an array
  * directly inside an array, which the emulator answers with {@code INVALID_ARGUMENT} and Google's
  * documentation says a Standard-edition database does not store, but which the service stored when
- * measured (2026-10-10). The table maps {@code ARRAY<ARRAY<T>>} on that measurement; the unit tests
- * cover the mapping and {@code FirestoreRejectionRealGcpITCase} the service's answer, and this
- * class is the one end-to-end check that a column of that type survives a SQL write and read.
+ * measured (2026-10-10), and the default {@code merge} and {@code replace} write modes, which
+ * {@code FirestoreTableSinkITCase} holds on the emulator. The table maps {@code ARRAY<ARRAY<T>>} on
+ * that measurement; the unit tests cover the mapping and {@code FirestoreRejectionRealGcpITCase}
+ * the service's answer, and this class is the one end-to-end check that a column of that type
+ * survives a SQL write and read.
  */
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
 class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
+
+    @Test
+    void theDefaultMergeKeepsUndeclaredFieldsAndReplaceRemovesThem() throws Exception {
+        String collection = uniqueCollection();
+        client().document(collection + "/m")
+                .set(Map.of("other", 1L, "attrs", Map.of("a", 1L), "row", Map.of("y", "kept")))
+                .get(30, TimeUnit.SECONDS);
+        client().document(collection + "/r").set(Map.of("other", 1L)).get(30, TimeUnit.SECONDS);
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        String columns =
+                " (id STRING NOT NULL, attrs MAP<STRING, BIGINT>, `row` ROW<x BIGINT>,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) ";
+        table.executeSql("CREATE TABLE merged" + columns + with(collection, ""));
+        table.executeSql(
+                "CREATE TABLE replaced"
+                        + columns
+                        + with(collection, ", 'sink.write-mode' = 'replace'"));
+
+        table.executeSql(
+                        "INSERT INTO merged VALUES ('m', MAP['b', CAST(2 AS BIGINT)],"
+                                + " ROW(CAST(1 AS BIGINT)))")
+                .await(120, TimeUnit.SECONDS);
+        table.executeSql(
+                        "INSERT INTO replaced VALUES ('r', MAP['b', CAST(2 AS BIGINT)],"
+                                + " ROW(CAST(1 AS BIGINT)))")
+                .await(120, TimeUnit.SECONDS);
+
+        assertThat(read(collection + "/m").getData())
+                .isEqualTo(
+                        Map.of(
+                                "other",
+                                1L,
+                                "attrs",
+                                Map.of("a", 1L, "b", 2L),
+                                "row",
+                                Map.of("x", 1L, "y", "kept")));
+        assertThat(read(collection + "/r").getData())
+                .isEqualTo(Map.of("attrs", Map.of("b", 2L), "row", Map.of("x", 1L)));
+    }
+
+    private static String with(String collection, String extra) {
+        return "WITH ('connector' = 'firestore', 'project' = '"
+                + PROJECT
+                + "', 'database' = '"
+                + database().getDatabaseId()
+                + "', 'collection' = '"
+                + collection
+                + "'"
+                + extra
+                + ")";
+    }
 
     @Test
     void anArrayOfArraysIsWrittenAndReadBackThroughSql() throws Exception {

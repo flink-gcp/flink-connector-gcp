@@ -23,9 +23,11 @@ import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.datastore.DatastoreException;
 import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.LatLng;
 import com.google.cloud.datastore.PathElement;
+import com.google.cloud.datastore.Value;
 import io.github.flink.gcp.connector.datastore.AbstractDatastoreRealGcpITCase;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -39,9 +41,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Runs the {@code datastore} table's geographical points and key values against the real service in
- * Datastore mode: a SQL write, a scan and a lookup of both, and the service's answer to a key value
- * outside the entity's partition, which the docs and ADR-0184 rest on.
+ * Runs the {@code datastore} table against the real service in Datastore mode: its geographical
+ * points and key values (a SQL write, a scan and a lookup of both, and the service's answer to a
+ * key value outside the entity's partition), and its write modes (the default {@code merge}, an
+ * upsert whose property mask names every value the row holds, a mask with no path and names the
+ * mask must quote and escape included, and {@code replace}), which the docs and ADR-0184 rest on.
+ * The emulator's reading of a mask is not evidence about the service's, which {@code
+ * datastore.proto} documents only in prose.
  */
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
@@ -211,5 +217,85 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                                 + " ON j.owner.name = u.id");
 
         assertThat(joined).containsExactly(Row.of("t1", Row.of(35.5, -139.25), "Ada"));
+    }
+
+    @Test
+    void theDefaultMergeKeepsWhatTheTableDoesNotDeclareAndReplaceRemovesIt() throws Exception {
+        String kind = uniqueKind();
+        for (String id : new String[] {"m", "r"}) {
+            client().put(
+                            Entity.newBuilder(keyIn(kind, id).build())
+                                    .set("other", 1L)
+                                    .set("a.b", 0L)
+                                    .set(
+                                            "e.f",
+                                            FullEntity.newBuilder()
+                                                    .set("g.h", 0L)
+                                                    .set("kept", "y")
+                                                    .build())
+                                    .set("tags", "a", "b")
+                                    .build());
+        }
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        String columns =
+                " (id STRING NOT NULL, `a.b` BIGINT, `e.f` ROW<`g.h` BIGINT>,"
+                        + " tags ARRAY<STRING>, PRIMARY KEY (id) NOT ENFORCED) ";
+        table.executeSql("CREATE TABLE merged" + columns + with(kind));
+        table.executeSql(
+                "CREATE TABLE replaced" + columns + with(kind, "'sink.write-mode' = 'replace'"));
+        String values = ", CAST(1 AS BIGINT), ROW(CAST(1 AS BIGINT)), ARRAY['c'])";
+
+        table.executeSql("INSERT INTO merged VALUES ('m'" + values).await(120, TimeUnit.SECONDS);
+        table.executeSql("INSERT INTO replaced VALUES ('r'" + values).await(120, TimeUnit.SECONDS);
+
+        Entity merged = read(keyIn(kind, "m").build());
+        assertThat(merged.getLong("other")).isEqualTo(1L);
+        assertThat(merged.getLong("a.b")).isEqualTo(1L);
+        assertThat(merged.getEntity("e.f").getLong("g.h")).isEqualTo(1L);
+        assertThat(merged.getEntity("e.f").getString("kept")).isEqualTo("y");
+        List<Value<?>> tags = merged.getList("tags");
+        assertThat(tags).extracting(value -> (Object) value.get()).containsExactly("c");
+        Entity replaced = read(keyIn(kind, "r").build());
+        assertThat(replaced.getNames()).containsExactlyInAnyOrder("a.b", "e.f", "tags");
+        assertThat(replaced.getEntity("e.f").getNames()).containsExactly("g.h");
+    }
+
+    @Test
+    void aMergeOfNoPropertyKeepsTheEntityAndQuotedNamesAddressOneProperty() throws Exception {
+        // A key-only table sends a property mask with no path, which datastore.proto does not
+        // describe; and a backquote or a backslash in a name is escaped inside its quoted mask
+        // segment, which datastore.proto names without spelling out. Both were first measured
+        // on the emulator only; a wrong reading of either would erase what the merge must keep.
+        String kind = uniqueKind();
+        client().put(
+                        Entity.newBuilder(keyIn(kind, "kept").build())
+                                .set("other", 1L)
+                                .set("tick`", 0L)
+                                .set("back\\slash", 0L)
+                                .build());
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(
+                "CREATE TABLE keys (id STRING NOT NULL, PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind));
+        table.executeSql(
+                "CREATE TABLE quoted (id STRING NOT NULL, `tick``` BIGINT, `back\\slash` BIGINT,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind));
+
+        table.executeSql("INSERT INTO keys VALUES ('kept'), ('created')")
+                .await(120, TimeUnit.SECONDS);
+        Entity untouched = read(keyIn(kind, "kept").build());
+        assertThat(untouched.getNames()).containsExactlyInAnyOrder("other", "tick`", "back\\slash");
+        assertThat(read(keyIn(kind, "created").build()).getNames()).isEmpty();
+
+        table.executeSql("INSERT INTO quoted VALUES ('kept', CAST(1 AS BIGINT), CAST(2 AS BIGINT))")
+                .await(120, TimeUnit.SECONDS);
+        Entity merged = read(keyIn(kind, "kept").build());
+        assertThat(merged.getNames()).containsExactlyInAnyOrder("other", "tick`", "back\\slash");
+        assertThat(merged.getLong("other")).isEqualTo(1L);
+        assertThat(merged.getLong("tick`")).isEqualTo(1L);
+        assertThat(merged.getLong("back\\slash")).isEqualTo(2L);
     }
 }

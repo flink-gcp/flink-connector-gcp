@@ -21,13 +21,16 @@ import org.apache.flink.annotation.PublicEvolving;
 /** The document operation {@code sink.write-mode} selects for a table with a PRIMARY KEY. */
 @PublicEvolving
 public enum WriteMode {
-    /** Replaces the document with the row, creating it if it is missing. */
-    SET("set"),
     /**
      * Merges the row into the document, creating it if it is missing; fields the table does not
      * declare keep their values, and a ROW or MAP column is merged key by key.
      */
     MERGE("merge"),
+    /**
+     * Replaces the document with the row, creating it if it is missing; fields the table does not
+     * declare are removed.
+     */
+    REPLACE("replace"),
     /** Replaces the table's fields of an existing document; a missing document fails the job. */
     UPDATE("update");
 

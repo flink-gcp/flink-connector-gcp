@@ -403,17 +403,19 @@ A key must address the sink's own project and database; one that does not is rou
 
 {{< java-snippet file="DatastoreConnectorSink.java" tag="datastore-connector-sink" >}}
 
-A `DatastoreMutation` carries one of four operations, named as the Datastore API names its mutations.
+A `DatastoreMutation` carries one of five operations, named after the Datastore API's mutations; `upsertMerge` is the API's `upsert` with a property mask.
 
 | Operation | Effect |
 |---|---|
 | `upsert` | Writes the entity, replacing whatever the key held |
+| `upsertMerge` | Merges the entity into the one the key holds, creating it if it is missing: each property the entity holds replaces the stored one, an embedded entity is merged property by property, and properties the entity does not hold keep their values |
 | `insert` | Writes the entity; refused with `ALREADY_EXISTS` if the key holds one |
 | `update` | Replaces the entity whole; refused with `NOT_FOUND` if the key holds none |
 | `delete` | Deletes the entity; deleting a missing entity succeeds |
 
 The key must be complete, a name or an id rather than a key the service fills in.
 An id allocated on the first attempt would be lost to a retry, which would then write a second entity, so the sink leaves id allocation to the pipeline.
+An `upsertMerge` is an `upsert` whose property mask names every value the entity holds, one path per value, so an array and a null replace the stored property whole, and an embedded entity without properties leaves it as it is, as the Native-mode `setMerge` treats an empty map; it can set a property, to null included, but not remove one.
 Property values are the client library's own value types, and the service enforces its limits: an indexed string over 1,500 bytes, an entity over 1 MiB, or a reserved `__name__`-style kind or property is refused with `INVALID_ARGUMENT`.
 `setExcludeFromIndexes(true)` lifts the 1,500-byte limit for a property that no query filters on.
 
@@ -422,7 +424,8 @@ Property values are the client library's own value types, and the service enforc
 Each writer subtask buffers writes and applies them in one non-transactional `Commit` at a time, waiting for each before it sends the next.
 It commits the buffer at every checkpoint barrier, when the next write would take it past `maxBatchMutations` (500 by default) or `maxBatchBytes` (9,000,000 bytes by default, against the documented 10 MiB request limit), and before a write to a key the buffer already holds.
 The service applied a commit of about 10.5 MiB when measured (2026-10-11), as it applied a Native-mode request of that size, so the budget is a margin under the documented figure rather than under a refusal anyone has seen.
-The size is the request's protobuf size on the wire: each mutation's, which the client library computes for an entity, plus the request's project, database and mode fields.
+The size is the request's protobuf size on the wire: each mutation's, property mask included, plus the request's project, database and mode fields.
+The writer encodes each mutation itself and sends the request through the client's own RPC object, in the order the serializer returned the writes; the client library's `Batch` cannot carry a property mask, and its conversion of an entity to protobuf is package-private.
 A commit names each key at most once, which the Datastore API requires of a non-transactional commit, and that rule has a useful side effect: the writes of one subtask to one key are applied in the order the serializer returned them, including across retries.
 The one exception is a commit that timed out on the client: the writer retries it and moves on, and the service may still apply the abandoned attempt after a later commit to the same key.
 Writes from different subtasks are not ordered against each other.
@@ -437,12 +440,12 @@ A failed non-transactional commit "may not apply as all or none", in the service
 
 | Operation | Same write replayed |
 |---|---|
-| `upsert`, `delete` | Idempotent for that write |
+| `upsert`, `upsertMerge`, `delete` | Idempotent for that write |
 | `insert` | Applied when the key already holds exactly the entity the insert writes; otherwise refused with `ALREADY_EXISTS` and routed to the failure handler |
 | `update` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler |
 
 Under the default `FailureHandler.failJob()`, a stream of `update` writes followed by deletes of the same keys fails again on every restart whose replay reaches a write already applied, and so does a stream of `insert` writes whose entity for a key differs between the write and its replay.
-`upsert` is the operation for a stream that needs neither failure.
+`upsert` and `upsertMerge` are the operations for a stream that needs neither failure.
 There is no exactly-once mode, for the reasons the Native-mode section gives.
 
 ### Refused writes in Datastore mode
@@ -461,8 +464,8 @@ A write that succeeds alone is applied; a write refused alone is routed if the s
 | `ALREADY_EXISTS` or `NOT_FOUND` for any other operation, and every other status | | **Fails the job** |
 
 Measured against the service, 2026-10-11: a commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applied every other write it carried, wherever the refused write sat in the request, while a commit refused with `INVALID_ARGUMENT` for any shape in the table applied none.
-The emulator applies none in the first case, and in the second it applies the writes ahead of an entity over 1 MiB; the client library orders a request by operation (inserts, updates, upserts, deletes), not as the writes arrived.
-That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `update` and `delete` absorb.
+The emulator applies the writes ahead of the refused one in the request in the first case, and in the second only those ahead of an entity over 1 MiB; a request holds the writes in the order the serializer returned them.
+That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `upsertMerge`, `update` and `delete` absorb.
 An `insert` the commit already applied answers its re-send with `ALREADY_EXISTS`, so before routing that refusal the writer looks the key up, and counts the insert as applied when the key holds exactly the entity it writes, every property value and index flag alike.
 A retried commit that had in fact been applied, and the replay of an identical insert, look the same to the writer and are counted as applied too; an insert whose key holds a different entity is routed, and so is one whose lookup still fails after the recovery budget's retries, with the lookup's failure attached.
 Neither outcome counts toward `maxConsecutiveRejections`, as a replay's answers do not.
@@ -645,7 +648,7 @@ Where the two disagree, the service decides.
 | Deviation | Consequence |
 |---|---|
 | An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`; a Standard-edition database on the service stored one |
-| A refused Datastore-mode commit applies nothing | A commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applies none of its other writes, where the service applies all of them; one refused with `INVALID_ARGUMENT` applies the writes ahead of an entity over 1 MiB, where the service applies none. The writer's handling of the service's behavior is exercised only by the gated suite |
+| A refused Datastore-mode commit applies the writes ahead of the refusal | A commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applies only the writes ahead of the refused one, where the service applies all of its other writes; one refused with `INVALID_ARGUMENT` applies nothing, or the writes ahead of an entity over 1 MiB, where the service applies none. The writer's handling of the service's behavior is exercised only by the gated suite |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |
 | `PartitionQuery` is not implemented | Asking for two partitions fails with `UNIMPLEMENTED`; one partition is the client library's own answer, made without a call. The source's emulator tests choose partition boundaries themselves, so the service's partitioning and its partition counts are exercised only by the gated suite, where a collection group of 3,000 documents came back in all eight partitions asked for and a group of five in fewer. A scan against the emulator needs a partition count of one |

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.datastore.sink.writer;
 
+import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.datastore.DatastoreException;
@@ -29,7 +30,6 @@ import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -38,23 +38,18 @@ import java.util.Map;
 
 /**
  * A {@link DatastoreDatabaseAccess} that decides each commit <b>per request</b>: a commit holding a
- * key the test refused fails whole with that key's status and, by default, applies nothing, as the
- * emulator measured. {@link #servesLikeTheService()} switches to what the service measured instead.
- * A test sets up which keys are refused and lets the writer's solo confirmation emerge, rather than
- * scripting it.
+ * key the test refused fails whole with that key's status and, by default, applies what the
+ * emulator measured — the writes ahead of the refused one in the request for {@code ALREADY_EXISTS}
+ * and {@code NOT_FOUND}, and nothing for any other status. {@link #servesLikeTheService()} switches
+ * to what the service measured instead. A test sets up which keys are refused and lets the writer's
+ * solo confirmation emerge, rather than scripting it.
  *
- * <p>Failures are thrown in the client library's shape: a {@link DatastoreException} whose cause is
- * the gax exception carrying the status.
+ * <p>Failures are thrown in production's shapes: a commit or a lookup, which go through the
+ * client's RPC object, throws the gax exception carrying the status ({@link #rpcFailure}), and an
+ * id allocation, which goes through the client library, a {@link DatastoreException} with that
+ * exception as its cause ({@link #failure}).
  */
 final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
-
-    /** The order the client's {@code Batch} sends a commit's mutations in. */
-    private static final List<DatastoreMutation.Operation> BATCH_ORDER =
-            List.of(
-                    DatastoreMutation.Operation.INSERT,
-                    DatastoreMutation.Operation.UPDATE,
-                    DatastoreMutation.Operation.UPSERT,
-                    DatastoreMutation.Operation.DELETE);
 
     private final Map<Key, StatusCode.Code> refusedKeys = new HashMap<>();
     private final Deque<Scripted> nextCommitFailures = new ArrayDeque<>();
@@ -78,9 +73,9 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     }
 
     /**
-     * Makes a refused commit apply the writes ahead of the refused key in the request first, as the
-     * emulator measured for an entity over 1 MiB, instead of applying nothing. The request is in
-     * the client's {@code Batch} order, grouped by operation: inserts, updates, upserts, deletes.
+     * Makes a commit refused with any status apply the writes ahead of the refused key in the
+     * request first, as the emulator measured for an entity over 1 MiB, instead of applying
+     * nothing. The request is in the order the writer gave it.
      */
     FakeDatastoreDatabaseAccess applyWritesBeforeARefusal() {
         appliesWritesBeforeARefusal = true;
@@ -107,7 +102,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     /** Fails the next commits, one per code, before deciding any by its keys. */
     FakeDatastoreDatabaseAccess failNextCommits(StatusCode.Code... codes) {
         for (StatusCode.Code code : codes) {
-            nextCommitFailures.add(new Scripted(failure(code), false));
+            nextCommitFailures.add(new Scripted(rpcFailure(code), false));
         }
         return this;
     }
@@ -117,7 +112,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
      * arrived — a timeout after the service applied it — looks to the caller.
      */
     FakeDatastoreDatabaseAccess applyThenFailNextCommit(StatusCode.Code code) {
-        nextCommitFailures.add(new Scripted(failure(code), true));
+        nextCommitFailures.add(new Scripted(rpcFailure(code), true));
         return this;
     }
 
@@ -150,7 +145,6 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
             throw scripted.failure;
         }
         List<DatastoreMutation> request = new ArrayList<>(writes);
-        request.sort(Comparator.comparingInt(write -> BATCH_ORDER.indexOf(write.getOperation())));
         if (servesLikeTheService) {
             commitAsTheService(request);
             return;
@@ -158,10 +152,12 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         for (int i = 0; i < request.size(); i++) {
             StatusCode.Code refused = refusalOf(request.get(i));
             if (refused != null) {
-                if (appliesWritesBeforeARefusal) {
+                if (appliesWritesBeforeARefusal
+                        || refused == StatusCode.Code.ALREADY_EXISTS
+                        || refused == StatusCode.Code.NOT_FOUND) {
                     apply(request.subList(0, i));
                 }
-                throw failure(refused);
+                throw rpcFailure(refused);
             }
         }
         apply(writes);
@@ -191,7 +187,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         if (onlyStateRefusals) {
             apply(accepted);
         }
-        throw failure(first);
+        throw rpcFailure(first);
     }
 
     @Nullable
@@ -233,7 +229,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         lookups.add(key);
         StatusCode.Code scripted = nextLookupFailures.poll();
         if (scripted != null) {
-            throw failure(scripted);
+            throw rpcFailure(scripted);
         }
         return stored(key);
     }
@@ -300,8 +296,16 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         return closeCalls;
     }
 
-    /** A failure in the shape the client library throws. */
+    /** A failure in the shape the client library throws: what an id allocation fails with. */
     static DatastoreException failure(StatusCode.Code code) {
+        return new DatastoreException(
+                0, code + ": refused by the fake", code.name(), rpcFailure(code));
+    }
+
+    /**
+     * A failure in the shape the client's RPC object throws: what a commit or a lookup fails with.
+     */
+    static ApiException rpcFailure(StatusCode.Code code) {
         StatusCode status =
                 new StatusCode() {
                     @Override
@@ -314,12 +318,8 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
                         return code;
                     }
                 };
-        return new DatastoreException(
-                0,
-                code + ": refused by the fake",
-                code.name(),
-                ApiExceptionFactory.createException(
-                        new RuntimeException(code + ": refused by the fake"), status, false));
+        return ApiExceptionFactory.createException(
+                new RuntimeException(code + ": refused by the fake"), status, false);
     }
 
     /** A scripted commit failure, and whether the commit is applied before it is thrown. */

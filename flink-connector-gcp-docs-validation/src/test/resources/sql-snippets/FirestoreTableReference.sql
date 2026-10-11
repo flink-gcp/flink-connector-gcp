@@ -46,18 +46,19 @@ CREATE TABLE stores (
 );
 -- end::markers[]
 
--- tag::merge[]
-CREATE TABLE order_status (
+-- tag::replace[]
+CREATE TABLE order_snapshots (
   order_id STRING NOT NULL,
   status STRING,
+  total DOUBLE,
   PRIMARY KEY (order_id) NOT ENFORCED
 ) WITH (
   'connector' = 'firestore',
   'project' = 'my-project',
-  'collection' = 'orders',
-  'sink.write-mode' = 'merge'
+  'collection' = 'order_snapshots',
+  'sink.write-mode' = 'replace'
 );
--- end::merge[]
+-- end::replace[]
 
 -- tag::append[]
 CREATE TABLE audit_events (

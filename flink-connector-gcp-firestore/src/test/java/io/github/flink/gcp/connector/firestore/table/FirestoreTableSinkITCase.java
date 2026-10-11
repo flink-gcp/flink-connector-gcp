@@ -213,30 +213,39 @@ class FirestoreTableSinkITCase extends AbstractFirestoreEmulatorITCase {
     }
 
     @Test
-    void mergeKeepsUndeclaredFieldsAndSetReplacesThem() throws Exception {
+    void theDefaultMergeKeepsUndeclaredFieldsAndReplaceRemovesThem() throws Exception {
         String collection = uniqueCollection();
         client().document(collection + "/m")
                 .set(Map.of("other", 1L, "attrs", Map.of("a", 1L)))
                 .get();
         client().document(collection + "/s").set(Map.of("other", 1L)).get();
+        client().document(collection + "/k").set(Map.of("other", 1L)).get();
         TableEnvironment table = streaming();
         table.executeSql(
                 "CREATE TABLE merged (id STRING NOT NULL, attrs MAP<STRING, BIGINT>,"
                         + " PRIMARY KEY (id) NOT ENFORCED) "
-                        + with(collection, "'sink.write-mode' = 'merge'"));
+                        + with(collection));
         table.executeSql(
                 "CREATE TABLE replaced (id STRING NOT NULL, attrs MAP<STRING, BIGINT>,"
                         + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(collection, "'sink.write-mode' = 'replace'"));
+        table.executeSql(
+                "CREATE TABLE keys (id STRING NOT NULL, PRIMARY KEY (id) NOT ENFORCED) "
                         + with(collection));
 
         table.executeSql("INSERT INTO merged SELECT 'm', MAP['b', CAST(2 AS BIGINT)]")
                 .await(60, TimeUnit.SECONDS);
         table.executeSql("INSERT INTO replaced SELECT 's', MAP['b', CAST(2 AS BIGINT)]")
                 .await(60, TimeUnit.SECONDS);
+        table.executeSql("INSERT INTO keys VALUES ('k'), ('new')").await(60, TimeUnit.SECONDS);
 
         assertThat(read(collection + "/m").getData())
                 .isEqualTo(Map.of("other", 1L, "attrs", Map.of("a", 1L, "b", 2L)));
         assertThat(read(collection + "/s").getData()).isEqualTo(Map.of("attrs", Map.of("b", 2L)));
+        // A merge of no field leaves a stored document as it was and creates a missing one.
+        assertThat(read(collection + "/k").getData()).isEqualTo(Map.of("other", 1L));
+        assertThat(read(collection + "/new").exists()).isTrue();
+        assertThat(read(collection + "/new").getData()).isEmpty();
     }
 
     @Test

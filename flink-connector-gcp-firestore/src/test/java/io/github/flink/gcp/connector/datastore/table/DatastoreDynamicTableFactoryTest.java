@@ -121,7 +121,8 @@ class DatastoreDynamicTableFactoryTest {
                                 schema(KEYED, 0),
                                 DatabaseDestination.of("my-project"),
                                 "",
-                                "Order"));
+                                "Order",
+                                WriteMode.MERGE));
         assertThat(config.getEmulatorEndpoint()).isNull();
         assertThat(config.getServiceAccountKeyFile()).isNull();
     }
@@ -132,6 +133,7 @@ class DatastoreDynamicTableFactoryTest {
         options.put("database", "orders-db");
         options.put("namespace", "tenant-a");
         options.put("emulator-endpoint", "localhost:8080");
+        options.put("sink.write-mode", "replace");
         DatastoreSinkConfig<?> config = config(KEYED, options);
 
         assertThat(config.getDatabase())
@@ -143,7 +145,8 @@ class DatastoreDynamicTableFactoryTest {
                                 schema(KEYED, 0),
                                 DatabaseDestination.of("my-project", "orders-db"),
                                 "tenant-a",
-                                "Order"));
+                                "Order",
+                                WriteMode.REPLACE));
     }
 
     @Test
@@ -273,7 +276,8 @@ class DatastoreDynamicTableFactoryTest {
                     {"kind", "Other"},
                     {"sink.unindexed-columns", null},
                     {"database", "other"},
-                    {"sink.buffer-flush.max-mutations", "18"}
+                    {"sink.buffer-flush.max-mutations", "18"},
+                    {"sink.write-mode", "replace"}
                 }) {
             Map<String, String> changed = new HashMap<>(everything);
             if (differing[1] == null) {
@@ -290,6 +294,16 @@ class DatastoreDynamicTableFactoryTest {
         assertThat(keyed.copy())
                 .isEqualTo(keyed)
                 .isNotEqualTo(FactoryMocks.createTableSink(KEYED, options()));
+    }
+
+    @Test
+    void aWriteModeIsRefusedOnATableWithoutAKey() {
+        assertThatThrownBy(
+                        () ->
+                                FactoryMocks.createTableSink(
+                                        UNKEYED, options("sink.write-mode", "merge")))
+                .hasStackTraceContaining("sink.write-mode needs a PRIMARY KEY");
+        assertThat(FactoryMocks.createTableSink(UNKEYED, options())).isNotNull();
     }
 
     @Test

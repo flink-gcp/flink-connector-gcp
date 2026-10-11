@@ -110,6 +110,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   re-draws on `ALREADY_EXISTS`, so a row never replaces a document (a lost answer stores it twice;
   #1680, owner's choice over reading back). A key that is empty or holds `/` fails the record: it would
   silently address another document. `update` declares no deletes (restart loop otherwise).
+- **`sink.write-mode` is `merge` (default, `setMerge`, Firestore's recursive merge: a MAP key
+  removed from the row stays stored), `replace` (`set`) or `update`** (#1729, owner 2026-10-11:
+  merge means Firestore's behaviour; a user who wants the row as the whole document picks
+  `replace`). Do not add a top-level-only merge mode without a new owner decision.
 - **Types are checked when the statement is planned by `FirestoreTableSchema`**, and the converter
   (`RowDataToFirestoreConverter`) assumes that check ran. Add a type to both, plus the type table
   on the table docs page. The read side (#1608) reuses the schema class and its markers.
@@ -172,13 +176,24 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Datastore-mode sink (`docs/adr/0175`)
 
 - **The SPI carries the client library's `FullEntity<Key>` and `Key`** (both serializable; a test
-  round-trips every value type). Their protobuf conversion is package-private, so do not add a
-  proto-building path; `FailedMutation`'s payload is the Java-serialized `DatastoreMutation`.
-- **The writer is synchronous** (Spanner shape): one non-transactional commit at a time through
-  the client's `Batch`, on the task thread. **It commits before a key repeats** — `Batch` would
-  merge or refuse a second write to one key — and that rule is also what keeps one subtask's
-  writes to a key in order (barring a timed-out attempt the service applies late). Do not let a
-  batch hold a key twice.
+  round-trips every value type); `FailedMutation`'s payload is the Java-serialized
+  `DatastoreMutation`. Their protobuf conversion is package-private, so **`EntityProtos` repeats
+  it** (#1729, owner's choice over committing merges apart from `Batch`): `EntityProtosTest` holds
+  it equal to the library's through `FullEntity.fromPb` and `calculateSerializedSize` and iterates
+  every `ValueType`, so a type a BOM bump adds fails there. Meaning is read through
+  `value.toBuilder().getMeaning()`, the only public route.
+- **The writer is synchronous** (Spanner shape): one non-transactional `CommitRequest` at a time,
+  encoded by `EntityProtos` in the writer's order and sent through the client's `DatastoreRpc`, on
+  the task thread. `Batch` is not used: it cannot carry `Mutation.property_mask`, which
+  `upsertMerge` needs. **It commits before a key repeats** — the API refuses a non-transactional
+  commit naming a key twice — and that rule is also what keeps one subtask's writes to a key in
+  order (barring a timed-out attempt the service applies late). Do not let a batch hold a key
+  twice.
+- **`upsertMerge` masks every value the entity holds** (`EntityProtos.mergePaths`): one
+  `PropertyPaths.segment` per name, recursing into an embedded entity (an empty one adds no path,
+  as Firestore's merge treats an empty map), stopping at an array (the mask cannot enter one) and a
+  null. It never masks an absent property, so it never deletes one. `PropertyPaths` is the one
+  copy of the mask grammar, shared with the lookup's mask; do not quote a name anywhere else.
 - **The client makes one attempt per call** (`DatastoreClients` sets single-attempt
   `RetrySettings`, which the library applies to `RetryHelper` and to every generated call); the
   writer owns retries on the `recovery*` schedule. **The host is always set**, so
@@ -196,9 +211,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Ramp-up throttling** (`RampUpThrottle`) is Beam's `RampupThrottlingFn` shape, one permit per
   record that reaches the buffer; retries and solo re-sends are not throttled.
 - The emulator (same binary, `--database-mode=datastore-mode`, set in
-  `AbstractDatastoreEmulatorITCase`) applies nothing of a refused commit except, for an oversized
-  entity, the writes ahead of it in the request, which `Batch` orders by operation (so a refused
-  commit can be partly applied), serves any database id
+  `AbstractDatastoreEmulatorITCase`) applies the writes ahead of the refused one in the request for
+  `ALREADY_EXISTS`, `NOT_FOUND` and an oversized entity, and nothing for any other
+  `INVALID_ARGUMENT` (re-measured in the writer's order by #1729; `Batch` had sent inserts and
+  updates first, which looked like "applies nothing"), serves any database id
   and enforces no request size; `DatastoreRejectionITCase` pins each fact it asserts. The service
   (#1707, `DatastoreRejectionRealGcpITCase`) differs: a commit refused with `ALREADY_EXISTS` or
   `NOT_FOUND` applies EVERY other write, one refused with `INVALID_ARGUMENT` applies none, a 10.5 MiB
@@ -265,9 +281,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Factory` service file**; the uber jar's `FirestoreSqlConnectorPackagingITCase` and
   `DatastoreSqlConnectorSmokeITCase` hold both factories. The scan (#1652) and lookup (#1653)
   extend this factory and `DatastoreTableSchema`; the type mapping is their read-back contract.
-- **Every write is `upsert` or `delete`; there is no `sink.write-mode`** (owner, 2026-10-10):
-  `insert`/`update` replays fail the job on every restart under the table's fail-job handler. A
-  keyless table upserts under ids the service allocates (`AllocateIds`, owner 2026-10-10: a
+- **Every write is `upsert` or `delete`** (owner, 2026-10-10): `insert`/`update` replays fail the
+  job on every restart under the table's fail-job handler. **`sink.write-mode`** (#1729, owner
+  2026-10-11) is `merge` (default: `upsertMerge`) or `replace` (`upsert`), the Native-mode table's
+  names; it is refused without a PRIMARY KEY. A keyless table upserts whole (an allocated id names
+  no stored entity), under ids the service allocates (`AllocateIds`, owner 2026-10-10: a
   guarantee against silently replacing an entity, which random names only made improbable). The
   guarantee covers allocated ids only, not self-chosen numeric ids in the same kind. The writer
   allocates and hands its allocator to the serializer through the `@Internal`
@@ -344,8 +362,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   bytes or `__.+__`: the emulator refuses a lookup of the empty name, id `0` or the over-long name
   with `INVALID_ARGUMENT`, and answers `__x__` as missing. A negative id
   is a real id (measured) and is read.
-- **The request carries a property mask** of the produced columns, each name backquoted with `\`
-  and `` ` `` escaped; `__key__` alone when only key/metadata are read (owner). Unlike a
+- **The request carries a property mask** of the produced columns, each name a
+  `PropertyPaths.segment` (backquoted, `\` and `` ` `` escaped); `__key__` alone when only key/metadata are read (owner). Unlike a
   projection query it keeps unindexed values and arrays whole. No read options: strong reads;
   `scan.read-time` is scan-only and `read-time` is `LookupResponse.read_time` (owner).
 - `DatastoreLookupConfig` is a per-connector copy of the lookup config, as Firestore, Spanner and

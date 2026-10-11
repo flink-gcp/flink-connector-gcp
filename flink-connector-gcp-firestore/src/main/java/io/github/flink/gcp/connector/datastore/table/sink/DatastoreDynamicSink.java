@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.datastore.sink.DatastoreSinkBuilder;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreWriterOptions;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableLineage;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
+import io.github.flink.gcp.connector.datastore.table.WriteMode;
 
 import javax.annotation.Nullable;
 
@@ -49,6 +50,7 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
     private final DatabaseDestination database;
     private final String namespace;
     private final String kind;
+    private final WriteMode writeMode;
     private final DatastoreWriterOptions writerOptions;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
@@ -61,6 +63,8 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
         this.namespace =
                 Preconditions.checkNotNull(builder.namespace, "namespace must not be null");
         this.kind = Preconditions.checkNotNull(builder.kind, "kind must not be null");
+        this.writeMode =
+                Preconditions.checkNotNull(builder.writeMode, "writeMode must not be null");
         this.writerOptions =
                 Preconditions.checkNotNull(builder.writerOptions, "writerOptions must not be null");
         this.emulatorEndpoint = builder.emulatorEndpoint;
@@ -89,7 +93,8 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
                 DatastoreSink.<RowData>builder()
                         .database(database)
                         .serializer(
-                                new RowDataSerializationSchema(schema, database, namespace, kind))
+                                new RowDataSerializationSchema(
+                                        schema, database, namespace, kind, writeMode))
                         .writerOptions(writerOptions);
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
@@ -108,6 +113,7 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
                 .database(database)
                 .namespace(namespace)
                 .kind(kind)
+                .writeMode(writeMode)
                 .writerOptions(writerOptions)
                 .emulatorEndpoint(emulatorEndpoint)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
@@ -133,6 +139,7 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
                 && database.equals(that.database)
                 && namespace.equals(that.namespace)
                 && kind.equals(that.kind)
+                && writeMode == that.writeMode
                 && writerOptions.equals(that.writerOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
@@ -147,6 +154,7 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
                 database,
                 namespace,
                 kind,
+                writeMode,
                 writerOptions,
                 emulatorEndpoint,
                 serviceAccountKeyFile,
@@ -160,6 +168,7 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
         private DatabaseDestination database;
         private String namespace = "";
         private String kind;
+        private WriteMode writeMode = WriteMode.MERGE;
         private DatastoreWriterOptions writerOptions;
         @Nullable private String emulatorEndpoint;
         @Nullable private String serviceAccountKeyFile;
@@ -188,6 +197,12 @@ public final class DatastoreDynamicSink implements DynamicTableSink {
         /** Sets the entities' kind. */
         public Builder kind(String kind) {
             this.kind = kind;
+            return this;
+        }
+
+        /** Sets what an insert or an update-after does, for a table with a PRIMARY KEY. */
+        public Builder writeMode(WriteMode writeMode) {
+            this.writeMode = writeMode;
             return this;
         }
 

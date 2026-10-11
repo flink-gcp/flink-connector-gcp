@@ -65,6 +65,16 @@ class DatastoreErrorClassifierTest {
                             DatastoreErrorClassifier.statusCode(
                                     FakeDatastoreDatabaseAccess.failure(code)))
                     .isEqualTo(code);
+            // A commit and a lookup go through the RPC object, which throws the bare exception.
+            assertThat(
+                            DatastoreErrorClassifier.classify(
+                                    FakeDatastoreDatabaseAccess.rpcFailure(code)))
+                    .as(code.name())
+                    .isEqualTo(EXPECTED.get(code));
+            assertThat(
+                            DatastoreErrorClassifier.statusCode(
+                                    FakeDatastoreDatabaseAccess.rpcFailure(code)))
+                    .isEqualTo(code);
         }
     }
 

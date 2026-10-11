@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.FullEntity;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.datastore.AbstractDatastoreEmulatorITCase;
@@ -39,7 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Drives the writer against the emulator through the production access, so that solo confirmation
- * meets the service's own all-or-nothing refusal rather than the unit tests' fake.
+ * meets the emulator's own refusals rather than the unit tests' fake. The emulator applies the
+ * writes ahead of a refused one; {@code DatastoreWriterRealGcpITCase} meets the service, which
+ * applies every other write of a commit refused with {@code ALREADY_EXISTS} or {@code NOT_FOUND}.
  */
 class DatastoreWriterITCase extends AbstractDatastoreEmulatorITCase {
 
@@ -70,6 +73,53 @@ class DatastoreWriterITCase extends AbstractDatastoreEmulatorITCase {
         assertThat(read(key(kind, "inserted")).getLong("v")).isEqualTo(2);
         assertThat(read(key(kind, "to-update")).getLong("v")).isEqualTo(3);
         assertThat(read(key(kind, "to-delete"))).isNull();
+        assertThat(ROUTED).isEmpty();
+    }
+
+    @Test
+    void aMergeWritesOnlyTheValuesItHoldsWhateverTheirNames() throws Exception {
+        // Every name is one quoted mask segment, so a dot, a backquote or a backslash in it does
+        // not change which property the merge writes.
+        client().put(
+                        Entity.newBuilder(key(kind, "m"))
+                                .set("a.b", 0L)
+                                .set("tick`", 0L)
+                                .set("back\\slash", 0L)
+                                .set("kept", 0L)
+                                .set("untouched", FullEntity.newBuilder().set("z", 0L).build())
+                                .set(
+                                        "e.f",
+                                        FullEntity.newBuilder()
+                                                .set("g.h", 0L)
+                                                .set("kept", 0L)
+                                                .build())
+                                .build());
+
+        try (DatastoreWriter<DatastoreMutation> writer = writer()) {
+            writer.write(
+                    DatastoreMutation.upsertMerge(
+                            Entity.newBuilder(key(kind, "m"))
+                                    .set("a.b", 1L)
+                                    .set("tick`", 1L)
+                                    .set("back\\slash", 1L)
+                                    .set("e.f", FullEntity.newBuilder().set("g.h", 1L).build())
+                                    // No property, so no path: the stored entity stays.
+                                    .set("untouched", FullEntity.newBuilder().build())
+                                    .build()),
+                    TestContexts.NO_OP);
+            writer.write(DatastoreMutation.upsertMerge(entity("created", 2)), TestContexts.NO_OP);
+            writer.flush(false);
+        }
+
+        Entity merged = read(key(kind, "m"));
+        assertThat(merged.getLong("a.b")).isEqualTo(1L);
+        assertThat(merged.getLong("tick`")).isEqualTo(1L);
+        assertThat(merged.getLong("back\\slash")).isEqualTo(1L);
+        assertThat(merged.getLong("kept")).isZero();
+        assertThat(merged.getEntity("e.f").getLong("g.h")).isEqualTo(1L);
+        assertThat(merged.getEntity("e.f").getLong("kept")).isZero();
+        assertThat(merged.getEntity("untouched").getLong("z")).isZero();
+        assertThat(read(key(kind, "created")).getLong("v")).isEqualTo(2L);
         assertThat(ROUTED).isEmpty();
     }
 
@@ -105,8 +155,8 @@ class DatastoreWriterITCase extends AbstractDatastoreEmulatorITCase {
 
     @Test
     void writesToOneKeyLandInTheOrderTheyWereGiven() throws Exception {
-        // The client's Batch would merge a repeated key on its own and land on the same final
-        // state, so the commit count is what shows the writer committed before each repeat.
+        // The commit count is what shows the writer committed before each repeat: the Datastore
+        // API refuses a non-transactional commit that names a key twice.
         TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
         try (DatastoreWriter<DatastoreMutation> writer = writer(metrics)) {
             for (long v = 1; v <= 5; v++) {
