@@ -403,7 +403,7 @@ A key must address the sink's own project and database; one that does not is rou
 
 {{< java-snippet file="DatastoreConnectorSink.java" tag="datastore-connector-sink" >}}
 
-A `DatastoreMutation` carries one of five operations, named after the Datastore API's mutations; `upsertMerge` is the API's `upsert` with a property mask.
+A `DatastoreMutation` carries one of six operations, named after the Datastore API's mutations; `upsertMerge` is the API's `upsert` with a property mask, and `updateProperties` its `update` with one.
 
 | Operation | Effect |
 |---|---|
@@ -411,13 +411,31 @@ A `DatastoreMutation` carries one of five operations, named after the Datastore 
 | `upsertMerge` | Merges the entity into the one the key holds, creating it if it is missing: each property the entity holds replaces the stored one, an embedded entity is merged property by property, and properties the entity does not hold keep their values |
 | `insert` | Writes the entity; refused with `ALREADY_EXISTS` if the key holds one |
 | `update` | Replaces the entity whole; refused with `NOT_FOUND` if the key holds none |
+| `updateProperties` | Replaces each property the entity holds, an embedded entity whole, and keeps the properties it does not hold; refused with `NOT_FOUND` if the key holds none |
 | `delete` | Deletes the entity; deleting a missing entity succeeds |
 
 The key must be complete, a name or an id rather than a key the service fills in.
 An id allocated on the first attempt would be lost to a retry, which would then write a second entity, so the sink leaves id allocation to the pipeline.
 An `upsertMerge` is an `upsert` whose property mask names every value the entity holds, one path per value, so an array and a null replace the stored property whole, and an embedded entity without properties leaves it as it is, as the Native-mode `setMerge` treats an empty map; it can set a property, to null included, but not remove one.
+An `updateProperties` is an `update` whose property mask names each property the entity holds, one path per top-level name, so it neither merges into an embedded entity nor creates a missing entity; an entity without properties is refused when the write is built, since it would change nothing.
 Property values are the client library's own value types, and the service enforces its limits: an indexed string over 1,500 bytes, an entity over 1 MiB, or a reserved `__name__`-style kind or property is refused with `INVALID_ARGUMENT`.
 `setExcludeFromIndexes(true)` lifts the 1,500-byte limit for a property that no query filters on.
+
+The four operations that can change an existing entity differ in which stored properties survive; an `insert` is refused when the key holds one.
+Take a key holding `{name: "Alice", tier: "silver", address: {city: "Tokyo", zip: "100"}}`, an entity's properties written here as JSON-like shorthand with `address` an embedded entity, and a write of `{tier: "gold", address: {city: "Osaka"}}` to that key:
+
+| Operation | The key holds afterwards |
+|---|---|
+| `upsert` | `{tier: "gold", address: {city: "Osaka"}}` |
+| `update` | `{tier: "gold", address: {city: "Osaka"}}` |
+| `updateProperties` | `{name: "Alice", tier: "gold", address: {city: "Osaka"}}` |
+| `upsertMerge` | `{name: "Alice", tier: "gold", address: {city: "Osaka", zip: "100"}}` |
+
+`upsert` and `update` replace the entity, so `name` is gone.
+`updateProperties` replaces only `tier` and `address` and keeps `name`, but replaces `address` whole, so `zip` is gone.
+`upsertMerge` also merges into `address`, so `zip` stays.
+Had the key held no entity, `update` and `updateProperties` would be refused with `NOT_FOUND`, while `upsert` and `upsertMerge` would create it.
+None of them removes a property the write names: a null value is stored as a null.
 
 ### How the Datastore sink writes
 
@@ -445,9 +463,9 @@ A failed non-transactional commit "may not apply as all or none", in the service
 |---|---|
 | `upsert`, `upsertMerge`, `delete` | Idempotent for that write |
 | `insert` | Applied when the key already holds exactly the entity the insert writes; otherwise refused with `ALREADY_EXISTS` and routed to the failure handler |
-| `update` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler |
+| `update`, `updateProperties` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler |
 
-Under the default `FailureHandler.failJob()`, a stream of `update` writes followed by deletes of the same keys fails again on every restart whose replay reaches a write already applied, and so does a stream of `insert` writes whose entity for a key differs between the write and its replay.
+Under the default `FailureHandler.failJob()`, a stream of `update` or `updateProperties` writes followed by deletes of the same keys fails again on every restart whose replay reaches a write already applied, and so does a stream of `insert` writes whose entity for a key differs between the write and its replay.
 `upsert` and `upsertMerge` are the operations for a stream that needs neither failure.
 There is no exactly-once mode, for the reasons the Native-mode section gives.
 
@@ -461,14 +479,14 @@ A write that succeeds alone is applied; a write refused alone is routed if the s
 | What the write did | Status | What the sink does |
 |---|---|---|
 | `insert` of a key that holds an entity | `ALREADY_EXISTS` | Confirmed alone and looked up: counted as applied when the key holds exactly the entity the insert writes, routed otherwise |
-| `update` of a key that holds none | `NOT_FOUND` | Confirmed alone, checked with a lookup, then routed |
+| `update` or `updateProperties` of a key that holds none | `NOT_FOUND` | Confirmed alone, checked with a lookup, then routed |
 | An indexed string over 1,500 bytes, an entity over 1 MiB, a reserved kind or property name | `INVALID_ARGUMENT` | Confirmed alone, then routed |
 | `delete` of a key that holds none | *applied* | None |
 | `ALREADY_EXISTS` or `NOT_FOUND` for any other operation, and every other status | | **Fails the job** |
 
 Measured against the service, 2026-10-11: a commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applied every other write it carried, wherever the refused write sat in the request, while a commit refused with `INVALID_ARGUMENT` for any shape in the table applied none.
 The emulator applies the writes ahead of the refused one in the request in the first case, and in the second only those ahead of an entity over 1 MiB; a request holds the writes in the order the serializer returned them.
-That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `upsertMerge`, `update` and `delete` absorb.
+That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `upsertMerge`, `update`, `updateProperties` and `delete` absorb.
 An `insert` the commit already applied answers its re-send with `ALREADY_EXISTS`, so before routing that refusal the writer looks the key up, and counts the insert as applied when the key holds exactly the entity it writes, every property value and index flag alike.
 A retried commit that had in fact been applied, and the replay of an identical insert, look the same to the writer and are counted as applied too; an insert whose key holds a different entity is routed, and so is one whose lookup still fails after the recovery budget's retries, with the lookup's failure attached.
 Neither outcome counts toward `maxConsecutiveRejections`, as a replay's answers do not.

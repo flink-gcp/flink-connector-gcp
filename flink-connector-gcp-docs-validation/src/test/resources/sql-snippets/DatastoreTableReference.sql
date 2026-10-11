@@ -105,6 +105,19 @@ CREATE TABLE customer_snapshots (
 );
 -- end::replace[]
 
+-- tag::update[]
+CREATE TABLE customer_tiers (
+  customer_id STRING NOT NULL,
+  tier STRING,
+  PRIMARY KEY (customer_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'Customer',
+  'sink.write-mode' = 'update'
+);
+-- end::update[]
+
 -- tag::append[]
 CREATE TABLE page_views (
   path STRING,

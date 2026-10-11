@@ -392,7 +392,8 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
     /**
      * Returns whether a refused commit's status is one a write of it could have earned: {@code
      * INVALID_ARGUMENT} for any write, {@code ALREADY_EXISTS} only beside an insert, and {@code
-     * NOT_FOUND} only beside an update. Any other refusal is the commit's, and fails the job.
+     * NOT_FOUND} only beside an update of the entity or of its properties. Any other refusal is the
+     * commit's, and fails the job.
      */
     private static boolean isCandidateFor(RuntimeException failure, List<EncodedMutation> batch) {
         if (DatastoreErrorClassifier.classify(failure) != DatastoreErrorClassifier.Kind.CANDIDATE) {
@@ -402,25 +403,29 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         if (code == StatusCode.Code.INVALID_ARGUMENT) {
             return true;
         }
-        DatastoreMutation.Operation earner = earnerOf(code);
         for (EncodedMutation pending : batch) {
-            if (pending.getWrite().getOperation() == earner) {
+            if (earns(pending.getWrite().getOperation(), code)) {
                 return true;
             }
         }
         return false;
     }
 
-    /** The only operation that can earn the status alone, or {@code null} for any operation. */
-    @Nullable
-    private static DatastoreMutation.Operation earnerOf(@Nullable StatusCode.Code code) {
+    /**
+     * Returns whether the operation alone can earn {@code ALREADY_EXISTS} (an insert) or {@code
+     * NOT_FOUND} (an update of the entity or of its properties); no operation earns any other
+     * status this way.
+     */
+    private static boolean earns(
+            DatastoreMutation.Operation operation, @Nullable StatusCode.Code code) {
         if (code == StatusCode.Code.ALREADY_EXISTS) {
-            return DatastoreMutation.Operation.INSERT;
+            return operation == DatastoreMutation.Operation.INSERT;
         }
         if (code == StatusCode.Code.NOT_FOUND) {
-            return DatastoreMutation.Operation.UPDATE;
+            return operation == DatastoreMutation.Operation.UPDATE
+                    || operation == DatastoreMutation.Operation.UPDATE_PROPERTIES;
         }
-        return null;
+        return false;
     }
 
     /** Decides what a refusal of a commit holding only this write means. */
@@ -438,7 +443,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
             // Not a status any one mutation earns: the commit's, whatever its size.
             throw fatal(failure, 1);
         }
-        if (operation == earnerOf(code)) {
+        if (earns(operation, code)) {
             if (code == StatusCode.Code.NOT_FOUND) {
                 confirmDatabaseAnswers(pending, failure);
             } else if (storedAsWritten(pending, failure)) {

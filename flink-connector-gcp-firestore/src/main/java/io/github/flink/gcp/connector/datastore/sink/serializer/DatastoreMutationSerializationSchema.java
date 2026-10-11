@@ -20,6 +20,8 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.cloud.datastore.FullEntity;
+import com.google.cloud.datastore.Key;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
 import javax.annotation.Nullable;
@@ -39,16 +41,19 @@ import java.io.Serializable;
  * re-sent one write at a time. Each operation answers a replay differently:
  *
  * <ul>
- *   <li>{@link DatastoreMutation#upsert}, {@link DatastoreMutation#upsertMerge} and {@link
- *       DatastoreMutation#delete} — idempotent for that write; deleting a missing entity succeeds.
- *   <li>{@link DatastoreMutation#insert} — the replay is refused with {@code ALREADY_EXISTS}. The
- *       sink looks the key up and counts the insert as applied when the key holds exactly the
- *       entity it writes; otherwise, or when the lookup fails, it routes the insert to the
- *       configured failure handler as a per-write failure.
- *   <li>{@link DatastoreMutation#update} — idempotent, <em>but</em> an entity deleted between the
- *       two attempts answers {@code NOT_FOUND}, which the sink routes once it has confirmed that
- *       the database itself is there. {@link DatastoreMutation#upsert} is the operation to reach
- *       for when that matters.
+ *   <li>{@link DatastoreMutation#upsert(FullEntity)}, {@link
+ *       DatastoreMutation#upsertMerge(FullEntity)} and {@link DatastoreMutation#delete(Key)} —
+ *       idempotent for that write; deleting a missing entity succeeds.
+ *   <li>{@link DatastoreMutation#insert(FullEntity)} — the replay is refused with {@code
+ *       ALREADY_EXISTS}. The sink looks the key up and counts the insert as applied when the key
+ *       holds exactly the entity it writes; otherwise, or when the lookup fails, it routes the
+ *       insert to the configured failure handler as a per-write failure.
+ *   <li>{@link DatastoreMutation#update(FullEntity)} and {@link
+ *       DatastoreMutation#updateProperties(FullEntity)} — idempotent, <em>but</em> an entity
+ *       deleted between the two attempts answers {@code NOT_FOUND}, which the sink routes once it
+ *       has confirmed that the database itself is there. {@link
+ *       DatastoreMutation#upsert(FullEntity)} and {@link DatastoreMutation#upsertMerge(FullEntity)}
+ *       are the operations to reach for when that matters.
  * </ul>
  *
  * <p>Within one subtask, writes to the same key are applied in the order this schema returned them:

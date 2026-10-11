@@ -30,7 +30,7 @@ import java.util.Objects;
 
 /**
  * One entity operation the Datastore sink applies: an upsert, merge, insert or update carrying an
- * entity, or a delete carrying a key.
+ * entity, an update of some of an entity's properties, or a delete carrying a key.
  *
  * <p>The entity is the client library's {@link FullEntity} and the key its {@link Key}, both
  * serializable, so a write can travel wherever the sink's records do — to a dead-letter queue, for
@@ -54,7 +54,8 @@ public final class DatastoreMutation implements Serializable {
 
     /**
      * The operation a write performs, named after the Datastore API's mutations: {@link
-     * #UPSERT_MERGE} is the API's {@code upsert} with a property mask.
+     * #UPSERT_MERGE} is the API's {@code upsert} with a property mask, and {@link
+     * #UPDATE_PROPERTIES} its {@code update} with one.
      */
     @PublicEvolving
     public enum Operation {
@@ -69,6 +70,12 @@ public final class DatastoreMutation implements Serializable {
         INSERT,
         /** Replaces the entity, refused with {@code NOT_FOUND} when the key holds none. */
         UPDATE,
+        /**
+         * Replaces the properties the entity holds and keeps the others, refused with {@code
+         * NOT_FOUND} when the key holds none: an update whose property mask names the entity's
+         * properties.
+         */
+        UPDATE_PROPERTIES,
         /** Deletes the entity, succeeding when the key holds none. */
         DELETE
     }
@@ -137,6 +144,31 @@ public final class DatastoreMutation implements Serializable {
      */
     public static DatastoreMutation update(FullEntity<Key> entity) {
         return withEntity(Operation.UPDATE, entity);
+    }
+
+    /**
+     * Creates a write that replaces the properties the entity holds in the entity its key holds,
+     * keeping the properties the given entity lacks. Each property replaces the stored property of
+     * its name whole, an embedded entity included; a property can be set, to {@code null} included,
+     * but not removed. Use {@link #upsertMerge(FullEntity)} to merge embedded entities property by
+     * property, or to create the entity when the key holds none.
+     *
+     * <p>The write is an {@code update} whose property mask names each property the entity holds,
+     * so, like {@link #update(FullEntity)}, it is refused with {@code NOT_FOUND} when the key holds
+     * no entity.
+     *
+     * @param entity the entity, with a complete key and at least one property
+     * @return the write
+     * @throws IllegalArgumentException if the entity has no key, an incomplete one, or no property
+     */
+    public static DatastoreMutation updateProperties(FullEntity<Key> entity) {
+        DatastoreMutation write = withEntity(Operation.UPDATE_PROPERTIES, entity);
+        Preconditions.checkArgument(
+                !entity.getNames().isEmpty(),
+                "An updateProperties write needs an entity with at least one property, was %s:"
+                        + " with none it would change nothing.",
+                entity.getKey());
+        return write;
     }
 
     /**

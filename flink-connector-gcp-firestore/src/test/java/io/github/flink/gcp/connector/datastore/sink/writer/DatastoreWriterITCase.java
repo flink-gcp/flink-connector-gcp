@@ -124,6 +124,47 @@ class DatastoreWriterITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     @Test
+    void anUpdateOfPropertiesReplacesEachWholeKeepsTheRestAndRoutesAMissingEntity()
+            throws Exception {
+        client().put(
+                        Entity.newBuilder(key(kind, "u"))
+                                .set("a.b", 0L)
+                                .set("kept", 0L)
+                                .set(
+                                        "e",
+                                        FullEntity.newBuilder()
+                                                .set("x", 0L)
+                                                .set("dropped", 0L)
+                                                .build())
+                                .build());
+
+        try (DatastoreWriter<DatastoreMutation> writer = writer()) {
+            writer.write(
+                    DatastoreMutation.updateProperties(
+                            Entity.newBuilder(key(kind, "u"))
+                                    .set("a.b", 1L)
+                                    .set("e", FullEntity.newBuilder().set("x", 1L).build())
+                                    .build()),
+                    TestContexts.NO_OP);
+            writer.write(
+                    DatastoreMutation.updateProperties(entity("absent", 2)), TestContexts.NO_OP);
+            writer.flush(false);
+        }
+
+        Entity updated = read(key(kind, "u"));
+        assertThat(updated.getLong("a.b")).isEqualTo(1L);
+        assertThat(updated.getLong("kept")).isZero();
+        // The embedded entity is replaced whole, not merged.
+        assertThat(updated.getEntity("e").getNames()).containsExactly("x");
+        assertThat(updated.getEntity("e").getLong("x")).isEqualTo(1L);
+        assertThat(read(key(kind, "absent"))).isNull();
+        assertThat(ROUTED)
+                .extracting(failed -> failed.getMutation().getKey().getName())
+                .containsExactly("absent");
+        assertThat(ROUTED.get(0).getErrorMessage()).contains("NOT_FOUND");
+    }
+
+    @Test
     void routesOnlyTheRefusedWritesAndAppliesTheRestOfTheirCommit() throws Exception {
         client().put(Entity.newBuilder(key(kind, "existing")).set("v", 0L).build());
 

@@ -61,7 +61,7 @@ class DatastoreConnectorOptionsTest {
         }
         assertThat(List.of(WriteMode.values()))
                 .extracting(WriteMode::toString)
-                .containsExactly("merge", "replace");
+                .containsExactly("merge", "replace", "update");
     }
 
     @Test

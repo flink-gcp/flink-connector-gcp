@@ -19,11 +19,14 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.api.gax.rpc.StatusCode;
+import com.google.cloud.datastore.BaseEntity;
 import com.google.cloud.datastore.DatastoreException;
 import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.EntityValue;
 import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
+import com.google.cloud.datastore.Value;
 import com.google.datastore.v1.Mutation;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
@@ -45,6 +48,10 @@ import java.util.Map;
  * to what the service measured instead. A test sets up which keys are refused and lets the writer's
  * solo confirmation emerge, rather than scripting it.
  *
+ * <p>What a key holds is kept apart from what was applied to it: an {@code upsertMerge} merges into
+ * the stored entity and an {@code updateProperties} replaces only the properties it holds, as their
+ * property masks make the service do, so a lookup after a masked write sees the whole entity.
+ *
  * <p>Failures are thrown in production's shapes: a commit or a lookup, which go through the
  * client's RPC object, throws the gax exception carrying the status ({@link #rpcFailure}), and an
  * id allocation, which goes through the client library, a {@link DatastoreException} with that
@@ -58,6 +65,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     private final List<List<Key>> requests = new ArrayList<>();
     private final List<List<Mutation>> encodings = new ArrayList<>();
     private final Map<Key, DatastoreMutation> applied = new LinkedHashMap<>();
+    private final Map<Key, Entity> entities = new HashMap<>();
     private final List<DatastoreMutation> appliedInOrder = new ArrayList<>();
     private final List<Key> lookups = new ArrayList<>();
     private final Deque<StatusCode.Code> nextAllocationFailures = new ArrayDeque<>();
@@ -98,6 +106,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     /** Stores the entity under its key, as if written before the test, without a request. */
     FakeDatastoreDatabaseAccess store(FullEntity<Key> entity) {
         applied.put(entity.getKey(), DatastoreMutation.upsert(entity));
+        entities.put(entity.getKey(), Entity.newBuilder(entity.getKey(), entity).build());
         return this;
     }
 
@@ -202,7 +211,8 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
                 && stored(write.getKey()) != null) {
             return StatusCode.Code.ALREADY_EXISTS;
         }
-        if (write.getOperation() == DatastoreMutation.Operation.UPDATE
+        if ((write.getOperation() == DatastoreMutation.Operation.UPDATE
+                        || write.getOperation() == DatastoreMutation.Operation.UPDATE_PROPERTIES)
                 && stored(write.getKey()) == null) {
             return StatusCode.Code.NOT_FOUND;
         }
@@ -212,16 +222,85 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
     /** The entity the key holds, or {@code null}. */
     @Nullable
     private Entity stored(Key key) {
-        DatastoreMutation last = applied.get(key);
-        return last == null || last.getOperation() == DatastoreMutation.Operation.DELETE
-                ? null
-                : Entity.newBuilder(key, last.getEntity()).build();
+        return entities.get(key);
     }
 
     private void apply(List<DatastoreMutation> writes) {
         for (DatastoreMutation write : writes) {
             applied.put(write.getKey(), write);
             appliedInOrder.add(write);
+            applyToStored(write);
+        }
+    }
+
+    /** Changes what the key holds as the service applies the write's mask, or its absence. */
+    private void applyToStored(DatastoreMutation write) {
+        Key key = write.getKey();
+        Entity stored = entities.get(key);
+        switch (write.getOperation()) {
+            case DELETE:
+                entities.remove(key);
+                return;
+            case UPSERT_MERGE:
+                Entity.Builder merged =
+                        stored == null ? Entity.newBuilder(key) : Entity.newBuilder(stored);
+                mergeInto(merged, stored, write.getEntity());
+                entities.put(key, merged.build());
+                return;
+            case UPDATE_PROPERTIES:
+                // Only reached for a stored entity under the service's answers; the emulator
+                // default applies what a test did not refuse.
+                Entity.Builder updated =
+                        stored == null ? Entity.newBuilder(key) : Entity.newBuilder(stored);
+                for (String name : write.getEntity().getNames()) {
+                    Value<?> value = write.getEntity().getValue(name);
+                    updated.set(name, value);
+                }
+                entities.put(key, updated.build());
+                return;
+            default:
+                entities.put(key, Entity.newBuilder(key, write.getEntity()).build());
+        }
+    }
+
+    /**
+     * Merges as the mask {@code EntityProtos.mergePaths} builds: each value replaces the stored
+     * one, an embedded entity is merged property by property into a stored embedded entity (or
+     * built from its own values where the key held something else), and an embedded entity whose
+     * subtree names no path, an empty one or one holding only empty ones, changes nothing. A merged
+     * embedded entity keeps the stored one's index mark.
+     */
+    @SuppressWarnings("unchecked")
+    private static <B extends BaseEntity.Builder<?, B>> void mergeInto(
+            B target, @Nullable BaseEntity<?> stored, BaseEntity<?> written) {
+        for (String name : written.getNames()) {
+            Value<?> value = written.getValue(name);
+            if (!(value instanceof EntityValue)) {
+                target.set(name, value);
+                continue;
+            }
+            FullEntity<?> inner = ((EntityValue) value).get();
+            if (EntityProtos.mergePaths(inner).isEmpty()) {
+                // No path below it, at any depth, so the mask leaves the stored value alone.
+                continue;
+            }
+            Value<?> storedValue =
+                    stored != null && stored.contains(name) ? stored.getValue(name) : null;
+            FullEntity<IncompleteKey> storedInner =
+                    storedValue instanceof EntityValue
+                            ? (FullEntity<IncompleteKey>) ((EntityValue) storedValue).get()
+                            : null;
+            FullEntity.Builder<IncompleteKey> innerBuilder =
+                    storedInner == null
+                            ? FullEntity.newBuilder()
+                            : FullEntity.newBuilder(storedInner);
+            mergeInto(innerBuilder, storedInner, inner);
+            boolean excluded = (storedInner == null ? value : storedValue).excludeFromIndexes();
+            target.set(
+                    name,
+                    EntityValue.newBuilder(innerBuilder.build())
+                            .setExcludeFromIndexes(excluded)
+                            .build());
         }
     }
 

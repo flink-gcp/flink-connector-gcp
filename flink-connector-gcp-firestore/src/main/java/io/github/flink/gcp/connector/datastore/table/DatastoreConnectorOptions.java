@@ -179,7 +179,8 @@ public final class DatastoreConnectorOptions {
 
     /**
      * How a row with a PRIMARY KEY is written: 'merge' merges the row into the entity, keeping the
-     * properties the table does not declare, and 'replace' replaces the entity with the row.
+     * properties the table does not declare, 'replace' replaces the entity with the row, and
+     * 'update' replaces the table's properties of an entity that must exist.
      */
     public static final ConfigOption<WriteMode> SINK_WRITE_MODE =
             ConfigOptions.key("sink.write-mode")
@@ -188,7 +189,9 @@ public final class DatastoreConnectorOptions {
                     .withDescription(
                             "How a row with a PRIMARY KEY is written: 'merge' merges the row into"
                                     + " the entity, keeping the properties the table does not"
-                                    + " declare, and 'replace' replaces the entity with the row.");
+                                    + " declare, 'replace' replaces the entity with the row, and"
+                                    + " 'update' replaces the table's properties of an entity that"
+                                    + " must exist.");
 
     /** The maximum mutations in one commit. */
     public static final ConfigOption<Integer> SINK_BUFFER_FLUSH_MAX_MUTATIONS =

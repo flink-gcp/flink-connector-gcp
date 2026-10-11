@@ -233,6 +233,147 @@ class DatastoreTableSinkITCase extends AbstractDatastoreEmulatorITCase {
     }
 
     @Test
+    void anUpdateReplacesTheDeclaredPropertiesWholeAndKeepsTheRest() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        Entity.newBuilder(key(kind, "o1"))
+                                .set("other", 1L)
+                                .set(
+                                        "nested",
+                                        FullEntity.newBuilder()
+                                                .set("x", 0L)
+                                                .set("y", "dropped")
+                                                .build())
+                                .set("cleared", "old")
+                                .build());
+        TableEnvironment table = streaming();
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, nested ROW<x BIGINT>, cleared STRING,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'update'"));
+
+        table.executeSql(
+                        "INSERT INTO target VALUES ('o1', ROW(CAST(1 AS BIGINT)),"
+                                + " CAST(NULL AS STRING))")
+                .await(60, TimeUnit.SECONDS);
+
+        Entity updated = read(key(kind, "o1"));
+        assertThat(updated.getNames()).containsExactlyInAnyOrder("other", "nested", "cleared");
+        assertThat(updated.getLong("other")).isEqualTo(1L);
+        // A ROW replaces the stored embedded entity whole, unlike a merge.
+        assertThat(updated.getEntity("nested").getNames()).containsExactly("x");
+        assertThat(updated.getEntity("nested").getLong("x")).isEqualTo(1L);
+        assertThat(updated.isNull("cleared")).as("a NULL column is written as a null").isTrue();
+    }
+
+    @Test
+    void anUpdateOfAMissingEntityFailsTheJobAndCreatesNothing() {
+        String kind = uniqueKind();
+        TableEnvironment table = streaming();
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, name STRING,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'update'"));
+
+        assertThatThrownBy(
+                        () ->
+                                table.executeSql("INSERT INTO target VALUES ('missing', 'x')")
+                                        .await(60, TimeUnit.SECONDS))
+                // Routed as the update's refusal, after the lookup found the database; a status the
+                // operation could not earn would read "refused the UPDATE_PROPERTIES of".
+                .hasStackTraceContaining("Datastore refused the UPDATE_PROPERTIES with NOT_FOUND");
+        assertThat(read(key(kind, "missing"))).isNull();
+    }
+
+    @Test
+    void anUpdateTableTakesAChangingQueryKeyedByItsPrimaryKey() throws Exception {
+        // The query's key is the table's, so the planner sends inserts and updates-after and no
+        // delete; the last count of each key is what stays.
+        String kind = uniqueKind();
+        for (String id : new String[] {"a", "b"}) {
+            client().put(
+                            Entity.newBuilder(key(kind, id))
+                                    .set("hits", "0")
+                                    .set("other", 1L)
+                                    .build());
+        }
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        table.createTemporaryView(
+                "events",
+                table.fromDataStream(
+                        env.fromData("a", "b", "a").map(v -> v).returns(String.class)));
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, hits STRING,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'update'"));
+
+        table.executeSql(
+                        "INSERT INTO target SELECT f0, CAST(COUNT(*) AS STRING) FROM events"
+                                + " GROUP BY f0")
+                .await(60, TimeUnit.SECONDS);
+
+        assertThat(read(key(kind, "a")).getString("hits")).isEqualTo("2");
+        assertThat(read(key(kind, "b")).getString("hits")).isEqualTo("1");
+        assertThat(read(key(kind, "a")).getLong("other")).isEqualTo(1L);
+    }
+
+    @Test
+    void anUpdateTableRefusesAChangelogWithDeletesWhenPlanned() {
+        String kind = uniqueKind();
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        Table changes =
+                table.fromChangelogStream(
+                        env.fromData(Row.ofKind(RowKind.DELETE, "gone", "old")),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING().notNull())
+                                .column("f1", DataTypes.STRING())
+                                .primaryKey("f0")
+                                .build());
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, name STRING,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'update'"));
+
+        assertThatThrownBy(() -> changes.executeInsert("target"))
+                .hasMessageContaining("doesn't support consuming")
+                .hasMessageContaining("delete");
+    }
+
+    @Test
+    void anUpdateTableFailsOnTheDeleteAnUpsertMaterializationProducesAndDeletesNothing() {
+        // The query's key (f0) differs from the table's, so the planner materializes the upsert
+        // and turns the old count's retraction into a DELETE, although the sink declares none.
+        String kind = uniqueKind();
+        client().put(Entity.newBuilder(key(kind, "1")).set("category", "x").build());
+        client().put(Entity.newBuilder(key(kind, "2")).set("category", "x").build());
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        table.createTemporaryView(
+                "events",
+                table.fromDataStream(
+                        env.fromData("x", "x", "x").map(v -> v).returns(String.class)));
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, category STRING,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'update'"));
+
+        assertThatThrownBy(
+                        () ->
+                                table.executeSql(
+                                                "INSERT INTO target SELECT CAST(COUNT(*) AS"
+                                                        + " STRING), f0 FROM events GROUP BY f0")
+                                        .await(60, TimeUnit.SECONDS))
+                .hasStackTraceContaining(
+                        "whose sink.write-mode is 'update', which takes no deletes");
+        assertThat(read(key(kind, "1"))).isNotNull();
+        assertThat(read(key(kind, "2"))).isNotNull();
+    }
+
+    @Test
     void aMergeMeetsAStoredValueOfAnotherShape() throws Exception {
         // A NULL ROW replaces the stored entity with a null; a ROW written where the entity
         // holds a string or holds a null replaces it with an embedded entity.

@@ -123,7 +123,7 @@ class EntityProtosTest {
     }
 
     @Test
-    void eachOperationIsItsMutationAndOnlyAMergeCarriesAMask() {
+    void eachOperationIsItsMutationAndOnlyAMergeOrAPropertyUpdateCarriesAMask() {
         Entity entity = Entity.newBuilder(KEY).set("v", 1L).build();
         com.google.datastore.v1.Entity proto = EntityProtos.entity(entity);
 
@@ -141,6 +141,32 @@ class EntityProtosTest {
                                 .setUpsert(proto)
                                 .setPropertyMask(PropertyMask.newBuilder().addPaths("`v`"))
                                 .build());
+        assertThat(EntityProtos.mutation(DatastoreMutation.updateProperties(entity)))
+                .isEqualTo(
+                        Mutation.newBuilder()
+                                .setUpdate(proto)
+                                .setPropertyMask(PropertyMask.newBuilder().addPaths("`v`"))
+                                .build());
+    }
+
+    @Test
+    void aPropertyUpdateNamesEachTopLevelPropertyQuotedAndAnEmbeddedEntityWhole() {
+        Entity entity =
+                Entity.newBuilder(KEY)
+                        .set("top", "t")
+                        .set("e.f", entityOf("g", 1L))
+                        .set("empty", FullEntity.newBuilder().build())
+                        .set("list", ListValue.of(1L))
+                        .set("tick`", NullValue.of())
+                        .build();
+
+        // Through the mutation, so that the encoding is held to the top-level mask rather than a
+        // merge's, which would name `e.f`.`g` and skip `empty`.
+        assertThat(
+                        EntityProtos.mutation(DatastoreMutation.updateProperties(entity))
+                                .getPropertyMask()
+                                .getPathsList())
+                .containsExactlyInAnyOrder("`top`", "`e.f`", "`empty`", "`list`", "`tick\\``");
     }
 
     @Test

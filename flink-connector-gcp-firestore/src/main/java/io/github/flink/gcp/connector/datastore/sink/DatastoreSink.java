@@ -35,13 +35,13 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
  * the operation the serializer built:
  *
  * <ul>
- *   <li>{@code upsert} and {@code delete} — idempotent for that write; deleting a missing entity
- *       succeeds.
+ *   <li>{@code upsert}, {@code upsertMerge} and {@code delete} — idempotent for that write;
+ *       deleting a missing entity succeeds.
  *   <li>{@code insert} — the replay is refused with {@code ALREADY_EXISTS}, which is routed to the
  *       failure handler as a per-write failure.
- *   <li>{@code update} — idempotent, <em>but</em> if the entity was deleted between the two
- *       attempts Datastore answers {@code NOT_FOUND}, which is routed to the failure handler once
- *       the sink has confirmed that the database itself is there.
+ *   <li>{@code update} and {@code updateProperties} — idempotent, <em>but</em> if the entity was
+ *       deleted between the two attempts Datastore answers {@code NOT_FOUND}, which is routed to
+ *       the failure handler once the sink has confirmed that the database itself is there.
  * </ul>
  *
  * <p>Within one subtask, writes to the same key are applied in the order the serializer returned
