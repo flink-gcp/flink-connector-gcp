@@ -21,7 +21,6 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
-import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
 import javax.annotation.Nullable;
 
@@ -47,9 +46,9 @@ public interface DatastoreDatabaseAccess extends AutoCloseable {
      * <p>A commit that fails may have applied some of its writes and not others; the service
      * reports no per-write outcome.
      *
-     * @param writes the writes, at least one
+     * @param writes the writes, each sent in the encoding it carries, at least one
      */
-    void commit(List<DatastoreMutation> writes);
+    void commit(List<EncodedMutation> writes);
 
     /**
      * Looks the key up in one bounded call, returning normally whether or not an entity is there.

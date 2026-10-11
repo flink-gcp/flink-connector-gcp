@@ -28,7 +28,6 @@ import com.google.cloud.datastore.spi.v1.DatastoreRpc;
 import com.google.datastore.v1.CommitRequest;
 import com.google.datastore.v1.LookupRequest;
 import com.google.datastore.v1.LookupResponse;
-import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,9 +40,10 @@ import java.util.List;
  * which closing it releases.
  *
  * <p>A commit is one non-transactional {@code Commit} request, sent through the client's own RPC
- * object, with the writes in the order they were given, each encoded by {@link EntityProtos}. The
- * client library's {@code Batch} is not used: it cannot carry a merge's property mask. A request
- * never holds two writes to one key, because the writer flushes before a key repeats.
+ * object, with the writes in the order they were given, each in the encoding the writer made when
+ * it buffered the write. The client library's {@code Batch} is not used: it cannot carry a merge's
+ * property mask. A request never holds two writes to one key, because the writer flushes before a
+ * key repeats.
  */
 @Internal
 final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
@@ -57,15 +57,15 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
     }
 
     @Override
-    public void commit(List<DatastoreMutation> writes) {
+    public void commit(List<EncodedMutation> writes) {
         DatastoreOptions options = datastore.getOptions();
         CommitRequest.Builder request =
                 CommitRequest.newBuilder()
                         .setProjectId(options.getProjectId())
                         .setDatabaseId(options.getDatabaseId())
                         .setMode(CommitRequest.Mode.NON_TRANSACTIONAL);
-        for (DatastoreMutation write : writes) {
-            request.addMutations(EntityProtos.mutation(write));
+        for (EncodedMutation write : writes) {
+            request.addMutations(write.getEncoding());
         }
         rpc().commit(request.build());
     }

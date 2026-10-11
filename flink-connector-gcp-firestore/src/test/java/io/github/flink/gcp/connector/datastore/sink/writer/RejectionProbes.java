@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -66,7 +67,11 @@ final class RejectionProbes {
      */
     static String outcome(DatastoreDatabaseAccess access, DatastoreMutation... writes) {
         try {
-            access.commit(List.of(writes));
+            List<EncodedMutation> encoded = new ArrayList<>();
+            for (DatastoreMutation write : writes) {
+                encoded.add(EncodedMutation.of(write));
+            }
+            access.commit(encoded);
             return "applied";
         } catch (RuntimeException e) {
             @Nullable StatusCode.Code code = DatastoreErrorClassifier.statusCode(e);

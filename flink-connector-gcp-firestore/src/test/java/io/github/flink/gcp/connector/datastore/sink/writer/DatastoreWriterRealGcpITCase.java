@@ -170,7 +170,7 @@ class DatastoreWriterRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         }
 
         @Override
-        public void commit(List<DatastoreMutation> writes) {
+        public void commit(List<EncodedMutation> writes) {
             delegate.commit(writes);
         }
 

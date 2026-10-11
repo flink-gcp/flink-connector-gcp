@@ -77,7 +77,8 @@ import java.util.Set;
  * <h2>Retries</h2>
  *
  * <p>The writer owns the whole retry loop; the client makes one attempt per call. A commit that
- * failed with a transient status is re-sent whole, within the {@code recovery*} budget. A failed
+ * failed with a transient status is re-sent whole, within the {@code recovery*} budget, in the
+ * encoding each write was given when it was buffered ({@link EncodedMutation}). A failed
  * non-transactional commit may have applied some of its writes, so a re-send can apply a write a
  * second time; that is the at-least-once guarantee, and why the serializer's choice of operation
  * matters.
@@ -126,7 +127,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
     private final DatastoreDatabaseAccess access;
 
     /** The batch being accumulated. Task-thread only. */
-    private final List<PendingMutation> buffer = new ArrayList<>();
+    private final List<EncodedMutation> buffer = new ArrayList<>();
 
     /** The keys of {@code buffer}, so a repeated key is found without a scan. */
     private final Set<Key> bufferedKeys = new HashSet<>();
@@ -204,6 +205,12 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         LOG.info("Datastore sink writer opened for {}.", database);
     }
 
+    /** The writes buffered for the next commit, in order. */
+    @VisibleForTesting
+    List<EncodedMutation> buffered() {
+        return Collections.unmodifiableList(buffer);
+    }
+
     @VisibleForTesting
     @Nullable
     static RampUpThrottle throttle(DatastoreWriterOptions options, int parallelism) {
@@ -257,27 +264,26 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
             enforceRejectionBound(write.getKey(), "a key addressing another database", null);
             return;
         }
-        long size;
+        EncodedMutation encoded;
         try {
-            size = MutationSizeEstimator.sizeOf(write);
+            encoded = EncodedMutation.of(write);
         } catch (RuntimeException e) {
-            // Insurance rather than a path with a known trigger: the size is the writer's own
-            // encoding of the write, the one its commit sends, and EntityProtosTest holds that
-            // encoding to every value type the client library has; but it reads user-supplied
-            // data, and without this one such record would fail the job even under a dropping
-            // policy, where now it is routed before it could reach a commit.
-            route(write, "Failed to size the Datastore write against the batch limits.", e);
+            // Insurance rather than a path with a known trigger: EntityProtosTest holds the
+            // encoding to every value type the client library has; but the encoding reads
+            // user-supplied data, and without this one such record would fail the job even under
+            // a dropping policy, where now it is routed before it could reach a commit.
+            route(write, "Failed to encode the Datastore write.", e);
             return;
         }
         if (throttle != null) {
             metrics.throttled(throttle.acquire());
         }
-        if (!buffer.isEmpty() && wouldOverflowOrRepeat(write.getKey(), size)) {
+        if (!buffer.isEmpty() && wouldOverflowOrRepeat(write.getKey(), encoded.getSize())) {
             flushBatch();
         }
-        buffer.add(new PendingMutation(write, size));
+        buffer.add(encoded);
         bufferedKeys.add(write.getKey());
-        bufferedBytes += size;
+        bufferedBytes += encoded.getSize();
     }
 
     /**
@@ -337,7 +343,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
     }
 
     private void flushBatch() throws IOException {
-        List<PendingMutation> batch = new ArrayList<>(buffer);
+        List<EncodedMutation> batch = new ArrayList<>(buffer);
         buffer.clear();
         bufferedKeys.clear();
         bufferedBytes = 0;
@@ -345,11 +351,11 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
     }
 
     /** Commits the batch, confirming each write alone if the commit is refused for one of them. */
-    private void send(List<PendingMutation> batch) throws IOException {
+    private void send(List<EncodedMutation> batch) throws IOException {
         // Counted once here rather than per attempt: numRecordsSend is a record count, and a
         // record re-sent by the loop or alone is the same record.
-        for (PendingMutation pending : batch) {
-            metrics.mutationSent(pending.size);
+        for (EncodedMutation pending : batch) {
+            metrics.mutationSent(pending.getSize());
         }
         RuntimeException failure = commitWithRetries(batch);
         if (failure == null) {
@@ -357,7 +363,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
             return;
         }
         if (batch.size() > 1 && isCandidateFor(failure, batch)) {
-            for (PendingMutation pending : batch) {
+            for (EncodedMutation pending : batch) {
                 // A blocking call ignores an interrupt, so a cancelled task would otherwise run the
                 // whole pass first, one bounded commit after another.
                 if (Thread.currentThread().isInterrupted()) {
@@ -388,7 +394,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
      * INVALID_ARGUMENT} for any write, {@code ALREADY_EXISTS} only beside an insert, and {@code
      * NOT_FOUND} only beside an update. Any other refusal is the commit's, and fails the job.
      */
-    private static boolean isCandidateFor(RuntimeException failure, List<PendingMutation> batch) {
+    private static boolean isCandidateFor(RuntimeException failure, List<EncodedMutation> batch) {
         if (DatastoreErrorClassifier.classify(failure) != DatastoreErrorClassifier.Kind.CANDIDATE) {
             return false;
         }
@@ -397,8 +403,8 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
             return true;
         }
         DatastoreMutation.Operation earner = earnerOf(code);
-        for (PendingMutation pending : batch) {
-            if (pending.write.getOperation() == earner) {
+        for (EncodedMutation pending : batch) {
+            if (pending.getWrite().getOperation() == earner) {
                 return true;
             }
         }
@@ -418,12 +424,12 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
     }
 
     /** Decides what a refusal of a commit holding only this write means. */
-    private void decide(PendingMutation pending, RuntimeException failure) throws IOException {
+    private void decide(EncodedMutation pending, RuntimeException failure) throws IOException {
         StatusCode.Code code = DatastoreErrorClassifier.statusCode(failure);
         boolean candidate =
                 DatastoreErrorClassifier.classify(failure)
                         == DatastoreErrorClassifier.Kind.CANDIDATE;
-        DatastoreMutation.Operation operation = pending.write.getOperation();
+        DatastoreMutation.Operation operation = pending.getWrite().getOperation();
         if (candidate && code == StatusCode.Code.INVALID_ARGUMENT) {
             reject(pending, code, failure, true);
             return;
@@ -451,7 +457,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                 "Datastore refused the "
                         + operation
                         + " of "
-                        + pending.write.getKey()
+                        + pending.getWrite().getKey()
                         + " in "
                         + database
                         + " with "
@@ -470,13 +476,14 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
      * a transient status within the recovery budget, as a commit is; a lookup that still fails is
      * added to the refusal as suppressed, and the insert is routed.
      */
-    private boolean storedAsWritten(PendingMutation pending, RuntimeException refusal)
+    private boolean storedAsWritten(EncodedMutation pending, RuntimeException refusal)
             throws IOException {
         for (int attempt = 1; ; attempt++) {
             try {
-                @Nullable Entity stored = access.lookup(pending.write.getKey());
+                @Nullable Entity stored = access.lookup(pending.getWrite().getKey());
                 return stored != null
-                        && stored.getProperties().equals(pending.write.getEntity().getProperties());
+                        && stored.getProperties()
+                                .equals(pending.getWrite().getEntity().getProperties());
             } catch (RuntimeException e) {
                 metrics.writeFailure(DatastoreErrorClassifier.statusCode(e));
                 if (DatastoreErrorClassifier.classify(e) != DatastoreErrorClassifier.Kind.TRANSIENT
@@ -485,7 +492,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                             "A lookup of {} failed after its insert was refused with"
                                     + " ALREADY_EXISTS, so the sink cannot tell whether the key"
                                     + " holds the entity the insert writes, and routes it.",
-                            pending.write.getKey(),
+                            pending.getWrite().getKey(),
                             e);
                     refusal.addSuppressed(e);
                     return false;
@@ -501,9 +508,9 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
      * Fails the job unless a lookup of the update's key is answered: a missing database refuses it
      * with the {@code NOT_FOUND} the update got, while a missing entity is an ordinary answer.
      */
-    private void confirmDatabaseAnswers(PendingMutation pending, RuntimeException updateFailure)
+    private void confirmDatabaseAnswers(EncodedMutation pending, RuntimeException updateFailure)
             throws IOException {
-        Key key = pending.write.getKey();
+        Key key = pending.getWrite().getKey();
         for (int attempt = 1; ; attempt++) {
             try {
                 access.lookup(key);
@@ -622,11 +629,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
      * @throws IOException if the budget is spent, or the backoff is interrupted
      */
     @Nullable
-    private RuntimeException commitWithRetries(List<PendingMutation> mutations) throws IOException {
-        List<DatastoreMutation> writes = new ArrayList<>(mutations.size());
-        for (PendingMutation pending : mutations) {
-            writes.add(pending.write);
-        }
+    private RuntimeException commitWithRetries(List<EncodedMutation> writes) throws IOException {
         for (int attempt = 1; ; attempt++) {
             metrics.batchSent();
             try {
@@ -664,7 +667,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
 
     /** Routes a write the service refused alone, then enforces the rejection bound. */
     private void reject(
-            PendingMutation pending,
+            EncodedMutation pending,
             @Nullable StatusCode.Code code,
             RuntimeException failure,
             boolean countsTowardBound)
@@ -674,16 +677,16 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
             consecutiveRejections++;
         }
         route(
-                pending.write,
+                pending.getWrite(),
                 "Datastore refused the "
-                        + pending.write.getOperation()
+                        + pending.getWrite().getOperation()
                         + " with "
                         + describe(code)
                         + ": "
                         + failure.getMessage(),
                 failure);
         if (countsTowardBound) {
-            enforceRejectionBound(pending.write.getKey(), "status " + describe(code), failure);
+            enforceRejectionBound(pending.getWrite().getKey(), "status " + describe(code), failure);
         }
     }
 
@@ -763,17 +766,5 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         bufferedKeys.clear();
         bufferedBytes = 0;
         Closers.closeAll(access, failedMutationHandler::close);
-    }
-
-    /** A write with its size on the wire. */
-    private static final class PendingMutation {
-
-        private final DatastoreMutation write;
-        private final long size;
-
-        private PendingMutation(DatastoreMutation write, long size) {
-            this.write = write;
-            this.size = size;
-        }
     }
 }

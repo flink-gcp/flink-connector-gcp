@@ -33,8 +33,8 @@ import com.google.datastore.v1.Key;
 import com.google.datastore.v1.Mutation;
 import com.google.datastore.v1.PartitionId;
 import com.google.datastore.v1.PropertyMask;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.NullValue;
+import com.google.protobuf.UnsafeByteOperations;
 import io.github.flink.gcp.connector.datastore.PropertyPaths;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 
@@ -173,8 +173,11 @@ final class EntityProtos {
                                         .setLongitude(point.getLongitude()))
                         .build();
             case BLOB:
+                // Wrapped, not copied: a Blob is immutable, and the writer keeps the encoding
+                // beside the entity until the commit, so a copy would hold the bytes twice.
                 return proto.setBlobValue(
-                                ByteString.copyFrom(((Blob) content).asReadOnlyByteBuffer()))
+                                UnsafeByteOperations.unsafeWrap(
+                                        ((Blob) content).asReadOnlyByteBuffer()))
                         .build();
             case KEY:
                 return proto.setKeyValue(key((IncompleteKey) content)).build();
