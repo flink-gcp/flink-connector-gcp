@@ -63,8 +63,8 @@ on a `MILLIS`-granularity table: the write is accepted and the cell is stored at
 nothing would have been correct for production.
 
 **Measured the same day against the pinned emulator** (`google-cloud-cli:583.0.0-emulators`): the
-same write is rejected with `invalid timestamp 1788436014893729`. `bttest` does not implement the
-origin field at all, so it treats a client-generated timestamp as user-specified. That cost 63
+same write is rejected with `invalid timestamp 1788436014893729`. That image's `bttest` did not
+implement the origin field at all, so it treated a client-generated timestamp as user-specified. That cost 63
 errors across four emulator ITCases — including `BigtableTableSinkITCase`, where it is the sink's
 own writes failing rather than the harness's seeding.
 
@@ -129,14 +129,14 @@ change wearing the same clothes.
   service reject it, while the writer-clock value is truncated unconditionally. One is a user's
   assertion about when a cell happened, which the connector does not quietly alter; the other is
   the connector's own clock, which it may round to what the table stores.
-- **This does not fix the emulator**, and is not the reason it was done. Once the BOM moves to
-  2.82.0 the emulator will still reject a client-auto-generated timestamp, so the harness needs an
-  explicit one of its own; that workaround travels with the bump and is tracked, with its removal
-  condition, in [#1205]. The deviation is reported upstream as [googleapis/google-cloud-go#20468]
-  with a fix in [googleapis/google-cloud-go#20469]. In google-cloud-bigtable 2.85.0
-  `newBuilderForEmulator` rounds a client-auto-generated timestamp down to a millisecond on the
-  client, which hides the deviation from every client built that way; the emulator itself is
-  unchanged, so [#1205] stays open and the deviation suite pins both behaviors (2026-10-03).
+- **This does not fix the emulator**, and is not the reason it was done. Emulator images up to
+  `587.0.0-emulators` refused a client-auto-generated timestamp, so the harness stamped an explicit
+  one, tracked in [#1205]; the deviation was reported upstream as
+  [googleapis/google-cloud-go#20468] and fixed by [googleapis/google-cloud-go#20469]. Since
+  `588.0.0-emulators` the emulator truncates such a timestamp as the service does, the harness
+  writes without one, and the deviation suite pins that parity. In google-cloud-bigtable 2.85.0
+  `newBuilderForEmulator` also rounds such a timestamp on the client, which shields every client
+  built that way from an image that lost the parity.
 
 ## Alternatives declined
 
