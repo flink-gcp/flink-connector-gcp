@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Actor handoff composed with production Pub/Sub resources, traffic and records."""
+"""Actor handoff composed with production Pub/Sub resources, messages and records."""
 
 import copy
 from types import SimpleNamespace
@@ -23,7 +23,6 @@ from flink_tier3.common import Failure, TransportError
 from flink_tier3.model import Phase
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle, require_pubsub_clean
-from flink_tier3.pubsub.traffic import PubSubTraffic, TrafficLimits
 from flink_tier3.records import Records
 
 from .. import test_lifecycle as settlement
@@ -59,17 +58,14 @@ def setup(request):
     env.schedule = SimpleNamespace(cleanup_at=now[0] + 200, expires_at=now[0] + 300)
     env.stopping = env.evidence_failed = False
     http, guards = Service(), []
-    limits = TrafficLimits(4, 4, 4, 1000, 4, 10, 200000, now[0] + 100)
     tokens = {"runner": "b" * 32, "supervisor": "c" * 32}
 
     def make(role="runner", token=None):
         view = copy.copy(env)
         view.actor = role
         view.records = Records(env.store, env.approval, env.clock)
-        controller = PubSubLifecycle(view, http, app, lambda *args: guards.append(args))
-        return PubSubHandoff(
-            PubSubTraffic(controller, app, limits), actor_token=token or tokens[role]
-        )
+        controller = PubSubLifecycle(view, http, lambda *args: guards.append(args))
+        return PubSubHandoff(controller, actor_token=token or tokens[role])
 
     make().initialize()
     if getattr(request, "param", True):
@@ -88,7 +84,172 @@ def deletions(http):
     return [c for c in http.resources.calls if c[0] == "DELETE"]
 
 
-def test_both_actors_have_bound_calls_and_independent_budgets(setup):
+def control_writes(env):
+    """Count the writes of the shared control record from here on."""
+    original, writes = env.store.write, []
+
+    def write(name, value, generation="0", **kwargs):
+        if name == env.records.path:
+            writes.append(name)
+        return original(name, value, generation, **kwargs)
+
+    env.store.write = write
+    return writes
+
+
+def test_a_publication_and_a_pull_each_update_control_twice(setup):
+    """Their begin and completion markers, and nothing else, on the normal path.
+
+    Cloud Storage takes about one mutation a second on one object, and both
+    actors write the same record.
+    """
+    make, env, http, _, _ = setup
+    writes = control_writes(env)
+    http.messages.responses.append(Response({"messageIds": ["a", "b"]}))
+    make().publish(0, 0, 2)
+    assert len(writes) == 2
+    writes.clear()
+    http.messages.responses.extend(
+        [Response({"receivedMessages": [output()]}), Response({})]
+    )
+    make("supervisor").collect("one", max_messages=1)
+    assert len(writes) == 2
+    writes.clear()
+    http.messages.responses.append(Response({}))
+    make("supervisor").collect("two")
+    assert len(writes) == 2
+    assert len(http.messages.calls) == 4
+
+
+@pytest.mark.parametrize(
+    "phase, publishes, collects",
+    [
+        (Phase.APPROVED, False, False),
+        # The first cohort is published before the application exists.
+        (Phase.READY, True, False),
+        (Phase.RUNNING, True, True),
+    ],
+)
+def test_the_runner_publishes_from_ready_and_the_supervisor_only_once_running(
+    setup, phase, publishes, collects
+):
+    make, env, http, _, _ = setup
+    env.records._change(lambda r: setattr(r, "phase", phase))
+    http.messages.responses.extend([Response({"messageIds": ["a"]}), Response({})])
+    if publishes:
+        assert make().publish(0, 0, 1)["message_ids"] == ["a"]
+    else:
+        with pytest.raises(Failure, match="admission has stopped"):
+            make().publish(0, 0, 1)
+    if collects:
+        make("supervisor").collect("one", max_messages=1)
+    else:
+        with pytest.raises(Failure, match="admission has stopped"):
+            make("supervisor").collect("one", max_messages=1)
+    assert len(http.messages.calls) == publishes + collects
+
+
+def test_message_traffic_closes_at_cleanup(setup):
+    make, _, http, now, _ = setup
+    now[0] += 200
+    with pytest.raises(Failure, match="admission has stopped"):
+        make().publish(0, 0, 1)
+    with pytest.raises(Failure, match="admission has stopped"):
+        make("supervisor").collect("one", max_messages=1)
+    assert not http.messages.calls
+
+
+@pytest.mark.parametrize("closed", ["recorded-evidence", "local-evidence", "stage"])
+def test_each_admission_condition_alone_closes_message_traffic(setup, closed):
+    """With no stop recorded and no call marker left to refuse first."""
+    make, env, http, _, _ = setup
+    runner, supervisor = make(), make("supervisor")
+    if closed == "recorded-evidence":
+        env.records._change(lambda r: setattr(r, "evidence_failed", True))
+    elif closed == "local-evidence":
+        runner.env.evidence_failed = supervisor.env.evidence_failed = True
+    else:
+        env.records._change(lambda r: r.pubsub.update(stage="cleaning"))
+    assert not env.refresh().stop_requested
+    writes = control_writes(env)
+    with pytest.raises(Failure, match="^Pub/Sub traffic admission has stopped$"):
+        runner.publish(0, 0, 1)
+    with pytest.raises(Failure, match="^Pub/Sub traffic admission has stopped$"):
+        supervisor.collect("one", max_messages=1)
+    # A refusal records nothing, so there is no marker to clear either.
+    assert not writes and not http.messages.calls
+    assert all(a["inflight"] is None for a in actors(env).values())
+
+
+def test_a_conflicting_begin_rechecks_admission_after_the_race(setup):
+    """The begin edit runs again on the record that won, at the later time."""
+    make, env, http, now, _ = setup
+
+    def later():
+        now[0] += 200
+        env.records._change(lambda r: None)
+
+    env.store.before_write = later
+    with pytest.raises(Failure, match="admission has stopped"):
+        make().publish(0, 0, 1)
+    assert env.store.conflicts == 1 and not http.messages.calls
+    assert actors(env)["runner"]["inflight"] is None
+
+
+@pytest.mark.parametrize("failure", ["upload", "lost-upload-response"])
+def test_evidence_failure_stops_current_and_restarted_actors(setup, failure):
+    make, env, http, _, _ = setup
+    original = env.store.write
+    supervisor = make("supervisor")
+
+    def write(name, value, generation="0", **kwargs):
+        if name.endswith("/response.json"):
+            if failure == "lost-upload-response":
+                original(name, value, generation, **kwargs)
+            raise Failure("response upload failed")
+        return original(name, value, generation, **kwargs)
+
+    env.store.write = write
+    http.messages.responses.append(Response({"receivedMessages": [output()]}))
+    with pytest.raises(Failure, match="response upload failed"):
+        supervisor.collect("one", max_messages=1)
+    assert supervisor.env.evidence_failed
+    assert env.refresh().evidence_failed
+    env.store.write = original
+    # The failed call keeps its marker, because nothing settled it; the runner
+    # is refused by the stop that failure wrote.
+    for actor in (supervisor, make("supervisor")):
+        with pytest.raises(Failure, match="unresolved"):
+            actor.collect("two", max_messages=1)
+    with pytest.raises(Failure, match="admission has stopped"):
+        make().publish(0, 0, 1)
+    # The pull's evidence was not complete, so nothing was acknowledged.
+    assert len(http.messages.calls) == 1
+
+
+def test_failed_failure_record_keeps_local_latch_and_reports_restart_barrier(setup):
+    make, env, http, _, _ = setup
+    supervisor = make("supervisor")
+    original = env.store.write
+
+    def write(name, value, generation="0", **kwargs):
+        if name.endswith("/response.json") or (
+            name == env.records.path and value["evidence_failed"]
+        ):
+            raise Failure("storage unavailable")
+        return original(name, value, generation, **kwargs)
+
+    env.store.write = write
+    http.messages.responses.append(Response({"receivedMessages": [output()]}))
+    with pytest.raises(Failure, match="stop actors independently before restarting"):
+        supervisor.collect("one", max_messages=1)
+    assert supervisor.env.evidence_failed and not env.refresh().evidence_failed
+    with pytest.raises(Failure, match="unresolved"):
+        supervisor.collect("two", max_messages=1)
+    assert len(http.messages.calls) == 1
+
+
+def test_both_actors_have_bound_calls_that_may_overlap(setup):
     make, env, http, _, _ = setup
     original = http.messages.request
     observed = []
@@ -109,7 +270,6 @@ def test_both_actors_have_bound_calls_and_independent_budgets(setup):
     make().publish(0, 0, 1)
     assert observed == ["publish", "collect"]
     assert all(a["inflight"] is None for a in actors(env).values())
-    assert env.refresh().pubsub["traffic"]["used"]["pubsub_requests"] == 2
 
 
 def test_same_actor_reentry_cannot_start_another_call(setup):
@@ -165,7 +325,6 @@ def test_preparation_is_covered_before_the_first_service_mutation(setup):
     make().prepare()
     assert observed and all(m["operation"] == "prepare" for m in observed)
     assert len({m["id"] for m in observed}) == 1
-    assert env.refresh().pubsub["traffic"]["used"]["publish_calls"] == 0
     assert actors(env)["runner"]["inflight"] is None
 
 
@@ -181,7 +340,9 @@ def test_competing_supervisor_join_does_not_replace_winner(setup):
     assert env.store.conflicts == 1
 
 
-def test_release_during_collect_stops_ack_and_retains_unresolved_call(setup):
+def test_release_during_collect_waits_for_the_call_it_cannot_release(setup):
+    """A stop admits no new call, but the one under way acknowledges what it
+    has durably observed and then completes."""
     make, env, http, _, _ = setup
     original = http.messages.request
     supervisor = make("supervisor")
@@ -193,37 +354,55 @@ def test_release_during_collect_stops_ack_and_retains_unresolved_call(setup):
         return response
 
     http.messages.request = request
-    http.messages.responses.append(Response({"receivedMessages": [output()]}))
-    with pytest.raises(Failure, match="admission"):
-        supervisor.collect("one", max_messages=1)
-    assert len(http.messages.calls) == 1
+    http.messages.responses.extend(
+        [Response({"receivedMessages": [output()]}), Response({})]
+    )
+    supervisor.collect("one", max_messages=1)
+    assert len(http.messages.calls) == 2
     assert env.refresh().stop_requested
-    assert actors(env)["supervisor"]["inflight"]["operation"] == "collect"
+    assert actors(env)["supervisor"]["inflight"] is None
     assert not actors(env)["supervisor"]["released"]
-    assert any(name.endswith("/observations.json") for _, name in env.store.data)
+    assert any(name.endswith("/acknowledged.json") for _, name in env.store.data)
+    with pytest.raises(Failure, match="admission has stopped"):
+        supervisor.collect("two", max_messages=1)
+    supervisor.release()
+    assert actors(env)["supervisor"]["released"]
 
 
-def test_lost_begin_response_never_calls_service_and_retains_marker(setup):
+@pytest.mark.parametrize("clearing", ["succeeds", "fails"])
+def test_lost_begin_response_never_calls_service_and_clears_its_marker(setup, clearing):
+    """Nothing was sent, so the landed marker is cleared rather than kept for
+    a reclamation proof; only a failed clearing keeps it, and the lock."""
     make, env, http, _, _ = setup
     original = env.store.write
 
     def write(name, value, generation="0", **kwargs):
+        if name == env.records.path and clearing == "fails" and lost:
+            raise Failure("control storage unavailable")
         result = original(name, value, generation, **kwargs)
         if (
             name == env.records.path
             and value["pubsub"]["handoff"]["actors"]["runner"]["inflight"]
         ):
+            lost.append(name)
             raise Failure("lost begin response")
         return result
 
+    lost = []
     env.store.write = write
     with pytest.raises(Failure, match="lost begin"):
         make().publish(0, 0, 1)
-    assert not http.messages.calls
-    assert actors(env)["runner"]["inflight"]["operation"] == "publish"
+    assert lost and not http.messages.calls
     env.store.write = original
-    with pytest.raises(Failure, match="unresolved"):
-        make().release()
+    if clearing == "fails":
+        assert actors(env)["runner"]["inflight"]["operation"] == "publish"
+        with pytest.raises(Failure, match="unresolved"):
+            make().release()
+        return
+    assert actors(env)["runner"]["inflight"] is None
+    assert not env.refresh().stop_requested
+    make().release()
+    assert actors(env)["runner"]["released"]
 
 
 def test_lost_finish_response_retries_only_acknowledgement(setup):
@@ -378,19 +557,6 @@ def test_ambiguous_preparation_can_only_be_reclaimed_after_external_proof(setup)
     assert actors(env)["supervisor"] is None
 
 
-@pytest.mark.parametrize("invalid", [None, {}, {"version": True}])
-def test_malformed_present_handoff_blocks_settlement(setup, invalid):
-    _, env, _, _, _ = setup
-
-    def corrupt(record):
-        record.stop_requested = True
-        record.pubsub.update(stage="cleaned", handoff=invalid)
-
-    env.records._change(corrupt)
-    with pytest.raises(Failure, match="handoff"):
-        require_pubsub_clean(env.refresh())
-
-
 final_env = settlement.env
 
 
@@ -511,16 +677,6 @@ def test_binding_cannot_adopt_prepared_resources(setup):
     assert "handoff" not in env.refresh().pubsub
 
 
-@pytest.mark.parametrize("setup", [False], indirect=True)
-def test_supervisor_cannot_use_the_runner_process_token(setup):
-    make, env, _, _, _ = setup
-    make().prepare()
-    env.records.set_phase(Phase.READY)
-    with pytest.raises(Failure, match="distinct"):
-        make("supervisor", "b" * 32).join()
-    assert actors(env)["supervisor"] is None
-
-
 def test_reclamation_proof_does_not_mutate_the_compared_snapshot(setup):
     make, env, _, _, _ = setup
     tokens = {role: actor["token"] for role, actor in actors(env).items()}
@@ -539,7 +695,7 @@ def test_local_stop_or_deadline_refuses_preparation_without_call_marker(setup, c
     make, env, http, now, _ = setup
     runner = make()
     if change == "deadline":
-        now[0] += 100
+        now[0] += 200
     elif change == "stop":
         runner.env.stopping = True
     else:

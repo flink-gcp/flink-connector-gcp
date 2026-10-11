@@ -47,7 +47,6 @@ def prepare(approval, *, prepared_at):
         raise Failure(
             "Rendered bundle differs from the approved manifests, images or source"
         )
-    approval_bundle.check_revision(approved.sha)
     return approval_bundle.bind("pubsub-approval-bundle", approved, bundle, when)
 
 

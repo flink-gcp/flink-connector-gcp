@@ -26,7 +26,6 @@ from flink_tier3.pubsub.access import (
     CONSUME,
     MEMBERS,
     PUBLISH,
-    evaluate_workload_log,
     expectations,
     probe_spec,
     pulls,
@@ -66,59 +65,6 @@ def test_only_the_subscriptions_an_identity_reads_are_pulled():
     assert pulls(PLAN, "runner") == []
     assert pulls(PLAN, "workload") == [NAMES["sub-in-0"], NAMES["sub-in-1"]]
     assert pulls(PLAN, "supervisor") == [NAMES["sub-out"]]
-
-
-def log(*events):
-    return "\n".join(json.dumps(event) for event in events)
-
-
-def passing(**change):
-    expected = expectations(PLAN, "workload")
-    events = [
-        {"event": "identity", "email": MEMBERS["workload"]},
-        {"event": "attempt", "seen": {n: w["held"] for n, w in expected.items()}},
-        {"event": "pulled", "name": NAMES["sub-in-0"]},
-        {"event": "pulled", "name": NAMES["sub-in-1"]},
-        {"event": "passed"},
-    ]
-    for event in events:
-        event.update(change.get(event["event"], {}))
-    return events
-
-
-def test_a_passing_log_is_read_into_the_workload_s_access():
-    summary = evaluate_workload_log(PLAN, log(*passing()))
-    assert summary == {
-        "attempts": 1,
-        "pull_attempts": 2,
-        "granted": sorted([NAMES["out"], NAMES["sub-in-0"], NAMES["sub-in-1"]]),
-        "pulled": [NAMES["sub-in-0"], NAMES["sub-in-1"]],
-    }
-
-
-@pytest.mark.parametrize(
-    "events",
-    [
-        [],
-        passing(identity={"email": MEMBERS["supervisor"]}),
-        passing()[:-1],
-        [*passing(), {"event": "refused"}],
-        passing(attempt={"seen": {NAMES["out"]: True}}),
-        passing(attempt={"seen": {name: True for name in NAMES.values()}}),
-        passing(attempt={"seen": {name: False for name in NAMES.values()}}),
-        [e for e in passing() if e["event"] != "pulled"],
-        [passing()[0], *passing()],
-        ["not an object"],
-    ],
-)
-def test_a_log_that_does_not_show_the_plan_met_is_refused(events):
-    with pytest.raises(Failure):
-        evaluate_workload_log(PLAN, log(*events))
-
-
-def test_an_unparsable_log_is_refused():
-    with pytest.raises(Failure, match="malformed"):
-        evaluate_workload_log(PLAN, "{not json")
 
 
 def schedule(deadline):
@@ -239,7 +185,7 @@ def test_the_probe_passes_on_the_plan_s_grants_and_empty_pulls(capsys):
     session = Session(held, pulls=[(200, {}), (200, {})])
     code, events, _ = run(session, capsys)
     assert code == 0 and events[-1]["event"] == "passed"
-    assert evaluate_workload_log(PLAN, log(*events))["pulled"] == pulls(
+    assert [e["name"] for e in events if e["event"] == "pulled"] == pulls(
         PLAN, "workload"
     )
 
@@ -254,7 +200,6 @@ def test_the_probe_waits_for_grants_and_for_the_data_plane(capsys):
     assert [e["event"] for e in events].count("attempt") == 3
     assert [e["event"] for e in events].count("pull-refused") == 1
     assert clock.now == 3 * 15
-    evaluate_workload_log(PLAN, log(*events))
 
 
 @pytest.mark.parametrize(
@@ -270,15 +215,13 @@ def test_the_probe_waits_for_grants_and_for_the_data_plane(capsys):
         (lambda name, count: 403, [], None, 3),
     ],
 )
-def test_the_probe_refuses_what_its_reader_would(
+def test_the_probe_exits_non_zero_on_each_refusal(
     capsys, permissions, pulled, email, code
 ):
     session = Session(permissions, pulls=pulled)
     actual, events, _ = run(session, capsys, email=email, deadline=200.0)
     assert actual == code
     assert events[-1]["event"] == "refused"
-    with pytest.raises(Failure):
-        evaluate_workload_log(PLAN, log(*events))
 
 
 def test_the_probe_stops_while_a_whole_round_still_fits(capsys):

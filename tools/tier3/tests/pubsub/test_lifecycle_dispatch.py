@@ -503,13 +503,12 @@ def test_the_approval_holds_a_deep_copy_of_the_trial(trial):
         actor="octocat",
     )
     before = copy.deepcopy(approval["pubsub_trial"])
-    trial["traffic_limits"]["publish_calls"] = 1
     trial["records_per_subscription"] = 2
     assert approval["pubsub_trial"] == before
     assert approval["upgrade_application_sha256"] == "4" * 64
 
 
-def test_each_reviewed_trial_is_one_of_the_four_and_covers_one_pass():
+def test_each_reviewed_trial_is_one_of_the_four_and_plans_its_input():
     checkout = Path(__file__).resolve().parents[4]
     reviewed = sorted((checkout / cli.PUBSUB_TRIALS).glob("*.toml"))
     trials = {path.stem: cli.pubsub_plan.load_reviewed_trial(path) for path in reviewed}
@@ -518,10 +517,4 @@ def test_each_reviewed_trial_is_one_of_the_four_and_covers_one_pass():
         assert reviewed_trial["trial"] == name
         assert reviewed_trial["entry_point"] == "datastream"
         assert reviewed_trial["records_per_subscription"] == 1000
-        # Message evidence is the helper's whole allowance; nothing else in
-        # the plan checks it is enough for a run.
-        assert (
-            reviewed_trial["traffic_limits"]["evidence_bytes"]
-            == (cli.pubsub_plan.COUNTER_CEILINGS["evidence_bytes"])
-        )
         cli.pubsub_plan.input_plan("ps-1361-0001", reviewed_trial)

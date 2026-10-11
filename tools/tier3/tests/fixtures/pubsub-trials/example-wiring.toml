@@ -12,21 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Example trial for tests. It exercises the version 4 trial schema, the
+# Example trial for tests. It exercises the version 5 trial schema, the
 # approval phrase and the approval-bound rendering. It lives outside
 # kubernetes/lifecycle/pubsub-trials/ so that no dispatch can name it: a file
 # there is a runnable trial, and the campaign's four trials are the files there.
 
-version = 4
+version = 5
 trial = "rescale-out"
-entry_point = "datastream"
+entry_point = "table"
 records_per_subscription = 1000
 
-[traffic_limits]
-publish_calls = 20000
-pull_calls = 2000
-input_messages = 20000
-input_bytes = 2560000
-output_messages = 200000
-pubsub_requests = 30000
-evidence_bytes = 67108864

@@ -197,7 +197,7 @@ def validate_approval(approval, now=None):
 
 
 def _validate_pubsub(approval, start, end):
-    # This schema binds the trial's caps; it neither estimates cost nor
+    # This schema binds the trial's input domain; it neither estimates cost nor
     # authorizes execution, which the dispatch's typed phrase does.
     from .pubsub.plan import WINDOW_SECONDS, input_plan
     from .pubsub.resources import ResourcePlan
@@ -206,7 +206,9 @@ def _validate_pubsub(approval, start, end):
         raise Failure("Pub/Sub approval version must be an integer")
     ResourcePlan(approval["run_id"], approval["nonce"])
     trial = approval.get("pubsub_trial")
-    input_plan(approval["run_id"], trial)
+    # A stored approval may predate trial version 5; rendering, dispatch and
+    # both actors' manifest checks still require it.
+    input_plan(approval["run_id"], trial, legacy=True)
     expected = PUBSUB_CEILINGS
     if json_bytes(approval["ceilings"]) != json_bytes(expected):
         raise Failure("Pub/Sub approval differs from its resource ceilings")
@@ -362,16 +364,6 @@ class Approval:
 
         self._validate_pubsub()
         return ResourcePlan(self.run_id, self.nonce)
-
-    @property
-    def pubsub_traffic_limits(self):
-        """Bind helper counters and their deadline to the serialized trial."""
-        from .pubsub.traffic import TrafficLimits
-
-        self._validate_pubsub()
-        return TrafficLimits(
-            **self.pubsub_trial["traffic_limits"], admit_until=self.schedule.cleanup_at
-        )
 
     def _validate_pubsub(self):
         if self.scenario != "pubsub-recovery":

@@ -17,45 +17,45 @@ import copy
 import json
 import re
 import tomllib
-from dataclasses import asdict
 from decimal import Decimal
 
 from ..bundle import delivery_digest, package_sources, source_digest
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
 from ..model import Schedule, _hourly
-from ..policy import GAR, POD_RESOURCES, POLL, PUBSUB_CEILINGS, SHA
+from ..policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
 from ..workflow import render
 from .access import probe_spec
 from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
 from .resources import ResourcePlan
-from .traffic import COUNTER_CEILINGS, TrafficLimits
 
 TRIALS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
 ENTRY_POINTS = ("datastream", "table")
 WINDOW_SECONDS = PUBSUB_CEILINGS["seconds"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# The supervisor's exercise pulls the output subscription at least once per
-# poll, empty or not, from admission until cleanup: at most this many polls.
-EXERCISE_PULLS = (WINDOW_SECONDS - PUBSUB_CEILINGS["cleanup_seconds"]) // POLL
 # When the rates behind the estimate were read from the official pricing
 # pages: the basis of the number the owner approves, not an admission deadline.
 REVIEWED_AT = "2026-10-10T00:00:00Z"
 RESERVE_USD = Decimal("1.00")
-FIELDS = {
-    "version",
-    "trial",
-    "entry_point",
-    "records_per_subscription",
-    "traffic_limits",
-}
+VERSION = 5
+FIELDS = {"version", "trial", "entry_point", "records_per_subscription"}
+# Version 4 also carried the runtime traffic limits that version 5 removed.
+# An approval written before then is still read, ignoring them, so recovery
+# can settle a run that spans the change; nothing admits such a trial.
+LEGACY_VERSION = 4
+LEGACY_FIELDS = FIELDS | {"traffic_limits"}
 
 
-def validate_trial(value):
-    """Validate proposed caps, without asserting feasibility or bill enforcement."""
-    if not isinstance(value, dict) or set(value) != FIELDS:
-        raise Failure("Pub/Sub trial fields must match the version 4 schema")
+def validate_trial(value, *, legacy=False):
+    """Validate a trial's kind, entry point and input domain.
+
+    ``legacy`` also accepts a version 4 trial, for reading a stored approval.
+    """
+    version = value.get("version") if isinstance(value, dict) else None
+    old = legacy and type(version) is int and version == LEGACY_VERSION
+    if not isinstance(value, dict) or set(value) != (LEGACY_FIELDS if old else FIELDS):
+        raise Failure(f"Pub/Sub trial fields must match the version {VERSION} schema")
     for key, low, high in (
-        ("version", 4, 4),
+        ("version", LEGACY_VERSION if old else VERSION, VERSION),
         ("records_per_subscription", 3, 10000),
     ):
         if type(value[key]) is not int or not low <= value[key] <= high:
@@ -64,10 +64,6 @@ def validate_trial(value):
         raise Failure("Unknown Pub/Sub trial")
     if value["entry_point"] not in ENTRY_POINTS:
         raise Failure("Unknown Pub/Sub entry point")
-    limits = value["traffic_limits"]
-    if not isinstance(limits, dict) or set(limits) != set(COUNTER_CEILINGS):
-        raise Failure("Pub/Sub trial requires every traffic counter")
-    TrafficLimits(**limits, admit_until=1)
 
 
 def estimate():
@@ -76,10 +72,11 @@ def estimate():
     It is the same for every trial. It charges all seven Pods of the policy for
     the whole window, the four application slots at the Flink shape and the
     three control slots at the Operator's, which is at least the supervisor's,
-    with no Spot or commitment discount. The reserve covers what the trial's
-    message and byte ceilings bound: Pub/Sub throughput, Cloud Storage
-    operations and storage, Cloud Logging ingestion and the logs and evidence
-    leaving Google Cloud, each a fraction of it at those ceilings.
+    with no Spot or commitment discount. The reserve covers what the input
+    domain and the window bound: Pub/Sub throughput, Cloud Storage operations
+    and storage, Cloud Logging ingestion and the logs and evidence leaving
+    Google Cloud, each a fraction of it at the largest input domain and the
+    exercise's pulls over the whole window.
     """
     shapes = [POD_RESOURCES["smoke"]] * 4 + [POD_RESOURCES["operator"]] * 3
     compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
@@ -169,9 +166,9 @@ def require_probe(probe, plan, schedule, image):
     verify_pod(probe, "supervisor", image, POD_RESOURCES["supervisor"], spot=False)
 
 
-def input_plan(run_id, trial):
-    """Validate one feasible pass and derive its exact logical input domain."""
-    validate_trial(trial)
+def input_plan(run_id, trial, *, legacy=False):
+    """Validate the trial and derive its exact logical input domain."""
+    validate_trial(trial, legacy=legacy)
     records = trial["records_per_subscription"]
     cohorts = cohort_ranges(records)
     # The helper's payload has no attributes; this excludes service framing.
@@ -181,24 +178,6 @@ def input_plan(run_id, trial):
     publish_calls = 2 * sum(
         (c["count"] + PUBLISH_BATCH - 1) // PUBLISH_BATCH for c in cohorts.values()
     )
-    minimum_pulls = sum(
-        (2 * c["count"] + MAX_BATCH - 1) // MAX_BATCH for c in cohorts.values()
-    )
-    limits = TrafficLimits(**trial["traffic_limits"], admit_until=1)
-    pulls = minimum_pulls + EXERCISE_PULLS
-    if (
-        limits.input_messages < 2 * records
-        or limits.input_bytes < input_bytes
-        or limits.publish_calls < publish_calls
-        # Every pull reserves its whole batch, even when fewer arrive.
-        or limits.output_messages < pulls * MAX_BATCH
-        or limits.pull_calls < pulls
-        # A nonempty pull also acknowledges; an empty one does not.
-        or limits.pubsub_requests < publish_calls + 2 * minimum_pulls + EXERCISE_PULLS
-    ):
-        raise Failure(
-            "Traffic proposal cannot cover even one complete input/output pass"
-        )
     return {
         "subscriptions": 2,
         "records_per_subscription": records,
@@ -299,7 +278,6 @@ def prepare(
     schedule = Schedule.for_window(start, end)
     planned_input = input_plan(run_id, trial)
     records = trial["records_per_subscription"]
-    limits = TrafficLimits(**trial["traffic_limits"], admit_until=schedule.cleanup_at)
     initial, recovery, delivery = render(
         run_id,
         nonce,
@@ -383,7 +361,6 @@ def prepare(
             ][0]["image"],
         },
         "input": planned_input,
-        "traffic_limits": asdict(limits),
         "limits": {
             "seconds": WINDOW_SECONDS,
             "cleanup_seconds": PUBSUB_CEILINGS["cleanup_seconds"],

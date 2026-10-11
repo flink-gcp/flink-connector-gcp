@@ -24,15 +24,14 @@ from ..runner import Runner
 from ..supervisor import Supervisor
 from . import bundle as pubsub_bundle
 from .auth import PubSubSession
-from .guard import PubSubGuard
+from .guard import PubSubGuard, admission_deadline
 from .handoff import PubSubHandoff
 from .lifecycle import PubSubLifecycle
 from .plan import require_trial_jobs
 from .quiesce import barrier
-from .traffic import PubSubTraffic
 
 
-def _handoff(env, application, token, http, role):
+def _handoff(env, token, http, role):
     approval = env.approval
     if (
         env.actor != role
@@ -43,12 +42,8 @@ def _handoff(env, application, token, http, role):
     validate_approval(approval.to_dict(), env.clock())
     require_installed_source(env, role, "Pub/Sub")
     env.assert_owner()
-    controller = PubSubLifecycle(env, http, application, PubSubGuard(env))
-    return PubSubHandoff(
-        PubSubTraffic(controller, application, approval.pubsub_traffic_limits),
-        actor_token=token,
-        settled=http.settled,
-    )
+    controller = PubSubLifecycle(env, http, PubSubGuard(env))
+    return PubSubHandoff(controller, actor_token=token, settled=http.settled)
 
 
 @contextmanager
@@ -60,12 +55,12 @@ def runner(env, bundle, *, runner_token, credentials=None):
     open through start and settlement. The caller retains the original process
     token and owns dispatch authorization and the external fence.
     """
-    verified = pubsub_bundle.validate(bundle, env.approval)
+    pubsub_bundle.validate(bundle, env.approval)
     with PubSubSession("runner", credentials) as http:
-        handoff = _handoff(env, verified["application"], runner_token, http, "runner")
+        handoff = _handoff(env, runner_token, http, "runner")
         actor = Runner(env, pubsub=handoff)
         actor.admission_open()
-        authenticate(env, http, handoff.controller.before_operation.deadline)
+        authenticate(env, http, admission_deadline(env))
         actor.admission_open()
         yield actor
 
@@ -91,7 +86,7 @@ def supervisor(env, application, upgrade, *, credentials=None):
         raise Failure("Pub/Sub supervisor manifests differ from approval")
     require_trial_jobs(approval.run_id, approval.pubsub_trial, application, upgrade)
     with PubSubSession("supervisor", credentials) as http:
-        handoff = _handoff(env, application, uuid.uuid4().hex, http, "supervisor")
+        handoff = _handoff(env, uuid.uuid4().hex, http, "supervisor")
         actor = Supervisor(env, upgrade, pubsub=handoff, quiesce=quiesce)
         authenticate(env, http, env.schedule.cleanup_at)
         yield actor

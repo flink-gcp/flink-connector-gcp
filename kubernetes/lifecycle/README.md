@@ -80,9 +80,8 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub/bundle.py` | Approval-bound Pub/Sub delivery and complete re-render verification; no authentication or admission |
 | `flink_tier3/pubsub/lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub/messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
-| `flink_tier3/pubsub/traffic.py` | Shared durable message/evidence reservations bound to prepared Pub/Sub control; full execution admission and actor quiescence remain caller-owned |
-| `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
-| `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, their per-method operation bounds and the namespace-wide cleanup barrier |
+| `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls, each admitted by its begin marker, and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
+| `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, the guard that holds each Pub/Sub request to its deadline, and the namespace-wide cleanup barrier |
 | `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program |
 
 The policy file is part of the reviewed revision, with no runtime override path.
@@ -438,5 +437,5 @@ Each file holds the [offline trial schema](../apps/pubsub/README.md#offline-tria
 The approved commit must contain the file: dispatch refuses an untracked TOML file under `kubernetes/`.
 
 The directory holds the four trials [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs once each: `jm-replacement`, `tm-replacement`, `rescale-out` and `rescale-in`, on the DataStream entry point with 1,000 records per subscription.
-Their input limits are exactly that input domain, 2,000 messages of at most 128 bytes, and the other traffic limits are the helper ceilings; each run is dispatched only after the owner approves its [estimate](../apps/pubsub/README.md#offline-trial-proposal).
+They use the version 5 schema, which carries no traffic limits; each run is dispatched only after the owner approves its [estimate](../apps/pubsub/README.md#offline-trial-proposal).
 A file under that path is a runnable trial, so the example the tests use lives in `tools/tier3/tests/fixtures/pubsub-trials/` instead, where no dispatch can name it.

@@ -65,7 +65,8 @@ limitations under the License.
 - Updated: 2026-10-10 (Pub/Sub publications carry up to 1,000 messages)
 - Updated: 2026-10-11 (Pub/Sub deployed trial findings)
 - Updated: 2026-10-11 (Cloud Tasks session path removed from the cluster rig)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723)
+- Updated: 2026-10-11 (Pub/Sub rig cut to what protects cleanup and the verdict)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723), [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md), [Pub/Sub trial findings](evidence/0165-pubsub-trial-findings-1361.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -247,6 +248,7 @@ A refused write was not applied.
 The next trial, `ps1361-jm-a5`, then reached its recovery boundary and stopped when the runner, publishing a cohort, lost five generation races in a row: it re-read at once, and the supervisor, collecting output, updated the record for every pull.
 A lost race now waits a random time of up to 0.25 seconds, doubling per race to at most 4 seconds, before the update reads again, and the twentieth lost race gives up, after at most about 64 seconds of waiting.
 One update therefore makes at most twenty-six writes: nineteen lost races, six refused writes and the one that settles it.
+Refined under [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722): Pub/Sub then took the remedy of fewer writes after all, two per service call, as the internal approval section below records, and these repetitions stay for the writes that remain.
 Use native SDK downloads and pools instead of custom response-size wrappers; generic API bodies no longer have an 8 MiB memory cap, while inventory count limits and Pod log byte limits remain.
 A standard authorized session is still injected into GCS to preserve disabled proxies, redirects and rejected-request refresh retries; public Client options do not expose those settings.
 GCS uploads disable the SDK's checksum-triggered automatic deletion path so every deletion remains an explicit generation-checked lifecycle operation.
@@ -619,6 +621,7 @@ A fresh cleanup attempt returns to `cleaning` even after prior success, so uncer
 Before deleting active Pub/Sub control, compare the complete current record with the receipt snapshot and use its observed generation; concurrent changes retain control and the lock.
 This gate preserves existing behavior for records without Pub/Sub state.
 The controller limits its control portion to 256 KiB and adds guarded logical control accesses; helper-only operation counts do not bound an integrated lifecycle.
+Refined under [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722): the guard no longer sees control accesses, and the controller reads its record as written, as the internal approval section below records.
 The [runbook](../../kubernetes/apps/pubsub/README.md#durable-preparation-and-cleanup) states the caller's budget, exclusive-control and external quiescence obligations.
 Numeric execution ceilings, CLI admission, deployed actor handoff and recovery evidence remain subsequent work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
@@ -651,8 +654,9 @@ Admission requires current ownership, prepared resources, an active run and no s
 Permit already admitted operations to retain received evidence during cleanup until approval expiry, but treat a following ACK as new communication.
 The wrapper does not adopt prior direct-helper work, cancel in-flight requests or authenticate actor strings.
 Full execution approval, effective access, exclusive resource control, total credential/control/storage operation costs and the external quiescence barrier remain caller obligations.
-The [reservation runbook](../../kubernetes/apps/pubsub/README.md#shared-traffic-reservations) distinguishes the internal numeric ceilings from trial authorization and total service billing.
+The reservation runbook, removed with the reservations, distinguished the internal numeric ceilings from trial authorization and total service billing.
 CLI admission remains disabled.
+Removed under [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722), with the traffic limits, as the internal approval section below records; the admission check and the evidence-failure latch moved into the actor handoff.
 
 ### Pub/Sub actor release before cleanup
 
@@ -832,6 +836,25 @@ Declined: a runtime request ceiling, for the reasons above; a preregistration do
 All four trials met that goal on 2026-10-10, as the [Pub/Sub trial findings](evidence/0165-pubsub-trial-findings-1361.md) record: every oracle found all 2,000 logical inputs with no duplicate, and every run cleaned up to verified idle and empty plans.
 Both rescales are `usable`; both replacements are `inconclusive` with `replay-unobserved`, because collecting the replay cohort's output outlasted the 120-second checkpoint interval and the job restored a checkpoint that already covered it, so the redelivery path is not yet observed on the deployed service.
 The owner accepted that as meeting the goal, which asks for no message lost, not for an observed redelivery, as [#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435#issuecomment-6099559941) records.
+
+Refined under [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722), part of the rig simplification [#1724](https://github.com/flink-gcp/flink-connector-gcp/issues/1724): the Pub/Sub rig keeps what protects the cleanup of paid resources and the correctness of a trial's verdict, and drops the rest.
+The deployed trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) failed four times on control-record contention, because a publication updated the shared record six times and a pull nine: the call's begin and completion markers, durable traffic reservations and evidence-byte reservations.
+Most of the other machinery guarded against cases that one owner running one trial under the environment lock does not produce, or capped spend of about a dollar that the approved estimate already covers.
+A publication or a pull now updates the record twice on its normal path, the call's begin and completion markers, which cuts the contention on the record against Cloud Storage's rate of about one mutation a second on one object; a test holds that count, and the retries above remain, because neither actor spaces its writes and both still write the same record.
+The begin marker's write also checks that message traffic is still admitted, as the traffic wrapper's reservations did, so a stop admits no new call; a call already under way now acknowledges what it has durably observed, because no reservation stands between its pull and its acknowledgement.
+A failed evidence upload still marks the run's evidence failed, in a write made only on that failure.
+The trial schema becomes version 5 without `traffic_limits`, so neither the proposal nor the approval carries traffic counters, and the input plan derives the trial's input domain without a feasibility check against them.
+An approval stored with a version 4 trial is still read, ignoring its limits, so recovery can settle a run that spans the change, as the record reader drops the removed Cloud Tasks session's fields; rendering, dispatch and both actors' manifest checks refuse it.
+Each actor's guard keeps one duty: it refuses a Pub/Sub request that would start within the request budget of its deadline, or one that an approval no longer validating would issue.
+The per-method operation bounds and their reservations are gone; the deadline is still the admission deadline unless a caller holds another, `cleanup_at` for message traffic and none for cleanup.
+The controller and the handoff no longer re-validate the rig's own record, including the actor handoff's and the cohorts' shapes and the distinct process tokens, and the controller no longer re-reads the environment lock on every control access or the record before each resource request; preparation checks the stop at its transitions, including the step from creating resources to installing their grants, verification once at its start, and an access probe before each round of tests and each pull, because its wait for grants can last most of the admission window.
+The runner no longer repeats checks the approval bundle's re-render already made: the manifests' digests, the trial's jobs and the probe Pod at admission, and the checkout's revision after rendering.
+The supervisor keeps its own manifest checks, because nothing re-renders its mounted manifests.
+The runner judges the workload's access probe Pod by its exit status, which the probe program sets non-zero on every refusal, and keeps the Pod's log as evidence instead of re-deriving the result from it, so the workload's access is no longer recorded beside the actors'.
+Kept: the call markers, actor release and reclamation, the namespace quiescence barrier, resource ownership and deletion, the cohort protocol, the oracle, the verdict and the exercise, the access probe Pod and the estimate, whose reserve now covers what the input domain and the window bound.
+A call whose begin write landed with its response lost now clears that marker: the call failed before sending anything, and before this change the marker stayed and kept the lock until a reclamation proof, a defect older than this simplification and folded in at the owner's request.
+The preparation's creation intent and a cohort's start mark share that shape and strand nothing: preparation settles its marker through the session's settled-write check, and a started but unpublished cohort only fails the run, whose cleanup it does not block.
+Declined: removing the call markers, because only a marker tells cleanup that a request may still be in flight, and dropping it would need a redesign of cleanup's safety; and removing the two trial loaders the issue counted as unused, because dispatch reads a reviewed trial file through one and the offline renderer a JSON proposal through the other.
 
 ### Pub/Sub lifecycle IAM preparation
 
