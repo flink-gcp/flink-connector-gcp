@@ -103,7 +103,6 @@ On the emulator, the refusal is ADR-0127's third shape: without it the job faile
 The service answers with the cursors the reader keeps, measured on the raw `RunQuery` rather than through the source, so there the refusal is a choice of scope, resting on these:
 
 - **Only the gated suite could test such a read.** The emulator answers `__kind__` and `__namespace__` without either cursor and `__property__` with nothing, so the module's emulator tests could not read one at all, and the source's paging and resume over a metadata kind would be exercised against the service alone.
-- **The snapshot is half measured.** The service honoured the read time for `__kind__`, and was not measured for `__namespace__` or `__property__`.
 - **The source's planning would need measuring first.** A metadata query filters only by a `__key__` range, and `__property__` by an ancestor as well, and sorts only by ascending key, as Google's page documents. The splitter's `__scatter__` sampling, which the emulator answered for `__kind__` with every kind, is unmeasured on the service, and so is whether the statistics the split-count estimate reads describe a metadata kind.
 - **The client library serves the use.** Google's page says a metadata query returning N entities takes about as long as N ordinary queries, and a job that needs the metadata can read it while it is built.
 
@@ -114,7 +113,7 @@ Declined:
 
 - **One split replayed from its beginning after a failure** ([#1690]'s second option). A restore after a checkpoint taken mid-split would emit again every row the checkpoint had already passed, and the result is generated anew from the database's current state, which the emulator does not even pin to the read time, so the replay need not return the same rows.
 - **Resuming a metadata query by key**, with `__key__ >` the last key emitted in place of a cursor. It read `__kind__` and `__namespace__` whole on the emulator, but it would add a second resume mode beside the cursor, which the service already carries, to serve only the emulator.
-- **Reading a metadata kind as one split** ([#1717]), with the splitter and the estimate skipped, `splitCount(...)` refused on one, and resume by the service's cursor. It would first need the read time measured for `__namespace__` and `__property__` and a gated test of a read and a restore, and it would leave the emulator's missing cursors as a limit of the emulator tests, for kinds the client library already reads.
+- **Reading a metadata kind as one split** ([#1717]), with the splitter and the estimate skipped, `splitCount(...)` refused on one, and resume by the service's cursor. It would first need a gated test of a read and a restore, and it would leave the emulator's missing cursors as a limit of the emulator tests, for kinds the client library already reads.
 
 The docs' deviation table records the emulator's missing cursors beside the service's answer.
 
@@ -141,7 +140,7 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 - **Paging.** An offset-only batch carries a skipped cursor, which the emulator omits. A batch of twelve entities of 512 KiB came back short of its limit of twelve, `NOT_FINISHED`, with an end cursor.
 - **A missing index** fails planning with `FAILED_PRECONDITION`, and the message names the recommended index.
 - **Read times and versions.** Datastore mode answers like Native mode. A read time from before the database existed, or in the future, is refused with `INVALID_ARGUMENT`, and so is one finer than a microsecond. An entity's update time is a whole microsecond: a lookup at it finds the entity, and one a microsecond earlier does not. So the floored read time reads the data the time given names. A timestamp value is floored too, and an equality filter carrying the unfloored value matches it, unlike in Native mode.
-- **Metadata kinds.** `__kind__`, `__namespace__` and `__property__` all answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest. `__kind__` honoured the read time and was scoped to the namespace. The decision on the metadata kinds above weighs these answers.
+- **Metadata kinds.** `__kind__`, `__namespace__` and `__property__` all answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest. `__kind__` honoured the read time and was scoped to the namespace. The decision on the metadata kinds above weighs these answers. A probe for [#1548] on 2026-10-11 found `__namespace__` and `__property__` honouring the read time too (ADR-0168).
 - **Statistics** stay unmeasured: a database created within the run has none.
 
 ## Consequences
@@ -177,3 +176,4 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 [#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1717]: https://github.com/flink-gcp/flink-connector-gcp/issues/1717
+[#1548]: https://github.com/flink-gcp/flink-connector-gcp/issues/1548
