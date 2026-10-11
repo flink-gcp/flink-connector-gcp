@@ -124,8 +124,8 @@ class DatastoreTableSinkITCase extends AbstractDatastoreEmulatorITCase {
     @Test
     void anUpsertChangelogUpsertsAndDeletesEntitiesByKeyInOrder() throws Exception {
         // Within one subtask the sink applies one key's writes in order, so two changes of one
-        // key leave the later one. An upsert replaces the entity whole, and deleting a missing
-        // key succeeds.
+        // key leave the later one. The default merge keeps a property the table does not
+        // declare, and deleting a missing key succeeds.
         String kind = uniqueKind();
         client().put(Entity.newBuilder(key(kind, "gone")).set("name", "old").build());
         client().put(
@@ -159,10 +159,141 @@ class DatastoreTableSinkITCase extends AbstractDatastoreEmulatorITCase {
 
         Entity kept = read(key(kind, "kept"));
         assertThat(kept.getString("name")).isEqualTo("second");
-        assertThat(kept.getNames()).containsExactly("name");
+        assertThat(kept.getNames()).containsExactlyInAnyOrder("name", "undeclared");
         assertThat(read(key(kind, "removed"))).isNull();
         assertThat(read(key(kind, "gone"))).isNull();
         assertThat(read(key(kind, "never"))).isNull();
+    }
+
+    @Test
+    void theDefaultMergeKeepsWhatTheTableDoesNotDeclareAtAnyDepth() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        Entity.newBuilder(key(kind, "o1"))
+                                .set("other", 1L)
+                                .set(
+                                        "nested",
+                                        FullEntity.newBuilder()
+                                                .set("x", 0L)
+                                                .set("y", "kept")
+                                                .build())
+                                .set("tags", "a", "b", "c")
+                                .set("cleared", "old")
+                                .build());
+        client().put(Entity.newBuilder(key(kind, "k1")).set("other", 1L).build());
+        TableEnvironment table = streaming();
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, nested ROW<x BIGINT>,"
+                        + " tags ARRAY<STRING>, cleared STRING,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind));
+        table.executeSql(
+                "CREATE TABLE keys (id STRING NOT NULL, PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind));
+
+        table.executeSql(
+                        "INSERT INTO target VALUES ('o1', ROW(CAST(1 AS BIGINT)), ARRAY['d'],"
+                                + " CAST(NULL AS STRING))")
+                .await(60, TimeUnit.SECONDS);
+        table.executeSql("INSERT INTO keys VALUES ('k1'), ('k2')").await(60, TimeUnit.SECONDS);
+
+        Entity merged = read(key(kind, "o1"));
+        assertThat(merged.getLong("other")).isEqualTo(1L);
+        assertThat(merged.getEntity("nested").getLong("x")).isEqualTo(1L);
+        assertThat(merged.getEntity("nested").getString("y")).isEqualTo("kept");
+        List<Value<?>> tags = merged.getList("tags");
+        assertThat(tags).extracting(value -> (Object) value.get()).containsExactly("d");
+        assertThat(merged.isNull("cleared")).as("a NULL column is written as a null").isTrue();
+        // A merge of no property leaves a stored entity as it was and creates a missing one.
+        assertThat(read(key(kind, "k1")).getLong("other")).isEqualTo(1L);
+        assertThat(read(key(kind, "k2"))).isNotNull();
+        assertThat(read(key(kind, "k2")).getNames()).isEmpty();
+    }
+
+    @Test
+    void replaceRemovesWhatTheTableDoesNotDeclare() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        Entity.newBuilder(key(kind, "o1"))
+                                .set("other", 1L)
+                                .set("nested", FullEntity.newBuilder().set("y", "gone").build())
+                                .build());
+        TableEnvironment table = streaming();
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, nested ROW<x BIGINT>,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.write-mode' = 'replace'"));
+
+        table.executeSql("INSERT INTO target VALUES ('o1', ROW(CAST(1 AS BIGINT)))")
+                .await(60, TimeUnit.SECONDS);
+
+        Entity replaced = read(key(kind, "o1"));
+        assertThat(replaced.getNames()).containsExactly("nested");
+        assertThat(replaced.getEntity("nested").getNames()).containsExactly("x");
+    }
+
+    @Test
+    void aMergeMeetsAStoredValueOfAnotherShape() throws Exception {
+        // A NULL ROW replaces the stored entity with a null; a ROW written where the entity
+        // holds a string or holds a null replaces it with an embedded entity.
+        String kind = uniqueKind();
+        for (String id : new String[] {"nulled", "string", "null"}) {
+            Entity.Builder stored = Entity.newBuilder(key(kind, id));
+            switch (id) {
+                case "nulled":
+                    stored.set("nested", FullEntity.newBuilder().set("y", "gone").build());
+                    break;
+                case "string":
+                    stored.set("nested", "text");
+                    break;
+                default:
+                    stored.setNull("nested");
+            }
+            client().put(stored.build());
+        }
+        TableEnvironment table = streaming();
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, nested ROW<x BIGINT>,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind));
+
+        table.executeSql(
+                        "INSERT INTO target VALUES ('nulled', CAST(NULL AS ROW<x BIGINT>)),"
+                                + " ('string', ROW(CAST(1 AS BIGINT))),"
+                                + " ('null', ROW(CAST(2 AS BIGINT)))")
+                .await(60, TimeUnit.SECONDS);
+
+        assertThat(read(key(kind, "nulled")).isNull("nested")).isTrue();
+        assertThat(read(key(kind, "string")).getEntity("nested").getNames()).containsExactly("x");
+        assertThat(read(key(kind, "null")).getEntity("nested").getLong("x")).isEqualTo(2L);
+    }
+
+    @Test
+    void aMergeIntoAnIndexedEntityMarksOnlyTheValuesItWrites() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        Entity.newBuilder(key(kind, "o1"))
+                                .set(
+                                        "meta",
+                                        FullEntity.newBuilder()
+                                                .set("note", "old")
+                                                .set("kept", "indexed")
+                                                .build())
+                                .build());
+        TableEnvironment table = streaming();
+        table.executeSql(
+                "CREATE TABLE target (id STRING NOT NULL, meta ROW<note STRING>,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'sink.unindexed-columns' = 'meta'"));
+
+        table.executeSql("INSERT INTO target VALUES ('o1', ROW(REPEAT('z', 2000)))")
+                .await(60, TimeUnit.SECONDS);
+
+        EntityValue meta = read(key(kind, "o1")).getValue("meta");
+        assertThat(meta.get().getString("note")).hasSize(2000);
+        assertThat(meta.get().getValue("note").excludeFromIndexes()).isTrue();
+        assertThat(meta.get().getValue("kept").excludeFromIndexes()).isFalse();
+        assertThat(meta.excludeFromIndexes()).as("the stored entity's own mark").isFalse();
     }
 
     @Test

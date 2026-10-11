@@ -117,7 +117,7 @@ class FirestoreDynamicTableFactoryTest {
                                         List.of(),
                                         List.of()),
                                 "users/alice/orders",
-                                WriteMode.SET));
+                                WriteMode.MERGE));
         assertThat(config.getEmulatorEndpoint()).isNull();
         assertThat(config.getServiceAccountKeyFile()).isNull();
     }
@@ -126,7 +126,7 @@ class FirestoreDynamicTableFactoryTest {
     void theNamedDatabaseTheWriteModeAndTheEmulatorReachTheSink() {
         Map<String, String> options = options();
         options.put("database", "orders-db");
-        options.put("sink.write-mode", "merge");
+        options.put("sink.write-mode", "replace");
         options.put("emulator-endpoint", "localhost:8080");
         FirestoreSinkConfig<?> config = config(KEYED, options);
 
@@ -143,7 +143,7 @@ class FirestoreDynamicTableFactoryTest {
                                         List.of(),
                                         List.of()),
                                 "users/alice/orders",
-                                WriteMode.MERGE));
+                                WriteMode.REPLACE));
     }
 
     @Test
@@ -280,7 +280,7 @@ class FirestoreDynamicTableFactoryTest {
         assertThatThrownBy(
                         () ->
                                 FactoryMocks.createTableSink(
-                                        UNKEYED, options("sink.write-mode", "set")))
+                                        UNKEYED, options("sink.write-mode", "replace")))
                 .hasStackTraceContaining("needs a PRIMARY KEY, the document id");
     }
 

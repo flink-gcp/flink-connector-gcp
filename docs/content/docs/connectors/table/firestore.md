@@ -171,15 +171,17 @@ An additional equality that fails follows the configured missing-key cache polic
 
 With a PRIMARY KEY, `sink.write-mode` says what an insert or an update does to the document:
 
-- **`set`** replaces the document with the row, creating it if it is missing; fields the table does not declare are removed.
-- **`merge`** merges the row into the document, creating it if it is missing; fields the table does not declare keep their values, and a `ROW` or `MAP` column is merged key by key rather than replaced, so an empty `MAP` leaves the stored map as it is.
+- **`merge`**, the default, merges the row into the document, creating it if it is missing; fields the table does not declare keep their values, and a `ROW` or `MAP` column is merged key by key rather than replaced, as Firestore's own `merge` option does. A key removed from a `MAP` therefore stays stored, and an empty `MAP` leaves the stored map as it is; a `NULL` column, or an `ARRAY`, replaces the stored field.
+- **`replace`** replaces the document with the row, creating it if it is missing; fields the table does not declare are removed.
 - **`update`** replaces the table's fields of an existing document; a missing document fails the job. An `update` table takes inserts and updates but no deletes, and an input that carries deletes is refused when the statement is planned: an update reordered after a delete of its document, or replayed after a restart, would meet a missing document and fail the job again on every restart.
-  The planner can still send a delete when the query's key differs from the table's PRIMARY KEY, as in an aggregation written into a table keyed by its result, because it then materializes the upsert and turns a retraction into a delete; such a delete fails the job without deleting anything, and the message says to key the query by the PRIMARY KEY or to use `set` or `merge`.
+  The planner can still send a delete when the query's key differs from the table's PRIMARY KEY, as in an aggregation written into a table keyed by its result, because it then materializes the upsert and turns a retraction into a delete; such a delete fails the job without deleting anything, and the message says to key the query by the PRIMARY KEY or to use `merge` or `replace`.
 
-Under `set` and `merge`, a delete deletes the document; deleting a missing document succeeds.
+Under `merge` and `replace`, a delete deletes the document; deleting a missing document succeeds.
+The default keeps what other writers store in the collection: a job that maintains some fields of documents another application also writes leaves that application's fields in place, and so does a table that declares fewer fields than the documents hold.
+Choose `replace` when the row is the whole document, so that a field the row no longer carries, or a key it removed from a `MAP`, does not stay stored.
 `sink.write-mode` is refused on a table without a PRIMARY KEY, whose rows are always created as new documents.
 
-{{< sql-snippet file="flink/FirestoreTableReference.sql" tag="merge" >}}
+{{< sql-snippet file="flink/FirestoreTableReference.sql" tag="replace" >}}
 
 A table without a PRIMARY KEY accepts inserts only, and creates one document per row:
 
@@ -228,7 +230,7 @@ No table write carries a precondition.
 | `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | `true` | Whether the partial cache records a key that found no document |
 | `lookup.partial-cache.max-rows` | *unset* | Maximum rows the partial cache keeps |
-| `sink.write-mode` | `set` | `set`, `merge` or `update`, for a table with a PRIMARY KEY |
+| `sink.write-mode` | `merge` | `merge`, `replace` or `update`, for a table with a PRIMARY KEY |
 | `sink.throttling.enabled` | `true` | Maps to `throttlingEnabled`: whether the client library ramps the write rate up |
 | `sink.throttling.initial-ops-per-second` | *unset ⇒ the client library's `500`* | Maps to `initialOpsPerSecond`, at least `20`; only with throttling enabled |
 | `sink.throttling.max-ops-per-second` | *unset ⇒ no ceiling* | Maps to `maxOpsPerSecond`, at least `20` and at least the initial rate; only with throttling enabled |
@@ -252,7 +254,7 @@ The [configuration reference]({{< relref "docs/reference/firestore" >}}#firestor
 A scan restored from a checkpoint resumes each split just after the last document it passed, at the same read time, without reading a document twice or skipping one; a job that restarts before its first checkpoint plans again, at a new read time unless `scan.read-time` is set.
 
 The sink is at-least-once: it waits for every write it has sent at each checkpoint, and a restart replays the records after the last completed one.
-With a PRIMARY KEY, `set`, `merge` and a delete are idempotent, so a replayed row writes the same document again; an `update` replayed after something outside the job deleted the document fails the job, and fails again after each restart until the document exists.
+With a PRIMARY KEY, `merge`, `replace` and a delete are idempotent, so a replayed row writes the same document again; an `update` replayed after something outside the job deleted the document fails the job, and fails again after each restart until the document exists.
 Without a PRIMARY KEY, a replayed row creates another document under a new id, so a restart can leave duplicates, and so can a retried write whose answer was lost; the `idsRedrawn` metric counts the second kind, together with drawn ids that named an existing document.
 See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/firestore" >}}#delivery-guarantee).
 

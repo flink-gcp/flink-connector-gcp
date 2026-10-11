@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.datastore.sink.DatastoreKeyAllocator;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import io.github.flink.gcp.connector.datastore.sink.serializer.KeyAllocatingSerializationSchema;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
+import io.github.flink.gcp.connector.datastore.table.WriteMode;
 
 import javax.annotation.Nullable;
 
@@ -41,10 +42,11 @@ import java.util.Objects;
  *
  * <p>With a PRIMARY KEY, the key column is the key's name or numeric id under the table's kind, in
  * its namespace, and every other column a property: an insert or an update-after is an {@code
- * upsert}, and a delete deletes the entity. Without one, every row is upserted under a new key
- * whose numeric id the service allocated, drawn from batches the writer's allocator fetches: the
- * service never hands an allocated id out again, so a row cannot replace an entity another row
- * wrote.
+ * upsert}, merged into the stored entity under {@link WriteMode#MERGE} and replacing it under
+ * {@link WriteMode#REPLACE}, and a delete deletes the entity. Without one, every row is upserted
+ * whole under a new key whose numeric id the service allocated, drawn from batches the writer's
+ * allocator fetches: the service never hands an allocated id out again, so a row cannot replace an
+ * entity another row wrote.
  *
  * <p>Every write is an {@code upsert} or a {@code delete}, the two a replay leaves as they were: an
  * {@code insert} replayed after a restart would be refused with {@code ALREADY_EXISTS} and an
@@ -61,6 +63,7 @@ public final class RowDataSerializationSchema implements KeyAllocatingSerializat
     private final String namespace;
     private final String kind;
     @Nullable private final String keyColumn;
+    private final WriteMode writeMode;
     private final RowDataToDatastoreConverter.Properties properties;
 
     private transient DatastoreKeyAllocator allocator;
@@ -74,16 +77,19 @@ public final class RowDataSerializationSchema implements KeyAllocatingSerializat
      * @param database the database the keys address
      * @param namespace the entities' namespace, empty for the default one
      * @param kind the entities' kind
+     * @param writeMode what an insert or an update-after does, for a table with a PRIMARY KEY
      */
     public RowDataSerializationSchema(
             DatastoreTableSchema schema,
             DatabaseDestination database,
             String namespace,
-            String kind) {
+            String kind,
+            WriteMode writeMode) {
         this.schema = schema;
         this.database = database;
         this.namespace = namespace;
         this.kind = kind;
+        this.writeMode = writeMode;
         this.keyColumn =
                 schema.hasPrimaryKey()
                         ? schema.getRowType().getFieldNames().get(schema.getKeyIndex())
@@ -103,9 +109,15 @@ public final class RowDataSerializationSchema implements KeyAllocatingSerializat
             switch (row.getRowKind()) {
                 case INSERT:
                 case UPDATE_AFTER:
-                    Key key = schema.hasPrimaryKey() ? key(row) : newKey();
-                    return DatastoreMutation.upsert(
-                            properties.setAll(row, Entity.newBuilder(key)).build());
+                    if (!schema.hasPrimaryKey()) {
+                        // A new allocated id names no stored entity, so there is nothing to merge.
+                        return DatastoreMutation.upsert(
+                                properties.setAll(row, Entity.newBuilder(newKey())).build());
+                    }
+                    Entity entity = properties.setAll(row, Entity.newBuilder(key(row))).build();
+                    return writeMode == WriteMode.MERGE
+                            ? DatastoreMutation.upsertMerge(entity)
+                            : DatastoreMutation.upsert(entity);
                 case DELETE:
                     if (!schema.hasPrimaryKey()) {
                         throw new IOException(
@@ -198,11 +210,12 @@ public final class RowDataSerializationSchema implements KeyAllocatingSerializat
         return schema.equals(that.schema)
                 && database.equals(that.database)
                 && namespace.equals(that.namespace)
-                && kind.equals(that.kind);
+                && kind.equals(that.kind)
+                && writeMode == that.writeMode;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(schema, database, namespace, kind);
+        return Objects.hash(schema, database, namespace, kind, writeMode);
     }
 }

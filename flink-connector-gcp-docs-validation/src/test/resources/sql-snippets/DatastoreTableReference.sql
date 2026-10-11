@@ -91,6 +91,20 @@ CREATE TABLE articles (
 );
 -- end::unindexed[]
 
+-- tag::replace[]
+CREATE TABLE customer_snapshots (
+  customer_id STRING NOT NULL,
+  name STRING,
+  tier STRING,
+  PRIMARY KEY (customer_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datastore',
+  'project' = 'my-project',
+  'kind' = 'CustomerSnapshot',
+  'sink.write-mode' = 'replace'
+);
+-- end::replace[]
+
 -- tag::append[]
 CREATE TABLE page_views (
   path STRING,

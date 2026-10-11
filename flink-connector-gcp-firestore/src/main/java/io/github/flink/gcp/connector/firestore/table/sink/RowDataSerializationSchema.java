@@ -35,10 +35,11 @@ import java.util.Objects;
  * Turns a table row into the document write the {@code firestore} table sink sends.
  *
  * <p>With a PRIMARY KEY, the key column is the document id within the collection and every other
- * column a field: an insert or an update-after is a {@code set}, a {@code merge} or an {@code
- * update} as {@code sink.write-mode} says, and a delete deletes the document. Without one, every
- * row is an {@link FirestoreWrite#add(String, Map)}: a create under a drawn id, which never
- * replaces an existing document.
+ * column a field: an insert or an update-after is a {@code setMerge} under {@code merge}, a {@code
+ * set} under {@code replace} or an {@code update} under {@code update}, as {@code sink.write-mode}
+ * says, and a delete deletes the document. Without one, every row is an {@link
+ * FirestoreWrite#add(String, Map)}: a create under a drawn id, which never replaces an existing
+ * document.
  */
 @Internal
 public final class RowDataSerializationSchema
@@ -89,7 +90,7 @@ public final class RowDataSerializationSchema
                                         + " 'update', which takes no deletes. The planner produces"
                                         + " one when the query's key differs from the table's"
                                         + " PRIMARY KEY; key the query by the PRIMARY KEY, or use"
-                                        + " 'set' or 'merge'. Nothing was deleted.");
+                                        + " 'merge' or 'replace'. Nothing was deleted.");
                     }
                     if (!schema.hasPrimaryKey()) {
                         throw new IOException(
@@ -111,12 +112,12 @@ public final class RowDataSerializationSchema
         String path = documentPath(row);
         Map<String, Object> fields = fields(row);
         switch (writeMode) {
-            case MERGE:
-                return FirestoreWrite.setMerge(path, fields);
+            case REPLACE:
+                return FirestoreWrite.set(path, fields);
             case UPDATE:
                 return FirestoreWrite.update(path, fields);
             default:
-                return FirestoreWrite.set(path, fields);
+                return FirestoreWrite.setMerge(path, fields);
         }
     }
 

@@ -82,7 +82,7 @@ class FirestoreConnectorOptionsTest {
         }
         assertThat(List.of(WriteMode.values()))
                 .extracting(WriteMode::toString)
-                .containsExactly("set", "merge", "update");
+                .containsExactly("merge", "replace", "update");
     }
 
     @Test

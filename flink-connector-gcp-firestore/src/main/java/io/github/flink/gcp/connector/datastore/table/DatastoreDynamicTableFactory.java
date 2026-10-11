@@ -90,6 +90,7 @@ public final class DatastoreDynamicTableFactory
                         LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
                         LookupOptions.PARTIAL_CACHE_MAX_ROWS,
                         DatastoreConnectorOptions.SINK_UNINDEXED_COLUMNS,
+                        DatastoreConnectorOptions.SINK_WRITE_MODE,
                         DatastoreConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         DatastoreConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
                         DatastoreConnectorOptions.SINK_REQUEST_TIMEOUT,
@@ -109,12 +110,15 @@ public final class DatastoreDynamicTableFactory
         DatabaseDestination database = database(config);
         String namespace = namespace(config);
         String kind = kind(config);
+        DatastoreTableSchema schema = schema(context, config);
+        validateWriteMode(context, schema);
 
         return DatastoreDynamicSink.builder()
-                .schema(schema(context, config))
+                .schema(schema)
                 .database(database)
                 .namespace(namespace)
                 .kind(kind)
+                .writeMode(config.get(DatastoreConnectorOptions.SINK_WRITE_MODE))
                 .writerOptions(WriterOptionsMapper.map(config))
                 .emulatorEndpoint(
                         config.getOptional(DatastoreConnectorOptions.EMULATOR_ENDPOINT)
@@ -158,6 +162,23 @@ public final class DatastoreDynamicTableFactory
                         .orElse(Collections.emptyList()),
                 config.getOptional(DatastoreConnectorOptions.REFERENCE_FIELD_PATHS)
                         .orElse(Collections.emptyList()));
+    }
+
+    /**
+     * Refuses a {@code sink.write-mode} on a table without a PRIMARY KEY, whose rows are always
+     * written as new entities under allocated ids.
+     */
+    private static void validateWriteMode(Context context, DatastoreTableSchema schema) {
+        String key = DatastoreConnectorOptions.SINK_WRITE_MODE.key();
+        if (!schema.hasPrimaryKey() && context.getCatalogTable().getOptions().containsKey(key)) {
+            throw new ValidationException(
+                    key
+                            + " needs a PRIMARY KEY, the key's name or id: without one every row is"
+                            + " written as a new entity under an allocated id. Declare the key"
+                            + " column PRIMARY KEY NOT ENFORCED, or remove "
+                            + key
+                            + ".");
+        }
     }
 
     private static DatastoreTableLineage lineage(

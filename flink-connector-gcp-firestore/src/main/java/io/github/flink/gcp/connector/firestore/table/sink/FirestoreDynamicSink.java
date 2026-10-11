@@ -174,7 +174,7 @@ public final class FirestoreDynamicSink implements DynamicTableSink {
         private FirestoreTableSchema schema;
         private DatabaseDestination database;
         private String collection;
-        private WriteMode writeMode = WriteMode.SET;
+        private WriteMode writeMode = WriteMode.MERGE;
         private FirestoreWriterOptions writerOptions;
         @Nullable private String emulatorEndpoint;
         @Nullable private String serviceAccountKeyFile;

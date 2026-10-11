@@ -21,6 +21,7 @@ import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.StringValue;
 import com.google.datastore.v1.CommitRequest;
 import com.google.datastore.v1.Mutation;
+import com.google.datastore.v1.PropertyMask;
 import com.google.datastore.v1.Value;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
@@ -29,9 +30,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Holds the estimator equal to the {@code CommitRequest} protobuf the client library sends, built
- * here from the same key and properties: the library's own entity-to-protobuf conversion is
- * package-private, so the protobuf entity is reconstructed, and its size is first held equal to the
+ * Holds the estimator equal to the growth of the {@code CommitRequest} the writer sends, built here
+ * by hand from the same key and properties, its entity's size first held equal to the client
  * library's {@code Entity.calculateSerializedSize}.
  */
 class MutationSizeEstimatorTest {
@@ -67,8 +67,13 @@ class MutationSizeEstimatorTest {
         assertSizeIsTheRequestsGrowth(
                 DatastoreMutation.upsert(large), Mutation.newBuilder().setUpsert(largeProto));
         assertSizeIsTheRequestsGrowth(
+                DatastoreMutation.upsertMerge(small),
+                Mutation.newBuilder()
+                        .setUpsert(smallProto)
+                        .setPropertyMask(PropertyMask.newBuilder().addPaths("`v`")));
+        assertSizeIsTheRequestsGrowth(
                 DatastoreMutation.delete(KEY),
-                Mutation.newBuilder().setDelete(DatastoreServiceAdapter.toProto(KEY)));
+                Mutation.newBuilder().setDelete(EntityProtos.key(KEY)));
     }
 
     @Test
@@ -99,7 +104,7 @@ class MutationSizeEstimatorTest {
 
     private static com.google.datastore.v1.Entity entityProto(Value value) {
         return com.google.datastore.v1.Entity.newBuilder()
-                .setKey(DatastoreServiceAdapter.toProto(KEY))
+                .setKey(EntityProtos.key(KEY))
                 .putProperties("v", value)
                 .build();
     }

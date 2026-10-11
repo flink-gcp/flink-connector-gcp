@@ -43,6 +43,7 @@ import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreKeyAllocator;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
+import io.github.flink.gcp.connector.datastore.table.WriteMode;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.Test;
 
@@ -90,7 +91,8 @@ class RowDataSerializationSchemaTest {
     private static RowDataSerializationSchema serializer(
             DatastoreTableSchema schema, String namespace) {
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(schema, DATABASE, namespace, "Order");
+                new RowDataSerializationSchema(
+                        schema, DATABASE, namespace, "Order", WriteMode.MERGE);
         return serializer;
     }
 
@@ -117,7 +119,7 @@ class RowDataSerializationSchemaTest {
         DatastoreMutation mutation =
                 serializer(everyType(List.of())).serialize(everyTypeRow("o1"), TestContexts.NO_OP);
 
-        assertThat(mutation.getOperation()).isEqualTo(DatastoreMutation.Operation.UPSERT);
+        assertThat(mutation.getOperation()).isEqualTo(DatastoreMutation.Operation.UPSERT_MERGE);
         assertThat(mutation.getKey())
                 .isEqualTo(Key.newBuilder("p", "Order", "o1", "db").setNamespace("").build());
         FullEntity<Key> entity = mutation.getEntity();
@@ -210,6 +212,24 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
+    void theWriteModeChoosesBetweenAMergeAndAWholeUpsert() throws IOException {
+        DatastoreTableSchema schema = everyType(List.of());
+
+        assertThat(
+                        new RowDataSerializationSchema(
+                                        schema, DATABASE, "", "Order", WriteMode.MERGE)
+                                .serialize(everyTypeRow("o1"), TestContexts.NO_OP)
+                                .getOperation())
+                .isEqualTo(DatastoreMutation.Operation.UPSERT_MERGE);
+        assertThat(
+                        new RowDataSerializationSchema(
+                                        schema, DATABASE, "", "Order", WriteMode.REPLACE)
+                                .serialize(everyTypeRow("o1"), TestContexts.NO_OP)
+                                .getOperation())
+                .isEqualTo(DatastoreMutation.Operation.UPSERT);
+    }
+
+    @Test
     void anUpdateAfterIsAnUpsertAndADeleteDeletesTheKey() throws IOException {
         DatastoreTableSchema schema = everyType(List.of());
         GenericRowData updateAfter = everyTypeRow("o1");
@@ -218,7 +238,7 @@ class RowDataSerializationSchemaTest {
         delete.setRowKind(RowKind.DELETE);
 
         assertThat(serializer(schema).serialize(updateAfter, TestContexts.NO_OP).getOperation())
-                .isEqualTo(DatastoreMutation.Operation.UPSERT);
+                .isEqualTo(DatastoreMutation.Operation.UPSERT_MERGE);
         DatastoreMutation deleted = serializer(schema).serialize(delete, TestContexts.NO_OP);
         assertThat(deleted.getOperation()).isEqualTo(DatastoreMutation.Operation.DELETE);
         assertThat(deleted.getKey()).isEqualTo(Key.newBuilder("p", "Order", "o1", "db").build());
@@ -277,7 +297,11 @@ class RowDataSerializationSchemaTest {
     void theDefaultDatabaseIsTheEmptyIdTheWriterExpects() throws IOException {
         RowDataSerializationSchema serializer =
                 new RowDataSerializationSchema(
-                        everyType(List.of()), DatabaseDestination.of("p"), "", "Order");
+                        everyType(List.of()),
+                        DatabaseDestination.of("p"),
+                        "",
+                        "Order",
+                        WriteMode.MERGE);
 
         assertThat(serializer.serialize(everyTypeRow("o1"), TestContexts.NO_OP).getKey())
                 .satisfies(
@@ -493,7 +517,7 @@ class RowDataSerializationSchemaTest {
     void theSchemaSurvivesJavaSerializationAndKeepsItsEquality() throws Exception {
         RowDataSerializationSchema original =
                 new RowDataSerializationSchema(
-                        everyType(List.of("s")), DATABASE, "tenant-a", "Order");
+                        everyType(List.of("s")), DATABASE, "tenant-a", "Order", WriteMode.MERGE);
         RowDataSerializationSchema copy =
                 InstantiationUtil.clone(original, getClass().getClassLoader());
 
@@ -501,19 +525,35 @@ class RowDataSerializationSchemaTest {
         assertThat(copy)
                 .isNotEqualTo(
                         new RowDataSerializationSchema(
-                                everyType(List.of()), DATABASE, "tenant-a", "Order"))
+                                everyType(List.of()),
+                                DATABASE,
+                                "tenant-a",
+                                "Order",
+                                WriteMode.MERGE))
                 .isNotEqualTo(
                         new RowDataSerializationSchema(
-                                everyType(List.of("s")), DATABASE, "", "Order"))
+                                everyType(List.of("s")), DATABASE, "", "Order", WriteMode.MERGE))
                 .isNotEqualTo(
                         new RowDataSerializationSchema(
-                                everyType(List.of("s")), DATABASE, "tenant-a", "Other"))
+                                everyType(List.of("s")),
+                                DATABASE,
+                                "tenant-a",
+                                "Other",
+                                WriteMode.MERGE))
+                .isNotEqualTo(
+                        new RowDataSerializationSchema(
+                                everyType(List.of("s")),
+                                DATABASE,
+                                "tenant-a",
+                                "Order",
+                                WriteMode.REPLACE))
                 .isNotEqualTo(
                         new RowDataSerializationSchema(
                                 everyType(List.of("s")),
                                 DatabaseDestination.of("p", "other"),
                                 "tenant-a",
-                                "Order"));
+                                "Order",
+                                WriteMode.MERGE));
         assertThat(
                         copy.serialize(everyTypeRow("o1"), TestContexts.NO_OP)
                                 .getEntity()

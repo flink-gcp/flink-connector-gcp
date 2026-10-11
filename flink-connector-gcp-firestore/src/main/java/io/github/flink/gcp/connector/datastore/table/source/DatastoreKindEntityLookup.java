@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreClients;
 import io.github.flink.gcp.connector.datastore.DatastoreCredentials;
+import io.github.flink.gcp.connector.datastore.PropertyPaths;
 import io.github.flink.gcp.connector.datastore.table.DatastoreConnectorOptions;
 
 import javax.annotation.Nullable;
@@ -124,7 +125,7 @@ final class DatastoreKindEntityLookup implements DatastoreEntityLookup {
         }
         String[] paths = new String[properties.length];
         for (int i = 0; i < properties.length; i++) {
-            paths[i] = "`" + properties[i].replace("\\", "\\\\").replace("`", "\\`") + "`";
+            paths[i] = PropertyPaths.segment(properties[i]);
         }
         return paths;
     }

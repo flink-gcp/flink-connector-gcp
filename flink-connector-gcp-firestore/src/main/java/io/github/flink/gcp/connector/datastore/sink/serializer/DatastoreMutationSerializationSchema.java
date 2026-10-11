@@ -39,8 +39,8 @@ import java.io.Serializable;
  * re-sent one write at a time. Each operation answers a replay differently:
  *
  * <ul>
- *   <li>{@link DatastoreMutation#upsert} and {@link DatastoreMutation#delete} — idempotent for that
- *       write; deleting a missing entity succeeds.
+ *   <li>{@link DatastoreMutation#upsert}, {@link DatastoreMutation#upsertMerge} and {@link
+ *       DatastoreMutation#delete} — idempotent for that write; deleting a missing entity succeeds.
  *   <li>{@link DatastoreMutation#insert} — the replay is refused with {@code ALREADY_EXISTS}. The
  *       sink looks the key up and counts the insert as applied when the key holds exactly the
  *       entity it writes; otherwise, or when the lookup fails, it routes the insert to the

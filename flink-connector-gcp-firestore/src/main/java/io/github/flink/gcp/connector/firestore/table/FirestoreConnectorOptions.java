@@ -171,17 +171,20 @@ public final class FirestoreConnectorOptions {
                                     + " for each.");
 
     /**
-     * How a row with a PRIMARY KEY is written: 'set' replaces the document, 'merge' merges the row
-     * into it, and 'update' replaces the table's fields of a document that must exist.
+     * How a row with a PRIMARY KEY is written: 'merge' merges the row into the document, keeping
+     * the fields the table does not declare, 'replace' replaces the document with the row, and
+     * 'update' replaces the table's fields of a document that must exist.
      */
     public static final ConfigOption<WriteMode> SINK_WRITE_MODE =
             ConfigOptions.key("sink.write-mode")
                     .enumType(WriteMode.class)
-                    .defaultValue(WriteMode.SET)
+                    .defaultValue(WriteMode.MERGE)
                     .withDescription(
-                            "How a row with a PRIMARY KEY is written: 'set' replaces the document,"
-                                    + " 'merge' merges the row into it, and 'update' replaces the"
-                                    + " table's fields of a document that must exist.");
+                            "How a row with a PRIMARY KEY is written: 'merge' merges the row into"
+                                    + " the document, keeping the fields the table does not"
+                                    + " declare, 'replace' replaces the document with the row,"
+                                    + " and 'update' replaces the table's fields of a document"
+                                    + " that must exist.");
 
     /** Whether the client library ramps the write rate up gradually. */
     public static final ConfigOption<Boolean> SINK_THROTTLING_ENABLED =

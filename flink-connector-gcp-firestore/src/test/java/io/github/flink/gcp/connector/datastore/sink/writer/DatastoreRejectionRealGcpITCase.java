@@ -77,7 +77,7 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
 
     @Test
     void anInsertOfAnExistingKeyIsAlreadyExistsAndTheCommitAppliesTheOtherWrites() {
-        // The emulator applies none of the other writes of such a commit; the service applies all
+        // The emulator applies only the writes ahead of the refused one; the service applies all
         // of them, so the refused commit is not atomic, only the refused write is left out.
         assertThat(code(DatastoreMutation.insert(entity("existing")))).isEqualTo("ALREADY_EXISTS");
         assertThat(
@@ -95,9 +95,8 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
 
     @Test
     void anUpdateOfAMissingKeyIsNotFoundAndTheCommitAppliesTheOtherWrites() {
-        // As above: the emulator applies none of them.
-        // The client's Batch sends inserts first, so the insert here precedes the refused update
-        // on the wire and the upserts follow it.
+        // As above: the emulator applies only the writes ahead of the refused one. The request
+        // holds the writes in this order, so the insert follows the refused update.
         assertThat(code(DatastoreMutation.update(entity("missing")))).isEqualTo("NOT_FOUND");
         assertThat(
                         code(
@@ -106,7 +105,7 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                                 DatastoreMutation.insert(entity("b-new")),
                                 upsert("b2")))
                 .isEqualTo("NOT_FOUND");
-        assertThat(read(key(kind, "b-new"))).as("the insert before it").isNotNull();
+        assertThat(read(key(kind, "b-new"))).as("the insert after it").isNotNull();
         assertThat(read(key(kind, "b1"))).isNotNull();
         assertThat(read(key(kind, "b2"))).isNotNull();
         assertThat(read(key(kind, "missing"))).isNull();

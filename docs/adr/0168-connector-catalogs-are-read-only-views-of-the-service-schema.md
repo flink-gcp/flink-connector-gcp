@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0168: Connector catalogs are read-only views of the service schema
 
 - Status: Accepted
-- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03), and by [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) (2026-10-11)
+- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03), and by [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) and [#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729) (2026-10-11)
 - Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216), [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548)
 - Modules: base, bigquery, spanner, bigtable, firestore (no catalog); each later connector catalog adds an adoption section here
 - Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog), [Bigtable catalog](../content/docs/connectors/table/bigtable.md#catalog), [connectors without a catalog](../content/docs/connectors/table/_index.md)
@@ -185,7 +185,8 @@ The kind probed for `__property__` held two entities, written to cover each valu
 A derived table would therefore declare a timestamp as a `BIGINT`, a blob as a `STRING` and an array as its element type, each of which fails a scan that reads the column under the default `type-mismatch-policy`; it would declare an embedded entity's values as top-level columns named by their dotted paths, which hold no value; and it would lack every unindexed property.
 A property listed with representations no one Flink type holds, such as `INT64` and `STRING`, with `NULL` alone, or as a point or a key has no Flink type, so the schema rule would fail `getTable` for its kind; `NULL` beside one other representation, such as `BOOLEAN`, fits that representation's nullable type.
 The missing properties also make writing through such a table destructive.
-The `datastore` sink writes each row as an `upsert` of the whole entity (ADR-0184), so an `INSERT INTO` through a derived table would remove the missing properties from every entity it writes, including the columns the sink itself wrote under `sink.unindexed-columns`, and the catalog could not tell which properties it had missed.
+The `datastore` sink wrote each row as an `upsert` of the whole entity (ADR-0184), so an `INSERT INTO` through a derived table would remove the missing properties from every entity it writes, including the columns the sink itself wrote under `sink.unindexed-columns`, and the catalog could not tell which properties it had missed.
+Since [#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729) the sink merges a row into the entity by default, so this holds only under `sink.write-mode` `replace`.
 
 The listing side would have worked, and is recorded for a reopening.
 `__namespace__` lists the default namespace under the numeric id `1`.
@@ -199,4 +200,4 @@ Two alternatives were declined with it:
 - **Statistics** (`__Stat_PropertyType_PropertyName_Kind__`): Google's [statistics](https://cloud.google.com/datastore/docs/concepts/stats) page records an array under its element type and lists no embedded-entity type, and says Datastore drops some statistics for a database with many properties. A kind written since statistics were last computed has none either: a database created within a gated run had none (ADR-0177), and [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719) is waiting for a new database's first ones.
 
 The reopen condition is a service API that reports each property's value type, arrays, embedded entities and unindexed properties included.
-A merge write that leaves undeclared properties untouched ([#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729)) would remove the write hazard only, not the missing types.
+The merge write that [#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729) made the default leaves undeclared properties untouched; it removes the write hazard under that default, not the missing types, so the reopen condition stands.

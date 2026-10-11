@@ -46,10 +46,10 @@ import java.io.UncheckedIOException;
  *
  * <p>{@link #getPayloadBytes()} is the <b>Java-serialized {@link DatastoreMutation}</b>, recovered
  * with an {@code ObjectInputStream} against this connector and the Datastore client library. It is
- * not the Datastore {@code Mutation} protobuf, and that is not a choice: the client library's
- * conversion from an entity to its protobuf is package-private (google-cloud-datastore 3.7.0), so
- * the supported API offers no route to the wire form. The entity and key types are serializable, so
- * their encoding is one the client library maintains.
+ * not the Datastore {@code Mutation} protobuf: the client library's conversion from an entity to
+ * its protobuf is package-private (google-cloud-datastore 3.7.0), and the writer's own encoding of
+ * the commit is internal, so neither is a format a reader of the bytes can rely on. The entity and
+ * key types are serializable, so their encoding is one the client library maintains.
  *
  * <p>A handler that wants the mutation itself should take {@code FailureHandler<FailedMutation>}
  * and read {@link #getMutation()}; the bytes exist for the cross-connector {@code DeadLetterQueue}

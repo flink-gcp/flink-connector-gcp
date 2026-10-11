@@ -113,7 +113,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void everyTypeBecomesItsFirestoreValueAndTheKeyBecomesThePath() throws IOException {
         FirestoreWrite write =
-                serializer(everyTypeSchema(new int[] {0}), WriteMode.SET)
+                serializer(everyTypeSchema(new int[] {0}), WriteMode.REPLACE)
                         .serialize(everyTypeRow("o1"), TestContexts.NO_OP);
 
         assertThat(write.getOperation()).isEqualTo(FirestoreWrite.Operation.SET);
@@ -150,7 +150,7 @@ class RowDataSerializationSchemaTest {
         FirestoreWrite write =
                 serializer(
                                 FirestoreTableSchema.of(type, new int[] {0}, List.of(), List.of()),
-                                WriteMode.SET)
+                                WriteMode.REPLACE)
                         .serialize(
                                 GenericRowData.of(
                                         StringData.fromString("m1"),
@@ -174,6 +174,11 @@ class RowDataSerializationSchemaTest {
                                 .serialize(everyTypeRow("o1"), TestContexts.NO_OP)
                                 .getOperation())
                 .isEqualTo(FirestoreWrite.Operation.SET_MERGE);
+        assertThat(
+                        serializer(schema, WriteMode.REPLACE)
+                                .serialize(everyTypeRow("o1"), TestContexts.NO_OP)
+                                .getOperation())
+                .isEqualTo(FirestoreWrite.Operation.SET);
         GenericRowData updateAfter = everyTypeRow("o1");
         updateAfter.setRowKind(RowKind.UPDATE_AFTER);
         assertThat(
@@ -186,7 +191,7 @@ class RowDataSerializationSchemaTest {
         GenericRowData delete = new GenericRowData(RowKind.DELETE, EVERY_TYPE.getFieldCount());
         delete.setField(0, StringData.fromString("o1"));
         FirestoreWrite deleted =
-                serializer(schema, WriteMode.SET).serialize(delete, TestContexts.NO_OP);
+                serializer(schema, WriteMode.REPLACE).serialize(delete, TestContexts.NO_OP);
         assertThat(deleted.getOperation()).isEqualTo(FirestoreWrite.Operation.DELETE);
         assertThat(deleted.getDocumentPath()).isEqualTo("users/alice/orders/o1");
     }
@@ -210,7 +215,7 @@ class RowDataSerializationSchemaTest {
         FirestoreTableSchema schema =
                 FirestoreTableSchema.of(
                         type, new int[] {0}, List.of("places.value"), List.of("owners.value"));
-        RowDataSerializationSchema serializer = serializer(schema, WriteMode.SET);
+        RowDataSerializationSchema serializer = serializer(schema, WriteMode.REPLACE);
         Map<StringData, StringData> owners = new LinkedHashMap<>();
         owners.put(StringData.fromString("lead"), StringData.fromString("staff/alice"));
         Map<StringData, Object> places = new LinkedHashMap<>();
@@ -266,7 +271,7 @@ class RowDataSerializationSchemaTest {
         // one that still arrives a routed failure rather than an index error from the writer.
         assertThatThrownBy(
                         () ->
-                                serializer(everyTypeSchema(new int[0]), WriteMode.SET)
+                                serializer(everyTypeSchema(new int[0]), WriteMode.REPLACE)
                                         .serialize(delete, TestContexts.NO_OP))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("without a PRIMARY KEY, which has no document to delete");
@@ -275,7 +280,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void withoutAKeyEveryRowIsAddedUnderAFreshDrawnId() throws IOException {
         RowDataSerializationSchema serializer =
-                serializer(everyTypeSchema(new int[0]), WriteMode.SET);
+                serializer(everyTypeSchema(new int[0]), WriteMode.REPLACE);
 
         FirestoreWrite first = serializer.serialize(everyTypeRow("ignored"), TestContexts.NO_OP);
         FirestoreWrite second = serializer.serialize(everyTypeRow("ignored"), TestContexts.NO_OP);
@@ -293,7 +298,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void aKeyThatWouldNameAnotherDocumentIsRefusedNamingTheColumn() {
         RowDataSerializationSchema serializer =
-                serializer(everyTypeSchema(new int[] {0}), WriteMode.SET);
+                serializer(everyTypeSchema(new int[] {0}), WriteMode.REPLACE);
 
         for (String id : List.of("", "a/b", "a/b/c")) {
             assertThatThrownBy(() -> serializer.serialize(everyTypeRow(id), TestContexts.NO_OP))
@@ -306,7 +311,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void aValueWithoutAFirestoreFormFailsTheRecordNamingTheField() {
         RowDataSerializationSchema serializer =
-                serializer(everyTypeSchema(new int[] {0}), WriteMode.SET);
+                serializer(everyTypeSchema(new int[] {0}), WriteMode.REPLACE);
 
         GenericRowData badReference = everyTypeRow("o1");
         badReference.setField(11, StringData.fromString("users"));

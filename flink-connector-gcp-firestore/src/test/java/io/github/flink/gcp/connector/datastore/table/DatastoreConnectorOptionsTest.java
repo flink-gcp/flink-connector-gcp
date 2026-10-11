@@ -40,14 +40,28 @@ class DatastoreConnectorOptionsTest {
     @Test
     void onlyTheRecordedOptionsCarryADefault() {
         // A mapped option's default lives on the connector's own builder and is applied by not
-        // calling a setter. These two are table-owned: no builder setter takes them, and the
+        // calling a setter. These three are table-owned: no builder setter takes them, and the
         // factory reads each with get().
         assertThat(DeclaredOptions.all()).isNotEmpty();
         assertThat(DeclaredOptions.all())
                 .filteredOn(ConfigOption::hasDefaultValue)
                 .containsExactlyInAnyOrder(
                         DatastoreConnectorOptions.TYPE_MISMATCH_POLICY,
-                        DatastoreConnectorOptions.LOOKUP_ASYNC);
+                        DatastoreConnectorOptions.LOOKUP_ASYNC,
+                        DatastoreConnectorOptions.SINK_WRITE_MODE);
+    }
+
+    @Test
+    void everyWriteModeParsesFromItsDdlSpelling() {
+        ConfigOption<WriteMode> option =
+                ConfigOptions.key("k").enumType(WriteMode.class).noDefaultValue();
+        for (WriteMode mode : WriteMode.values()) {
+            assertThat(Configuration.fromMap(Map.of("k", mode.toString())).get(option))
+                    .isEqualTo(mode);
+        }
+        assertThat(List.of(WriteMode.values()))
+                .extracting(WriteMode::toString)
+                .containsExactly("merge", "replace");
     }
 
     @Test

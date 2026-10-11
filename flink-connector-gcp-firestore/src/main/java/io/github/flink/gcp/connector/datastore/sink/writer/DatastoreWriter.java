@@ -261,9 +261,11 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         try {
             size = MutationSizeEstimator.sizeOf(write);
         } catch (RuntimeException e) {
-            // Insurance rather than a path with a known trigger: the size is the client library's
-            // own encoding of a value it accepted, but it reads user-supplied data, and without
-            // this one such record would fail the job even under a dropping policy.
+            // Insurance rather than a path with a known trigger: the size is the writer's own
+            // encoding of the write, the one its commit sends, and EntityProtosTest holds that
+            // encoding to every value type the client library has; but it reads user-supplied
+            // data, and without this one such record would fail the job even under a dropping
+            // policy, where now it is routed before it could reach a commit.
             route(write, "Failed to size the Datastore write against the batch limits.", e);
             return;
         }
@@ -631,7 +633,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                 access.commit(writes);
                 return null;
             } catch (RuntimeException e) {
-                // Deliberately broad. The client library throws DatastoreException, but a broken
+                // Deliberately broad. The RPC object throws an ApiException, but a broken
                 // channel or a classloading failure arrives as something else, and the classifier
                 // calls a failure it cannot read fatal — so nothing this writer does not
                 // understand is retried into silence.
