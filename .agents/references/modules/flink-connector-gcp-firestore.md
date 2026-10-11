@@ -297,6 +297,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `WriterOptionsMapper`, `CrossVersionChangelogMode` in `datastore.table.sink`). The changelog shim
   is a per-package copy, as Spanner, BigQuery and Bigtable keep theirs. The timestamp conversion
   repeats the Native-mode package's; hoisting it into base is deferred (PR #1677 round one).
+- **Markers are `geo-point-field-paths` / `reference-field-paths`** (ADR-0184's #1730 section;
+  Native mode's keys and path grammar, no `MAP`). A key value is a `ROW<kind, name, id>` with an
+  optional `ancestors ARRAY<ROW<kind, name, id>>`, always in the table's own project, database and
+  namespace: the service refuses a key value of another database and of a nonexistent project
+  (another existing project is unmeasured), stores one of another namespace, and the scan reads
+  that as a mismatch. A new type goes into
+  `DatastoreTableSchema`, both converters and the docs type table together; data-only failures
+  (no kind, neither/both of name and id, out-of-range point) fail the record, never the plan.
 - **A kind's lineage identity comes from `datastore.DatastoreLineage.kind`**, which the source and
   the table sink both call, so the two report the same `datastore-kind` resource.
 

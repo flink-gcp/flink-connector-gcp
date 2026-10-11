@@ -22,6 +22,7 @@ import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.InstantiationUtil;
 
@@ -35,7 +36,9 @@ import com.google.cloud.datastore.LatLng;
 import com.google.cloud.datastore.ListValue;
 import com.google.cloud.datastore.LongValue;
 import com.google.cloud.datastore.NullValue;
+import com.google.cloud.datastore.PathElement;
 import com.google.cloud.datastore.StringValue;
+import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.source.serializer.EntityMetadata;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
 import io.github.flink.gcp.connector.datastore.table.TypeMismatchPolicy;
@@ -70,8 +73,37 @@ class RowDataDeserializationSchemaTest {
 
     private static RowDataDeserializationSchema schema(
             RowType row, int key, int[] columns, TypeMismatchPolicy policy, String... metadata) {
+        return schema(
+                DatastoreTableSchema.of(
+                        row,
+                        key < 0 ? new int[0] : new int[] {key},
+                        List.of(),
+                        List.of(),
+                        List.of()),
+                columns,
+                policy,
+                metadata);
+    }
+
+    private static RowDataDeserializationSchema schema(
+            DatastoreTableSchema schema,
+            int[] columns,
+            TypeMismatchPolicy policy,
+            String... metadata) {
+        return schema(schema, DatabaseDestination.of("p"), "", columns, policy, metadata);
+    }
+
+    private static RowDataDeserializationSchema schema(
+            DatastoreTableSchema schema,
+            DatabaseDestination database,
+            String namespace,
+            int[] columns,
+            TypeMismatchPolicy policy,
+            String... metadata) {
         return new RowDataDeserializationSchema(
-                DatastoreTableSchema.of(row, key < 0 ? new int[0] : new int[] {key}, List.of()),
+                schema,
+                database,
+                namespace,
                 columns,
                 List.of(metadata),
                 policy,
@@ -410,9 +442,27 @@ class RowDataDeserializationSchemaTest {
                 InstantiationUtil.clone(original, getClass().getClassLoader());
 
         assertThat(copy).isEqualTo(original).hasSameHashCodeAs(original);
+        DatastoreTableSchema table =
+                DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of());
         assertThat(copy)
                 .isNotEqualTo(schema(row, -1, TypeMismatchPolicy.FAIL, "version"))
-                .isNotEqualTo(schema(row, -1, TypeMismatchPolicy.NULL));
+                .isNotEqualTo(schema(row, -1, TypeMismatchPolicy.NULL))
+                .isNotEqualTo(
+                        schema(
+                                table,
+                                DatabaseDestination.of("p", "db"),
+                                "",
+                                new int[] {0},
+                                TypeMismatchPolicy.NULL,
+                                "version"))
+                .isNotEqualTo(
+                        schema(
+                                table,
+                                DatabaseDestination.of("p"),
+                                "tenant",
+                                new int[] {0},
+                                TypeMismatchPolicy.NULL,
+                                "version"));
         assertThat(read(copy, entity("a").set("v", 3L).build()).getLong(1)).isEqualTo(9L);
     }
 
@@ -431,5 +481,262 @@ class RowDataDeserializationSchemaTest {
 
         @Override
         public void close() {}
+    }
+
+    private static DataType pathElement(DataType name, DataType id) {
+        return DataTypes.ROW(
+                DataTypes.FIELD("kind", DataTypes.STRING()),
+                DataTypes.FIELD("name", name),
+                DataTypes.FIELD("id", id));
+    }
+
+    private static final DataType PATH_ELEMENT =
+            pathElement(DataTypes.STRING(), DataTypes.BIGINT());
+
+    private static final RowType MARKED =
+            row(
+                    DataTypes.FIELD(
+                            "at",
+                            DataTypes.ROW(
+                                    DataTypes.FIELD("latitude", DataTypes.DOUBLE()),
+                                    DataTypes.FIELD("longitude", DataTypes.DOUBLE()))),
+                    DataTypes.FIELD("owner", PATH_ELEMENT),
+                    DataTypes.FIELD(
+                            "child",
+                            DataTypes.ROW(
+                                    DataTypes.FIELD("kind", DataTypes.STRING()),
+                                    DataTypes.FIELD("name", DataTypes.STRING()),
+                                    DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                    DataTypes.FIELD("ancestors", DataTypes.ARRAY(PATH_ELEMENT)))),
+                    DataTypes.FIELD("refs", DataTypes.ARRAY(PATH_ELEMENT)),
+                    DataTypes.FIELD(
+                            "named",
+                            pathElement(DataTypes.STRING().notNull(), DataTypes.BIGINT())));
+
+    private static RowDataDeserializationSchema marked(TypeMismatchPolicy policy) {
+        return schema(
+                DatastoreTableSchema.of(
+                        MARKED,
+                        new int[0],
+                        List.of(),
+                        List.of("at"),
+                        List.of("owner", "child", "refs", "named")),
+                IntStream.range(0, MARKED.getFieldCount()).toArray(),
+                policy);
+    }
+
+    @Test
+    void markedColumnsReadGeoPointsAndKeyValues() throws IOException {
+        Entity entity =
+                entity("a")
+                        .set("at", LatLng.of(-35.5, 139.25))
+                        .set("owner", Key.newBuilder("p", "User", "u1").build())
+                        .set(
+                                "child",
+                                Key.newBuilder("p", "Line", 3L)
+                                        .addAncestors(
+                                                PathElement.of("Root", "r"),
+                                                PathElement.of("Mid", -7L))
+                                        .build())
+                        .set(
+                                "refs",
+                                ListValue.of(
+                                        com.google.cloud.datastore.KeyValue.of(
+                                                Key.newBuilder("p", "User", 9L).build()),
+                                        NullValue.of()))
+                        .set("named", Key.newBuilder("p", "User", "u2").build())
+                        .build();
+
+        RowData read = read(marked(TypeMismatchPolicy.FAIL), entity);
+
+        RowData at = read.getRow(0, 2);
+        assertThat(at.getDouble(0)).isEqualTo(-35.5);
+        assertThat(at.getDouble(1)).isEqualTo(139.25);
+        RowData owner = read.getRow(1, 3);
+        assertThat(owner.getString(0)).isEqualTo(StringData.fromString("User"));
+        assertThat(owner.getString(1)).isEqualTo(StringData.fromString("u1"));
+        assertThat(owner.isNullAt(2)).isTrue();
+        RowData child = read.getRow(2, 4);
+        assertThat(child.getString(0)).isEqualTo(StringData.fromString("Line"));
+        assertThat(child.isNullAt(1)).isTrue();
+        assertThat(child.getLong(2)).isEqualTo(3L);
+        ArrayData ancestors = child.getArray(3);
+        assertThat(ancestors.size()).isEqualTo(2);
+        assertThat(ancestors.getRow(0, 3).getString(1)).isEqualTo(StringData.fromString("r"));
+        assertThat(ancestors.getRow(1, 3).getString(0)).isEqualTo(StringData.fromString("Mid"));
+        assertThat(ancestors.getRow(1, 3).getLong(2)).isEqualTo(-7L);
+        ArrayData refs = read.getArray(3);
+        assertThat(refs.getRow(0, 3).getLong(2)).isEqualTo(9L);
+        assertThat(refs.isNullAt(1)).isTrue();
+        assertThat(read.getRow(4, 3).getString(1)).isEqualTo(StringData.fromString("u2"));
+    }
+
+    @Test
+    void aKeyWithoutAncestorsReadsAnEmptyAncestorsArray() throws IOException {
+        Entity entity = entity("a").set("child", Key.newBuilder("p", "Line", "l").build()).build();
+
+        RowData child = read(marked(TypeMismatchPolicy.FAIL), entity).getRow(2, 4);
+
+        assertThat(child.getArray(3).size()).isZero();
+    }
+
+    @Test
+    void aKeyOutsideTheTablesPartitionOrWithUndeclaredAncestorsIsAMismatch() throws IOException {
+        Key[] outside = {
+            Key.newBuilder("other", "User", "u").build(),
+            Key.newBuilder("p", "User", "u", "db").build(),
+            Key.newBuilder("p", "User", "u").setNamespace("tenant").build(),
+        };
+        for (Key key : outside) {
+            Entity entity = entity("a").set("owner", key).build();
+            assertThatThrownBy(() -> read(marked(TypeMismatchPolicy.FAIL), entity))
+                    .as(key.toString())
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Property 'owner' holds the key")
+                    .hasMessageContaining(
+                            "which is not in the table's project, database and namespace")
+                    .hasMessageContaining("'type-mismatch-policy' = 'null'");
+            assertThat(read(marked(TypeMismatchPolicy.NULL), entity).isNullAt(1)).isTrue();
+        }
+        Entity withParent =
+                entity("a")
+                        .set(
+                                "owner",
+                                Key.newBuilder("p", "User", "u")
+                                        .addAncestor(PathElement.of("Org", "o"))
+                                        .build())
+                        .build();
+        assertThatThrownBy(() -> read(marked(TypeMismatchPolicy.FAIL), withParent))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("which has ancestors, but its ROW declares no 'ancestors'");
+    }
+
+    @Test
+    void aMarkedColumnMismatchesTheOtherValueTypesAndAnUnmarkedOneMismatchesTheseValues()
+            throws IOException {
+        Entity entity =
+                entity("a")
+                        .set("at", Key.newBuilder("p", "User", "u").build())
+                        .set("owner", LatLng.of(1, 2))
+                        .set("named", Key.newBuilder("p", "User", 4L).build())
+                        .build();
+
+        assertThatThrownBy(() -> read(marked(TypeMismatchPolicy.FAIL), entity))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(
+                        "Property 'at' holds a value of type KEY, which is not a geographical"
+                                + " point");
+        RowData lenient = read(marked(TypeMismatchPolicy.NULL), entity);
+        assertThat(lenient.isNullAt(0)).isTrue();
+        assertThat(lenient.isNullAt(1)).as("a point is not a key").isTrue();
+        assertThat(lenient.isNullAt(4)).as("an id key in a NOT NULL name").isTrue();
+        assertThatThrownBy(
+                        () ->
+                                read(
+                                        marked(TypeMismatchPolicy.FAIL),
+                                        entity("a")
+                                                .set(
+                                                        "named",
+                                                        Key.newBuilder("p", "User", 4L).build())
+                                                .build()))
+                .hasMessageContaining(
+                        "Property 'named' holds a key whose path element User has no name, but"
+                                + " the table declares its name NOT NULL");
+
+        // Unmarked, the same ROWs are embedded entities.
+        RowType unmarked = MARKED;
+        RowDataDeserializationSchema plain = schema(unmarked, -1, TypeMismatchPolicy.FAIL);
+        assertThatThrownBy(
+                        () ->
+                                read(
+                                        plain,
+                                        entity("a")
+                                                .set("owner", Key.newBuilder("p", "U", "u").build())
+                                                .build()))
+                .hasMessageContaining(
+                        "Property 'owner' holds a value of type KEY, which is not an embedded"
+                                + " entity");
+        assertThatThrownBy(() -> read(plain, entity("a").set("at", LatLng.of(1, 2)).build()))
+                .hasMessageContaining(
+                        "Property 'at' holds a value of type LAT_LNG, which is not an embedded"
+                                + " entity");
+    }
+
+    @Test
+    void aKeyValueIsComparedWithTheTablesOwnDatabaseAndNamespace() throws IOException {
+        RowType row = row(DataTypes.FIELD("owner", PATH_ELEMENT));
+        RowDataDeserializationSchema named =
+                schema(
+                        DatastoreTableSchema.of(
+                                row, new int[0], List.of(), List.of(), List.of("owner")),
+                        DatabaseDestination.of("p", "db"),
+                        "tenant",
+                        new int[] {0},
+                        TypeMismatchPolicy.FAIL);
+        Key inTable = Key.newBuilder("p", "User", "u", "db").setNamespace("tenant").build();
+
+        assertThat(read(named, entity("a").set("owner", inTable).build()).getRow(0, 3).getString(1))
+                .isEqualTo(StringData.fromString("u"));
+        for (Key outside :
+                List.of(
+                        Key.newBuilder("p", "User", "u").setNamespace("tenant").build(),
+                        Key.newBuilder("p", "User", "u", "db").build())) {
+            assertThatThrownBy(() -> read(named, entity("a").set("owner", outside).build()))
+                    .as(outside.toString())
+                    .hasMessageContaining(
+                            "which is not in the table's project, database and namespace");
+        }
+    }
+
+    @Test
+    void aNotNullNameOrIdIsHeldForEveryPathElement() {
+        RowType row =
+                row(
+                        DataTypes.FIELD(
+                                "child",
+                                DataTypes.ROW(
+                                        DataTypes.FIELD("kind", DataTypes.STRING()),
+                                        DataTypes.FIELD("name", DataTypes.STRING()),
+                                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                                        DataTypes.FIELD(
+                                                "ancestors",
+                                                DataTypes.ARRAY(
+                                                        pathElement(
+                                                                DataTypes.STRING().notNull(),
+                                                                DataTypes.BIGINT()))))));
+        RowDataDeserializationSchema schema =
+                schema(
+                        DatastoreTableSchema.of(
+                                row, new int[0], List.of(), List.of(), List.of("child")),
+                        new int[] {0},
+                        TypeMismatchPolicy.FAIL);
+
+        assertThatThrownBy(
+                        () ->
+                                read(
+                                        schema,
+                                        entity("a")
+                                                .set(
+                                                        "child",
+                                                        Key.newBuilder("p", "Line", "l").build())
+                                                .build()))
+                .hasMessageContaining(
+                        "Property 'child' holds a key whose path element Line has no id, but the"
+                                + " table declares its id NOT NULL");
+        assertThatThrownBy(
+                        () ->
+                                read(
+                                        schema,
+                                        entity("a")
+                                                .set(
+                                                        "child",
+                                                        Key.newBuilder("p", "Line", 3L)
+                                                                .addAncestor(
+                                                                        PathElement.of("Mid", -7L))
+                                                                .build())
+                                                .build()))
+                .hasMessageContaining(
+                        "Property 'child' holds a key whose path element Mid has no name, but the"
+                                + " table declares its name NOT NULL");
     }
 }

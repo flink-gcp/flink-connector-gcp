@@ -85,7 +85,9 @@ class DatastoreRowDataLookupFunctionTest {
                                     .getLogicalType();
         }
         return new RowDataDeserializationSchema(
-                DatastoreTableSchema.of(type, new int[] {0}, List.of()),
+                DatastoreTableSchema.of(type, new int[] {0}, List.of(), List.of(), List.of()),
+                DATABASE,
+                "",
                 new int[] {0, 1},
                 metadata,
                 TypeMismatchPolicy.FAIL,

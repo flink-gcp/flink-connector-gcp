@@ -88,7 +88,7 @@ public final class RowDataSerializationSchema implements KeyAllocatingSerializat
                 schema.hasPrimaryKey()
                         ? schema.getRowType().getFieldNames().get(schema.getKeyIndex())
                         : null;
-        this.properties = RowDataToDatastoreConverter.forEntity(schema);
+        this.properties = RowDataToDatastoreConverter.forEntity(schema, database, namespace);
     }
 
     @Override

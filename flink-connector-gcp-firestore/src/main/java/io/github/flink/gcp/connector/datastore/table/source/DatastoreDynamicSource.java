@@ -152,7 +152,13 @@ public final class DatastoreDynamicSource
                         .database(database)
                         .deserializer(
                                 new RowDataDeserializationSchema(
-                                        schema, columns, metadataKeys, policy, producedType))
+                                        schema,
+                                        database,
+                                        namespace,
+                                        columns,
+                                        metadataKeys,
+                                        policy,
+                                        producedType))
                         .kind(kind);
         if (!namespace.isEmpty()) {
             builder.namespace(namespace);
@@ -174,6 +180,8 @@ public final class DatastoreDynamicSource
         RowDataDeserializationSchema deserializer =
                 new RowDataDeserializationSchema(
                         schema,
+                        database,
+                        namespace,
                         columns,
                         metadataKeys,
                         policy,

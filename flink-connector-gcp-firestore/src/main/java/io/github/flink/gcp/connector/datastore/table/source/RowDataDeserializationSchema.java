@@ -26,6 +26,7 @@ import org.apache.flink.util.Collector;
 
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.Key;
+import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityMetadataDeserializationSchema;
 import io.github.flink.gcp.connector.datastore.source.serializer.EntityMetadata;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
@@ -50,6 +51,8 @@ final class RowDataDeserializationSchema
     private static final long serialVersionUID = 1L;
 
     private final DatastoreTableSchema schema;
+    private final DatabaseDestination database;
+    private final String namespace;
     private final TypeMismatchPolicy policy;
     private final int[] columns;
     private final int keyIndex;
@@ -62,6 +65,8 @@ final class RowDataDeserializationSchema
      * Creates the schema.
      *
      * @param schema the checked table schema
+     * @param database the table's database, which the key values it reads must address
+     * @param namespace the table's namespace, empty for the default one
      * @param columns the physical columns to read, by index, in the produced order
      * @param metadataKeys the metadata keys to read after them
      * @param policy what a mismatched value does
@@ -69,13 +74,19 @@ final class RowDataDeserializationSchema
      */
     RowDataDeserializationSchema(
             DatastoreTableSchema schema,
+            DatabaseDestination database,
+            String namespace,
             int[] columns,
             List<String> metadataKeys,
             TypeMismatchPolicy policy,
             TypeInformation<RowData> producedType) {
         RowType rowType = schema.getRowType();
         this.schema = schema;
+        this.database = database;
+        this.namespace = namespace;
         this.policy = policy;
+        DatastoreToRowDataConverter.Context context =
+                new DatastoreToRowDataConverter.Context(schema, database, namespace);
         this.columns = columns.clone();
         this.keyIndex = schema.getKeyIndex();
         this.names = new String[columns.length];
@@ -86,7 +97,7 @@ final class RowDataDeserializationSchema
             if (column != keyIndex) {
                 converters[i] =
                         DatastoreToRowDataConverter.create(
-                                names[i], rowType.getTypeAt(column), policy);
+                                context, names[i], rowType.getTypeAt(column), policy);
             }
         }
         this.metadata =
@@ -203,6 +214,8 @@ final class RowDataDeserializationSchema
         }
         RowDataDeserializationSchema that = (RowDataDeserializationSchema) o;
         return schema.equals(that.schema)
+                && database.equals(that.database)
+                && namespace.equals(that.namespace)
                 && policy == that.policy
                 && Arrays.equals(columns, that.columns)
                 && Arrays.equals(metadata, that.metadata)
@@ -211,6 +224,12 @@ final class RowDataDeserializationSchema
 
     @Override
     public int hashCode() {
-        return Objects.hash(schema, policy, Arrays.hashCode(columns), Arrays.hashCode(metadata));
+        return Objects.hash(
+                schema,
+                database,
+                namespace,
+                policy,
+                Arrays.hashCode(columns),
+                Arrays.hashCode(metadata));
     }
 }

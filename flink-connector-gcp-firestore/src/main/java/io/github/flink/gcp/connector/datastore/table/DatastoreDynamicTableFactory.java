@@ -76,6 +76,8 @@ public final class DatastoreDynamicTableFactory
                         DatastoreConnectorOptions.NAMESPACE,
                         DatastoreConnectorOptions.EMULATOR_ENDPOINT,
                         DatastoreConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
+                        DatastoreConnectorOptions.GEO_POINT_FIELD_PATHS,
+                        DatastoreConnectorOptions.REFERENCE_FIELD_PATHS,
                         DatastoreConnectorOptions.TYPE_MISMATCH_POLICY,
                         DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         DatastoreConnectorOptions.SCAN_READ_TIME,
@@ -151,6 +153,10 @@ public final class DatastoreDynamicTableFactory
                 (RowType) context.getPhysicalRowDataType().getLogicalType(),
                 context.getPrimaryKeyIndexes(),
                 config.getOptional(DatastoreConnectorOptions.SINK_UNINDEXED_COLUMNS)
+                        .orElse(Collections.emptyList()),
+                config.getOptional(DatastoreConnectorOptions.GEO_POINT_FIELD_PATHS)
+                        .orElse(Collections.emptyList()),
+                config.getOptional(DatastoreConnectorOptions.REFERENCE_FIELD_PATHS)
                         .orElse(Collections.emptyList()));
     }
 

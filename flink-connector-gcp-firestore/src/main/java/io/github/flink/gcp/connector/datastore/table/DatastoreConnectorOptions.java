@@ -87,6 +87,36 @@ public final class DatastoreConnectorOptions {
                                     + " process.");
 
     /**
+     * Field paths of ROW values with the DOUBLE fields latitude and longitude that are Datastore
+     * geographical points, for example 'location' or 'stops.position'.
+     */
+    public static final ConfigOption<List<String>> GEO_POINT_FIELD_PATHS =
+            ConfigOptions.key("geo-point-field-paths")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Field paths of ROW values with the DOUBLE fields latitude and"
+                                    + " longitude that are Datastore geographical points, for"
+                                    + " example 'location' or 'stops.position'.");
+
+    /**
+     * Field paths of ROW values that are Datastore key values in the table's namespace: the fields
+     * kind, name and id of the key's last path element, optionally followed by ancestors, for
+     * example 'owner' or 'items.product'.
+     */
+    public static final ConfigOption<List<String>> REFERENCE_FIELD_PATHS =
+            ConfigOptions.key("reference-field-paths")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Field paths of ROW values that are Datastore key values in the"
+                                    + " table's namespace: the fields kind, name and id of the"
+                                    + " key's last path element, optionally followed by"
+                                    + " ancestors, for example 'owner' or 'items.product'.");
+
+    /**
      * What a read does with a stored value whose type does not match its column: 'fail' the read,
      * or read the field as 'null'.
      */

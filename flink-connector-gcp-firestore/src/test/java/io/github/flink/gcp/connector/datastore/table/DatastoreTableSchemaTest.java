@@ -39,7 +39,7 @@ class DatastoreTableSchemaTest {
     }
 
     private static DatastoreTableSchema of(RowType row, int... key) {
-        return DatastoreTableSchema.of(row, key, List.of());
+        return DatastoreTableSchema.of(row, key, List.of(), List.of(), List.of());
     }
 
     @Test
@@ -230,17 +230,30 @@ class DatastoreTableSchemaTest {
                         DataTypes.FIELD(
                                 "r", DataTypes.ROW(DataTypes.FIELD("x", DataTypes.STRING()))));
 
-        DatastoreTableSchema schema = DatastoreTableSchema.of(row, new int[] {0}, List.of("body"));
+        DatastoreTableSchema schema =
+                DatastoreTableSchema.of(row, new int[] {0}, List.of("body"), List.of(), List.of());
 
         assertThat(schema.isUnindexed("body")).isTrue();
         assertThat(schema.isUnindexed("r")).isFalse();
-        assertThatThrownBy(() -> DatastoreTableSchema.of(row, new int[] {0}, List.of("id")))
+        assertThatThrownBy(
+                        () ->
+                                DatastoreTableSchema.of(
+                                        row, new int[] {0}, List.of("id"), List.of(), List.of()))
                 .hasMessageContaining("names the PRIMARY KEY column 'id'");
-        assertThatThrownBy(() -> DatastoreTableSchema.of(row, new int[] {0}, List.of("r.x")))
+        assertThatThrownBy(
+                        () ->
+                                DatastoreTableSchema.of(
+                                        row, new int[] {0}, List.of("r.x"), List.of(), List.of()))
                 .hasMessageContaining("names columns the table does not declare: 'r.x'");
         // 'body;;r' parses to an empty element, which the message must still show.
         assertThatThrownBy(
-                        () -> DatastoreTableSchema.of(row, new int[] {0}, List.of("body", "", "r")))
+                        () ->
+                                DatastoreTableSchema.of(
+                                        row,
+                                        new int[] {0},
+                                        List.of("body", "", "r"),
+                                        List.of(),
+                                        List.of()))
                 .hasMessageContaining("names columns the table does not declare: ''");
     }
 
@@ -248,9 +261,234 @@ class DatastoreTableSchemaTest {
     void equalSchemasAreEqual() {
         RowType row = row(DataTypes.FIELD("s", DataTypes.STRING()));
 
-        assertThat(DatastoreTableSchema.of(row, new int[0], List.of("s")))
-                .isEqualTo(DatastoreTableSchema.of(row, new int[0], List.of("s")))
-                .hasSameHashCodeAs(DatastoreTableSchema.of(row, new int[0], List.of("s")))
-                .isNotEqualTo(DatastoreTableSchema.of(row, new int[0], List.of()));
+        assertThat(DatastoreTableSchema.of(row, new int[0], List.of("s"), List.of(), List.of()))
+                .isEqualTo(
+                        DatastoreTableSchema.of(
+                                row, new int[0], List.of("s"), List.of(), List.of()))
+                .hasSameHashCodeAs(
+                        DatastoreTableSchema.of(
+                                row, new int[0], List.of("s"), List.of(), List.of()))
+                .isNotEqualTo(
+                        DatastoreTableSchema.of(row, new int[0], List.of(), List.of(), List.of()));
+    }
+
+    private static DataType pathElement() {
+        return DataTypes.ROW(
+                DataTypes.FIELD("kind", DataTypes.STRING()),
+                DataTypes.FIELD("name", DataTypes.STRING()),
+                DataTypes.FIELD("id", DataTypes.BIGINT()));
+    }
+
+    private static DataType keyWithAncestors() {
+        return DataTypes.ROW(
+                DataTypes.FIELD("kind", DataTypes.STRING()),
+                DataTypes.FIELD("name", DataTypes.STRING()),
+                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                DataTypes.FIELD("ancestors", DataTypes.ARRAY(pathElement())));
+    }
+
+    private static DataType geoPoint() {
+        return DataTypes.ROW(
+                DataTypes.FIELD("latitude", DataTypes.DOUBLE()),
+                DataTypes.FIELD("longitude", DataTypes.DOUBLE()));
+    }
+
+    private static DatastoreTableSchema marked(
+            RowType row, List<String> geoPoints, List<String> references) {
+        return DatastoreTableSchema.of(row, new int[] {0}, List.of(), geoPoints, references);
+    }
+
+    @Test
+    void markersNameGeoPointsAndKeyValuesAtAnyDepthAndThroughAnArray() {
+        RowType row =
+                row(
+                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("at", geoPoint()),
+                        DataTypes.FIELD("owner", pathElement()),
+                        DataTypes.FIELD("parent", keyWithAncestors()),
+                        DataTypes.FIELD("refs", DataTypes.ARRAY(pathElement())),
+                        DataTypes.FIELD("route", DataTypes.ARRAY(geoPoint())),
+                        DataTypes.FIELD(
+                                "stop",
+                                DataTypes.ROW(
+                                        DataTypes.FIELD("position", geoPoint()),
+                                        DataTypes.FIELD("by", pathElement().notNull()))),
+                        // Unmarked, the same shapes are ordinary embedded entities.
+                        DataTypes.FIELD("plain", geoPoint()),
+                        DataTypes.FIELD("plainKey", pathElement()));
+
+        DatastoreTableSchema schema =
+                marked(
+                        row,
+                        List.of("at", "route", "stop.position"),
+                        List.of("owner", "parent", "refs", "stop.by"));
+
+        assertThat(schema.isGeoPoint("at")).isTrue();
+        assertThat(schema.isGeoPoint("route")).isTrue();
+        assertThat(schema.isGeoPoint("stop.position")).isTrue();
+        assertThat(schema.isReference("owner")).isTrue();
+        assertThat(schema.isReference("parent")).isTrue();
+        assertThat(schema.isReference("refs")).isTrue();
+        assertThat(schema.isReference("stop.by")).isTrue();
+        assertThat(schema.isGeoPoint("plain")).isFalse();
+        assertThat(schema.isReference("plainKey")).isFalse();
+    }
+
+    @Test
+    void aGeoPointMarkerRefusesAnythingButTheLatitudeLongitudeRow() {
+        for (DataType type :
+                List.of(
+                        DataTypes.DOUBLE(),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("longitude", DataTypes.DOUBLE()),
+                                DataTypes.FIELD("latitude", DataTypes.DOUBLE())),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("latitude", DataTypes.DOUBLE()),
+                                DataTypes.FIELD("longitude", DataTypes.BIGINT())),
+                        DataTypes.ROW(DataTypes.FIELD("latitude", DataTypes.DOUBLE())))) {
+            RowType row =
+                    row(
+                            DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                            DataTypes.FIELD("at", type));
+            assertThatThrownBy(() -> marked(row, List.of("at"), List.of()))
+                    .as(type.toString())
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Field 'at' has the type")
+                    .hasMessageContaining(
+                            "geo-point-field-paths names it, so it must be a ROW of the DOUBLE"
+                                    + " fields latitude and longitude");
+        }
+    }
+
+    @Test
+    void aReferenceMarkerRefusesAnythingButAKeyRow() {
+        for (DataType type :
+                List.of(
+                        DataTypes.STRING(),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING())),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                DataTypes.FIELD("name", DataTypes.STRING())),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.STRING())),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.BIGINT()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT())),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                DataTypes.FIELD("parent", DataTypes.ARRAY(pathElement()))),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                DataTypes.FIELD("ancestors", pathElement())),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                DataTypes.FIELD(
+                                        "ancestors",
+                                        DataTypes.ARRAY(
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("kind", DataTypes.STRING()),
+                                                        DataTypes.FIELD(
+                                                                "name", DataTypes.STRING()))))),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                DataTypes.FIELD(
+                                        "ancestors",
+                                        DataTypes.ARRAY(
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("kind", DataTypes.STRING()),
+                                                        DataTypes.FIELD("name", DataTypes.STRING()),
+                                                        DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                                        DataTypes.FIELD(
+                                                                "extra", DataTypes.STRING()))))),
+                        DataTypes.ROW(
+                                DataTypes.FIELD("kind", DataTypes.STRING()),
+                                DataTypes.FIELD("name", DataTypes.STRING()),
+                                DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                DataTypes.FIELD("ancestors", DataTypes.ARRAY(pathElement())),
+                                DataTypes.FIELD("extra", DataTypes.STRING())))) {
+            RowType row =
+                    row(
+                            DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                            DataTypes.FIELD("ref", type));
+            assertThatThrownBy(() -> marked(row, List.of(), List.of("ref")))
+                    .as(type.toString())
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Field 'ref' has the type")
+                    .hasMessageContaining(
+                            "reference-field-paths names it, so it must be a ROW of the fields"
+                                    + " kind STRING, name STRING and id BIGINT");
+        }
+    }
+
+    @Test
+    void aMarkerOnAnUnknownPathTheKeyOrBothMarkersOnOnePathIsRefused() {
+        RowType row =
+                row(
+                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("at", geoPoint()),
+                        DataTypes.FIELD("nested", DataTypes.ROW(DataTypes.FIELD("x", geoPoint()))));
+
+        assertThatThrownBy(() -> marked(row, List.of("at", "nested.y"), List.of()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("name field paths the table does not declare: 'nested.y'");
+        assertThatThrownBy(() -> marked(row, List.of(), List.of("missing")))
+                .hasMessageContaining("name field paths the table does not declare: 'missing'");
+        for (List<List<String>> markers :
+                List.of(
+                        List.of(List.of("id"), List.<String>of()),
+                        List.of(List.<String>of(), List.of("id")))) {
+            assertThatThrownBy(() -> marked(row, markers.get(0), markers.get(1)))
+                    .hasMessageContaining(
+                            "The PRIMARY KEY column 'id' is the entity's key, which is never"
+                                    + " stored as a property, so no schema marker can name it.");
+        }
+        assertThatThrownBy(() -> marked(row, List.of("at"), List.of("at")))
+                .hasMessageContaining(
+                        "geo-point-field-paths and reference-field-paths both name 'at'");
+    }
+
+    @Test
+    void aMarkerOnAPathTwoFieldsShareIsRefused() {
+        RowType row =
+                row(
+                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("a.b", geoPoint()),
+                        DataTypes.FIELD("a", DataTypes.ROW(DataTypes.FIELD("b", geoPoint()))));
+
+        assertThatThrownBy(() -> marked(row, List.of("a.b"), List.of()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Schema markers name field paths that more than one field has: 'a.b'");
+        // Unmarked, the shared path is no one's concern.
+        assertThat(marked(row, List.of(), List.of()).isGeoPoint("a.b")).isFalse();
+    }
+
+    @Test
+    void theMarkersTakePartInEquality() {
+        RowType row =
+                row(
+                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("at", geoPoint()),
+                        DataTypes.FIELD("ref", pathElement()));
+
+        assertThat(marked(row, List.of("at"), List.of("ref")))
+                .isEqualTo(marked(row, List.of("at"), List.of("ref")))
+                .hasSameHashCodeAs(marked(row, List.of("at"), List.of("ref")))
+                .isNotEqualTo(marked(row, List.of(), List.of("ref")))
+                .isNotEqualTo(marked(row, List.of("at"), List.of()));
     }
 }
