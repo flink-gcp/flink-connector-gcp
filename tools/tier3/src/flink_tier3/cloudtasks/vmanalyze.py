@@ -14,11 +14,10 @@
 """Offline analysis of single-host campaigns under the preregistered rule.
 
 The input is the campaign directories ``vmcampaign`` leaves, collected to the
-reviewing host; nothing here contacts a service. What transfers from the
-cluster analyzer is the arithmetic and the per-cell reconciliation, not its
-evidence contract: ``evidence.Reconciler`` reads this rig's receipts and rows
-from a local tree, and ``analyze.build_groups`` applies the thresholds. What is
-this module's own is deciding which runs are cells at all.
+reviewing host; nothing here contacts a service. ``evidence.Reconciler`` reads
+this rig's receipts and rows from a local tree, and ``groups.build_groups``
+applies the thresholds. What is this module's own is deciding which runs are
+cells at all.
 
 **The journal is the ledger of record.** A run's state comes from the
 campaign's ``state.json``; ``outcome.json`` is corroboration. A run the journal
@@ -62,8 +61,12 @@ from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
-from .. import analyze as cluster
-from ..analyze import (
+from ..analyze import write_reports as write_report_files
+from ..common import INCONCLUSIVE, INCONSISTENT, USABLE, Failure, digest
+from . import groups, vmcampaign
+from .campaign import CLAIMED, FAILED, MANIFEST, OBSERVED, PENDING, STATE
+from .evidence import RECEIPT, DirectorySource, Reconciler, cell_kind, cell_prefix
+from .groups import (
     BASELINE,
     INCREMENTAL,
     REPETITIONS,
@@ -78,10 +81,6 @@ from ..analyze import (
     show,
     source_bounds,
 )
-from ..common import INCONCLUSIVE, INCONSISTENT, USABLE, Failure, digest
-from . import vmcampaign
-from .campaign import CLAIMED, FAILED, MANIFEST, OBSERVED, PENDING, STATE
-from .evidence import RECEIPT, DirectorySource, Reconciler, cell_kind, cell_prefix
 from .protocol import LINES, load, protocol_sha256, session_cell
 
 #: Groups are keyed by line, shape and body; every campaign of one assessment
@@ -186,8 +185,8 @@ def checkpoint_completions(run_directory):
 def observation_window(completions, start_ms, last_ms, warmup_seconds):
     """The preregistered window over this rig's completions, or why there is none.
 
-    The rule itself is ``analyze.observation_window``'s, shared with the
-    cluster: from the first completed ordinary checkpoint after warm-up to
+    The rule itself is ``groups.observation_window``'s: from the first
+    completed ordinary checkpoint after warm-up to
     the last completed before end of input, holding at least six. This rig
     places each completion at the instant the probe recorded, in the clock
     of the source receipts that bound it.
@@ -199,7 +198,7 @@ def observation_window(completions, start_ms, last_ms, warmup_seconds):
     placed = {
         key: {"id": key, "ack": Fraction(at, 1000)} for key, at in completions.items()
     }
-    span, failure = cluster.observation_window(
+    span, failure = groups.observation_window(
         placed, set(completions), start_ms, warmup_seconds, last_ms
     )
     if span is not None:
@@ -388,7 +387,7 @@ def expected_detail(outcome, reserves):
     return text + SLOW_EXIT if outcome.get("killed") else text
 
 
-#: What ``analyze.build_groups`` reads of the conditions a run executed.
+#: What ``groups.build_groups`` reads of the conditions a run executed.
 CONDITIONS = (
     "arm",
     "parallelism",
@@ -587,7 +586,7 @@ def observe(record, source, run_directory, options, cell):
 
 
 #: What a run's limits and controls must be for the cell its ID names; the
-#: shape, body, arm, line and window are ``analyze.build_groups``'s to compare.
+#: shape, body, arm, line and window are ``groups.build_groups``'s to compare.
 LIMITS = (
     "offered_rate",
     "record_limit",
@@ -712,7 +711,7 @@ MEASURED_ARMS = (BASELINE, "NAMED_HASH", "STAGED_HASH")
 def measured_arms(group):
     """Judges a group on the arms the reduced assessment measures.
 
-    ``analyze.build_groups`` compares both staged arms and calls any arm short
+    ``groups.build_groups`` compares both staged arms and calls any arm short
     of three repetitions a reason, so a group measured without the random-name
     arms would always come out inconclusive. Here only the measured arms can be
     short, and ``STAGED_HASH`` against ``UNNAMED`` is the whole verdict.
@@ -836,7 +835,7 @@ def render_markdown(report):
 
 
 def write_reports(report, out):
-    return cluster.write_reports(report, out, markdown=render_markdown)
+    return write_report_files(report, out, markdown=render_markdown)
 
 
 def main(argv=None):

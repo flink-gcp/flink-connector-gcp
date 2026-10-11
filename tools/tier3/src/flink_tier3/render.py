@@ -20,9 +20,7 @@ from pathlib import Path
 
 from .bigquery.plan import TRIALS, prepare
 from .bigquery.plan import trial as bigquery_trial
-from .cloudtasks.session import load_session
 from .common import Failure
-from .policy import CLOUDTASKS_POLICY, FLINK_LINES
 from .pubsub import plan as pubsub_plan
 from .workflow import render
 
@@ -38,14 +36,11 @@ def main(argv=None):
         choices=(
             "smoke",
             "generic-recovery",
-            "cloudtasks",
             "bigquery-recovery",
             "pubsub-recovery",
         ),
         default="smoke",
     )
-    parser.add_argument("--cells-file", type=Path, help="cloudtasks session TOML")
-    parser.add_argument("--flink-version", choices=tuple(FLINK_LINES), default="2.2.1")
     parser.add_argument(
         "--application-image",
         help="application digest reference; an offline render may be synthetic",
@@ -56,7 +51,6 @@ def main(argv=None):
     parser.add_argument(
         "--revision", help="trial proposal's intended full source revision"
     )
-    parser.add_argument("--target", default=CLOUDTASKS_POLICY["target"])
     parser.add_argument("--expression", default="delivery.resources")
     args = parser.parse_args(argv)
     if args.scenario in ("bigquery-recovery", "pubsub-recovery"):
@@ -71,13 +65,8 @@ def main(argv=None):
                 + ("--trial-file" if args.scenario == "pubsub-recovery" else "--trial")
                 + ", --started-at, --revision and --application-image"
             )
-        if (
-            args.cells_file
-            or args.expression != "delivery.resources"
-            or args.flink_version != "2.2.1"
-            or args.target != CLOUDTASKS_POLICY["target"]
-        ):
-            parser.error("Trial proposals cannot select cells or a raw expression")
+        if args.expression != "delivery.resources":
+            parser.error("Trial proposals cannot select a raw expression")
         proposal_prepare, proposal_load = (
             (pubsub_plan.prepare, pubsub_plan.load_trial)
             if args.scenario == "pubsub-recovery"
@@ -100,19 +89,10 @@ def main(argv=None):
         return
     if args.trial_file or args.trial or args.started_at or args.revision:
         parser.error("trial inputs apply only to BigQuery or Pub/Sub proposals")
-    tags = {}
-    if args.scenario == "cloudtasks":
-        if not args.cells_file or not args.application_image:
-            parser.error("cloudtasks requires --cells-file and --application-image")
-        session = load_session(args.cells_file)
-        tags = {
-            "cells": json.dumps(session["cells"], separators=(",", ":")),
-            "flink_version": args.flink_version,
-            "application_image": args.application_image,
-            "target": args.target,
-        }
-    elif args.cells_file or args.application_image:
-        parser.error("session inputs apply only to the cloudtasks scenario")
+    if args.application_image:
+        parser.error(
+            "--application-image applies only to BigQuery or Pub/Sub proposals"
+        )
     print(
         json.dumps(
             render(
@@ -122,7 +102,6 @@ def main(argv=None):
                 args.active_seconds,
                 expression=args.expression,
                 scenario=args.scenario,
-                **tags,
             ),
             indent=2,
         )

@@ -46,7 +46,7 @@ It is a local build artifact; this change adds no package-registry publication.
 
 Service tooling lives in the `flink_tier3.bigquery`, `flink_tier3.pubsub`, and `flink_tier3.cloudtasks` subpackages.
 Shared approval, lifecycle, transport, source delivery, and report entry points remain in `flink_tier3`.
-Cloud Tasks owns its observation/evidence collectors, campaign tooling, and `protocol_1246.toml`.
+Cloud Tasks owns the single-host rig: its campaign tooling, evidence reconciliation, offline analysis and `protocol_1246.toml`.
 Tests follow the same service directories, with shared lifecycle and package tests at their parent.
 Internal imports use the new paths; the CLI command names and arguments remain unchanged.
 

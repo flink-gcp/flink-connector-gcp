@@ -21,7 +21,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,8 +39,7 @@ from flink_tier3.pubsub import plan as pubsub_plan
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
 ENV = {**os.environ, "GOMAXPROCS": "2"}
-SESSIONS = KUBERNETES / "lifecycle/sessions"
-SCENARIOS = ("smoke", "generic-recovery", "cloudtasks")
+SCENARIOS = ("smoke", "generic-recovery")
 CLOUDTASKS_IMAGE = (
     "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-measurement"
 )
@@ -838,9 +836,6 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
             pod["containers"][0]["resources"][category] == POD_RESOURCES["supervisor"]
         ), category
     app = json.loads(config["data"]["application.json"])
-    if scenario == "cloudtasks":
-        assert_example_session_manifests(app)
-        return
     if scenario == "generic-recovery":
         from flink_tier3.exercise import validate_manifests
         from flink_tier3.policy import RECOVERY
@@ -878,12 +873,8 @@ def test_lifecycle_rejects_invalid_dispatch_inputs(module, tag):
     assert result.returncode != 0
 
 
-def session_cells(name="example-wiring"):
-    return tomllib.loads((SESSIONS / f"{name}.toml").read_text())["cells"]
-
-
 def lifecycle_tags(scenario="smoke", **overrides):
-    """Dispatch tags for one scenario; cloudtasks carries the example session."""
+    """Dispatch tags for one scenario."""
     tags = {
         "run_id": "probe",
         "nonce": "a" * 32,
@@ -891,13 +882,6 @@ def lifecycle_tags(scenario="smoke", **overrides):
         "active_seconds": "3300",
         "scenario": scenario,
     }
-    if scenario == "cloudtasks":
-        tags.update(
-            cells=json.dumps(session_cells()),
-            flink_version="2.2.1",
-            application_image=f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
-            target="https://ct1246.invalid/task",
-        )
     tags.update(overrides)
     return [arg for key, value in tags.items() for arg in ("-t", f"{key}={value}")]
 
@@ -913,142 +897,6 @@ def lifecycle_export(module, expression, scenario="smoke", **overrides):
         "json",
         *lifecycle_tags(scenario, **overrides),
     )
-
-
-def assert_example_session_manifests(manifests):
-    cells = session_cells()
-    assert isinstance(manifests, list)
-    assert [item["metadata"]["name"] for item in manifests] == [
-        cell["id"] for cell in cells
-    ]
-    for manifest, cell in zip(manifests, cells, strict=True):
-        assert manifest["kind"] == "FlinkDeployment"
-        assert manifest["metadata"]["namespace"] == "tier3-cloudtasks"
-        assert manifest["metadata"]["labels"]["flink-gcp.io/run-id"] == "probe"
-        annotations = manifest["metadata"]["annotations"]
-        assert annotations["flink-gcp.io/approval"] == "a" * 32
-        assert annotations["flink-gcp.io/scenario"] == "cloudtasks"
-        assert annotations["flink-gcp.io/cell"] == cell["id"]
-        assert annotations["flink-gcp.io/expires-at"] == "2026-09-20T00:00:00Z"
-        spec = manifest["spec"]
-        assert spec["image"] == f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"
-        assert spec["flinkVersion"] == "v2_2"
-        assert spec["serviceAccount"] == "cloudtasks-benchmark"
-        assert spec["mode"] == "native"
-        assert spec["job"]["parallelism"] == cell["parallelism"]
-        assert spec["job"]["upgradeMode"] == "stateless"
-        assert spec["job"]["allowNonRestoredState"] is False
-        assert spec["job"]["jarURI"] == (
-            "local:///opt/flink/usrlib/cloudtasks-measurement.jar"
-        )
-        config = spec["flinkConfiguration"]
-        assert config["taskmanager.numberOfTaskSlots"] == str(cell["parallelism"])
-        assert config["execution.checkpointing.interval"] == (
-            f"{cell['checkpoint_seconds']} s"
-        )
-        assert config["execution.checkpointing.timeout"] == "120 s"
-        assert (
-            config["execution.checkpointing.externalized-checkpoint-retention"]
-            == "RETAIN_ON_CANCELLATION"
-        )
-        storage = (
-            f"gs://flink-gcp-cloudtasks-benchmark/runs/probe/cells/{cell['id']}/state"
-        )
-        for option, suffix in [
-            ("execution.checkpointing.dir", "checkpoints"),
-            ("execution.checkpointing.savepoint-dir", "savepoints"),
-            ("high-availability.storageDir", "ha"),
-        ]:
-            assert config[option] == f"{storage}/{suffix}"
-        assert_pod_policy(spec)
-        for manager in ("jobManager", "taskManager"):
-            assert spec[manager]["replicas"] == 1
-            pod = spec[manager]["podTemplate"]["spec"]
-            [container] = pod["containers"]
-            assert container["name"] == "flink-main-container"
-            assert (
-                container["resources"]["requests"] == container["resources"]["limits"]
-            )
-    [a, b] = manifests
-    assert a["spec"]["job"]["args"] == [
-        "--run-id",
-        "probe",
-        "--cell-id",
-        "example-wiring-a",
-        "--queue",
-        "projects/flink-gcp/locations/us-central1/queues/ct1246-probe",
-        "--target",
-        "https://ct1246.invalid/task",
-        "--arm",
-        "UNNAMED",
-        "--body-bytes",
-        "1024",
-        "--parallelism",
-        "1",
-        "--concurrency",
-        "1",
-        "--checkpoint-seconds",
-        "1",
-        "--channel-pool-size",
-        "1",
-        "--distribution",
-        "even",
-        "--offered-rate",
-        "10",
-        "--warmup-seconds",
-        "60",
-        "--observation-seconds",
-        "180",
-        "--record-limit",
-        "2430",
-        "--attempt-limit",
-        "3645",
-        "--control-delay-millis",
-        "0",
-        "--emit-attempts",
-        "true",
-    ]
-    assert b["spec"]["job"]["args"][8:10] == ["--arm", "STAGED_HASH"]
-    assert container_limits(a, "jobManager") == {
-        "cpu": "1",
-        "memory": "2Gi",
-        "ephemeral-storage": "1Gi",
-    }
-    assert container_limits(a, "taskManager") == {
-        "cpu": "1",
-        "memory": "4Gi",
-        "ephemeral-storage": "1Gi",
-    }
-    assert container_limits(b, "taskManager") == {
-        "cpu": "2",
-        "memory": "8Gi",
-        "ephemeral-storage": "2Gi",
-    }
-    assert a["spec"]["jobManager"]["resource"] == {"cpu": 1, "memory": "2Gi"}
-    assert a["spec"]["taskManager"]["resource"] == {"cpu": 1, "memory": "4Gi"}
-    assert b["spec"]["taskManager"]["resource"] == {"cpu": 2, "memory": "8Gi"}
-
-
-def container_limits(manifest, manager):
-    [container] = manifest["spec"][manager]["podTemplate"]["spec"]["containers"]
-    return container["resources"]["limits"]
-
-
-def cloudtasks_workload(**spec):
-    """A tier3-cloudtasks run leaf in the shape of workload()."""
-    document = workload()
-    document["run"]["namespace"] = "tier3-cloudtasks"
-    job = document["delivery"]["resources"]["job"]
-    job["spec"].update(
-        {
-            "image": f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
-            "serviceAccount": "cloudtasks-benchmark",
-            "flinkVersion": "v1_20",
-            "job": {"parallelism": 4, "upgradeMode": "stateless"},
-        }
-    )
-    job["spec"].update(spec)
-    return document
 
 
 @pytest.mark.parametrize(
@@ -1094,8 +942,6 @@ def test_lifecycle_application_cannot_relax_shared_run_policy(module, override):
         ("smoke", 3420, True),
         ("smoke", 3421, False),
         ("generic-recovery", 3421, False),
-        ("cloudtasks", 17820, True),
-        ("cloudtasks", 17821, False),
     ],
 )
 def test_lifecycle_active_seconds_ceiling_depends_on_scenario(
@@ -1112,194 +958,12 @@ def test_lifecycle_active_seconds_ceiling_depends_on_scenario(
         assert not result.stdout.strip()
 
 
-def test_cloudtasks_line_selects_image_package_and_flink_version(module):
-    image = f"{CLOUDTASKS_IMAGE}-flink120@{SYNTHETIC_DIGEST}"
-    result = lifecycle_export(
-        module,
-        "delivery.resources",
-        "cloudtasks",
-        flink_version="1.20.4",
-        application_image=image,
-    )
-    assert result.returncode == 0, result.stderr
-    manifests = json.loads(
-        json.loads(result.stdout)["config"]["data"]["application.json"]
-    )
-    assert len(manifests) == 2
-    for manifest in manifests:
-        assert manifest["spec"]["flinkVersion"] == "v1_20"
-        assert manifest["spec"]["image"] == image
-        assert manifest["metadata"]["namespace"] == "tier3-cloudtasks"
-
-
-@pytest.mark.parametrize(
-    ("flink_version", "image"),
-    [
-        ("2.2.1", f"{CLOUDTASKS_IMAGE}-flink120@{SYNTHETIC_DIGEST}"),
-        ("1.20.4", f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"),
-        ("2.2.1", ""),
-        ("2.2.1", f"{CLOUDTASKS_IMAGE}@sha256:{'a' * 63}"),
-        ("2.2.1", f"{CLOUDTASKS_IMAGE}:latest"),
-        (
-            "2.2.1",
-            f"us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@{SYNTHETIC_DIGEST}",
-        ),
-        ("2.1.0", f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"),
-    ],
-)
-def test_cloudtasks_rejects_an_image_that_does_not_match_the_line(
-    module, flink_version, image
-):
-    result = lifecycle_export(
-        module,
-        "delivery.resources",
-        "cloudtasks",
-        flink_version=flink_version,
-        application_image=image,
-    )
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-
-
-@pytest.mark.parametrize("target", ["", "http://ct1246.invalid/task", "ct1246.invalid"])
-def test_cloudtasks_requires_an_https_target(module, target):
-    result = lifecycle_export(module, "delivery.resources", "cloudtasks", target=target)
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-
-
-def mutate_cells(mutation):
-    cells = session_cells()
-    mutation(cells)
-    return json.dumps(cells)
-
-
-def _drop_second(cells):
-    del cells[1]
-
-
-def _duplicate_id(cells):
-    cells[1]["id"] = cells[0]["id"]
-
-
-def _duplicate_cell(cells):
-    cells[1] = dict(cells[0])
-
-
-def _unknown_key(cells):
-    cells[0]["extra"] = 1
-
-
-def _missing_key(cells):
-    del cells[0]["emit_attempts"]
-
-
-def _set(key, value):
-    def apply(cells):
-        cells[0][key] = value
-
-    return apply
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda cells: cells.clear(),
-        _duplicate_id,
-        _duplicate_cell,
-        _unknown_key,
-        _missing_key,
-        _set("id", "Example-Wiring-A"),
-        _set("id", "a" * 41),
-        _set("arm", "NAMED"),
-        _set("body_bytes", 2048),
-        _set("parallelism", 2),
-        _set("concurrency", 8),
-        _set("checkpoint_seconds", 5),
-        _set("channel_pool_size", 2),
-        _set("distribution", "uniform"),
-        _set("offered_rate", 0),
-        _set("offered_rate", 10001),
-        _set("warmup_seconds", 121),
-        _set("observation_seconds", 601),
-        _set("record_limit", 10000001),
-        _set("attempt_limit", 0),
-        _set("control_delay_millis", 50),
-        _set("emit_attempts", "true"),
-        _set("parallelism", "1"),
-    ],
-    ids=lambda mutation: getattr(mutation, "__name__", "custom"),
-)
-def test_cloudtasks_rejects_a_session_outside_the_cell_vocabulary(module, mutation):
-    valid = lifecycle_export(module, "delivery.resources", "cloudtasks")
-    assert valid.returncode == 0, valid.stderr
-    invalid = lifecycle_export(
-        module, "delivery.resources", "cloudtasks", cells=mutate_cells(mutation)
-    )
-    assert invalid.returncode != 0
-    assert not invalid.stdout.strip()
-
-
-def test_cloudtasks_single_cell_session_renders_one_manifest(module):
-    result = lifecycle_export(
-        module, "delivery.resources", "cloudtasks", cells=mutate_cells(_drop_second)
-    )
-    assert result.returncode == 0, result.stderr
-    manifests = json.loads(
-        json.loads(result.stdout)["config"]["data"]["application.json"]
-    )
-    assert [item["metadata"]["name"] for item in manifests] == ["example-wiring-a"]
-
-
-def test_cloudtasks_manifests_follow_session_order(module):
-    cells = session_cells()
-    cells.reverse()
-    result = lifecycle_export(
-        module, "cellManifests", "cloudtasks", cells=json.dumps(cells)
-    )
-    assert result.returncode == 0, result.stderr
-    assert [item["metadata"]["name"] for item in json.loads(result.stdout)] == [
-        "example-wiring-b",
-        "example-wiring-a",
-    ]
-
-
-def test_cloudtasks_parallelism_sixteen_takes_the_largest_task_manager_shape(module):
-    cell = {**session_cells()[0], "parallelism": 16, "concurrency": 16}
-    result = lifecycle_export(
-        module, "cellManifests", "cloudtasks", cells=json.dumps([cell])
-    )
-    assert result.returncode == 0, result.stderr
-    [manifest] = json.loads(result.stdout)
-    spec = manifest["spec"]
-    assert spec["job"]["parallelism"] == 16
-    assert spec["flinkConfiguration"]["taskmanager.numberOfTaskSlots"] == "16"
-    assert spec["taskManager"]["resource"] == {"cpu": 4, "memory": "16Gi"}
-    assert container_limits(manifest, "taskManager") == {
-        "cpu": "4",
-        "memory": "16Gi",
-        "ephemeral-storage": "4Gi",
-    }
-    assert container_limits(manifest, "jobManager") == {
-        "cpu": "1",
-        "memory": "2Gi",
-        "ephemeral-storage": "1Gi",
-    }
-    assert spec["job"]["args"][12:16] == ["--parallelism", "16", "--concurrency", "16"]
-
-
-def test_cloudtasks_configmap_for_thirty_two_cells_keeps_data_headroom(module):
-    cells = [{**session_cells()[0], "id": f"cell-{i:02d}"} for i in range(32)]
-    result = lifecycle_export(
-        module,
-        "delivery.resources",
-        "cloudtasks",
-        cells=json.dumps(cells),
-        active_seconds="17820",
-    )
+@pytest.mark.parametrize("scenario", SCENARIOS)
+def test_lifecycle_configmap_keeps_data_headroom(module, scenario):
+    """The delivered source shares one ConfigMap with the run's documents."""
+    result = lifecycle_export(module, "delivery.resources", scenario)
     assert result.returncode == 0, result.stderr
     config = json.loads(result.stdout)["config"]
-    assert len(json.loads(config["data"]["application.json"])) == 32
     # Kubernetes counts UTF-8 data values, not JSON quoting and escaping.
     # Reserve 256 KiB below its 1 MiB data ceiling; bound the wire form too.
     assert not config.get("binaryData")
@@ -1307,102 +971,6 @@ def test_cloudtasks_configmap_for_thirty_two_cells_keeps_data_headroom(module):
         768 * 1024
     )
     assert len(json.dumps(config).encode("utf-8")) < 1024 * 1024
-
-
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"metadata": {"namespace": "tier3-smoke"}},
-        {"spec": {"job": {"parallelism": 2}}},
-        {"spec": {"serviceAccount": "smoke"}},
-        {"spec": {"flinkVersion": "v1_19"}},
-        # Only the TaskManager pins a capacity class, so it is the only one a
-        # cell can relax here; a JobManager that opted into Spot is refused by
-        # the runtime audit instead, which is what sees the merged Pod.
-        {
-            "spec": {
-                "taskManager": {
-                    "podTemplate": {
-                        "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
-                    }
-                }
-            }
-        },
-    ],
-)
-def test_lifecycle_cell_manifests_cannot_relax_shared_run_policy(module, override):
-    # First prove this copied source is valid, then contradict one shared rule
-    # on the first cell only.
-    valid = lifecycle_export(module, "cellManifests", "cloudtasks")
-    assert valid.returncode == 0, valid.stderr
-    assert len(json.loads(valid.stdout)) == 2
-    leaf(module, "lifecycle", {"cellManifests": [override, {}]})
-    invalid = lifecycle_export(module, "cellManifests", "cloudtasks")
-    assert invalid.returncode != 0
-    assert not invalid.stdout.strip()
-
-
-@pytest.mark.parametrize(
-    ("flink_version", "parallelism"),
-    [("v1_20", 1), ("v2_2", 4), ("v1_20", 16)],
-)
-def test_cloudtasks_namespace_policy_admits_both_lines_and_all_classes(
-    module, flink_version, parallelism
-):
-    document = cloudtasks_workload(flinkVersion=flink_version)
-    document["delivery"]["resources"]["job"]["spec"]["job"]["parallelism"] = parallelism
-    path = leaf(module, "runs/cloudtasks", document)
-    result = cue(module, "cmd", "render", path)
-    assert result.returncode == 0, result.stderr
-    [job] = list(yaml.safe_load_all(result.stdout))
-    assert job["metadata"]["namespace"] == "tier3-cloudtasks"
-    assert job["spec"]["flinkVersion"] == flink_version
-    assert job["spec"]["job"]["parallelism"] == parallelism
-    assert job["spec"]["job"]["allowNonRestoredState"] is False
-    assert job["spec"]["podTemplate"]["spec"]["nodeSelector"] == {
-        "kubernetes.io/arch": "amd64"
-    }
-
-
-@pytest.mark.parametrize(
-    ("location", "value"),
-    [
-        (("spec", "job", "parallelism"), 2),
-        (("spec", "job", "parallelism"), 3),
-        (("spec", "job", "parallelism"), 32),
-        (("spec", "flinkVersion"), "v1_19"),
-        (("spec", "flinkVersion"), "v2_1"),
-        (("spec", "serviceAccount"), "smoke"),
-        (("spec", "job", "allowNonRestoredState"), True),
-        (("metadata", "namespace"), "tier3-smoke"),
-        (
-            ("spec", "taskManager"),
-            {
-                "podTemplate": {
-                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
-                }
-            },
-        ),
-        (
-            ("spec", "jobManager"),
-            {
-                "podTemplate": {
-                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "false"}}
-                }
-            },
-        ),
-    ],
-)
-def test_cloudtasks_namespace_policy_rejects_other_shapes(module, location, value):
-    document = cloudtasks_workload()
-    target = document["delivery"]["resources"]["job"]
-    for key in location[:-1]:
-        target = target.setdefault(key, {})
-    target[location[-1]] = value
-    path = leaf(module, "runs/invalid", document)
-    result = cue(module, "cmd", "render", path)
-    assert result.returncode != 0, result.stdout
-    assert not result.stdout.strip()
 
 
 @pytest.mark.parametrize(
@@ -1414,9 +982,7 @@ def test_cloudtasks_namespace_policy_rejects_other_shapes(module, location, valu
         (("spec", "serviceAccount"), "cloudtasks-benchmark"),
     ],
 )
-def test_smoke_namespace_policy_is_unchanged_by_the_cloudtasks_namespace(
-    module, location, value
-):
+def test_smoke_namespace_policy_admits_only_its_own_shapes(module, location, value):
     document = workload()
     target = document["delivery"]["resources"]["job"]
     for key in location[:-1]:
@@ -1431,16 +997,6 @@ def test_smoke_namespace_policy_is_unchanged_by_the_cloudtasks_namespace(
     else:
         assert result.returncode != 0, result.stdout
         assert not result.stdout.strip()
-
-
-def test_example_session_is_the_reviewed_wiring_shape():
-    session = tomllib.loads((SESSIONS / "example-wiring.toml").read_text())
-    assert session["campaign"] == "example"
-    assert [cell["id"] for cell in session["cells"]] == [
-        "example-wiring-a",
-        "example-wiring-b",
-    ]
-    assert {cell["arm"] for cell in session["cells"]} == {"UNNAMED", "STAGED_HASH"}
 
 
 def test_ci_discovers_and_renders_lifecycle(module):

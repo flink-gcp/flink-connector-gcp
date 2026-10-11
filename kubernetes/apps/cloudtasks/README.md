@@ -7,12 +7,9 @@ It is built only by the `tier3-cloudtasks` Maven profile and is never deployed t
 ## Build
 
 Run `mise x -- just tier3-cloudtasks-verify` from the repository root.
-The build creates `target/cloudtasks-measurement.jar` and retains the unmodified runtime dependency JARs in `target/image-lib/`.
-The [publication workflow](../../../.github/workflows/tier3-images.yaml) selects Flink 2.2.1 or 1.20.4, verifies that reactor version and supplies its reviewed AMD64 base digest to the Dockerfile.
-The two payloads use separate GAR packages: `cloudtasks-measurement` and `cloudtasks-measurement-flink120`.
-The image build checks that the matching bundled GCS plugin exists before enabling it.
-Its digest must be published and independently verified before a later delivery selects it.
-This change does not publish an image, admit a Kubernetes workload or create a queue.
+The build creates `target/cloudtasks-measurement.jar`; the weekly floor and LTS builds verify it on both supported Flink lines.
+The single-host rig of [ADR-0162](../../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) runs its lean probe from this module's test sources.
+No container image is published any more: only the cluster measurement session ran one, and [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723) removed that session.
 
 ## Compared paths
 
@@ -61,7 +58,7 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 | `--attempt-limit` | Window mode: explicitly approved per-creator ceiling, from 1 through three times the generated record count |
 | `--control-delay-millis` | Window calibration only: 0 (default) or 100; a nonzero value requires `UNNAMED`, parallelism/concurrency 1 and CSV output |
 | `--emit-attempts` | `true` (default), or `false` for a window calibration that measures accounting without CSV formatting/output |
-| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Defaults to `gs://flink-gcp-cloudtasks-benchmark/runs/`, which is what a cluster session uses and never passes; a rig that writes elsewhere passes its own, and the single-host controller passes one inside each run's directory |
+| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Defaults to `gs://flink-gcp-cloudtasks-benchmark/runs/`, which is what the removed cluster session used without passing it; a rig that writes elsewhere passes its own, and the single-host controller passes one inside each run's directory |
 
 Record-count mode remains available for finite wiring checks.
 Window mode requires all four window arguments and rejects `--records` and `--warmup-records`.
@@ -163,7 +160,7 @@ The counts-only control writes no rows, so its snapshot does not require that eq
 Close with an outstanding callback produces an incomplete snapshot; a later callback never upgrades that persisted snapshot.
 An abrupt process loss can leave a registration without a terminal receipt.
 
-The lifecycle collector (`flink_tier3/cloudtasks/evidence.py`, described in the [lifecycle runbook](../../lifecycle/README.md#cloud-tasks-session)) discovers registrations from the receipts rather than the logs, requires matching terminal receipts for a steady-state result, and compares the rows decoded from the parts with `rows_exported` and the terminal counts.
+The reconciler (`flink_tier3/cloudtasks/evidence.py`) discovers registrations from the receipts rather than the logs, requires matching terminal receipts for a steady-state result, and compares the rows decoded from the parts with `rows_exported` and the terminal counts.
 Thus losing the final CSV row or all rows from one registered creator cannot be concealed by counting the remaining CSV itself.
 A complete receipt certifies local accounting and that every part closed without a reported error; it does not certify successful service creation, a read-back of the parts, job success or a performance pass.
 Read back the receipts and reconcile record/task outcomes and job status before accepting a cell.
@@ -172,9 +169,8 @@ Recovery evidence must explicitly account for incomplete prior incarnations inst
 Receipts carry schema version 1, run/cell/arm identity, role, incarnation, process UUID and wall/monotonic clock samples.
 They contain no task body, target URL or exception text.
 Wall/monotonic samples do not prove synchronized clocks across hosts.
-The offline analyzer establishes the observation window from the checkpoints the supervisor observed and the source receipts, and records which clock each instant belongs to, preserving the cross-JVM latency exclusion above.
-On the single-host rig, `flink_tier3.cloudtasks.vmanalyze` applies the same window rule to checkpoint completions the probe is to record in its own clock; the probe does not record them yet, so such a run has no window ([ADR-0162](../../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md)).
-The worker writes receipts to temporary benchmark storage; the lifecycle collector exports them to retained evidence, verified by hash, before the run prefix is released.
+On the single-host rig, `flink_tier3.cloudtasks.vmanalyze` applies the preregistered window rule to checkpoint completions the probe is to record in its own clock, and records which clock each instant belongs to, preserving the cross-JVM latency exclusion above; the probe does not record them yet, so such a run has no window ([ADR-0162](../../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md)).
+The worker writes receipts under the run's own directory, and the controller records their digests when the run finishes.
 Receipt writes and their failure/overhead behavior still require execution-host calibration.
 
 ## Resource boundary and remaining acceptance
@@ -184,6 +180,6 @@ Each client refuses sends after three times `--records` attempts in record-count
 This is not a global run ceiling: external admission must account for parallelism, restarts, replay, all cells, observation reads and administrative operations.
 The application does not terminate Pods, delete queues or override the lifecycle supervisor.
 
-Publication and execution still require the reviewed image, Cloud Tasks delivery/admission support, fixed numeric resource and cost approval, verified queue settings, and cleanup evidence.
+A cluster execution would still need the reviewed image, a Cloud Tasks delivery and admission, which the cluster rig no longer has, fixed numeric resource and cost approval, verified queue settings, and cleanup evidence.
 The full assessment additionally needs three repetitions after warm-up, a sensitivity control, checkpoint/heap/copy/pending/backlog/recovery observations, and the ADR-0104 variability and support decisions.
 Local tests validate observation and runtime wiring; they establish no real-service performance or release verdict.

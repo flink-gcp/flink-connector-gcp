@@ -38,15 +38,11 @@ from . import workflow as wf
 from .bigquery import actors as bigquery_actors
 from .bigquery import bundle as bigquery_bundle
 from .bigquery import plan as bigquery_plan
-from .cloudtasks.session import QUEUE_POLL_MASK, Ledger, Queues, load_session
 from .exercise import validate_manifests
-from .model import queue_name, session_plan
 from .policy import (
     BIGQUERY,
     BIGQUERY_CEILINGS,
-    CLOUDTASKS_CEILINGS,
     DIGEST,
-    FLINK_LINES,
     PUBSUB,
     PUBSUB_CEILINGS,
     RECOVERY,
@@ -56,9 +52,6 @@ from .pubsub import bundle as pubsub_bundle
 from .pubsub import plan as pubsub_plan
 
 APPROVAL = "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES"
-CLOUDTASKS_APPROVAL = (
-    "APPROVE ONE CLOUD TASKS SESSION: 5 PODS, 300 MINUTES, 0 DISPATCHES"
-)
 BIGQUERY_APPROVAL = (
     f"APPROVE ONE BIGQUERY TRIAL: {BIGQUERY_CEILINGS['pods']} PODS, "
     f"{BIGQUERY_CEILINGS['seconds'] // 60} MINUTES"
@@ -66,7 +59,6 @@ BIGQUERY_APPROVAL = (
 SCENARIOS = (
     "smoke",
     "generic-recovery",
-    "cloudtasks",
     "bigquery-recovery",
     "pubsub-recovery",
 )
@@ -294,31 +286,9 @@ def start_pubsub(args, store):
     )
 
 
-def runner_for(approval, kube, store, queues=None, ledger=None):
-    """Build the external runner with the scenario's collaborators."""
-    if approval.get("scenario") == "cloudtasks":
-        queues = queues or Queues(
-            rt.authorized_session(rt.GoogleToken()), approval["queue"]
-        )
-        ledger = ledger or Ledger(store, approval["campaign"])
-    return runner_api.Runner(
-        rt.Environment(kube, store, approval, queues=queues, ledger=ledger)
-    )
-
-
-def session_inputs(args):
-    """Resolve the reviewed session file, Flink line and live application digest."""
-    if not rt.RUN_ID.fullmatch(args.session or ""):
-        raise rt.Failure("Cloud Tasks sessions need a reviewed --session name")
-    if args.flink_version not in FLINK_LINES:
-        raise rt.Failure("Cloud Tasks sessions need a supported --flink-version")
-    if not DIGEST.fullmatch(args.application_digest or ""):
-        raise rt.Failure("Cloud Tasks sessions need a sha256 --application-digest")
-    session = load_session(
-        repository.ROOT / "kubernetes/lifecycle/sessions" / (args.session + ".toml")
-    )
-    image = rt.GAR + FLINK_LINES[args.flink_version][0] + "@" + args.application_digest
-    return session, args.flink_version, image
+def runner_for(approval, kube, store):
+    """Build the external runner over the approval's environment."""
+    return runner_api.Runner(rt.Environment(kube, store, approval))
 
 
 def rig_owner(owner, args):
@@ -506,64 +476,26 @@ def start(args, store):
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
         return start_pubsub(args, store)
-    cloudtasks = scenario == "cloudtasks"
-    refuse_before_admission(
-        args, store, CLOUDTASKS_APPROVAL if cloudtasks else APPROVAL
-    )
+    refuse_before_admission(args, store, APPROVAL)
     now = time.time()
     end = rt.timestamp(args.expires_at)
-    session = line = application_image = None
-    if cloudtasks:
-        session, line, application_image = session_inputs(args)
-        plan = session_plan(session["cells"]) + CLOUDTASKS_CEILINGS["cleanup_seconds"]
-        if (
-            not plan
-            <= end - now
-            <= min(CLOUDTASKS_CEILINGS["session_seconds"], plan + 600)
-        ):
-            raise rt.Failure(
-                "Dispatch expiry must cover the session plan plus cleanup, "
-                "within ten minutes and the session ceiling"
-            )
-    elif not 3300 <= end - now <= 3600:
+    if not 3300 <= end - now <= 3600:
         raise rt.Failure("Dispatch expiry must be 55 to 60 minutes ahead")
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args)
-    namespace = rt.CLOUDTASKS if cloudtasks else rt.SMOKE
     kube = external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
-        True, "create", "flink.apache.org", "flinkdeployments", namespace
+        True, "create", "flink.apache.org", "flinkdeployments", rt.SMOKE
     )
-    queues = ledger = None
-    if cloudtasks:
-        # Cheap refusals before any lock or cluster mutation.
-        queues = Queues(
-            rt.authorized_session(rt.GoogleToken()), queue_name(args.run_id)
-        )
-        if queues.get(QUEUE_POLL_MASK) is not None:
-            raise rt.Failure("Queue already exists; this run does not own it")
-        ledger = Ledger(store, session["campaign"])
-        ledger.admit([cell["id"] for cell in session["cells"]])
-    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, namespace)
+    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, rt.SMOKE)
     schedule = rt.Schedule.for_window(now, end)
     active = schedule.active_seconds(time.time())
-    render_options = {"scenario": scenario} if scenario != "smoke" else {}
-    manifest_options = {}
-    if cloudtasks:
-        render_options.update(
-            cells=json.dumps(session["cells"], separators=(",", ":")),
-            flink_version=line,
-            application_image=application_image,
-            target=rt.CLOUDTASKS_POLICY["target"],
-        )
-        manifest_options = {"expression": "cellManifests"}
     application = wf.render(
         args.run_id,
         nonce,
         args.expires_at,
         active,
-        **manifest_options,
-        **render_options,
+        scenario=scenario,
     )
     bundle = wf.render(
         args.run_id,
@@ -571,22 +503,15 @@ def start(args, store):
         args.expires_at,
         active,
         expression="delivery.resources",
-        **render_options,
+        scenario=scenario,
     )
     images = {
         "operator": operator_image,
         "supervisor": bundle["supervisor"]["spec"]["template"]["spec"]["containers"][0][
             "image"
         ],
+        "smoke": application["spec"]["image"],
     }
-    if cloudtasks:
-        if any(m["spec"]["image"] != application_image for m in application):
-            raise rt.Failure(
-                "Rendered cells do not use the dispatched application image"
-            )
-        images["application"] = application_image
-    else:
-        images["smoke"] = application["spec"]["image"]
     receipts = wf.image_receipts(
         rt.authorized_session(rt.GoogleToken()), images, args.expires_at
     )
@@ -617,7 +542,7 @@ def start(args, store):
             args.expires_at,
             active,
             expression="upgradeApplication",
-            **render_options,
+            scenario=scenario,
         )
         approval.update(
             version=2,
@@ -626,29 +551,12 @@ def start(args, store):
             upgrade_application_sha256=rt.digest(upgrade),
         )
         validate_manifests(application, upgrade)
-    if cloudtasks:
-        if len(application) != len(session["cells"]):
-            raise rt.Failure("Rendered cell count differs from the session")
-        approval.update(
-            version=3,
-            scenario=scenario,
-            campaign=session["campaign"],
-            flink_version=line,
-            queue=queues.name,
-            target=rt.CLOUDTASKS_POLICY["target"],
-            cells=[
-                {**cell, "manifest_sha256": rt.digest(manifest)}
-                for cell, manifest in zip(session["cells"], application, strict=True)
-            ],
-            cloudtasks_ceilings=rt.CLOUDTASKS_CEILINGS,
-            cloudtasks_pod_resources=rt.CLOUDTASKS_POD_RESOURCES,
-        )
     rt.validate_approval(approval, time.time())
     wf.save(args.directory / "owner.json", owner)
     rt.EnvironmentLock(store).acquire(owner)
     # Recheck idle after acquiring exclusivity; the earlier snapshot cannot
     # authorize a change that raced an infrastructure apply.
-    if wf.snapshot(kube, namespace) != (
+    if wf.snapshot(kube, rt.SMOKE) != (
         namespaces,
         operator_uid,
         operator_image,
@@ -667,8 +575,6 @@ def start(args, store):
     artifact("images.json", receipts)
     if upgrade is not None:
         artifact("upgrade-application.json", upgrade)
-    if cloudtasks:
-        artifact("session.json", session)
     store.write(
         f"_control/runs/{args.run_id}.json",
         {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},
@@ -683,9 +589,9 @@ def start(args, store):
         active,
         approval,
         "delivery.resources",
-        **render_options,
+        scenario=scenario,
     )
-    runner = runner_for(approval, kube, store, queues, ledger)
+    runner = runner_for(approval, kube, store)
 
     def stop(_number, _frame):
         runner.env.stopping = True
@@ -694,9 +600,7 @@ def start(args, store):
     signal.signal(signal.SIGINT, stop)
     failed = True
     try:
-        runner.start(
-            bundle["config"], bundle["supervisor"], None if cloudtasks else application
-        )
+        runner.start(bundle["config"], bundle["supervisor"], application)
         failed = False
     finally:
         runner.settle(request_stop=failed)
@@ -952,8 +856,6 @@ def main(argv=None):
     run.add_argument("--expires-at", required=True)
     run.add_argument("--approve", required=True)
     run.add_argument("--scenario", choices=SCENARIOS, default="smoke")
-    run.add_argument("--session")
-    run.add_argument("--flink-version", choices=tuple(FLINK_LINES))
     run.add_argument("--application-digest")
     run.add_argument(
         "--trial", help="BigQuery trial: " + ", ".join(bigquery_plan.TRIALS)
@@ -980,7 +882,6 @@ def main(argv=None):
         # Each scenario's own inputs, and none of another's: the run workflow
         # passes exactly these, so a mismatch refuses before cloud access.
         inputs = {
-            "cloudtasks": {"session", "flink_version", "application_digest"},
             "bigquery-recovery": {"trial", "application_digest"},
             "pubsub-recovery": {"pubsub_trial", "application_digest"},
         }.get(args.scenario, set())
@@ -989,8 +890,6 @@ def main(argv=None):
         supplied = {
             name
             for name in (
-                "session",
-                "flink_version",
                 "application_digest",
                 "trial",
                 "pubsub_trial",

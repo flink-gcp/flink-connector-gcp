@@ -326,9 +326,10 @@ final class CloudTasksLeanProbe {
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 3);
         configuration.set(
                 RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY, Duration.ofSeconds(10));
-        // The cluster cells' checkpoint settings (kubernetes/pkg/cloudtasks/application.cue), so
-        // a cell measures the same job on either rig. Left unset, the timeout is Flink's ten
-        // minutes, under which a saturated cell's growing checkpoints hide far longer.
+        // The cluster cells' checkpoint settings (kubernetes/pkg/cloudtasks/application.cue until
+        // #1723 removed the cluster path), so a cell measures the same job on either rig. Left
+        // unset, the timeout is Flink's ten minutes, under which a saturated cell's growing
+        // checkpoints hide far longer.
         configuration.set(StateBackendOptions.STATE_BACKEND, "hashmap");
         configuration.set(CheckpointingOptions.CHECKPOINTING_TIMEOUT, Duration.ofSeconds(120));
         configuration.set(CheckpointingOptions.MAX_CONCURRENT_CHECKPOINTS, 1);

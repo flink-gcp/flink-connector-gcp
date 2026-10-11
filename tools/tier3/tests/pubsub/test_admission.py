@@ -648,10 +648,10 @@ def test_a_valid_pubsub_delivery_reaches_the_entrypoint_s_cluster_step(
         bundle["application"],
         bundle["recovery_application"],
     )
-    _, approved, application, upgrade, cells = runtime.verify_delivery(tmp_path)
+    _, approved, application, upgrade = runtime.verify_delivery(tmp_path)
     assert approved.scenario == "pubsub-recovery"
     assert application == bundle["application"]
-    assert upgrade == bundle["recovery_application"] and cells is None
+    assert upgrade == bundle["recovery_application"]
     with pytest.raises(FileNotFoundError, match="serviceaccount"):
         runtime.supervisor_main(tmp_path)
 

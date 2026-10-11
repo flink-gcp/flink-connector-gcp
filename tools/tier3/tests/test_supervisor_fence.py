@@ -19,18 +19,10 @@ import copy
 import pytest
 from flink_tier3 import lifecycle as cli
 
-from .cloudtasks.test_session import (
-    CELL_A,
-    CELL_B,
-    CellWorld,
-    admitted_session,
-    evidence_events,
-    session_approval,
-    session_environment,
-)
 from .test_lifecycle import (
     app,
     claim_as_supervisor,
+    evidence_events,
     lifecycle,
     obj,
     prepared_supervisor,
@@ -97,14 +89,11 @@ def test_a_claim_landing_inside_a_write_refuses_that_write(env):
         lambda r: r.begin_cleanup("taken"),
         lambda r: r.mark_evidence_failed(),
         lambda r: r.observe({"x": {"uid": "x", "namespace": rt.SMOKE}}),
-        lambda r: r.remember_root("cell:x", {"uid": "x", "namespace": rt.SMOKE}),
-        lambda r: r.intend("queue"),
+        lambda r: r.remember_root("application", {"uid": "x", "namespace": rt.SMOKE}),
+        lambda r: r.intend("probe"),
         lambda r: r.set_phase(rt.Phase.READY),
-        lambda r: r.cell_done("x", "completed", "finished"),
-        lambda r: r.record_export("x", {"manifest_sha256": "x"}),
         lambda r: r.record_lineage("11111111-1111-4111-8111-111111111111"),
         lambda r: r.checkpoint(),
-        lambda r: r.operations("supervisor", {}),
     ],
     ids=[
         "heartbeat",
@@ -116,11 +105,8 @@ def test_a_claim_landing_inside_a_write_refuses_that_write(env):
         "root",
         "intent",
         "phase",
-        "cell",
-        "export",
         "lineage",
         "checkpoint",
-        "operations",
     ],
 )
 def test_every_write_of_a_displaced_pod_is_refused(env, write):
@@ -386,49 +372,6 @@ def test_a_displaced_pod_that_is_also_signalled_reports_only_its_displacement(
         supervisor.supervise(pod["metadata"]["uid"])
     assert "supervisor-replaceable" not in evidence_events(env)
     assert not mutations(env)
-
-
-def test_a_replacement_carries_a_session_its_predecessor_never_started(
-    env, monkeypatch
-):
-    manifests = session_approval(env)
-    world = CellWorld(env, manifests, monkeypatch)
-    taken, pod, _runner = admitted_session(env, manifests)
-    taken.env.stopping = True
-    with pytest.raises(rt.Failure, match="terminated before supervision began"):
-        taken.supervise(pod["metadata"]["uid"])
-    assert world.deployments_seen == []
-    assert not taken.env.ledger.read()[0]["cells"]
-    replacement = rt.Supervisor(
-        session_environment(env, taken.env.queues.actor()), cells=manifests
-    )
-    replacement.supervise(replacement_pod(env, pod)["metadata"]["uid"])
-    assert world.deployments_seen == [CELL_A["id"], CELL_B["id"]]
-    control = replacement.env.refresh()
-    assert control.supervisor_pod == REPLACEMENT
-    assert control.phase == rt.Phase.CLEANED and control.success
-    ledger = replacement.env.ledger.read()[0]["cells"]
-    assert {entry["status"] for entry in ledger.values()} == {"completed"}
-
-
-def test_a_displaced_session_supervisor_claims_no_cell(env, monkeypatch):
-    """The ledger claim follows the fenced start, so a loser never reaches it."""
-    manifests = session_approval(env)
-    world = CellWorld(env, manifests, monkeypatch)
-    taken, pod, _runner = admitted_session(env, manifests)
-    heartbeat = taken.env.records.heartbeat
-
-    def displaced(*args, started=False, **kwargs):
-        if started:
-            records(env).claim_supervisor(REPLACEMENT)
-        return heartbeat(*args, started=started, **kwargs)
-
-    monkeypatch.setattr(taken.env.records, "heartbeat", displaced)
-    with pytest.raises(rt.Superseded):
-        taken.supervise(pod["metadata"]["uid"])
-    assert world.deployments_seen == []
-    assert not taken.env.ledger.read()[0]["cells"]
-    assert taken.env.queues.get() is not None  # the queue is the holder's
 
 
 # --- the runner and the Job -----------------------------------------------------

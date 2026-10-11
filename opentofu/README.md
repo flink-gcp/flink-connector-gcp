@@ -25,8 +25,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
 | `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
 | `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
-| `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket for separately approved Cloud Tasks benchmarks |
-| `flink-gcp/cloudtasks-lifecycle.tf` | Queue control and benchmark state cleanup grants for the runner and supervisor |
+| `flink-gcp/cloudtasks-benchmark.tf` | Workload identity and temporary-object bucket kept for a later Cloud Tasks cluster scenario |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
 | `flink-gcp/tier3-pubsub.tf` | Pub/Sub recovery workload identity, one-day state bucket and lifecycle state access |
@@ -164,10 +163,10 @@ System and workload logging also remain enabled; a run must bound application lo
 
 The separate `cloudtasks-benchmark` runtime account has project-wide `roles/cloudtasks.editor` and object read/write/delete access only to `flink-gcp-cloudtasks-benchmark`.
 The Kubernetes identity `tier3-cloudtasks/cloudtasks-benchmark` may impersonate it through Workload Identity Federation for GKE; the workload ServiceAccount must carry the corresponding GCP account annotation.
-Queue operations remain project-wide, so the run supervisor must enforce exact queue names.
+Queue operations remain project-wide, so a scenario that runs as this identity must enforce exact queue names.
 Neither the node account nor the runtime account receives IAM administration permissions.
 The cluster foundation grants the apply identity `compute.networkAdmin`, `container.clusterAdmin`, `artifactregistry.admin` and permission to attach the dedicated node account.
-The [Cloud Tasks lifecycle control](#cloud-tasks-lifecycle-control) extension also grants it project-wide custom-role administration.
+The service lifecycle controls below also grant it project-wide custom-role administration, which their custom roles depend on.
 
 A merge applies this foundation and creates a cluster; it therefore requires resource and cost approval before merge.
 The [GKE price list](https://cloud.google.com/kubernetes-engine/pricing) checked on 2026-09-11 charges $0.10 per cluster-hour.
@@ -177,26 +176,12 @@ Image/object storage, application Pods and other metered services are additional
 No claim of zero idle cost follows from this configuration.
 Cluster deletion protection prevents accidental removal; deliberate decommissioning requires a reviewed change disabling it before deletion.
 
-### Cloud Tasks lifecycle control
+### Cloud Tasks cluster resources
 
-The [lifecycle grants](flink-gcp/cloudtasks-lifecycle.tf) explicitly select the existing runner and supervisor identities for the Cloud Tasks session admission path.
-Adding a different identity to the shared lifecycle registry does not extend these grants.
-Both receive custom roles with `cloudtasks.queues.get/pause/delete` and `cloudtasks.tasks.get/list`; only the runner also receives `cloudtasks.queues.create`.
-These roles omit queue resume/update/purge/IAM changes and task creation/deletion/run/fullView.
-The bindings are project-wide: IAM does not restrict them to the `ct1246-` prefix or an active run.
-The [lifecycle runtime](../kubernetes/lifecycle/README.md#cloud-tasks-session) therefore binds its client to the one queue named after the approved run, creates it with its full configuration only after a read proves it absent, pauses it, reads back the paused state and zero dispatch counts before admitting a cell, re-reads it on every poll, and deletes it during cleanup.
-
-Each identity also receives Object Viewer on `flink-gcp-cloudtasks-benchmark` and Object User conditional on object names under `runs/`.
-Listing and reads cover the whole bucket; writes and deletes cover every run prefix, not just the current run.
-The existing benchmark worker keeps its editor grant.
-The apply identity receives project-wide `roles/iam.roleAdmin`, and custom-role creation depends on that binding.
-This permits administration of project custom roles beyond these two names; it does not grant Role Admin to either lifecycle identity.
-
-The GCP plan should add nine resources: two custom roles, two project bindings, four bucket bindings and the apply identity's Role Admin binding.
-The Operator plan should update the idle Helm release in place, adding a Role/RoleBinding in `tier3-cloudtasks` while preserving zero replicas and all idle quotas.
-Review the actual CI plans and rendered chart before merge.
-The dependent admission path was implemented after that apply, idle verification and empty refreshed plans.
-No queue, workload or paid measurement is admitted by these grants; execution still requires the session approval phrase, a published application digest and the separately approved cell list.
+The runner and supervisor no longer hold Cloud Tasks grants.
+Their queue-control custom roles and benchmark-bucket bindings served the cluster measurement session, which [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723) removed after [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM, so the same change removes them; the GCP plan destroys two custom roles, two project bindings and four bucket bindings.
+A deleted custom role's ID stays unavailable until its permanent deletion, which IAM completes within 44 days of the request, so a scenario that needs queue control sooner names new roles.
+The `cloudtasks-benchmark` workload identity, its bucket and the `tier3-cloudtasks` namespace stay, because the cluster recovery scenario of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) runs a job there that needs an identity and checkpoint storage.
 
 ### BigQuery trial foundation
 

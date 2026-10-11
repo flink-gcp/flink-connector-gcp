@@ -490,11 +490,7 @@ def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, 
     command.main(arguments)
     assert calls[0]["trial"] == trial
     assert json.loads(capsys.readouterr().out)["proposal"]["approved"] is False
-    for extra in (
-        ["--expression", "application"],
-        ["--flink-version", "1.20.4"],
-        ["--cells-file", "cells.toml"],
-    ):
+    for extra in (["--expression", "application"],):
         with pytest.raises(SystemExit):
             command.main(arguments + extra)
     assert len(calls) == 1

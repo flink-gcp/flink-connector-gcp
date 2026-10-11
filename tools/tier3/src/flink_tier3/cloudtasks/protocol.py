@@ -18,14 +18,15 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import tomllib
 from fractions import Fraction
 from importlib.resources import files
 
 from ..common import Failure
-from ..model import ARMS, cell_records, creator_share
-from ..policy import CELL_ID
 
+# Mirrors MeasurementOptions.label in the measurement application.
+CELL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}\Z")
 PROTOCOL_FILE = "protocol_1246.toml"
 # The private draft this file was converted from, field for field.
 DRAFT_SHA256 = "32122ff01527f4e17a1eac7377c0f11430d71fabba2bce65b4c011afb5b07354"
@@ -44,6 +45,38 @@ REPETITIONS = (1, 2, 3)
 MAX_RECORDS = 10000000
 # The highest offered rate a cell may declare, and the ceiling of the search.
 MAX_RATE = 10000
+
+
+ARMS = (
+    "UNNAMED",
+    "NAMED_HASH",
+    "NAMED_RANDOM_CONTROL",
+    "STAGED_HASH",
+    "STAGED_RANDOM",
+)
+
+
+def cell_records(cell):
+    """Records a window-mode cell generates, as MeasurementOptions computes them."""
+    return math.ceil(
+        int(cell["offered_rate"])
+        * (
+            int(cell["warmup_seconds"])
+            + int(cell["observation_seconds"])
+            + 2 * int(cell["checkpoint_seconds"])
+            + 1
+        )
+    )
+
+
+def creator_share(cell, records):
+    """Records the busiest creator maps: all of them at parallelism 1, nine
+    tenths under the skewed distribution, an even share otherwise."""
+    if int(cell["parallelism"]) == 1:
+        return records
+    if cell["distribution"] == "skew":
+        return math.ceil(Fraction(records) * Fraction(9, 10))
+    return math.ceil(Fraction(records, int(cell["parallelism"])))
 
 
 def window(checkpoint_seconds):

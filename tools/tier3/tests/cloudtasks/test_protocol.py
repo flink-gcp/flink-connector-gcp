@@ -18,7 +18,6 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from flink_tier3 import model
 from flink_tier3.bundle import delivered_sources, package_sources
 from flink_tier3.cloudtasks import protocol
 from flink_tier3.common import Failure
@@ -41,7 +40,7 @@ def test_pin_holds_the_420_preregistered_cells_and_their_rules():
             protocol.SHAPES,
             protocol.BODIES,
             protocol.REPETITIONS,
-            model.ARMS,
+            protocol.ARMS,
         )
     )
     for cell in cells:
@@ -113,16 +112,36 @@ def test_corrupted_pins_are_refused(tmp_path, mutate, message):
         protocol.load(copy)
 
 
+# The window-mode inputs of the measurement application, one per argument.
+INPUTS = {
+    "id",
+    "arm",
+    "body_bytes",
+    "parallelism",
+    "concurrency",
+    "checkpoint_seconds",
+    "channel_pool_size",
+    "distribution",
+    "offered_rate",
+    "warmup_seconds",
+    "observation_seconds",
+    "record_limit",
+    "attempt_limit",
+    "control_delay_millis",
+    "emit_attempts",
+}
+
+
 def test_session_cells_derive_records_and_attempt_limits_from_the_rate():
     cells = protocol.load()["cells"]
     s1 = next(c for c in cells if c["shape"] == "s1" and c["arm"] == "UNNAMED")
     cell = protocol.session_cell(s1, 10)
-    model.validate_cell(cell, manifest=False)
+    assert set(cell) == INPUTS
     assert cell["record_limit"] == 2430 and cell["attempt_limit"] == 3645
     assert cell["id"] == s1["cell_id"] and cell["distribution"] == "even"
     s7 = next(c for c in cells if c["shape"] == "s7")
     skew = protocol.session_cell(s7, 1000, suffix="-q1")
-    model.validate_cell(skew, manifest=False)
+    assert set(skew) == INPUTS
     assert skew["distribution"] == "skew" and skew["id"].endswith("-q1")
     assert skew["record_limit"] == 601000
     assert skew["attempt_limit"] == 811350  # 1.5 x the 90 % hot subtask share
@@ -137,7 +156,7 @@ def test_session_cells_derive_records_and_attempt_limits_from_the_rate():
     with pytest.raises(Failure, match="label grammar"):
         protocol.derived_id("a" * 40, "-x2")
     control = protocol.session_cell(s1, 20, control_delay_millis=100)
-    model.validate_cell(control, manifest=False)
+    assert set(control) == INPUTS
     counts_only = protocol.session_cell(s1, 20, emit=False)
     assert counts_only["emit_attempts"] is False
 

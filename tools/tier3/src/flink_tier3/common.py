@@ -48,8 +48,8 @@ class Superseded(RuntimeError):
 
     Deliberately not a `Failure`. Cleanup records a failed control write and
     carries on deleting, which is right for a write that lost to storage and
-    wrong for one that lost to the holder: the workload and the queue it would
-    delete are the holder's. Nothing that handles a `Failure` handles this.
+    wrong for one that lost to the holder: the workload and the service
+    resources it would delete are the holder's. Nothing that handles a `Failure` handles this.
     """
 
 
@@ -90,6 +90,16 @@ class ApiError(Failure):
     def __init__(self, status, method, path):
         self.status = status
         super().__init__(f"{method} {path}: HTTP {status}")
+
+
+TRANSIENT_STATUSES = (408, 429, 500, 502, 503, 504)
+
+
+def transient(error):
+    """Whether a failed read says nothing about the resource itself."""
+    return isinstance(error, TransportError) or (
+        isinstance(error, ApiError) and error.status in TRANSIENT_STATUSES
+    )
 
 
 def encoded(value):
@@ -155,22 +165,19 @@ def reference(obj):
     }
 
 
-def ha_metadata(obj, names, namespace=SMOKE):
+def ha_metadata(obj, name, namespace=SMOKE):
     # Flink HA ConfigMaps deliberately have no ownerReference. These are
     # observations only: never adopt them into the UID deletion graph. The
     # Operator's normal finalizer must remove them; leftovers block release.
     meta = obj["metadata"]
-    names = [names] if isinstance(names, str) else list(names)
     return (
         obj["kind"] == "ConfigMap"
         and meta["namespace"] == namespace
-        and any(
-            re.fullmatch(
-                re.escape(name) + r"-(?:cluster|[0-9a-f]{32})-config-map", meta["name"]
-            )
-            and meta.get("labels", {}).get("app") == name
-            for name in names
+        and re.fullmatch(
+            re.escape(name) + r"-(?:cluster|[0-9a-f]{32})-config-map", meta["name"]
         )
+        is not None
+        and meta.get("labels", {}).get("app") == name
         and meta.get("labels", {}).get("type") == "flink-native-kubernetes"
     )
 

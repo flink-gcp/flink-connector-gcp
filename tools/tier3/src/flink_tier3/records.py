@@ -26,7 +26,6 @@ from .common import ApiError, Failure, Superseded, json_bytes, utc
 from .model import Phase, RunRecord, open_for_replacement
 from .policy import (
     BIGQUERY_CEILINGS,
-    CLOUDTASKS_CEILINGS,
     ENVIRONMENT,
     GENERATION_RACES,
     MIB,
@@ -80,7 +79,6 @@ RUN_ARTIFACTS = (
     "application.json",
     "images.json",
     "upgrade-application.json",
-    "session.json",
     "result.json",
 )
 
@@ -255,52 +253,12 @@ class Records:
 
         return self._change(edit)
 
-    def heartbeat(self, operations=None, *, started=False):
+    def heartbeat(self, *, started=False):
         """Report the supervisor alive; `started` closes the takeover window."""
 
         def edit(record):
             record.heartbeat = utc(self.clock())
             record.supervision_started |= started
-            if operations is not None:
-                record.operations["supervisor"] = dict(operations)
-
-        return self._change(edit)
-
-    def operations(self, actor, snapshot):
-        return self._change(
-            lambda record: record.operations.__setitem__(actor, dict(snapshot))
-        )
-
-    def set_queue(self, readback):
-        def edit(record):
-            if record.queue is not None:
-                raise Failure("Queue admission was already recorded")
-            record.queue = copy.deepcopy(readback)
-
-        return self._change(edit)
-
-    def cell_done(self, cell_id, status, reason, operations=None):
-        def edit(record):
-            record.cells[cell_id] = {"status": status, "reason": reason}
-            record.cell_intent = None
-            if operations is not None:
-                record.operations["supervisor"] = dict(operations)
-
-        return self._change(edit)
-
-    def record_export(self, cell_id, summary):
-        """Record one cell's verified evidence export and its byte cost."""
-
-        def edit(record):
-            previous = record.exports.get(cell_id)
-            if previous is not None:
-                # A retry after a lost response records the same export again;
-                # a different one would double-count the session's bytes.
-                if previous.get("manifest_sha256") != summary.get("manifest_sha256"):
-                    raise Failure("Cell export was already recorded")
-                return
-            record.exports[cell_id] = copy.deepcopy(summary)
-            record.evidence_bytes += int(summary.get("evidence_bytes", 0))
 
         return self._change(edit)
 
@@ -310,8 +268,6 @@ class Records:
             "config": "config_intent",
             "supervisor": "supervisor_intent",
             "probe": "probe_intent",
-            "cell": "cell_intent",
-            "queue": "queue_intent",
         }
 
         def edit(record):
@@ -319,7 +275,6 @@ class Records:
                 record.evidence_failed
                 or record.stop_requested
                 or record.phase in (Phase.CLEANING, Phase.CLEANED)
-                or (key == "cell" and record.phase != Phase.RUNNING)
             ):
                 raise Failure("Run admission has been stopped")
             setattr(record, fields[key], copy.deepcopy(manifest))
@@ -358,9 +313,7 @@ class Records:
 
     def evidence(self, event, payload, actor="supervisor"):
         prefix = f"runs/{self.approval.run_id}/{actor}/"
-        if self.approval.scenario == "cloudtasks":
-            budget = CLOUDTASKS_CEILINGS["receipt_bytes_" + actor]
-        elif self.approval.scenario == "bigquery-recovery":
+        if self.approval.scenario == "bigquery-recovery":
             budget = BIGQUERY_CEILINGS["receipt_bytes_" + actor]
         else:
             budget = (88 if actor == "supervisor" else 10) * MIB

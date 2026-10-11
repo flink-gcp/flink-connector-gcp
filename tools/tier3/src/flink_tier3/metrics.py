@@ -118,9 +118,8 @@ def subset(value, fields):
 class FlinkRest:
     """Read the running job's REST API through its own Service, by proxy.
 
-    The Cloud Tasks observer has equivalents bound to that scenario's fixed
-    namespace and to its session's meter; this one takes the namespace from
-    the approval so the same endpoints can be read from a recovery exercise.
+    The namespace comes from the approval, so the same endpoints can be read
+    from every recovery exercise.
     """
 
     def __init__(self, env, service, job_id):

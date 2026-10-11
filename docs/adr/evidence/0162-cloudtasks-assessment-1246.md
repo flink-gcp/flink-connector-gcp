@@ -162,7 +162,7 @@ Their session ceilings, acceptance items and cost basis are the cluster's, and n
 
 ### Cluster calibration cells
 
-The reviewed session file is [`kubernetes/lifecycle/sessions/calibration-1246.toml`](../../../kubernetes/lifecycle/sessions/calibration-1246.toml); Flink 2.2.1, 1 KiB bodies, channel pool 1, `UNNAMED` unless stated.
+The reviewed session file is [`kubernetes/lifecycle/sessions/calibration-1246.toml`](https://github.com/flink-gcp/flink-connector-gcp/blob/21fd3c8dd02df751d607800b5c1e2fa383519a0c/kubernetes/lifecycle/sessions/calibration-1246.toml); Flink 2.2.1, 1 KiB bodies, channel pool 1, `UNNAMED` unless stated.
 Warm-up and observation windows follow the protocol rule, max(60 s, two checkpoints) and max(180 s, six checkpoints).
 
 | Cell | Purpose | Parallelism, concurrency, checkpoint | Offered rate | Records |
@@ -178,7 +178,7 @@ Warm-up and observation windows follow the protocol rule, max(60 s, two checkpoi
 | `k10-random-control` | 32-hex name control (`NAMED_RANDOM_CONTROL`) | 4, 4, 10 s | 100 | 26,100 |
 | `interrupt-control-k11` | TaskManager killed 60 s after warm-up; proves the incomplete-evidence path | 1, 1, 1 s | 10 | 2,430 |
 
-A second reviewed file, [`calibration-1246-flink120.toml`](../../../kubernetes/lifecycle/sessions/calibration-1246-flink120.toml), repeats `k01` to `k04` on Flink 1.20.4 in a separate session and campaign under its own approval.
+A second reviewed file, [`calibration-1246-flink120.toml`](https://github.com/flink-gcp/flink-connector-gcp/blob/21fd3c8dd02df751d607800b5c1e2fa383519a0c/kubernetes/lifecycle/sessions/calibration-1246-flink120.toml), repeats `k01` to `k04` on Flink 1.20.4 in a separate session and campaign under its own approval.
 
 ### First attempt, 2026-09-19
 

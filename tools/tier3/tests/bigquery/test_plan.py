@@ -368,10 +368,7 @@ def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
     command.main(args)
     assert json.loads(capsys.readouterr().out)["proposal"]["approved"] is False
     for option in (
-        ["--cells-file", "unused"],
-        ["--flink-version", "1.20.4"],
         ["--expression", "application"],
-        ["--target", "wrong"],
         # A trial is named; the file form belongs to Pub/Sub proposals.
         ["--trial-file", str(path)],
     ):

@@ -28,17 +28,14 @@ import flink_tier3.bigquery.actors as bigquery_actors
 import flink_tier3.pubsub.actors as pubsub_actors
 
 from .bundle import delivery_digest
-from .cloudtasks.evidence import Collector
-from .cloudtasks.observe import CellObserver
-from .cloudtasks.session import Ledger, Queues, load_cells
 from .common import Failure, digest
 from .environment import Environment
 from .exercise import validate_manifests
-from .google import GoogleToken, Storage, authorized_session
+from .google import Storage
 from .kubernetes import Kubernetes, KubernetesTransport
 from .model import Approval
 from .policy import SYSTEM
-from .supervisor import HookChain, Supervisor
+from .supervisor import Supervisor
 
 
 def mounted(directory, name):
@@ -64,7 +61,7 @@ def verify_delivery(directory):
     if digest(application) != approval["application_sha256"]:
         raise Failure("Supervisor application differs from approval")
     approved = Approval.from_dict(approval)
-    upgrade, cells = None, None
+    upgrade = None
     if approved.scenario in (
         "generic-recovery",
         "bigquery-recovery",
@@ -78,13 +75,11 @@ def verify_delivery(directory):
         # its own, which `bigquery_plan.prepare` checked when it rendered the
         # manifests these two digests pin; this check would refuse every one.
         validate_manifests(application, upgrade)
-    elif approved.scenario == "cloudtasks":
-        cells = load_cells(directory, approved)
-    return approval, approved, application, upgrade, cells
+    return approval, approved, application, upgrade
 
 
 def supervisor_main(directory):
-    approval, approved, application, upgrade, cells = verify_delivery(directory)
+    approval, approved, application, upgrade = verify_delivery(directory)
     account = Path("/var/run/secrets/kubernetes.io/serviceaccount")
     if (account / "namespace").read_text().strip() != SYSTEM:
         raise Failure("Supervisor must run in tier3-system")
@@ -106,16 +101,7 @@ def supervisor_main(directory):
         != "system:serviceaccount:tier3-system:tier3-supervisor"
     ):
         raise Failure("Unexpected supervisor Kubernetes identity")
-    store = Storage()
-    queues = ledger = None
-    if cells is not None:
-        queues = Queues(authorized_session(GoogleToken()), approved.queue)
-        ledger = Ledger(store, approved.campaign)
-    env = Environment(kube, store, approval, queues=queues, ledger=ledger)
-    hooks = None
-    if cells is not None:
-        # Observe every poll, then collect and export each cell's evidence.
-        hooks = HookChain(CellObserver(), Collector(env, store))
+    env = Environment(kube, Storage(), approval)
 
     def stop(_number, _frame):
         env.stopping = True
@@ -139,7 +125,7 @@ def supervisor_main(directory):
         with pubsub_actors.supervisor(env, application, upgrade) as supervisor:
             supervisor.supervise(os.environ["POD_UID"])
         return
-    Supervisor(env, upgrade, cells, hooks).supervise(os.environ["POD_UID"])
+    Supervisor(env, upgrade).supervise(os.environ["POD_UID"])
 
 
 def main(argv=None):

@@ -21,13 +21,13 @@ import (
 	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 )
 
-runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                                      @tag(run_id)
-nonce:            string & =~"^[0-9a-f]{32}$"                                                            @tag(nonce)
-expires:          time.Time                                                                              @tag(expires_at)
-approval:         *"{}" | string                                                                         @tag(approval)
-activeSeconds:    int & >0                                                                               @tag(active_seconds,type=int)
-scenario:         *"smoke" | "generic-recovery" | "cloudtasks" | "bigquery-recovery" | "pubsub-recovery" @tag(scenario)
-applicationImage: *"" | string                                                                           @tag(application_image)
+runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                       @tag(run_id)
+nonce:            string & =~"^[0-9a-f]{32}$"                                             @tag(nonce)
+expires:          time.Time                                                               @tag(expires_at)
+approval:         *"{}" | string                                                          @tag(approval)
+activeSeconds:    int & >0                                                                @tag(active_seconds,type=int)
+scenario:         *"smoke" | "generic-recovery" | "bigquery-recovery" | "pubsub-recovery" @tag(scenario)
+applicationImage: *"" | string                                                            @tag(application_image)
 // Shared offline proposal document for BigQuery and Pub/Sub.
 proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
@@ -40,11 +40,9 @@ packageSources: {
 	[=~"^[a-z0-9_]+(/[a-z0-9_]+)*[.](py|toml)$"]: string
 }
 
-// A smoke run is bounded by one 60-minute approval; a measurement session by
-// its plan plus cleanup, at most 300 minutes.
+// A smoke run is bounded by one 60-minute approval, a BigQuery trial by its 90-minute one.
 if scenario == "smoke" || scenario == "generic-recovery" || scenario == "pubsub-recovery" {activeSeconds: <=3420}
 if scenario == "bigquery-recovery" {activeSeconds: <=5220}
-if scenario == "cloudtasks" {activeSeconds: <=17820}
 
 upgradeApplication: _
 
