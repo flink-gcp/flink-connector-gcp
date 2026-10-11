@@ -444,12 +444,23 @@ public final class DatastoreWriterOptions implements Serializable {
          * job, dropping or dead-lettering — under the default {@code failJob()} the first rejection
          * already fails the job. Beside one, it is what stops a stream whose mutations Datastore
          * refuses wholesale from being shed one record at a time behind a green job: every refused
-         * mutation is still routed, and the bound fails the job once that many arrive with none
-         * applied in between. A confirmed {@code INVALID_ARGUMENT} counts toward it, and so does a
-         * key addressing another database than the sink's, which the service would refuse the same
-         * way: {@code ALREADY_EXISTS} for an insert and {@code NOT_FOUND} for an update do not,
-         * because they are what a restart's replay answers rather than evidence of broken data.
-         * Records the serializer rejects do not count either.
+         * mutation is still routed, and the bound fails the job once that many arrive in a row. A
+         * commit the service applies ends the run, and so does an insert whose key is found holding
+         * exactly the entity it writes. A confirmed {@code INVALID_ARGUMENT} counts toward it, and
+         * so does a key addressing another database than the sink's, which the service would refuse
+         * the same way, and a {@code NOT_FOUND} for an {@code update} or an {@code
+         * updateProperties} once a lookup of its key is answered, which a serializer naming the
+         * wrong kind or namespace earns for every update. {@code ALREADY_EXISTS} for an insert does
+         * not count, because it is what a restart's replay answers rather than evidence of broken
+         * data. Records the serializer rejects do not count either.
+         *
+         * <p>A replay answers {@code NOT_FOUND} too, for an update of an entity the stream deleted
+         * afterwards. On a stream keyed so that a key's writes reach one subtask, the replayed
+         * delete is applied there and ends the run, so a restart fails only when that many such
+         * updates come ahead of their deletes with no write applied between them, and then fails
+         * again on every restart until the bound is raised. A stream that expects to update
+         * entities that are gone, deleted by a TTL policy or another writer, needs a larger bound
+         * or none, which also loosens it for {@code INVALID_ARGUMENT}.
          *
          * @param maxConsecutiveRejections the bound, positive, or {@link #UNBOUNDED}
          * @return this builder

@@ -686,20 +686,141 @@ class DatastoreWriterTest {
     }
 
     @Test
-    void replayAnswersDoNotCountTowardTheBound() throws Exception {
+    void anAlreadyExistsForAnInsertDoesNotCountTowardTheBound() throws Exception {
         DatastoreWriter<DatastoreMutation> writer =
                 writer(
                         DatastoreWriterOptions.builder().maxConsecutiveRejections(1).build(),
                         dropping());
         for (int i = 0; i < 3; i++) {
-            access.refuse(key("dup" + i), StatusCode.Code.ALREADY_EXISTS)
-                    .refuse(key("gone" + i), StatusCode.Code.NOT_FOUND);
+            access.refuse(key("dup" + i), StatusCode.Code.ALREADY_EXISTS);
             writer.write(DatastoreMutation.insert(entity("dup" + i, 1)), TestContexts.NO_OP);
-            writer.write(DatastoreMutation.update(entity("gone" + i, 1)), TestContexts.NO_OP);
         }
         writer.flush(false);
 
-        assertThat(handler.routed).hasSize(6);
+        assertThat(handler.routed).hasSize(3);
+    }
+
+    @Test
+    void updatesAddressingNoStoredEntityFailTheJobAtTheBound() throws Exception {
+        // A serializer naming the wrong kind or namespace: every update misses, and each lookup
+        // is answered, so nothing but the bound stops a dropping handler shedding the stream.
+        access.servesLikeTheService();
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(3).build(),
+                        dropping());
+        writer.write(DatastoreMutation.update(entity("m1", 1)), TestContexts.NO_OP);
+        writer.write(DatastoreMutation.updateProperties(entity("m2", 1)), TestContexts.NO_OP);
+        writer.write(DatastoreMutation.update(entity("m3", 1)), TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("3 mutation(s) in a row")
+                .hasMessageContaining("with status NOT_FOUND")
+                .hasMessageContaining("wrong kind or namespace")
+                .hasMessageContaining("maxConsecutiveRejections(3)");
+        assertThat(access.lookups()).containsExactly(key("m1"), key("m2"), key("m3"));
+        assertThat(handler.routed)
+                .extracting(failed -> failed.getMutation().getKey())
+                .containsExactly(key("m1"), key("m2"), key("m3"));
+        assertThat(access.applied()).isEmpty();
+        assertThat(errorClass("NOT_FOUND")).isEqualTo(3);
+    }
+
+    @Test
+    void aReplayedDeleteEndsTheRunItsUpdateStarted() throws Exception {
+        // A restart replays updates of entities the stream deleted afterwards; each delete comes
+        // after its update, is applied, and ends the run before the next update misses.
+        access.servesLikeTheService();
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        dropping());
+        for (String name : List.of("k1", "k2", "k3")) {
+            writer.write(DatastoreMutation.update(entity(name, 1)), TestContexts.NO_OP);
+            writer.write(DatastoreMutation.delete(key(name)), TestContexts.NO_OP);
+        }
+        writer.flush(false);
+
+        assertThat(handler.routed)
+                .extracting(failed -> failed.getMutation().getKey())
+                .containsExactly(key("k1"), key("k2"), key("k3"));
+        assertThat(access.applied()).containsOnlyKeys(key("k1"), key("k2"), key("k3"));
+    }
+
+    @Test
+    void aReplayOfMoreMissesThanTheBoundAheadOfTheirDeletesFailsOnEveryRestart() throws Exception {
+        // The cost of counting NOT_FOUND: the job fails before it reaches the deletes, and the
+        // next attempt replays the same records into the same failure until the bound is raised.
+        access.servesLikeTheService();
+        DatastoreWriterOptions options =
+                DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            DatastoreWriter<DatastoreMutation> writer = writer(options, dropping());
+            writer.write(DatastoreMutation.update(entity("k1", 1)), TestContexts.NO_OP);
+            writer.write(DatastoreMutation.update(entity("k2", 1)), TestContexts.NO_OP);
+
+            // The delete of k1 repeats a buffered key, so the updates are committed first.
+            assertThatThrownBy(
+                            () ->
+                                    writer.write(
+                                            DatastoreMutation.delete(key("k1")),
+                                            TestContexts.NO_OP))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("maxConsecutiveRejections(2)");
+        }
+        assertThat(access.applied()).isEmpty();
+        DatastoreWriter<DatastoreMutation> raised =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(3).build(),
+                        dropping());
+        raised.write(DatastoreMutation.update(entity("k1", 1)), TestContexts.NO_OP);
+        raised.write(DatastoreMutation.update(entity("k2", 1)), TestContexts.NO_OP);
+        raised.write(DatastoreMutation.delete(key("k1")), TestContexts.NO_OP);
+        raised.write(DatastoreMutation.delete(key("k2")), TestContexts.NO_OP);
+        raised.flush(false);
+
+        assertThat(access.applied()).containsOnlyKeys(key("k1"), key("k2"));
+    }
+
+    @Test
+    void missesAndInvalidArgumentsCountTowardOneRun() throws Exception {
+        // Ending on the INVALID_ARGUMENT: the message speaks of the last refusal, not a miss.
+        access.servesLikeTheService().refuse(key("bad"), StatusCode.Code.INVALID_ARGUMENT);
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        dropping());
+        writer.write(DatastoreMutation.update(entity("missing", 1)), TestContexts.NO_OP);
+        writer.write(upsert("bad"), TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)")
+                .hasMessageContaining("with status INVALID_ARGUMENT")
+                .hasMessageContaining("looks broken")
+                .hasMessageNotContaining("wrong kind");
+        assertThat(handler.routed)
+                .extracting(failed -> failed.getMutation().getKey())
+                .containsExactly(key("missing"), key("bad"));
+    }
+
+    @Test
+    void anAppliedWriteBetweenMissesResetsTheRun() throws Exception {
+        // Why a stream mixing upserts with updates escapes the bound: each applied upsert ends the
+        // run, wherever it was addressed.
+        access.servesLikeTheService();
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        dropping());
+        for (int i = 0; i < 3; i++) {
+            writer.write(upsert("a" + i), TestContexts.NO_OP);
+            writer.write(DatastoreMutation.update(entity("missing" + i, 1)), TestContexts.NO_OP);
+        }
+        writer.flush(false);
+
+        assertThat(handler.routed).hasSize(3);
     }
 
     @Test
@@ -966,11 +1087,32 @@ class DatastoreWriterTest {
     }
 
     @Test
-    void anInsertCountedAsAppliedLeavesARunOfRejectionsAsItWas() throws Exception {
-        // The key holding the insert's entity is what a replay meets, so it neither resets the
-        // run of rejections nor adds to it.
+    void anInsertFoundHoldingItsEntityResetsTheRunOfRejections() throws Exception {
+        // The key holds what the insert writes, so the write is satisfied, as an applied one is.
         access.servesLikeTheService()
                 .store(entity("dup", 1))
+                .refuse(key("bad1"), StatusCode.Code.INVALID_ARGUMENT)
+                .refuse(key("bad2"), StatusCode.Code.INVALID_ARGUMENT);
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        dropping());
+        writer.write(upsert("bad1"), TestContexts.NO_OP);
+        writer.write(DatastoreMutation.insert(entity("dup", 1)), TestContexts.NO_OP);
+        writer.write(upsert("bad2"), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed)
+                .extracting(failed -> failed.getMutation().getKey())
+                .containsExactly(key("bad1"), key("bad2"));
+    }
+
+    @Test
+    void anInsertOfAKeyHoldingAnotherEntityLeavesTheRunAsItWas() throws Exception {
+        // What a replay meets once a later write changed the entity: routed, neither counted nor
+        // ending the run.
+        access.servesLikeTheService()
+                .store(entity("dup", 0))
                 .refuse(key("bad1"), StatusCode.Code.INVALID_ARGUMENT)
                 .refuse(key("bad2"), StatusCode.Code.INVALID_ARGUMENT);
         DatastoreWriter<DatastoreMutation> writer =
@@ -983,7 +1125,30 @@ class DatastoreWriterTest {
 
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("maxConsecutiveRejections(2)");
+                .hasMessageContaining("2 mutation(s) in a row");
+        assertThat(handler.routed)
+                .extracting(failed -> failed.getMutation().getKey())
+                .containsExactly(key("bad1"), key("dup"), key("bad2"));
+    }
+
+    @Test
+    void anInsertTheRefusedCommitAppliedResetsTheRunOfMisses() throws Exception {
+        // The service applies the insert beside the refused updates, so its re-send meets itself.
+        access.servesLikeTheService();
+        DatastoreWriter<DatastoreMutation> writer =
+                writer(
+                        DatastoreWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        dropping());
+        DatastoreMutation insert = DatastoreMutation.insert(entity("new", 1));
+        writer.write(DatastoreMutation.update(entity("missing1", 1)), TestContexts.NO_OP);
+        writer.write(insert, TestContexts.NO_OP);
+        writer.write(DatastoreMutation.update(entity("missing2", 1)), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.routed)
+                .extracting(failed -> failed.getMutation().getKey())
+                .containsExactly(key("missing1"), key("missing2"));
+        assertThat(access.applied()).containsOnlyKeys(key("new"));
     }
 
     @Test

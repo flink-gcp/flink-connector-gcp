@@ -463,9 +463,11 @@ A failed non-transactional commit "may not apply as all or none", in the service
 |---|---|
 | `upsert`, `upsertMerge`, `delete` | Idempotent for that write |
 | `insert` | Applied when the key already holds exactly the entity the insert writes; otherwise refused with `ALREADY_EXISTS` and routed to the failure handler |
-| `update`, `updateProperties` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler |
+| `update`, `updateProperties` | Idempotent, but if the entity was deleted in between, Datastore answers `NOT_FOUND`, routed to the failure handler and counted toward `maxConsecutiveRejections` |
 
 Under the default `FailureHandler.failJob()`, a stream of `update` or `updateProperties` writes followed by deletes of the same keys fails again on every restart whose replay reaches a write already applied, and so does a stream of `insert` writes whose entity for a key differs between the write and its replay.
+Under a dropping or dead-lettering handler, the updates fail the same way once `maxConsecutiveRejections` of them come ahead of their deletes with no write applied between them, as when a stream updates a set of entities and then deletes them all.
+What decides it is the order, not the time between them: on a stream keyed so that a key's writes reach one subtask, each replayed delete is applied and ends the run its update began, so a stream that deletes each key before it updates the next one never counts more than one miss in a row.
 `upsert` and `upsertMerge` are the operations for a stream that needs neither failure.
 There is no exactly-once mode, for the reasons the Native-mode section gives.
 
@@ -489,7 +491,7 @@ The emulator applies the writes ahead of the refused one in the request in the f
 That is why the confirmation pass re-sends every write of a refused commit rather than only the ones it suspects: a write the commit already applied is applied again, which `upsert`, `upsertMerge`, `update`, `updateProperties` and `delete` absorb.
 An `insert` the commit already applied answers its re-send with `ALREADY_EXISTS`, so before routing that refusal the writer looks the key up, and counts the insert as applied when the key holds exactly the entity it writes, every property value and index flag alike.
 A retried commit that had in fact been applied, and the replay of an identical insert, look the same to the writer and are counted as applied too; an insert whose key holds a different entity is routed, and so is one whose lookup still fails after the recovery budget's retries, with the lookup's failure attached.
-Neither outcome counts toward `maxConsecutiveRejections`, as a replay's answers do not.
+A match ends a run of refusals counted toward `maxConsecutiveRejections`, as an applied write does; a routed insert neither counts toward it nor ends one.
 A timestamp finer than a microsecond is stored floored, so an insert carrying one never matches what it wrote and is routed as before.
 
 `NOT_FOUND` is routed only after a lookup of the same key is answered.
@@ -497,10 +499,15 @@ The status alone does not say whether the entity or the database is missing, and
 A lookup of a missing entity is an ordinary answer, while a missing database refuses the lookup as it refused the update, so a refused lookup fails the job instead.
 Measured against the service, 2026-10-11: a database that does not exist, and a malformed id such as `Bad_Id`, refuse the update and the lookup alike with `NOT_FOUND`; the emulator serves any database id.
 
-Confirming costs one commit per write of the refused commit, sequentially on the task thread, plus one lookup for each insert refused alone with `ALREADY_EXISTS`; `mutationsConfirmedAlone` counts the commits.
-`maxConsecutiveRejections` (100 by default) fails the job once that many confirmed `INVALID_ARGUMENT` refusals, or keys addressing another database, arrive with no write applied between them, after routing each of them; a dropping or dead-lettering handler is where it matters.
+Confirming costs one commit per write of the refused commit, sequentially on the task thread, plus one lookup for each insert refused alone with `ALREADY_EXISTS` and for each update refused alone with `NOT_FOUND`; `mutationsConfirmedAlone` counts the commits.
+`maxConsecutiveRejections` (100 by default) fails the job once that many confirmed `INVALID_ARGUMENT` refusals, keys addressing another database, or routed `NOT_FOUND` refusals arrive in a row, after routing each of them; a dropping or dead-lettering handler is where it matters.
+A commit the service applies ends the run, and so does an insert found holding exactly the entity it writes.
 A key addressing another database counts because it is what the service would refuse with `INVALID_ARGUMENT`, and a sink whose every key names the wrong database is a configuration error.
-`ALREADY_EXISTS` and `NOT_FOUND` do not count toward it, because they are what a restart's replay answers.
+A `NOT_FOUND` counts because a serializer naming the wrong kind or namespace earns it for every update, and the lookup answers that as a missing entity rather than a missing database.
+A restart's replay earns it too, for an update of an entity the stream deleted afterwards, but on a keyed stream the replayed delete ends the run, so a replay fails only as the paragraph under the replay table above describes.
+A stream that expects its updates to miss, because a TTL policy or another writer deletes its entities, needs a larger bound or `-1`, which loosens the bound for `INVALID_ARGUMENT` refusals too.
+A stream that mixes updates with writes the service applies, such as upserts, inserts or deletes, is not protected: each applied write ends the run, wherever its key points.
+`ALREADY_EXISTS` does not count, because it is what a restart's replay answers for an insert.
 A transient status anywhere in a failure's cause chain is never routed, and a failure of the request itself, such as `PERMISSION_DENIED`, fails the job.
 A database in Native mode does not refuse the Datastore API: measured on 2026-10-11, one applied a commit and answered a lookup and a query, and the entity was then readable through the Firestore API as a document.
 
