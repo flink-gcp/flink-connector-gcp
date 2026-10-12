@@ -26,7 +26,8 @@ limitations under the License.
 - Updated: 2026-09-23 (the owner reduces the assessment to 27 cells at fixed rates and drops the capacity search and recovery cells, revised by [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246))
 - Updated: 2026-09-24 (the assessment's result: staging keeps up at every measured rate with a p95 that follows the checkpoint interval, and the mode ships as experimental, revised by [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246))
 - Updated: 2026-10-11 (the cluster session path is removed; the VM rig keeps what it took from it, revised by [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723))
-- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1444](https://github.com/flink-gcp/flink-connector-gcp/issues/1444), [#1457](https://github.com/flink-gcp/flink-connector-gcp/issues/1457), [#1458](https://github.com/flink-gcp/flink-connector-gcp/issues/1458), [#1448](https://github.com/flink-gcp/flink-connector-gcp/issues/1448), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723)
+- Updated: 2026-10-12 (#1362 ran one savepoint upgrade and one JobManager failover; TaskManager replacement and rescale are no longer its, revised by [#1770](https://github.com/flink-gcp/flink-connector-gcp/issues/1770))
+- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1444](https://github.com/flink-gcp/flink-connector-gcp/issues/1444), [#1457](https://github.com/flink-gcp/flink-connector-gcp/issues/1457), [#1458](https://github.com/flink-gcp/flink-connector-gcp/issues/1458), [#1448](https://github.com/flink-gcp/flink-connector-gcp/issues/1448), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723), [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), [#1770](https://github.com/flink-gcp/flink-connector-gcp/issues/1770)
 - Evidence: [calibration preregistration](evidence/0162-cloudtasks-assessment-1246.md)
 - Supersedes: only the Cloud Tasks requirement in [ADR-0104](0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md) and [ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md) for a separate primitive performance pass before implementation, connector-level evaluation or release
 - Modules: cloudtasks
@@ -122,6 +123,12 @@ The throughput threshold still applies, and the mode met it everywhere measured.
 The mode ships as experimental: its public types keep `@Experimental`, and the documentation states the measured throughput, the latency it adds and the scope of its guarantee.
 It is for a sink that cannot assign a unique task ID yet cannot tolerate duplicate tasks; with a stable application key, the at-least-once path with named tasks costs no added latency.
 `BatchCreateTasks` is not revisited: [ADR-0129](0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md) measured it on v2beta3, and measured it again on the GA v2 surface once google-cloud-tasks 2.99.0 put it there ([#1590](https://github.com/flink-gcp/flink-connector-gcp/issues/1590), 2026-10-03), with the same decline; ADR-0129 holds the triggers to measure again.
+
+## #1362's deployed trial (2026-10-12)
+
+[#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) was re-scoped on 2026-10-12 to one savepoint upgrade and one JobManager failover of the staged DataStream sink writing to a paused queue, and that trial reached a `usable` verdict, as the [Cloud Tasks recovery trial findings](evidence/0165-cloudtasks-recovery-findings-1362.md) record.
+The TaskManager replacement and the rescale that the bullets above ascribe to #1362 were set aside by that scope, and no issue now owns them on the cluster rig; #1245's partial-commit cases, which restore committer parallelism 2 to 1 and 2 to 3 under controlled oracles, remain the rescale evidence.
+The trial measured neither recovery time nor the replay budget a recovery consumes, so the quantitative failure question above stays open.
 
 ## Consequences
 

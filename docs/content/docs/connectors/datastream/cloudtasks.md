@@ -961,6 +961,15 @@ is unobserved. The production recovery window and service assumptions are unchan
 Local model results do not establish service retention, and ten-day automatic task expiry is
 not measured by this experiment.
 
+The staged DataStream sink has also been run as a FlinkDeployment of the Flink Kubernetes Operator
+on GKE Autopilot: on 2026-10-12, with Flink 2.2.1, it passed a savepoint upgrade and a JobManager
+failover, and every one of 180,000 input records became exactly one task in a paused queue, with
+none dispatched. The
+[findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md)
+record that run and map it against the recovery evidence above. TaskManager loss, rescaling, the
+Table entry point and a drain failure after a stop-with-savepoint were not exercised there, and
+one run at one input rate is not a throughput limit.
+
 Limits of the existing eager-mode coverage:
 
 - The deduplication tests assert `ALREADY_EXISTS` using separate flush cycles and a queue per
