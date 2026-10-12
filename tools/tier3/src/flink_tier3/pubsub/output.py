@@ -20,7 +20,7 @@ import re
 import uuid
 
 from ..common import Failure
-from .messages import MAX_BATCH, _encode, cohort_ranges
+from .messages import _encode, cohort_ranges
 
 PHASES = ("initial", "upgrade")
 DECIMAL = re.compile(r"0|[1-9][0-9]{0,4}")
@@ -131,10 +131,11 @@ class OutputCollector:
         return result["count"]
 
     def drain(self, max_pulls):
-        """Pull until a batch comes back short or ``max_pulls`` are spent.
+        """Pull until a batch comes back empty or ``max_pulls`` are spent.
 
-        A short or empty pull does not prove the subscription empty; it only
-        ends this round.
+        A short batch does not end the round, because an immediate pull
+        answers with what is ready at once; an empty one does not prove the
+        subscription empty either.
         """
         if type(max_pulls) is not int or max_pulls < 1:
             raise ValueError("A drain needs at least one pull")
@@ -142,7 +143,7 @@ class OutputCollector:
         for _ in range(max_pulls):
             count = self.pull()
             received += count
-            if count < MAX_BATCH:
+            if count == 0:
                 break
         return received
 

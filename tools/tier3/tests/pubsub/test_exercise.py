@@ -79,6 +79,7 @@ class Relay:
         restored_flag=True,
         ignore_delete=False,
         savepoint_acks=True,
+        pull_limit=None,
     ):
         self.a, self.kube, self.clock = a, a.environment.kube, a.environment.clock
         self.approval = a.environment.approval
@@ -96,6 +97,9 @@ class Relay:
         # A savepoint's acknowledgements reach the service; when they do not,
         # what it covered is redelivered to the upgraded job.
         self.savepoint_acks = savepoint_acks
+        # An immediate pull answers at most this many, as the service's
+        # answer holds what it has ready at once rather than the backlog.
+        self.pull_limit = pull_limit
         # Output messages the collector has been given, for redelivering one.
         self.delivered = []
         # A checkpoint triggered and not yet completed, with what it covers.
@@ -174,10 +178,8 @@ class Relay:
         # The service may hold a pull that does not return immediately until
         # messages arrive, past the transport timeout.
         assert kwargs["json"].get("returnImmediately") is True
-        batch, self.output = (
-            self.output[: kwargs["json"]["maxMessages"]],
-            self.output[kwargs["json"]["maxMessages"] :],
-        )
+        size = min(kwargs["json"]["maxMessages"], self.pull_limit or len(self.output))
+        batch, self.output = self.output[:size], self.output[size:]
         self.delivered.extend(batch)
         return Response(
             {
@@ -747,6 +749,24 @@ def test_a_checkpoint_completing_before_the_fault_loses_the_boundary(
     assert (
         recovery["restored"]["id"] > control.recovery["outcomes"]["fault"]["checkpoint"]
     )
+
+
+@pytest.mark.parametrize("trial", ["jm-replacement", "tm-replacement"], indirect=True)
+def test_short_pulls_still_collect_the_replay_cohort_before_the_next_checkpoint(
+    admitting, monkeypatch
+):
+    """Two messages a pull spread a cohort over ten pulls (#1720).
+
+    A drain that ended at a short batch, or at one pull, would take ten polls
+    to see the cohort, past the 120-second interval, and lose the boundary.
+    """
+    world = World(admitting, monkeypatch, pull_limit=2)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    recovery = control.recovery["outcomes"]["recovery"]
+    assert recovery["boundary_held"] is True
+    assert recovery["replay"] == "observed"
+    assert control.recovery["verdict"] == rt.USABLE, control.recovery["reasons"]
 
 
 @one("jm-replacement")

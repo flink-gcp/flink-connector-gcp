@@ -61,7 +61,7 @@ That phase does not locate a savepoint or prove a checkpoint boundary: the super
 The logical input domain and restart count do not bound elapsed execution or billable service operations.
 
 Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
-The deployed recovery trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran on the DataStream entry point, one of each kind, and lost no message; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the verdicts, every attempt and what they leave unobserved.
+The deployed recovery trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran on the DataStream entry point, one of each kind, and lost no message; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the verdicts, every attempt and what they leave unobserved; the replacement reruns of [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720) observed the redelivery those trials did not, as their [findings](../../../docs/adr/evidence/0165-pubsub-redelivery-findings-1720.md) record.
 The Table entry point has no deployed trial.
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
@@ -561,7 +561,8 @@ The start and end marks are read from the runner's clock and the request time fr
 
 [`OutputCollector`](../../../tools/tier3/src/flink_tier3/pubsub/output.py) pulls the output subscription through the supervisor's handoff, so every pull is a marked call and leaves the evidence `collect` writes.
 `pull()` takes one batch of up to 100 under the next batch ID: `out-`, eight random hexadecimal digits fixed for the collector, and a counter, so that two collectors name the same create-only evidence only if those digits collide.
-`drain(max_pulls)` repeats it until a batch comes back short or the pulls are spent; a short or empty batch ends the round without proving the subscription empty.
+`drain(max_pulls)` repeats it until a batch comes back empty or the pulls are spent; an empty batch ends the round without proving the subscription empty.
+A short batch does not end it, because an immediate pull returns what the service has ready at once rather than the backlog; the exercise drains at most 20 pulls a poll, so that at the batch sizes measured so far one poll can collect the replay cohort's output before the next checkpoint, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records under [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720).
 Each collected line whose payload is this run's relay output, with the nine fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase and whether the attempt restored state, with the output message ID, batch and collection time.
 Any other line, including another run's, is kept apart by batch and stays in the evidence, and the [verdict](#verdict)'s oracle refuses it.
 Every collected line is also kept in collection order, repeats included, as the oracle's input for the [verdict](#verdict).

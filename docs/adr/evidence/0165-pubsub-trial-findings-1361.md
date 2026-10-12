@@ -73,6 +73,7 @@ The oracle counts the output subscription's lines against the published inputs, 
 What the two trials do not establish is the redelivery path, in which a message that was processed and acknowledged to Flink but not covered by a completed checkpoint is redelivered by the service after recovery.
 Observing it needs the fault to land before the next checkpoint, either through a longer checkpoint interval or through faster output collection, which the [rig fixes](#every-admitted-attempt) did not change.
 The owner accepted the inconclusive replacement verdicts as meeting the goal on 2026-10-10, on the condition that this limit is stated, as [#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435#issuecomment-6099559941) records.
+The replacement reruns of [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720) collected the output faster, landed the fault before the next checkpoint and observed the redelivery, as [their findings](0165-pubsub-redelivery-findings-1720.md) record.
 
 ## Redelivery after a savepoint
 
