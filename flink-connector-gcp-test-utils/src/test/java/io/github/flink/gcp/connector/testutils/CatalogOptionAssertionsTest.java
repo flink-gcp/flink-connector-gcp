@@ -21,9 +21,10 @@ import org.apache.flink.configuration.ConfigOptions;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static io.github.flink.gcp.connector.testutils.CatalogOptionAssertions.assertOptionsSurviveCatalogRoundTrip;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,13 +60,7 @@ class CatalogOptionAssertionsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "schema.test-option",
-                "partition.keys.test-option",
-                "comment",
-                "definition-query"
-            })
+    @MethodSource("reservedKeys")
     void aDroppedRequiredOptionIsRejected(String key) {
         assertThatThrownBy(
                         () ->
@@ -76,13 +71,7 @@ class CatalogOptionAssertionsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "schema.test-option",
-                "partition.keys.test-option",
-                "comment",
-                "definition-query"
-            })
+    @MethodSource("reservedKeys")
     void aDroppedOptionalOptionIsRejected(String key) {
         assertThatThrownBy(
                         () ->
@@ -90,6 +79,14 @@ class CatalogOptionAssertionsTest {
                                         Set.of(option("project")), Set.of(option(key))))
                 .isInstanceOf(AssertionError.class)
                 .hasMessageContaining(key);
+    }
+
+    // Every key must be reserved on each Flink version CI runs: Flink 2.3 replaced the reserved
+    // "definition-query" with "original-query" and "expanded-query", while "refresh-mode" is
+    // reserved from 1.20 through the 2.4 snapshot.
+    private static Stream<String> reservedKeys() {
+        return Stream.of(
+                "schema.test-option", "partition.keys.test-option", "comment", "refresh-mode");
     }
 
     private static ConfigOption<String> option(String key) {
