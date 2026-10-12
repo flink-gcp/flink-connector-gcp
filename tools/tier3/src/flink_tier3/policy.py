@@ -59,6 +59,16 @@ BIGQUERY_OBSERVATIONS = {
     "input_seconds": 1200,
     "recovery_seconds": 300,
     "visibility_seconds": 600,
+    # FILE_LOADS deletes the JobManager only once a listing shows a load job
+    # of the run RUNNING. A commit starts within any 120-second checkpoint
+    # interval and runs its loads within seconds of starting, so the wait is
+    # one interval and a margin, listed without a gap. Input keeps flowing while
+    # it waits, and must still last the post-recovery window after the
+    # failover: bq1313-fl-10-a1's input completed 232 s after that window
+    # ended, and would have completed about 172 s after it had its upgrade
+    # waited a whole interval for the first checkpoint after the baseline.
+    "in_flight_seconds": 130,
+    "in_flight_poll_seconds": 1,
     # One measurement per this many seconds, not per poll. Six REST reads at
     # the transport's timeout would otherwise let a slow endpoint spend two
     # minutes of a window that is three, and a memory or GC trend does not

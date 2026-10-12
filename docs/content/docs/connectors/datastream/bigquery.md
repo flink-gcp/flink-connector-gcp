@@ -3089,9 +3089,13 @@ reported. On 2026-10-10 `FILE_LOADS` at 10 destinations passed the same two reco
 same result; its JobManager failover interrupted a commit, and the restored committer completed
 it by re-attaching to the load jobs already submitted rather than loading the files again. Its
 [findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md)
-record the finalization and commit timings. A failover while a load job is still running has not
-been exercised. Those figures were taken at one fixed input rate, one run per configuration; they
-describe these runs, not a throughput limit or a sizing target.
+record the finalization and commit timings. On 2026-10-12 a second `FILE_LOADS` trial deleted the
+JobManager while all ten load jobs of a commit were running: the jobs finished after the committer
+tasks' cancellation had begun, and the restored committer re-attached to them and completed the
+commit without submitting them again, with the same query result. Its
+[findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-fileloads-inflight-findings-1685.md)
+give the timeline. Those figures were taken at one fixed input rate, one run per configuration;
+they describe these runs, not a throughput limit or a sizing target.
 
 ## Scope and provenance
 
