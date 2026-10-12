@@ -37,8 +37,10 @@ from . import runner as runner_api
 from . import workflow as wf
 from .bigquery import actors as bigquery_actors
 from .bigquery import plan as bigquery_plan
+from .cloudtasks import actors as cloudtasks_actors
+from .cloudtasks import plan as cloudtasks_plan
 from .model import APPROVAL_VERSION, SCENARIOS
-from .policy import BIGQUERY, DIGEST, PUBSUB
+from .policy import BIGQUERY, CLOUDTASKS, DIGEST, PUBSUB
 from .pubsub import actors as pubsub_actors
 from .pubsub import plan as pubsub_plan
 
@@ -370,6 +372,125 @@ def start_bigquery(args, store):
     )
 
 
+def cloudtasks_approval(
+    *,
+    run_id,
+    nonce,
+    sha,
+    proposal,
+    namespaces,
+    operator_uid,
+    baseline,
+    images,
+    owner,
+    actor,
+):
+    """Assemble the approval from a rendered, verified proposal.
+
+    Every digest comes from the proposal, which rendered and checked the
+    manifests itself; nothing here renders or hashes a second time.
+    """
+    return {
+        "version": APPROVAL_VERSION,
+        "scenario": "cloudtasks-recovery",
+        "run_id": run_id,
+        "nonce": nonce,
+        "sha": sha,
+        "started_at": proposal["started_at"],
+        "expires_at": proposal["expires_at"],
+        "cleanup_at": proposal["cleanup_at"],
+        "cloudtasks_trial": copy.deepcopy(cloudtasks_plan.TRIAL),
+        "namespaces": namespaces,
+        "operator_uid": operator_uid,
+        "baseline_uids": baseline,
+        "images": images,
+        "lock_owner": owner,
+        "application_sha256": proposal["application_sha256"],
+        "upgrade_application_sha256": proposal["upgrade_application_sha256"],
+        "actor": actor,
+    }
+
+
+def start_cloudtasks(args, store):
+    """Dispatch the Cloud Tasks recovery trial.
+
+    Everything that can refuse without the lock does so first, including the
+    rendering and ConfigMap size. The run's queue is created by the runner
+    once the supervisor and the Operator are ready, after the lock.
+    """
+    if not DIGEST.fullmatch(args.application_digest or ""):
+        raise rt.Failure("Cloud Tasks trials need a sha256 --application-digest")
+    application_image = rt.GAR + "cloudtasks-recovery@" + args.application_digest
+    sha = refuse_before_admission(args, store)
+    started, end = window(cloudtasks_plan.WINDOW_SECONDS)
+    nonce = uuid.uuid4().hex
+    owner = rig_owner(wf.execution("run", nonce), args.run_id, sha)
+    kube = external(args.kubeconfig, idle=True)
+    bootstrap.Cluster(args.kubeconfig).can_i(
+        True, "create", "flink.apache.org", "flinkdeployments", CLOUDTASKS
+    )
+    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, CLOUDTASKS)
+    rendered = cloudtasks_plan.prepare(
+        run_id=args.run_id,
+        nonce=nonce,
+        started_at=rt.utc(started),
+        expires_at=rt.utc(end),
+        active_seconds=cloudtasks_plan.ACTIVE_SECONDS,
+        revision=sha,
+        application_image=application_image,
+        trial=cloudtasks_plan.TRIAL,
+    )
+    proposal = rendered["proposal"]
+    images = {
+        "operator": operator_image,
+        "supervisor": proposal["images"]["supervisor"],
+        "application": application_image,
+    }
+    receipts = wf.image_receipts(
+        rt.authorized_session(rt.GoogleToken()), images, proposal["expires_at"]
+    )
+    approval = cloudtasks_approval(
+        run_id=args.run_id,
+        nonce=nonce,
+        sha=sha,
+        proposal=proposal,
+        namespaces=namespaces,
+        operator_uid=operator_uid,
+        baseline=baseline,
+        images=images,
+        owner=owner,
+        actor=os.environ["GITHUB_ACTOR"],
+    )
+    rt.validate_approval(approval)
+    delivery = bind(
+        rt.Approval.from_dict(approval), rendered["delivery"], math.ceil(time.time())
+    )
+    run_service_trial(
+        args,
+        store,
+        kube,
+        foundation=(namespaces, operator_uid, operator_image, baseline),
+        namespace=CLOUDTASKS,
+        owner=owner,
+        approval=approval,
+        documents={
+            "application.json": rendered["application"],
+            "images.json": receipts,
+            "upgrade-application.json": rendered["upgrade_application"],
+        },
+        # The queue's release needs no runner token: only this process's
+        # controller can write it.
+        actor=lambda env, runner_token: cloudtasks_actors.runner(
+            env, rendered["application"]
+        ),
+        admitted=(
+            delivery["config"],
+            delivery["supervisor"],
+            rendered["application"],
+        ),
+    )
+
+
 def run_service_trial(
     args,
     store,
@@ -439,6 +560,8 @@ def start(args, store):
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
         return start_pubsub(args, store)
+    if scenario == "cloudtasks-recovery":
+        return start_cloudtasks(args, store)
     sha = refuse_before_admission(args, store)
     now, end = window(rt.WINDOWS["smoke"])
     expires_at = rt.utc(end)

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .bigquery.plan import TRIALS, prepare
 from .bigquery.plan import trial as bigquery_trial
+from .cloudtasks import plan as cloudtasks_plan
 from .common import Failure
 from .model import SCENARIOS
 from .pubsub import plan as pubsub_plan
@@ -49,6 +50,32 @@ def main(argv=None):
     )
     parser.add_argument("--expression", default="delivery.resources")
     args = parser.parse_args(argv)
+    if args.scenario == "cloudtasks-recovery":
+        # One fixed trial, so it takes no trial input.
+        if args.trial or args.trial_file:
+            parser.error("cloudtasks-recovery takes no trial input")
+        if not all((args.started_at, args.revision, args.application_image)):
+            parser.error(
+                "cloudtasks-recovery requires --started-at, --revision and "
+                "--application-image"
+            )
+        if args.expression != "delivery.resources":
+            parser.error("Trial proposals cannot select a raw expression")
+        try:
+            bundle = cloudtasks_plan.prepare(
+                run_id=args.run_id,
+                nonce=args.nonce,
+                started_at=args.started_at,
+                expires_at=args.expires_at,
+                active_seconds=args.active_seconds,
+                revision=args.revision,
+                application_image=args.application_image,
+                trial=cloudtasks_plan.TRIAL,
+            )
+        except (ValueError, Failure) as error:
+            parser.error(str(error))
+        print(json.dumps(bundle, indent=2))
+        return
     if args.scenario in ("bigquery-recovery", "pubsub-recovery"):
         choice = args.trial_file if args.scenario == "pubsub-recovery" else args.trial
         wrong = args.trial if args.scenario == "pubsub-recovery" else args.trial_file
@@ -84,11 +111,9 @@ def main(argv=None):
         print(json.dumps(bundle, indent=2))
         return
     if args.trial_file or args.trial or args.started_at or args.revision:
-        parser.error("trial inputs apply only to BigQuery or Pub/Sub proposals")
+        parser.error("trial inputs apply only to service trial proposals")
     if args.application_image:
-        parser.error(
-            "--application-image applies only to BigQuery or Pub/Sub proposals"
-        )
+        parser.error("--application-image applies only to service trial proposals")
     print(
         json.dumps(
             render(

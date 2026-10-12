@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Normal completion, one BigQuery recovery trial, or one Pub/Sub recovery trial'
+        description: 'Normal completion, or one BigQuery, Pub/Sub or Cloud Tasks recovery trial'
         required: true
         type: choice
         default: smoke
@@ -15,12 +15,13 @@ on:
           - smoke
           - bigquery-recovery
           - pubsub-recovery
+          - cloudtasks-recovery
       run_id:
         description: 'Unique lowercase run ID (at most 40 characters)'
         required: true
         type: string
       application_digest:
-        description: 'BigQuery and Pub/Sub: published sha256:... digest of the application package; verified live, never pinned'
+        description: 'Recovery trials: published sha256:... digest of the application package; verified live, never pinned'
         required: false
         type: string
         default: ''
@@ -57,7 +58,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # The window plus room for dispatch, cleanup and the empty-plan proof.
-    timeout-minutes: ${{ inputs.scenario == 'bigquery-recovery' && 120 || 85 }}
+    timeout-minutes: ${{ (inputs.scenario == 'bigquery-recovery' || inputs.scenario == 'cloudtasks-recovery') && 120 || 85 }}
     permissions:
       contents: read
       actions: read
@@ -117,6 +118,8 @@ jobs:
             start+=(--trial "$TRIAL" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = pubsub-recovery ]; then
             start+=(--pubsub-trial "$PUBSUB_TRIAL" --application-digest "$APPLICATION_DIGEST")
+          elif [ "$SCENARIO" = cloudtasks-recovery ]; then
+            start+=(--application-digest "$APPLICATION_DIGEST")
           fi
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle \
             --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" "${start[@]}"

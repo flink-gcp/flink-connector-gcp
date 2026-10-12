@@ -2448,17 +2448,19 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     schedule = rt.Approval.from_dict(env[2]).schedule
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     timeout = workflow["jobs"]["lifecycle"]["timeout-minutes"]
-    # The workflow selects a longer timeout for BigQuery trials; a timeout
-    # shorter than a window kills the job mid-run.
+    # The workflow selects a longer timeout for the 90-minute trials; a
+    # timeout shorter than a window kills the job mid-run.
     match = re.fullmatch(
-        r"\$\{\{ inputs\.scenario == 'bigquery-recovery' && (\d+) \|\| (\d+) \}\}",
+        r"\$\{\{ \(inputs\.scenario == 'bigquery-recovery' \|\| "
+        r"inputs\.scenario == 'cloudtasks-recovery'\) && (\d+) \|\| (\d+) \}\}",
         str(timeout),
     )
     assert match, timeout
     trial_minutes, smoke_minutes = (int(m) for m in match.groups())
     assert schedule.serial_budget <= smoke_minutes * 60
-    trial = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS["bigquery-recovery"])
-    assert trial.serial_budget <= trial_minutes * 60
+    for scenario in ("bigquery-recovery", "cloudtasks-recovery"):
+        trial = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS[scenario])
+        assert trial.serial_budget <= trial_minutes * 60
     # Pub/Sub takes the default timeout: its window is the smoke run's hour.
     pubsub = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS["pubsub-recovery"])
     assert pubsub.serial_budget <= smoke_minutes * 60
@@ -2950,6 +2952,7 @@ def test_reviewed_policy_preserves_the_fixed_windows_and_shapes():
         "smoke": 3600,
         "bigquery-recovery": 5400,
         "pubsub-recovery": 3600,
+        "cloudtasks-recovery": 5400,
     }
     assert CLEANUP_SECONDS == 900
     assert STATE_OBJECTS == 10000
@@ -3335,6 +3338,7 @@ WORKFLOW_INPUTS = {
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
+    "cloudtasks-recovery": ["--application-digest", "sha256:" + "d" * 64],
 }
 
 
@@ -3365,7 +3369,11 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
             r'"\$SCENARIO" = ([a-z-]+) \]; then\s+start\+=\(([^)]*)\)', step["run"]
         )
     )
-    assert set(branches) == {"bigquery-recovery", "pubsub-recovery"}
+    assert set(branches) == {
+        "bigquery-recovery",
+        "pubsub-recovery",
+        "cloudtasks-recovery",
+    }
     # Each flag with the workflow input it carries, not only its name.
     expected = {
         "bigquery-recovery": [
@@ -3376,6 +3384,7 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
             ("--pubsub-trial", "PUBSUB_TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
         ],
+        "cloudtasks-recovery": [("--application-digest", "APPLICATION_DIGEST")],
     }
     for scenario, arguments in branches.items():
         passed = re.findall(r'(--[a-z-]+) "\$([A-Z_]+)"', arguments)

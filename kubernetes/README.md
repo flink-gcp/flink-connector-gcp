@@ -217,7 +217,7 @@ The idle Helm release follows successful bootstrap; GAR image and lifecycle tool
 The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`.
 All four application namespaces retain zero Pod/PVC quotas until separately approved admission.
 After calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed.
-The `tier3-cloudtasks` namespace now has the `cloudtasks-recovery` delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); the rig admits it once [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769) adds the scenario.
+The `tier3-cloudtasks` namespace runs the `cloudtasks-recovery` scenario, the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); its [runbook](apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
 
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).

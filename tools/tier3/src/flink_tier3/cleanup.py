@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 
 from .bigquery.handoff import require_bigquery_clean
+from .cloudtasks.lifecycle import require_cloudtasks_clean
 from .common import (
     ApiError,
     Failure,
@@ -37,6 +38,8 @@ from .model import Phase
 from .policy import (
     BIGQUERY,
     BIGQUERY_STATE,
+    CLOUDTASKS,
+    CLOUDTASKS_STATE,
     OPERATOR,
     POD_RESOURCES,
     POLL,
@@ -47,6 +50,7 @@ from .policy import (
     SYSTEM,
 )
 from .pubsub.lifecycle import require_pubsub_clean
+from .records import require_services_clean
 
 
 def sum_resources(shapes):
@@ -90,9 +94,19 @@ def application_resources():
 class Cleanup:
     """Ownership-checked observation and convergence toward the idle foundation."""
 
-    def __init__(self, env, *, bigquery=None, pubsub=None, quiesce=None):
-        if bigquery is not None and pubsub is not None:
+    def __init__(
+        self, env, *, bigquery=None, pubsub=None, cloudtasks=None, quiesce=None
+    ):
+        if sum(item is not None for item in (bigquery, pubsub, cloudtasks)) > 1:
             raise Failure("Cleanup accepts only one service handoff")
+        if cloudtasks is not None and (
+            cloudtasks.env is not env
+            or env.actor != "supervisor"
+            or not callable(quiesce)
+        ):
+            raise Failure(
+                "Cloud Tasks cleanup needs its supervisor environment and a quiescence barrier"
+            )
         if pubsub is not None and (
             pubsub.env is not env
             or env.actor != "supervisor"
@@ -102,7 +116,8 @@ class Cleanup:
             raise Failure(
                 "Pub/Sub cleanup needs its supervisor environment and a quiescence barrier"
             )
-        if bigquery is None and pubsub is None and quiesce is not None:
+        services = (bigquery, pubsub, cloudtasks)
+        if all(item is None for item in services) and quiesce is not None:
             raise Failure("A quiescence barrier requires a service handoff")
         if bigquery is not None and (
             bigquery.env is not env
@@ -114,17 +129,22 @@ class Cleanup:
             )
         self.env = env
         self.bigquery, self.pubsub, self.quiesce = bigquery, pubsub, quiesce
+        self.cloudtasks = cloudtasks
         self.last_inventory = []
 
     def state_prefixes(self):
         run_id = self.env.approval.run_id
         if self.env.approval.scenario == "pubsub-recovery":
             return [(f"runs/{run_id}/", PUBSUB_STATE)]
-        if self.env.approval.scenario == "bigquery-recovery":
+        bucket = {
+            "bigquery-recovery": BIGQUERY_STATE,
+            "cloudtasks-recovery": CLOUDTASKS_STATE,
+        }.get(self.env.approval.scenario)
+        if bucket is not None:
             # Flink's GCS writer stages uploads under .inprogress/<bucket>/.
             return [
-                (f"runs/{run_id}/", BIGQUERY_STATE),
-                (f".inprogress/{BIGQUERY_STATE}/runs/{run_id}/", BIGQUERY_STATE),
+                (f"runs/{run_id}/", bucket),
+                (f".inprogress/{bucket}/runs/{run_id}/", bucket),
             ]
         return [(f"runs/{run_id}/", STATE)]
 
@@ -151,7 +171,8 @@ class Cleanup:
                 pods, resources = 1, POD_RESOURCES["supervisor"]
             elif namespace == PUBSUB:
                 pods, resources = 4, sum_resources([POD_RESOURCES["smoke"]] * 4)
-            elif namespace == BIGQUERY:
+            elif namespace in (BIGQUERY, CLOUDTASKS):
+                # One JobManager and two TaskManagers.
                 pods, resources = 3, sum_resources([POD_RESOURCES["smoke"]] * 3)
             elif namespace == SYSTEM:
                 # Two Pods run here; the third is the replacement slot.
@@ -196,8 +217,7 @@ class Cleanup:
         else:
             self.env.assert_owner()
             control = self.env.refresh()
-            require_pubsub_clean(control)
-            require_bigquery_clean(control)
+            require_services_clean(control)
         # ScaleSpec omits zero replicas from its JSON representation.
         if scale["spec"].get("replicas", 0) != replicas:
             patch = [
@@ -364,6 +384,7 @@ class Cleanup:
         if (
             self.env.records.cache.bigquery is not None
             or self.env.records.cache.pubsub is not None
+            or self.env.records.cache.cloudtasks is not None
         ):
             try:
                 self.env.records.request_stop()
@@ -458,6 +479,7 @@ class Cleanup:
             )
         self.finish_bigquery(end)
         self.finish_pubsub(end)
+        self.finish_cloudtasks(end)
         # Evidence or storage failures must not keep paid resources alive.
         state_clean = False
         try:
@@ -507,6 +529,22 @@ class Cleanup:
                 deadline,
             )
         require_bigquery_clean(self.env.refresh())
+
+    def finish_cloudtasks(self, deadline):
+        """After workload teardown, wait for release and delete the run's queue."""
+        if self.env.refresh().cloudtasks is None:
+            return
+        if self.cloudtasks is not None:
+            self.cloudtasks.stop()
+            self.env.wait(
+                lambda: (
+                    self.cloudtasks.released()
+                    and self.quiesce() is True
+                    and self.cloudtasks.cleanup(self.quiesce, deadline=deadline)
+                ),
+                deadline,
+            )
+        require_cloudtasks_clean(self.env.refresh())
 
     def finish_pubsub(self, deadline):
         """After workload teardown, release this actor and require the external fence."""
@@ -561,8 +599,7 @@ class Cleanup:
 def verify_idle(env):
     env.namespaces()
     control = env.refresh()
-    require_bigquery_clean(control)
-    require_pubsub_clean(control)
+    require_services_clean(control)
     kube, approval = env.kube, env.approval
     items = kube.inventory()
     baseline = set(approval.baseline_uids)

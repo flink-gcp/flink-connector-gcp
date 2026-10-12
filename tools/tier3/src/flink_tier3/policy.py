@@ -39,9 +39,8 @@ WINDOWS = _policy["windows"]
 CLEANUP_SECONDS = _policy["cleanup"]["seconds"]
 STATE_OBJECTS = _policy["state"]["objects"]
 POD_RESOURCES = _policy["pod_resources"]
-# The namespace OpenTofu keeps for a later Cloud Tasks scenario (#1362). No run
-# admits a workload there; every run's inventory still lists it.
 CLOUDTASKS = _policy["environment"]["cloudtasks"]
+CLOUDTASKS_STATE = _policy["environment"]["cloudtasks_state"]
 BIGQUERY = _policy["environment"]["bigquery"]
 BIGQUERY_STATE = _policy["environment"]["bigquery_state"]
 PUBSUB = _policy["environment"]["pubsub"]
@@ -74,6 +73,20 @@ BIGQUERY_OBSERVATIONS = {
     # minutes of a window that is three, and a memory or GC trend does not
     # need a sample every fifteen seconds to be readable.
     "measure_seconds": 60,
+}
+
+CLOUDTASKS_OBSERVATIONS = {
+    # From admission to the application's creation: the supervisor and
+    # Operator readiness every scenario waits for, then the run's queue
+    # created, paused and read back once it settles.
+    "startup_seconds": 600,
+    # From admission to input flowing, as for BigQuery: a cold Autopilot
+    # cluster provisions a node each for the supervisor, the JobManager and the
+    # TaskManagers in turn.
+    "input_seconds": 1200,
+    "recovery_seconds": 300,
+    # From the finished application to a task listing that passes the oracle.
+    "visibility_seconds": 600,
 }
 
 PUBSUB_ADMISSION = {

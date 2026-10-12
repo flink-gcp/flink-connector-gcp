@@ -247,3 +247,74 @@ The lineage stays the same across a restore, and `restored` reports whether this
 `RecoveryJobITCase` runs the deployed graph and the production sink against `FakeCloudTasks`, an in-process `CreateTask` server that refuses a repeated name with `ALREADY_EXISTS`.
 A run, and a run stopped with a savepoint and resumed from it in the `upgrade` phase, each end with exactly the expected task names.
 The fake has no queue to read, and the connector skips the retention readback for an emulator endpoint; what the real service does is the trial's question.
+
+## Recovery trial
+
+The `cloudtasks-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-cloudtasks` and judges whether every input record became exactly one task.
+It is the trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-trial) records its design.
+Its grants and its CUE delivery are described in the [OpenTofu runbook](../../../opentofu/README.md#cloud-tasks-cluster-resources) and the [lifecycle runbook](../../lifecycle/README.md).
+
+### Trial and estimate
+
+There is one trial: 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window.
+Render its offline proposal, which carries the estimate the owner approves, from the repository root; the run takes no trial input:
+
+```sh
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
+  --scenario cloudtasks-recovery \
+  --run-id example-1362 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --started-at 2026-10-13T00:00:00Z --expires-at 2026-10-13T01:30:00Z \
+  --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
+  --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  > /tmp/cloudtasks-proposal.json
+```
+
+A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
+
+The estimate prices the operator, the supervisor and the three application Pods for the window at the reviewed Autopilot rates, every task operation the trial plans at USD 0.40 per million without the monthly free tier, and a USD 1.00 reserve for state, evidence and telemetry.
+The operations are the 180,000 creates, one checkpoint's records re-created for each of the two recoveries, two whole listings in pages of 1,000, and ten queue calls.
+
+### Dispatch
+
+The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `cloudtasks-recovery` with one input beyond the common ones, `application_digest`: the published `cloudtasks-recovery` GAR digest, verified live at dispatch and never pinned.
+The owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios.
+The workflow job runs for up to 120 minutes, because the 90-minute window's serial budget is 114 minutes.
+
+Dispatch checks the digest, the run ID and an existing run's evidence first, then snapshots the foundation, renders and verifies the proposal, takes live image receipts and binds the approval into the delivery before it takes the environment lock.
+The run's queue is `ct1362-<run-id>` in `flink-gcp/us-central1`.
+Choose a run ID that has not been used: a deleted queue's name can stay unavailable for a tombstone window of up to three days, and a used ID already has evidence, which dispatch refuses.
+
+### Queue lifecycle
+
+After the supervisor heartbeats and the Operator is ready, the runner records the queue's intent, reads that the name is free, records the creation intent and a call marker in one control write, creates the queue with a one-hour `tombstoneTtl`, pauses it, and reads it back until it reports `PAUSED` with the approved configuration.
+The readback is also what proves the create took effect: the [DeleteQueue reference](https://docs.cloud.google.com/tasks/docs/reference/rest/v2beta3/projects.locations.queues/delete) says a create can appear to succeed without creating the queue, and recommends reading it back.
+Only then does the runner open the namespace quota for three Pods and create the FlinkDeployment.
+A queue that already carries the name refuses the run, which then deletes nothing.
+
+A create the service answers with 409, although the name read free just before, names a queue, or a deleted name's tombstone, that is not this run's: the run clears its creation intent and fails, deleting nothing.
+The runner releases its authority over the queue when it settles, without stopping the run, and retries the release on every poll; it makes no queue call after admission.
+A create that did not return keeps its marker, and then neither the release nor cleanup proceeds: the create could still land after cleanup found the name absent, so an operator decides.
+A create refused before it was sent, for example because the admission deadline passed while the marker was being written, clears the marker and the creation intent.
+
+Only the supervisor deletes the queue, and only one whose creation intent the record holds.
+It waits for the runner's release and for the namespace to hold no Pod, deletes the queue and reads it back until it is gone, and shared cleanup then removes the run's state under `runs/<run-id>/` and `.inprogress/flink-gcp-cloudtasks-benchmark/runs/<run-id>/` in the benchmark bucket.
+
+### Exercise and oracle
+
+The supervisor runs the shared recovery exercise on the application's `cloudtasks-progress` lines: one savepoint upgrade while the initial input still flows, then one JobManager deletion while the upgraded input flows, each proved by a restored savepoint or checkpoint, advanced input and a new completed checkpoint.
+The input lineage must stay the one the first progress line reported.
+
+When the upgraded application reaches `FINISHED` with the whole input processed, the supervisor reads the queue back and lists its tasks in the basic view, page by page.
+It exports every page as a `cloudtasks-task-page` evidence event, holding the listed task ids, any name outside the run's queue and the ids of any task with a dispatch attempt.
+The oracle maps each id back to its sequence through the SHA-256 of `<run-id>/<sequence>` and passes only when every sequence is listed once, nothing else is listed and nothing was dispatched.
+A failing listing is repeated 15 seconds later while another attempt as long as the last still fits the listing window, which closes 600 seconds after the application finishes or a minute before the cleanup start, whichever is first; each attempt exports its own pages, and a transiently failing call is retried every 5 seconds.
+A queue or task-listing call still failing when the window closes, however it fails, leaves the last whole attempt in place, so a listing still failing then is the trial's finding and is recorded, not raised.
+A non-transient error from such a call before then, any failure of the run's own state reads, which precede each attempt and recur once a poll, and a window that closes on the first attempt end the run without a verdict.
+
+### Verdict and analysis
+
+The run is `usable` when both recoveries are proved, the queue read back `PAUSED` before the listing, and the oracle passed; anything short of that is `inconclusive`.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
+
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory: it rebuilds the oracle report from the pages of the attempt the record names, reports a page missing from the export as a problem that leaves the run without a verdict, and reports a stored report or verdict that the pages do not reproduce.
+A usable verdict makes no claim about a handler, since a paused queue dispatches nothing.
