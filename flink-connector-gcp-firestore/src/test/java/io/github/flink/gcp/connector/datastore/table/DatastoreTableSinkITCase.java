@@ -352,6 +352,10 @@ class DatastoreTableSinkITCase extends AbstractDatastoreEmulatorITCase {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        // Flink 2.3 refuses this mismatched key while planning unless the statement resolves the
+        // conflict; relaxing that keeps 2.2's materialization, so the delete reaches the sink.
+        // Flink 1.20 and 2.2 do not define the setting and ignore it.
+        table.getConfig().set("table.exec.sink.require-on-conflict", "false");
         table.createTemporaryView(
                 "events",
                 table.fromDataStream(

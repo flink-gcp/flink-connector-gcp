@@ -334,6 +334,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   that is Flink's bug, and asking for full deletes instead drops deletes of keys the job never saw
   (measured). Owner, 2026-10-10: do not work around it; document nullable columns. No test may
   assert the failure: the weekly next-Flink build would break on the fix.
+- **A test of a query keyed differently from the table sets `table.exec.sink.require-on-conflict`
+  to `false`.** Flink 2.3 otherwise refuses the statement in the planner before the sink sees it
+  (#1757), while 1.20 and 2.2 ignore the setting, so one assertion holds on every CI version.
 - **Option keys follow ADR-0137**: `sink.buffer-flush.*` (connector-owned buffer),
   `sink.request-timeout`, `sink.recovery.*`, `sink.throttling.*`. Docs live on their own page,
   `docs/content/docs/connectors/table/datastore.md`, one page per `connector` identifier.
