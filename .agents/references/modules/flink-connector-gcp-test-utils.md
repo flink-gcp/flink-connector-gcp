@@ -33,7 +33,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `CatalogTable.fromProperties(...)` (#1637). Keep `flink-table-common` provided and use the
   public catalog API rather than duplicating Flink's reserved-key rules. Its direct tests hold
   the rejection paths that clean connector option sets cannot exercise; Spanner also uses the
-  shared round trip to pin the loss of its deprecated marker spellings.
+  shared round trip to pin the loss of its deprecated marker spellings. A reserved key in those
+  direct tests must be reserved on every Flink version CI runs, including the weekly rows;
+  Flink 2.3 stopped reserving `definition-query` (#1754).
 - `LineageListenerCapture` is the Flink 2.x listener fixture in `src/main/java-flink2`
   (ADR-0160). It depends on public Flink types, never on base. Runtime/streaming dependencies
   remain provided. This shared-prerequisite fixture precedes the five connector adopters.
