@@ -261,7 +261,7 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
             }
             consecutiveRejections++;
             route(write, mismatch, null);
-            enforceRejectionBound(write.getKey(), "a key addressing another database", null);
+            enforceRejectionBound(write.getKey(), "a key addressing another database", null, null);
             return;
         }
         EncodedMutation encoded;
@@ -446,14 +446,22 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
         if (earns(operation, code)) {
             if (code == StatusCode.Code.NOT_FOUND) {
                 confirmDatabaseAnswers(pending, failure);
-            } else if (storedAsWritten(pending, failure)) {
-                // Like the replay answers below, this leaves a run of rejections as it was: the
-                // write may have been the refused commit's, or a replay's.
+                // Counted: a serializer addressing the wrong kind or namespace earns it for every
+                // update, and nothing else would stop a dropping handler shedding the stream. A
+                // replayed update of an entity the stream deleted afterwards earns it too, but the
+                // replayed delete is applied and resets the run (ADR-0175).
+                reject(pending, code, failure, true);
                 return;
             }
-            // Neither counts toward the bound: both are what a restart's replay answers — an
-            // insert of a key holding another entity, and a replayed update of an entity the
-            // stream deleted afterwards.
+            if (storedAsWritten(pending, failure)) {
+                // The key holds what the insert writes, so the write is satisfied, whether the
+                // refused commit or an earlier run applied it, and it resets the run as an applied
+                // write does.
+                consecutiveRejections = 0;
+                return;
+            }
+            // Not counted: an insert of a key holding another entity is what a restart's replay
+            // answers once a later write of the stream changed the entity.
             reject(pending, code, failure, false);
             return;
         }
@@ -691,12 +699,17 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                         + failure.getMessage(),
                 failure);
         if (countsTowardBound) {
-            enforceRejectionBound(pending.getWrite().getKey(), "status " + describe(code), failure);
+            enforceRejectionBound(
+                    pending.getWrite().getKey(), "status " + describe(code), code, failure);
         }
     }
 
     /** Fails the job once the run of counted rejections reaches the bound. */
-    private void enforceRejectionBound(Key lastKey, String lastCause, @Nullable Throwable failure)
+    private void enforceRejectionBound(
+            Key lastKey,
+            String lastCause,
+            @Nullable StatusCode.Code lastCode,
+            @Nullable Throwable failure)
             throws IOException {
         if (maxConsecutiveRejections != DatastoreWriterOptions.UNBOUNDED
                 && consecutiveRejections >= maxConsecutiveRejections) {
@@ -708,13 +721,23 @@ public class DatastoreWriter<T> implements SinkWriter<T> {
                             + database
                             + ", with "
                             + lastCause
-                            + ") with none applied between them, reaching"
+                            + ") with no write the sink saw applied between them, reaching"
                             + " maxConsecutiveRejections("
                             + maxConsecutiveRejections
-                            + "): the stream's data looks broken rather than anomalous, so the job"
-                            + " fails instead of routing it record by record. Every refused"
-                            + " mutation, this one included, was routed to the configured handler"
-                            + " first; DatastoreWriterOptions.builder().maxConsecutiveRejections(-1)"
+                            + "): "
+                            + (lastCode == StatusCode.Code.NOT_FOUND
+                                    ? "the last is an update of an entity that does not exist,"
+                                            + " which a serializer naming the wrong kind or"
+                                            + " namespace earns for every update, and a restart"
+                                            + " earns for each replayed update of an entity the"
+                                            + " stream deleted afterwards; a stream that expects"
+                                            + " its updates to miss needs a larger bound. The"
+                                            + " job fails"
+                                    : "the stream's data looks broken rather than anomalous, so"
+                                            + " the job fails")
+                            + " instead of routing it record by record. Every refused mutation,"
+                            + " this one included, was routed to the configured handler first;"
+                            + " DatastoreWriterOptions.builder().maxConsecutiveRejections(-1)"
                             + " removes this bound.",
                     failure);
         }

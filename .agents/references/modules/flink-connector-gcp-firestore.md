@@ -219,8 +219,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   a write refused alone is routed only for an operation that can earn the status. **`NOT_FOUND` is
   routed only after a lookup of the key is answered** (owner's decision, 2026-10-03); a refused
   lookup fails the job as a missing database. The lookup is one `Lookup` through the client's RPC
-  object, never `Datastore.get`, which re-sends a deferred key without a bound. `maxConsecutiveRejections` counts `INVALID_ARGUMENT`
-  and keys addressing another database, never the replay answers. `DatastoreErrorClassifierTest` iterates every gax code.
+  object, never `Datastore.get`, which re-sends a deferred key without a bound. `maxConsecutiveRejections` counts `INVALID_ARGUMENT`,
+  keys addressing another database and a routed `NOT_FOUND` (#1750: a wrong kind or namespace
+  misses every update; the replayed delete ends a replay's run), never `ALREADY_EXISTS`.
+  `DatastoreErrorClassifierTest` iterates every gax code.
 - **Ramp-up throttling** (`RampUpThrottle`) is Beam's `RampupThrottlingFn` shape, one permit per
   record that reaches the buffer; retries and solo re-sends are not throttled.
 - The emulator (same binary, `--database-mode=datastore-mode`, set in
@@ -235,9 +237,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   So the confirmation pass meets inserts the refused commit already wrote: an insert's
   `ALREADY_EXISTS` counts as applied when `lookup` (which returns the stored `Entity`, or null when
   missing, deferred or unreadable) finds exactly the insert's entity (`storedAsWritten`); a
-  different entity, null, or a lookup that fails after its transient retries routes it. Either
-  way the run of rejections is left as it was. The unit-test fake models the emulator by default
-  and the service under `servesLikeTheService()`; test a routing change under both.
+  different entity, null, or a lookup that fails after its transient retries routes it. A match
+  ends the run of rejections as an applied write does (#1750); a routed insert leaves it as it
+  was. The unit-test fake models the emulator by default and the service under
+  `servesLikeTheService()`; test a routing change under both.
 
 ## Datastore-mode source (`docs/adr/0177`)
 
