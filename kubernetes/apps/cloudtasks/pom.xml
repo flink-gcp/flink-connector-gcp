@@ -24,8 +24,8 @@ limitations under the License.
         <relativePath>../../../pom.xml</relativePath>
     </parent>
     <artifactId>flink-gcp-tier3-cloudtasks</artifactId>
-    <name>Flink GCP : Tier-3 Cloud Tasks measurement application</name>
-    <description>Internal Cloud Tasks measurement application for the on-demand Tier-3 rig.</description>
+    <name>Flink GCP : Tier-3 Cloud Tasks applications</name>
+    <description>Internal Cloud Tasks measurement and recovery applications for the on-demand Tier-3 rigs.</description>
     <properties>
         <!-- The application follows the image runtime, independently of connector compatibility. -->
         <maven.compiler.source>17</maven.compiler.source>
@@ -55,6 +55,12 @@ limitations under the License.
             <artifactId>flink-connector-datagen</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-test-utils</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils</artifactId>
             <scope>test</scope>
@@ -77,10 +83,25 @@ limitations under the License.
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksMeasurementJob</mainClass>
+                            <mainClass>io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksRecoveryJob</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>image-dependencies</id>
+                        <phase>package</phase>
+                        <goals><goal>copy-dependencies</goal></goals>
+                        <configuration>
+                            <includeScope>runtime</includeScope>
+                            <outputDirectory>${project.build.directory}/image-lib</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

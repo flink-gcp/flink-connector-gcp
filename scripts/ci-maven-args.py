@@ -114,7 +114,7 @@ Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
 
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
-  run_tier3_cloudtasks=true|false selects the opt-in Cloud Tasks measurement application.
+  run_tier3_cloudtasks=true|false selects the opt-in Cloud Tasks applications.
   run_tier3_pubsub=true|false selects the opt-in Pub/Sub recovery application.
   run_tier3_bigquery=true|false selects the opt-in BigQuery recovery application.
   run_tier3_smoke=true|false   selects the opt-in smoke application for its own

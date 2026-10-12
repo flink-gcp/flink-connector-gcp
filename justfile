@@ -464,7 +464,7 @@ check-skill-frontmatter:
 tier3-smoke-verify:
     just verify -P tier3-smoke -pl kubernetes/apps/smoke -am clean
 
-# Build the measurement application and test its observed RPC paths without GCP.
+# Build the Cloud Tasks measurement and recovery applications and test them without GCP.
 tier3-cloudtasks-verify:
     just verify -P tier3-cloudtasks -pl kubernetes/apps/cloudtasks -am clean
 

@@ -69,13 +69,16 @@ jobs:
       - name: Verify the BigQuery recovery payload
         run: just tier3-bigquery-verify
 
-      - name: Read the reviewed BigQuery and Pub/Sub base
+      - name: Read the reviewed recovery application base
         id: recovery_base
         run: |
           printf 'image=%s/flink@%s\n' "$GAR" "${FLINK_SOURCE##*@}" >> "$GITHUB_OUTPUT"
 
       - name: Verify the Pub/Sub recovery payload
         run: just tier3-pubsub-verify
+
+      - name: Verify the Cloud Tasks recovery payload
+        run: just tier3-cloudtasks-verify
 
       - name: Export the locked lifecycle dependencies
         run: just tier3-lifecycle-requirements
@@ -173,6 +176,24 @@ jobs:
           tags: ${{ steps.pubsub_meta.outputs.tags }}
           labels: ${{ steps.pubsub_meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: cloudtasks_meta
+        with:
+          images: ${{ env.GAR }}/cloudtasks-recovery
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: cloudtasks_build
+        with:
+          context: kubernetes/apps/cloudtasks
+          platforms: linux/amd64
+          build-args: |
+            FLINK_IMAGE=${{ steps.recovery_base.outputs.image }}
+            FLINK_VERSION=2.2.1
+          push: true
+          tags: ${{ steps.cloudtasks_meta.outputs.tags }}
+          labels: ${{ steps.cloudtasks_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
@@ -180,6 +201,7 @@ jobs:
           BIGQUERY_DIGEST: ${{ steps.bigquery_build.outputs.digest }}
           RECOVERY_BASE: ${{ steps.recovery_base.outputs.image }}
           PUBSUB_DIGEST: ${{ steps.pubsub_build.outputs.digest }}
+          CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
@@ -191,4 +213,5 @@ jobs:
             printf '%s\n' "$RECOVERY_BASE"
             printf '%s/bigquery-recovery@%s\n' "$GAR" "$BIGQUERY_DIGEST"
             printf '%s/pubsub-recovery@%s\n' "$GAR" "$PUBSUB_DIGEST"
+            printf '%s/cloudtasks-recovery@%s\n' "$GAR" "$CLOUDTASKS_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"

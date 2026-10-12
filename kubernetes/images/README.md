@@ -28,6 +28,7 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), CA certificates, kubectl 1.35.7 and the [locked official Python SDKs](../../tools/tier3/pyproject.toml) | Export the Tier-3 member dependencies, then build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
 | `bigquery-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [BigQuery recovery application](../apps/bigquery/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
 | `pubsub-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Pub/Sub recovery application](../apps/pubsub/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
+| `cloudtasks-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Cloud Tasks recovery application](../apps/cloudtasks/README.md#recovery-application) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
 | `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
@@ -50,8 +51,8 @@ mise x -- just tier3-lifecycle-requirements
 Run the export recipe before a local Docker build as well; the publication workflow runs it before cloud authentication.
 The locked export fails when dependency declarations and `uv.lock` disagree.
 Docker's setup-buildx, metadata and build-push actions build it, apply a full-commit `sha-...` tag and OCI labels, and publish it.
-The BigQuery and Pub/Sub contexts are `kubernetes/apps/bigquery` and `kubernetes/apps/pubsub`; their `.dockerignore` files admit only each Dockerfile, application JAR and packaged runtime dependency JARs.
-The BigQuery and Pub/Sub CI lanes also build their Dockerfiles without publishing, using the public digest that the publication workflow mirrors into GAR.
+The BigQuery, Pub/Sub and Cloud Tasks contexts are `kubernetes/apps/bigquery`, `kubernetes/apps/pubsub` and `kubernetes/apps/cloudtasks`; their `.dockerignore` files admit only each Dockerfile, application JAR and packaged runtime dependency JARs.
+Their CI lanes also build the Dockerfiles without publishing, using the public digest that the publication workflow mirrors into GAR.
 The lifecycle build context is only `kubernetes/images/lifecycle`; the smoke context is `kubernetes/apps/smoke`, with `.dockerignore` allowing only the Dockerfile and two packaged JARs.
 
 Source images retain their upstream notices, licenses and OS package metadata.
@@ -82,15 +83,16 @@ gh workflow run tier3-images.yaml --repo flink-gcp/flink-connector-gcp \
 
 The workflow no longer publishes the Cloud Tasks measurement images (`cloudtasks-measurement` and `cloudtasks-measurement-flink120`): only the removed cluster session ran them, and the single-host rig runs the application from its build ([#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723)).
 Versions already published expire under the repository's seven-day cleanup policy.
+It publishes the Cloud Tasks recovery application as `cloudtasks-recovery` instead, for the cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), on the Flink 2.2.1 line only.
 
-Every dispatch verifies smoke, BigQuery and Pub/Sub before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all three application images with BuildKit.
-BigQuery and Pub/Sub publication require separate approval before dispatch; adding this path does not authorize a publication or trial.
+Every dispatch verifies smoke, BigQuery, Pub/Sub and Cloud Tasks before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all four application images with BuildKit.
+BigQuery, Pub/Sub and Cloud Tasks publication require separate approval before dispatch; adding this path does not authorize a publication or trial.
 It uses one standard Ubuntu runner, permits one publication at a time and has a 30-minute job timeout.
 The fixed source digests define what is transferred; there is no custom image-content inspector, capacity quota or intermediate receipt format.
 Docker's login action logs out when the job ends.
 
 A successful run lists the Operator, Flink, lifecycle tools and smoke digest references in the GitHub Actions job summary.
-It also lists the shared BigQuery/Pub/Sub base once, followed by both recovery application digests.
+It also lists the shared recovery application base once, followed by the BigQuery, Pub/Sub and Cloud Tasks recovery application digests.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
 The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
 The build action also supplies its standard build summary.
@@ -99,7 +101,7 @@ Do not adopt image pins from an incomplete run.
 The [first BigQuery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35489876881) built `116f2b8d9f992ecca7282d6320468db2b4a5c196`, before the application added appender observations; the [BigQuery trial publication](#bigquery-trial-publication) below supersedes it.
 The [first Pub/Sub publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35494622116) built `cba9043faee0ceb067cba23b56fe3e0abe7f0542`; its [application runbook](../apps/pubsub/README.md#deployment-definition) records the GAR-verified digest.
 Workload admission must recheck that digest's availability and retention window.
-Publication supplies no BigQuery or Pub/Sub workload admission or service-measurement approval.
+Publication supplies no BigQuery, Pub/Sub or Cloud Tasks workload admission or service-measurement approval.
 
 ## Retention and acceptance
 
