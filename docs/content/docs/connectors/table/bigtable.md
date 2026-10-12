@@ -797,9 +797,10 @@ The default `sink.insert-only-input-mode = upsert` applies that rule to an inser
 It exposes all three conflict strategies and reflects the physical write, which overwrites a row
 with the same key. On an insert-only input, `DO DEDUPLICATE` adds no materializer and leaves those
 writes on the ordinary overwrite path. `DO NOTHING` keeps the first row the *job* observes per key
-and `DO ERROR` fails when the job observes a conflict; both require watermarks. Neither inspects
-Bigtable, so `DO NOTHING` is not an atomic insert-if-absent — a fresh job, expired state or cleared
-state can overwrite an existing row.
+and `DO ERROR` fails when the job observes a conflict; both require a watermark on every table the
+statement scans, though not on a lookup join's dimension table. Neither inspects Bigtable, so
+`DO NOTHING` is not an atomic insert-if-absent — a fresh job, expired state or cleared state can
+overwrite an existing row.
 
 For a plain insert that must use the same DDL on Flink 1.20, 2.2 and 2.3, set
 `sink.insert-only-input-mode = insert-only`. This table-local compatibility mode restores the
@@ -815,6 +816,11 @@ mode carries no materializer. Flink 1.20 and 2.2 do not define the setting and i
 the connector option when the compatibility decision belongs to one Bigtable table and the extra
 keyed state is not wanted; use the Flink setting when relaxing the check for every sink planned by
 the session is intentional.
+
+All of this is streaming behaviour. In batch execution Flink 2.3 plans a plain insert, `VALUES`
+included, with no clause, and accepts an `ON CONFLICT` clause without watermarks but drops it: the
+plan carries no materializer, so `DO NOTHING` keeps no first row and `DO ERROR` reports no conflict
+(measured on 2.3.0).
 
 ### Two rows for one key in one batch have no defined winner
 

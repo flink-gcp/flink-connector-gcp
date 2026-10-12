@@ -271,6 +271,16 @@ Without a primary key, the sink accepts insert-only input and uses Spanner `inse
 This preserves duplicate-key errors instead of pretending that an unknown physical key can support upserts or deletes.
 As with other Flink connectors, `PRIMARY KEY ... NOT ENFORCED` describes the contract to the planner; the connector does not verify uniqueness.
 
+### Flink 2.3 may demand ON CONFLICT
+
+Flink 2.3 ([FLIP-558](https://cwiki.apache.org/confluence/display/FLINK/FLIP-558%3A+Improvements+to+SinkUpsertMaterializer+and+changelog+disorder)) refuses to plan an updating statement into a table with a PRIMARY KEY unless the PRIMARY KEY contains an upsert key the planner infers for the query, or the statement carries one of the `ON CONFLICT DO DEDUPLICATE`, `DO ERROR` or `DO NOTHING` clauses that Flink 2.3 introduces.
+A query keyed by other columns, such as an aggregation written into a table keyed by its result, is refused, and so is one whose upsert key the planner cannot infer.
+The refusal is the planner's, not this connector's: rows with different upsert keys that map to one primary key reach the sink in no defined order, and Flink 2.3 asks the statement to say what that should mean instead of materializing silently, as Flink 2.2 does.
+An aggregation grouped by the key columns plans with no clause, and so does an insert-only statement, `INSERT INTO .. VALUES` included, because the sink answers an insert-only input with an insert-only changelog.
+`ON CONFLICT DO DEDUPLICATE`, or the planner-wide `table.exec.sink.require-on-conflict = false`, plans a refused statement with the materialization Flink 2.2 uses; `DO ERROR` and `DO NOTHING` plan it only when every table the statement scans declares a watermark, while a lookup join's dimension table needs none (measured on 2.3.0).
+Flink 1.20 and 2.2 do not parse the clause, and ignore the setting.
+All of this is streaming behaviour: in batch execution Flink 2.3 plans such a statement with no clause, and accepts an `ON CONFLICT` clause without watermarks but drops it, so the rows reach the sink with no materializer and the clause has no effect (measured on 2.3.0).
+
 ## Lookup behavior
 
 The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
