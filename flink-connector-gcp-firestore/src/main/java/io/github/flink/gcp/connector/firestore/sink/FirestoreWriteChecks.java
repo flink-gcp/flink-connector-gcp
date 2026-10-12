@@ -22,25 +22,34 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.Blob;
 import com.google.cloud.firestore.GeoPoint;
+import com.google.cloud.firestore.VectorValue;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * The checks {@link FirestoreWrite} applies when it is built: the document or collection path's
- * grammar and the closed value vocabulary.
+ * grammar and the value vocabulary.
  *
  * <p>Both exist for what the sink does with the value, not for what the service might refuse
  * (ADR-0127). The path is parsed here and composed into a document reference, so it is checked
  * against the grammar that reads it. The values are handed to the client library, which fails
  * synchronously on a value it cannot encode in a way that corrupts the rest of its request
- * (ADR-0171), so a value is accepted only if the library is known to encode it. The one exception
- * is {@link FirestoreDocumentReference}, which the library never sees: the writer replaces it with
- * the library's own reference before it hands the fields over, and the library would otherwise
- * encode it as a map of its properties.
+ * (ADR-0171), so a value the library would refuse is rejected here, naming its field. The one value
+ * the library never sees is {@link FirestoreDocumentReference}: the writer replaces it with the
+ * library's own reference before it hands the fields over, and the library would otherwise encode
+ * it as a map of its properties.
+ *
+ * <p>An {@link Integer}, a {@link Float}, a {@link Date} or an {@link Instant} is converted to the
+ * {@link Long}, {@link Double} or {@link Timestamp} the library sends it as, so the copy holds only
+ * types the writer's size accounting already counts. The conversion also keeps a mutable {@code
+ * Date} out of an immutable write, and sends a pre-epoch {@code Date} that is not a whole second
+ * correctly, which the library's own conversion does not (googleapis/google-cloud-java#14635).
  *
  * <p>A field's path is built only for an error message, or once per nested map or list: the copy
  * runs for every record, and most values are scalars that need none.
@@ -167,8 +176,18 @@ final class FirestoreWriteChecks {
                 || value instanceof Timestamp
                 || value instanceof GeoPoint
                 || value instanceof Blob
+                || value instanceof VectorValue
                 || value instanceof FirestoreDocumentReference) {
             return value;
+        }
+        if (value instanceof Integer) {
+            return ((Integer) value).longValue();
+        }
+        if (value instanceof Float) {
+            return ((Float) value).doubleValue();
+        }
+        if (value instanceof Date || value instanceof Instant) {
+            return timestamp(value, parent, name, index);
         }
         if (value instanceof Map) {
             return copyMap((Map<?, ?>) value, childPath(parent, name, index), depth);
@@ -187,12 +206,43 @@ final class FirestoreWriteChecks {
                         + childPath(parent, name, index)
                         + "' has a value of type "
                         + value.getClass().getName()
-                        + ", which a Firestore write does not accept. Use String, Long, Double,"
-                        + " Boolean, com.google.cloud.Timestamp, GeoPoint, Blob,"
-                        + " FirestoreDocumentReference, a List or a Map with String keys: an int"
-                        + " is written as a Long, a float as a Double, bytes as"
-                        + " Blob.fromBytes(...), and a reference to a document as"
+                        + ", which a Firestore write does not accept. Use String, Long or"
+                        + " Integer, Double or Float, Boolean, com.google.cloud.Timestamp, Date or"
+                        + " Instant, GeoPoint, Blob, VectorValue, FirestoreDocumentReference, a"
+                        + " List or a Map with String keys: a short is written as a Long, bytes as"
+                        + " Blob.fromBytes(...), a BigDecimal or an enum constant as the String of"
+                        + " its toString() or name(), and a reference to a document as"
                         + " FirestoreDocumentReference.of(path).");
+    }
+
+    /**
+     * Converts a {@link Date} or an {@link Instant} to the {@link Timestamp} of the same instant,
+     * keeping a {@link java.sql.Timestamp}'s nanoseconds, which its {@code Date} form drops. {@code
+     * Timestamp.of(java.sql.Timestamp)} is not used: it returns a time one second late for a value
+     * less than a second before the epoch (googleapis/google-cloud-java#14636).
+     */
+    private static Timestamp timestamp(Object value, String parent, String name, int index) {
+        try {
+            if (value instanceof java.sql.Timestamp) {
+                java.sql.Timestamp sqlTimestamp = (java.sql.Timestamp) value;
+                return Timestamp.ofTimeSecondsAndNanos(
+                        Math.floorDiv(sqlTimestamp.getTime(), 1000L), sqlTimestamp.getNanos());
+            }
+            if (value instanceof Date) {
+                return Timestamp.of((Date) value);
+            }
+            Instant instant = (Instant) value;
+            return Timestamp.ofTimeSecondsAndNanos(instant.getEpochSecond(), instant.getNano());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Field '"
+                            + childPath(parent, name, index)
+                            + "' is a "
+                            + value.getClass().getName()
+                            + " outside the range a Firestore timestamp can hold, the years 1 to"
+                            + " 9999.",
+                    e);
+        }
     }
 
     private static String childPath(String parent, String name, int index) {

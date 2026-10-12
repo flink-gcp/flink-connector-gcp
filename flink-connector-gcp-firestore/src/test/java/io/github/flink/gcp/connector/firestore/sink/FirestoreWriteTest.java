@@ -25,6 +25,7 @@ import com.google.cloud.firestore.BsonTimestamp;
 import com.google.cloud.firestore.Decimal128Value;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.FieldPath;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.GeoPoint;
@@ -39,8 +40,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -148,6 +152,7 @@ class FirestoreWriteTest {
         fields.put("list", list);
         fields.put("map", nested);
         fields.put("reference", FirestoreDocumentReference.of("users/alice"));
+        fields.put("vector", FieldValue.vector(new double[] {1, 2}));
         fields.put("a.b", "a field whose name contains a dot");
 
         FirestoreWrite write = FirestoreWrite.set("c/a", fields);
@@ -159,17 +164,97 @@ class FirestoreWriteTest {
         assertThat(write.getFields().get("map")).isEqualTo(Map.of("inner", true));
         assertThat(write.getFields().get("reference"))
                 .isEqualTo(FirestoreDocumentReference.of("users/alice"));
+        assertThat(write.getFields().get("vector"))
+                .isEqualTo(FieldValue.vector(new double[] {1, 2}));
         assertThatThrownBy(() -> write.getFields().put("k", 1L))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThat(InstantiationUtil.clone(write)).isEqualTo(write);
     }
 
     @Test
-    void aValueOutsideTheVocabularyIsRejectedAndNamed() {
-        assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("n", Map.of("i", 1))))
+    void aConvenienceTypeIsConvertedToTheValueItIsSentAs() throws Exception {
+        java.sql.Timestamp sqlTimestamp = new java.sql.Timestamp(-500);
+        sqlTimestamp.setNanos(500_000_123);
+        Date date = new Date(1_500);
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("integer", Integer.MIN_VALUE);
+        fields.put("float", 0.1f);
+        fields.put("date", date);
+        // Before the epoch, a millisecond count's remainder is negative: the client library sends
+        // that as negative nanos, which the service refuses (googleapis/google-cloud-java#14635).
+        fields.put("preEpochDate", new Date(-1_500));
+        // Half a second before the epoch, with nanoseconds a Date cannot hold. The client library's
+        // Timestamp.of(java.sql.Timestamp) reads it as half a second after the epoch
+        // (googleapis/google-cloud-java#14636).
+        fields.put("sqlTimestamp", sqlTimestamp);
+        fields.put("instant", Instant.ofEpochSecond(-1, 999_999_999));
+        fields.put("nested", List.of(Map.of("integer", 7)));
+
+        FirestoreWrite write = FirestoreWrite.set("c/a", fields);
+        date.setTime(0);
+
+        assertThat(write.getFields().get("integer")).isEqualTo((long) Integer.MIN_VALUE);
+        assertThat(write.getFields().get("float")).isEqualTo((double) 0.1f);
+        assertThat(write.getFields().get("date"))
+                .as("a copy, which the Date's later change does not reach")
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(1, 500_000_000));
+        assertThat(write.getFields().get("preEpochDate"))
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(-2, 500_000_000));
+        assertThat(write.getFields().get("sqlTimestamp"))
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(-1, 500_000_123));
+        assertThat(write.getFields().get("instant"))
+                .isEqualTo(Timestamp.ofTimeSecondsAndNanos(-1, 999_999_999));
+        assertThat(write.getFields().get("nested")).isEqualTo(List.of(Map.of("integer", 7L)));
+        assertThat(InstantiationUtil.clone(write)).isEqualTo(write);
+    }
+
+    @Test
+    void aTimeATimestampCannotHoldIsRejectedAndNamed() {
+        assertThatThrownBy(
+                        () ->
+                                FirestoreWrite.set(
+                                        "c/a", Map.of("m", Map.of("d", new Date(Long.MAX_VALUE)))))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("'n.i'")
-                .hasMessageContaining("java.lang.Integer");
+                .hasMessageContaining("'m.d'")
+                .hasMessageContaining("java.util.Date")
+                .hasMessageContaining("years 1 to 9999");
+        assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("l", List.of(Instant.MIN))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'l[0]'")
+                .hasMessageContaining("java.time.Instant")
+                .hasMessageContaining("years 1 to 9999");
+        assertThatThrownBy(
+                        () ->
+                                FirestoreWrite.set(
+                                        "c/a",
+                                        Map.of(
+                                                "s",
+                                                new java.sql.Timestamp(-70_000_000_000_000_000L))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'s'")
+                .hasMessageContaining("java.sql.Timestamp")
+                .hasMessageContaining("years 1 to 9999");
+    }
+
+    @Test
+    void aValueOutsideTheVocabularyIsRejectedAndNamed() {
+        // The client library itself refuses a Short, so it stays outside the vocabulary.
+        assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("n", Map.of("s", (short) 1))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'n.s'")
+                .hasMessageContaining("java.lang.Short")
+                .hasMessageContaining("a short is written as a Long");
+        // The library would store these as strings, a type other than the one written.
+        assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("d", new BigDecimal("1.5"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'d'")
+                .hasMessageContaining("java.math.BigDecimal")
+                .hasMessageContaining("toString() or name()");
+        assertThatThrownBy(
+                        () -> FirestoreWrite.set("c/a", Map.of("e", FirestoreWrite.Operation.SET)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'e'")
+                .hasMessageContaining(FirestoreWrite.Operation.class.getName());
         assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("l", List.of(new byte[0]))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("'l[0]'");
@@ -257,7 +342,7 @@ class FirestoreWriteTest {
     @MethodSource("bsonValues")
     void aBsonValueClassIsRejected(Object value) {
         // The library encodes each as a reserved map the writer's size accounting does not count,
-        // and #1589 kept them outside the closed list.
+        // and #1589 kept them outside the accepted values.
         assertThatThrownBy(() -> FirestoreWrite.set("c/a", Map.of("v", value)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(value.getClass().getName());
@@ -272,8 +357,9 @@ class FirestoreWriteTest {
 
     @Test
     void everyAcceptedValueIsOneTheClientLibraryEncodes() throws Exception {
-        // The closed vocabulary exists so that no accepted value makes the library throw after it
-        // has queued an operation (ADR-0171). WriteBatch converts synchronously through the same
+        // A value the library would refuse is rejected when the write is built, so that no accepted
+        // value makes the library throw after it has queued an operation (ADR-0171). WriteBatch
+        // converts synchronously through the same
         // encoder BulkWriter uses and sends nothing until commit, so an unreachable emulator
         // endpoint is enough. A FirestoreDocumentReference is the one accepted value the library
         // never sees: the writer replaces it with the library's DocumentReference first, which
@@ -291,6 +377,9 @@ class FirestoreWriteTest {
         fields.put("timestamp", TIME);
         fields.put("geoPoint", new GeoPoint(35.6, 139.7));
         fields.put("blob", Blob.fromBytes(new byte[] {1}));
+        // An Integer, a Float, a Date and an Instant are not listed: the library sees only the
+        // Long, Double and Timestamp they are converted to, which are.
+        fields.put("vector", FieldValue.vector(new double[] {1}));
         fields.put("list", List.of("x", Map.of("k", 1L)));
         fields.put("map", Map.of("inner", List.of(2L)));
         fields.put("a.b", "dotted");

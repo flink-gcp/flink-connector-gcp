@@ -23,12 +23,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   executor down.
 - **Three library defects are worked around, and `BulkWriterDefectsITCase` pins all three**: a
   failed write never releases its pending-operation slot (the writer replaces the `BulkWriter`
-  before a submission could reach 500), a synchronous refusal corrupts its request (the closed
-  `FirestoreWrite` value vocabulary keeps it unreachable; a refusal that still arrives fails the
-  job), and a throttle ceiling below 20 never sends a first batch holding more writes than the
-  ceiling (the rate floor below). All three are reported upstream as issues (ADR-0171), but that
-  test, not the issues, reports a fix: when it fails after a BOM bump, re-examine the workaround
-  rather than the test.
+  before a submission could reach 500), a synchronous refusal corrupts its request
+  (`FirestoreWrite` rejects every value the library would refuse when the write is built, which
+  keeps it unreachable; a refusal that still arrives fails the job), and a throttle ceiling below
+  20 never sends a first batch holding more writes than the ceiling (the rate floor below). All
+  three are reported upstream as issues (ADR-0171), but that test, not the issues, reports a fix:
+  when it fails after a BOM bump, re-examine the workaround rather than the test.
 - **The library sends on no timer** — at 20 writes (10 with a retry) or on `flush()`, and a
   retried write joins whatever batch is open. Every pass of a wait that finds the mailbox empty
   asks it to send (`sendOutstanding`); asking once per wait can strand a retry. Never wait on the
@@ -56,6 +56,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   count configurable as `writeMaxAttempts`; that backoff has no knobs because the library exposes
   none. The transport's per-call retries are the Pub/Sub-shaped `retry*` options, mapped by
   `DefaultFirestoreDatabaseAccessFactory.retrySettings` onto the library's `BatchWrite` values.
+- **A value the library would refuse is rejected; one it encodes is not refused merely for the
+  synchronous-refusal defect's sake** (#1747). Other reasons still reject an encodable value: the
+  BSON classes and a subtyped `Blob` (#1589), the library's `DocumentReference`, a POJO.
+  `FirestoreWriteChecks` converts `Integer`, `Float`, `Date` and `Instant` to the `Long`, `Double`
+  and `Timestamp` they are sent as, and passes `VectorValue` through. Never hand a `Date` to the
+  library (it sends a pre-epoch one that is not a whole second with negative nanos,
+  google-cloud-java#14635) and never call `Timestamp.of(java.sql.Timestamp)` (one second late
+  just before the epoch, #14636); #1748 tracks both. A value the library converts to another type (`BigDecimal`, an enum) stays rejected.
 - **Field names are literal in every operation**; `update` goes through the `FieldPath` overload.
 - **`FirestoreDocumentReference` never reaches the library**: `BulkWriterDatabaseAccess` replaces
   it, at any depth, with a `DocumentReference` of its own client. The library would encode an

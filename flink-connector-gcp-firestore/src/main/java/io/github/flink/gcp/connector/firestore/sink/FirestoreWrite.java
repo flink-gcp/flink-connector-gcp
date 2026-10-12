@@ -64,18 +64,23 @@ import java.util.Objects;
  *
  * <p>A field value is one of: {@code null}, {@link String}, {@link Long}, {@link Double}, {@link
  * Boolean}, {@link Timestamp}, {@link GeoPoint}, a {@link Blob} of subtype 0, a {@link
+ * com.google.cloud.firestore.VectorValue} (made by {@code FieldValue.vector(double[])}), a {@link
  * FirestoreDocumentReference}, a {@link java.util.List} of values, or a {@link Map} from non-empty
- * {@link String} field names to values, nested at most 500 levels deep. A {@code
+ * {@link String} field names to values, nested at most 500 levels deep. An {@link Integer}, a
+ * {@link Float}, a {@link java.util.Date} and a {@link java.time.Instant} are accepted too, and
+ * converted when the write is built to the {@code Long}, {@code Double} or {@code Timestamp} they
+ * are sent as, which is what {@link #getFields()} returns; a {@link java.sql.Timestamp} is
+ * converted with its nanoseconds, and a time outside the years 1 to 9999 is rejected. A {@code
  * FirestoreDocumentReference} is sent as a reference to that document in the database the sink
  * writes to. Anything else is rejected when the write is built, which the sink reports as a failure
- * to serialize that record. A BSON binary {@code Blob} of another subtype is rejected because the
- * client library encodes it as a reserved map rather than as bytes, and the sink's request-size
- * accounting does not count that form. The list is closed on purpose: it is the set of values the
- * client library is known to encode, once the sink has replaced each {@code
- * FirestoreDocumentReference} with the library's own reference, and a value it cannot encode would
- * fail the job rather than one record. Firestore's own rules about the values are the service's to
- * enforce: a document over 1 MiB, or a map nested more than 20 levels, is refused with {@code
- * INVALID_ARGUMENT} for that write.
+ * to serialize that record: a value the client library cannot encode, such as a {@link Short} or a
+ * {@code byte[]}, would otherwise fail the job rather than one record. A BSON binary {@code Blob}
+ * of another subtype is rejected because the client library encodes it as a reserved map rather
+ * than as bytes, and the sink's request-size accounting does not count that form; a {@link
+ * java.math.BigDecimal} or an enum constant is rejected because the library would store it as a
+ * string. Firestore's own rules about the values are the service's to enforce: a document over 1
+ * MiB, or a map nested more than 20 levels, is refused with {@code INVALID_ARGUMENT} for that
+ * write.
  *
  * <h2>Preconditions</h2>
  *

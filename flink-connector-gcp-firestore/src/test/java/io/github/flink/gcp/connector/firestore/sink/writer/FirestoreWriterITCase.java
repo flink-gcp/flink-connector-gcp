@@ -18,8 +18,10 @@ package io.github.flink.gcp.connector.firestore.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreEmulatorITCase;
@@ -35,7 +37,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -127,6 +131,55 @@ class FirestoreWriterITCase extends AbstractFirestoreEmulatorITCase {
             assertThat(((Map<?, ?>) list.get(2)).get("ref"))
                     .as("%s: a reference in a map in a list", id)
                     .isInstanceOf(DocumentReference.class);
+        }
+        assertThat(routed).isEmpty();
+    }
+
+    @Test
+    void aVectorAndEveryConvertedValueAreStoredAsWhatTheyStandForInEveryOperation()
+            throws Exception {
+        client().document(path("update")).set(Map.of("v", 1L)).get();
+        Map<String, Object> fields =
+                Map.of(
+                        "vector",
+                        FieldValue.vector(new double[] {1.5, -2}),
+                        "integer",
+                        7,
+                        "float",
+                        1.5f,
+                        // The client library would send this as negative nanos, which the
+                        // emulator refuses (googleapis/google-cloud-java#14635).
+                        "preEpochDate",
+                        new Date(-1_500),
+                        "instant",
+                        Instant.ofEpochSecond(1_700_000_000, 123_456_000),
+                        "nested",
+                        Map.of("vector", FieldValue.vector(new double[] {3})));
+
+        try (SinkWriter<FirestoreWrite> writer = writer()) {
+            write(writer, FirestoreWrite.set(path("set"), fields));
+            write(writer, FirestoreWrite.setMerge(path("merge"), fields));
+            write(writer, FirestoreWrite.create(path("create"), fields));
+            write(writer, FirestoreWrite.update(path("update"), fields));
+            writer.flush(false);
+        }
+
+        for (String id : List.of("set", "merge", "create", "update")) {
+            DocumentSnapshot stored = read(path(id));
+            assertThat(stored.get("vector"))
+                    .as(id)
+                    .isEqualTo(FieldValue.vector(new double[] {1.5, -2}));
+            assertThat(stored.get("integer")).as(id).isEqualTo(7L);
+            assertThat(stored.get("float")).as(id).isEqualTo(1.5d);
+            assertThat(stored.getTimestamp("preEpochDate"))
+                    .as(id)
+                    .isEqualTo(Timestamp.ofTimeSecondsAndNanos(-2, 500_000_000));
+            assertThat(stored.getTimestamp("instant"))
+                    .as(id)
+                    .isEqualTo(Timestamp.ofTimeSecondsAndNanos(1_700_000_000, 123_456_000));
+            assertThat(stored.get("nested.vector"))
+                    .as(id)
+                    .isEqualTo(FieldValue.vector(new double[] {3}));
         }
         assertThat(routed).isEmpty();
     }

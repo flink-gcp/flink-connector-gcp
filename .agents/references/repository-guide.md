@@ -1015,7 +1015,7 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   Recorded in ADRs (`docs/adr/0075`–`0077`, `0085`, `0088`)
 - `.agents/references/modules/flink-connector-gcp-firestore.md` — one module with two package roots
   for Firestore Native and Datastore modes (#355), and the Native-mode sink (#1540): the
-  `BulkWriter` write path, the two client-library defects it works around, solo confirmation of
+  `BulkWriter` write path, the three client-library defects it works around, solo confirmation of
   `INVALID_ARGUMENT`, the routed set and `preconditionFailurePolicy`. Also the Native-mode bounded
   source (#1541): splits as a query's wire form plus one read time, the service-picked snapshot,
   cursor resume, and the client library's mid-stream retry the reader and planner guard against.

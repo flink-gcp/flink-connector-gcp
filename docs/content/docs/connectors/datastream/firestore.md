@@ -128,7 +128,7 @@ A `FirestoreDocumentDeserializationSchema` turns each document into zero or more
 It receives the client library's `DocumentSnapshot`, whose read time is the job's and which holds only the projected fields when the scan sets `select(...)`.
 The source passes the library's decoding of the values through unchecked.
 A reference value decodes to the client library's `DocumentReference` (the sink writes one from a `FirestoreDocumentReference`).
-Besides that and the other types the sink writes, a field can decode to a `VectorValue` or a `Blob` with a BSON binary subtype, and, in an Enterprise-edition database, to one of the library's BSON value classes (`MinKey`, `MaxKey`, `RegexValue`, `BsonObjectId`, `BsonTimestamp`, `Int32Value`, `Decimal128Value`), which the Firestore API carries as a reserved single-key map such as `{"__int__": 5}`; a Standard-edition database refuses to store those classes ([#1589]({{< param BookRepo >}}/issues/1589)).
+Besides that and the other types the sink writes, a field can decode to a `Blob` with a BSON binary subtype and, in an Enterprise-edition database, to one of the library's BSON value classes (`MinKey`, `MaxKey`, `RegexValue`, `BsonObjectId`, `BsonTimestamp`, `Int32Value`, `Decimal128Value`), which the Firestore API carries as a reserved single-key map such as `{"__int__": 5}`; a Standard-edition database refuses to store those classes ([#1589]({{< param BookRepo >}}/issues/1589)).
 
 {{< java-snippet file="FirestoreConnectorSourceDeserializer.java" tag="firestore-connector-source-deserializer" >}}
 
@@ -188,11 +188,15 @@ Every field name is literal in every operation.
 One spelling meaning two things depending on the operation is the confusion this rules out.
 To change one key of a nested map, use `setMerge`.
 
-Field values come from a closed list: `null`, `String`, `Long`, `Double`, `Boolean`, `com.google.cloud.Timestamp`, `GeoPoint`, `Blob`, `FirestoreDocumentReference`, a `List` of values, or a `Map` from non-empty field names to values.
-Anything else is rejected when the write is built, which the sink reports as a failure to serialize that record.
-The list is closed because of how the client library fails.
+A field value is `null`, a `String`, `Long`, `Double`, `Boolean`, `com.google.cloud.Timestamp`, `GeoPoint`, `Blob`, `VectorValue` (from `FieldValue.vector(double[])`) or `FirestoreDocumentReference`, a `List` of values, or a `Map` from non-empty field names to values.
+An `Integer`, a `Float`, a `java.util.Date` and a `java.time.Instant` are accepted too, and converted when the write is built to the `Long`, `Double` or `Timestamp` they are sent as, which is what `getFields()` returns.
+A `Date` or an `Instant` outside the years 1 to 9999 is rejected, and a `java.sql.Timestamp` is converted with its nanoseconds, of which Firestore stores the microseconds.
+A `Date` before 1970 that is not a whole second is written correctly only through this conversion: the client library sends one with a negative nanosecond count, which the emulator refuses as an invalid timestamp ([googleapis/google-cloud-java#14635](https://github.com/googleapis/google-cloud-java/issues/14635)).
+Any other value is rejected when the write is built, which the sink reports as a failure to serialize that record.
+The check runs then because of how the client library fails.
 A value it cannot encode, such as a `Short` or a `byte[]`, makes it throw after it has already queued the operation, and the rest of that request is then answered out of step: in the measurement, one write was applied while its result never arrived.
-Write an `int` as a `Long`, a `float` as a `Double`, and bytes as `Blob.fromBytes(...)`; an `Integer`, a `Float` or a `byte[]` is rejected.
+Write a `short` as a `Long` and bytes as `Blob.fromBytes(...)`.
+A `BigDecimal` or an enum constant is rejected too, although the library would store it as a string: write its `toString()` or `name()` when a string is what the document should hold.
 A reference to a document is written as `FirestoreDocumentReference.of("users/alice")`, and Firestore stores it as a reference value, which the source hands back as the client library's `DocumentReference`.
 The library's own `DocumentReference` is rejected, because it belongs to one client and cannot be serialized; the sink makes one from its own client when it sends the write, so a reference always points into the database the sink writes to.
 A `Blob` must have subtype 0, and the library's BSON value classes (`Int32Value`, `Decimal128Value` and the rest) are not accepted.

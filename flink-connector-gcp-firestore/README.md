@@ -44,9 +44,9 @@ Sink<OrderEvent> sink =
 
 The connector documentation — how the source partitions a scan, holds one snapshot and resumes a
 split after its last document, why the sink's destination is a database rather than a collection, the
-closed value vocabulary and why it is closed, what a replay does to each operation, which refusals
-reach the failure handler and why an invalid write is confirmed alone first, how the client
-library throttles and retries, the two client-library defects the writer works around, how the
+values a write accepts and why the rest are rejected when it is built, what a replay does to each
+operation, which refusals reach the failure handler and why an invalid write is confirmed alone first, how the client
+library throttles and retries, the three client-library defects the sink works around, how the
 Datastore-mode source cuts a query into key ranges and the sink batches, confirms a refused commit
 and paces its ramp-up, and where the
 emulator differs from the service — is in the

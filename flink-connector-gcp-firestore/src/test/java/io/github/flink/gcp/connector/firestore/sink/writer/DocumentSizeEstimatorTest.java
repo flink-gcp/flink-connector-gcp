@@ -19,7 +19,9 @@ package io.github.flink.gcp.connector.firestore.sink.writer;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.Blob;
 import com.google.cloud.firestore.FieldPath;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.GeoPoint;
+import com.google.cloud.firestore.VectorValue;
 import com.google.firestore.v1.ArrayValue;
 import com.google.firestore.v1.BatchWriteRequest;
 import com.google.firestore.v1.Document;
@@ -36,7 +38,9 @@ import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -129,6 +133,21 @@ class DocumentSizeEstimatorTest {
                 List.of(
                         Map.of("inMapInList", FirestoreDocumentReference.of("c/d")),
                         FirestoreDocumentReference.of("c/e")));
+        fields.put("vector", FieldValue.vector(new double[] {1.5, -0.0, 0.0, Double.NaN}));
+        fields.put("emptyVector", FieldValue.vector(new double[0]));
+        fields.put("wideVector", FieldValue.vector(new double[2048]));
+        fields.put(
+                "nestedVectors",
+                Map.of(
+                        "inMap",
+                        FieldValue.vector(new double[] {1}),
+                        "inList",
+                        List.of(FieldValue.vector(new double[] {2, 3}))));
+        // Converted when the write is built, to the Long, Double and Timestamp they are sent as.
+        fields.put("integer", -7);
+        fields.put("float", 0.1f);
+        fields.put("date", new Date(-1_500));
+        fields.put("instant", Instant.ofEpochSecond(1_700_000_000, 123_456_789));
         return fields;
     }
 
@@ -149,6 +168,9 @@ class DocumentSizeEstimatorTest {
         fields.put("9lives", "a leading digit");
         fields.put("nested", Map.of("leaf", 1L, "deeper", Map.of("x", 2L), "none", Map.of()));
         fields.put("ref", Map.of("leafReference", FirestoreDocumentReference.of("c/b")));
+        // A vector is sent as a map, but the library's merge mask names it as one leaf.
+        fields.put("vector", FieldValue.vector(new double[] {1, 2}));
+        fields.put("inner", Map.of("vector", FieldValue.vector(new double[] {3})));
         Timestamp time = Timestamp.ofTimeSecondsAndNanos(1_700_000_000, 5);
 
         return List.of(
@@ -236,6 +258,17 @@ class DocumentSizeEstimatorTest {
                     ROOT + ((FirestoreDocumentReference) value).getDocumentPath());
         } else if (value instanceof Blob) {
             builder.setBytesValue(ByteString.copyFrom(((Blob) value).toBytes()));
+        } else if (value instanceof VectorValue) {
+            ArrayValue.Builder array = ArrayValue.newBuilder();
+            for (double element : ((VectorValue) value).toArray()) {
+                array.addValues(Value.newBuilder().setDoubleValue(element));
+            }
+            builder.setMapValue(
+                    MapValue.newBuilder()
+                            .putFields(
+                                    "__type__",
+                                    Value.newBuilder().setStringValue("__vector__").build())
+                            .putFields("value", Value.newBuilder().setArrayValue(array).build()));
         } else if (value instanceof List) {
             ArrayValue.Builder array = ArrayValue.newBuilder();
             for (Object element : (List<Object>) value) {

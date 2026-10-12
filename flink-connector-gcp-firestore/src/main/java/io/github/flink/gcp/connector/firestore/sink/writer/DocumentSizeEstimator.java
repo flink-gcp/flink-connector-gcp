@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.Blob;
 import com.google.cloud.firestore.GeoPoint;
+import com.google.cloud.firestore.VectorValue;
 import com.google.protobuf.CodedOutputStream;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
@@ -54,6 +55,18 @@ final class DocumentSizeEstimator {
      * The tag of Value.string_value (17) and Value.bytes_value (18); every other field is below 16.
      */
     private static final int TWO_BYTE_TAG = 2;
+
+    /** The type name of the reserved map a vector is sent as. */
+    private static final String VECTOR_TYPE = "__vector__";
+
+    /** The reserved map's entry that names its type: VECTOR_TYPE as a string_value (17). */
+    private static final long VECTOR_TYPE_ENTRY =
+            mapEntryOfLength(
+                    "__type__",
+                    TWO_BYTE_TAG + varintSize(VECTOR_TYPE.length()) + VECTOR_TYPE.length());
+
+    /** The key of the reserved map's entry that holds a vector's elements. */
+    private static final String VECTOR_VALUES_KEY = "value";
 
     /** The UTF-8 length of the database's documents root, which every resource name starts with. */
     private final long documentsRootLength;
@@ -150,7 +163,12 @@ final class DocumentSizeEstimator {
 
     /** One map entry, in Document.fields or MapValue.fields: key (1) and value (2). */
     private long mapEntry(String key, Object value) {
-        return delimited(delimited(utf8Length(key)) + delimited(value(value)));
+        return mapEntryOfLength(key, value(value));
+    }
+
+    /** One map entry whose value encodes to {@code valueLength} bytes. */
+    private static long mapEntryOfLength(String key, long valueLength) {
+        return delimited(delimited(utf8Length(key)) + delimited(valueLength));
     }
 
     /** The encoded size of one google.firestore.v1.Value, without its own tag and length. */
@@ -190,6 +208,14 @@ final class DocumentSizeEstimator {
             // other subtype as a map_value, which this does not count (#1589).
             long length = ((Blob) value).toByteString().size();
             return TWO_BYTE_TAG + varintSize(length) + length;
+        }
+        if (value instanceof VectorValue) {
+            // map_value (6): the reserved map the library sends a vector as, its type entry and an
+            // array_value of double_values under "value". The library exposes the dimension count
+            // only through a copy of the elements.
+            long elements = ((VectorValue) value).toArray().length * delimited(9);
+            return delimited(
+                    VECTOR_TYPE_ENTRY + mapEntryOfLength(VECTOR_VALUES_KEY, delimited(elements)));
         }
         if (value instanceof List) {
             // array_value (9): ArrayValue.values (1), one Value each.
