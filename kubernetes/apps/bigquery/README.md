@@ -553,7 +553,7 @@ The receipt carries all of this as the `file_loads` part of its `bigquery` recor
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with two inputs beyond the common ones.
 The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md), and its results, every attempt included, are in the [BigQuery trial findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md).
-The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md) and the [BigQuery FILE_LOADS trial findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md).
+The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md) and the [BigQuery FILE_LOADS trial findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md); the [in-flight failover findings](../../../docs/adr/evidence/0165-bigquery-fileloads-inflight-findings-1685.md) record the trial of [#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685).
 
 | Input | Contract |
 | --- | --- |
@@ -595,20 +595,18 @@ It then requires a checkpoint triggered after that window and fresh, unfinished 
 Each recovery has its own 300-second deadline, capped by the absolute cleanup start.
 The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint before a single JobManager deletion.
 The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
-Input completion must be observed at least 600 seconds after that second recovery proof.
-Inside those windows the sink is sampled through the job's own REST service, at most once per `measure_seconds` rather than once per poll, and the samples are emitted as `bigquery-measurement` records carrying the stage they were taken in. One sample is six REST reads, and at the transport's timeout that would let a slow endpoint spend two minutes of a window that is three; a memory or GC trend does not need a reading every fifteen seconds to be readable.
-What is read: the sink and source vertices' task metrics — throughput, backpressure, busy and idle time, and the buffer-pool and byte-rate metrics that say whether the network was the limit; every TaskManager's memory, including non-heap, direct, mapped and Flink managed memory rather than heap alone, because this sink appends through native buffers; and the connector's own gauges, which are the active-writer observation — open destinations, in-flight appends and batches, append retries, destination activations and commit durations.
-A connector metric's id carries its operator name, so the ids are discovered and then asked for by id; the discovered set is unioned across samples rather than frozen on the first answer, because a task registers its own metrics when it deploys and the sink's operators theirs when they open — freezing a listing taken between those two moments would silently drop the active-writer gauges for the rest of the job's life.
-The source vertex is identified by its name rather than by its position in the plan, and a plan that does not hold exactly one of each is reported unavailable rather than guessed at.
-A FILE_LOADS plan holds a third vertex: the connector routes every committable to one committer subtask, so the committer is a vertex of its own, named `<sink>: Committer`, while the EO committer is chained into its writer's vertex.
-For that mode the plan must hold one source, one writer and one such committer, and each sample also reads the committer's own metrics (load jobs submitted, queued and active commit destinations, current and last commit duration) and each writer and committer subtask's share of the latest completed checkpoint: its synchronous and asynchronous durations, start delay, alignment and end-to-end duration.
-Finalization means the writer closing its staged files, and the connector adds no metric for it (ADR-0146). Flink 2.2.1 runs it in the writer's pre-barrier step, before the synchronous part's timer starts, so it shows in neither the sync nor the async duration but in the writer subtask's end-to-end duration and, because the barrier leaves later, in the committer's start delay.
-The commit itself runs synchronously when a checkpoint completes, and its time is the committer's `lastCommitDurationMillis`; it delays the committer's next barrier only when it outlasts the interval.
-The writer's staged-file gauges join the connector family.
-No sample is taken on a poll where the loop resolved no Service: the job is between states, and a reading taken through the last one would be attributed to a job that is not the one running.
-An absent reading is recorded as `unavailable` with its cause rather than dropped: a missing sample and a zero reading mean opposite things when the question is whether the sink was the limit.
-Checkpoint duration and state come from the checkpoints the recovery loop already reads.
-What the verdict below reads from these is whether each was obtained, never what it read.
+
+In FILE_LOADS mode the JobManager is deleted only once a listing shows one of the run's load jobs `RUNNING`, so that the failover is issued while a commit's load runs server-side ([#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685)).
+A commit takes 5 to 11 seconds of each 120-second checkpoint interval at the trial's sizes and a load 1 to 6 seconds, so a deletion left to the 15-second poll rarely lands inside one.
+Once the upgrade is proved, the supervisor starts a listing of the run's [connector-issued jobs](#connector-issued-jobs) once a second (`in_flight_poll_seconds`), or as soon as the previous one returns when it took longer, and deletes the JobManager as soon as a load is `RUNNING`; a `PENDING` load, or a copy or query, does not count.
+The wait blocks the supervisor loop for at most `in_flight_seconds`, 130 seconds or one checkpoint interval and a margin, which replaces the upgrade's recovery deadline.
+Input keeps flowing meanwhile and must still last the 600-second post-recovery window: `bq1313-fl-10-a1`'s input completed 232 seconds after that window ended, and would have completed about 172 seconds after it had its upgrade waited a whole interval for the first checkpoint after the baseline, so a longer wait would put the run at risk of failing on input that ran out too early.
+A stop is checked once a poll during the wait, a listing that fails in transport, including the control and lock reads it makes first, counts as a listing that saw nothing, and a run in which no load runs by the end fails without deleting the JobManager.
+The loads the wait saw are written into the `failover_in_flight` outcome before the deletion, so the failover record holds them even when the recovery then fails.
+Right after the delete request returns, the supervisor lists again: a load listed `RUNNING` on both sides was running when the deletion was issued, since a job's state only moves forward, and the intersection is recorded as `running_through`; an empty one records a failover issued just as its load finished, and a relisting that fails in transport is recorded as unknown rather than failing the run.
+The record is also emitted as a `bigquery-failover-in-flight` event; the verdict does not read it.
+It does not show that the load outlived the JobManager's exit or the committer's cancellation, which follow the delete request by a moment (0.8 seconds for the committer in `bq1313-fl-10-a1`): that is read afterwards from each load's end time and the TaskManager log.
+The restored committer re-attaches to the commit's jobs about 40 seconds after the deletion, by when a 1 to 6 second load has finished, so the trial cannot show a re-attachment to a job still running.
 
 After Flink reports `FINISHED` with complete input and both recovery proofs, the supervisor requests final queries through the existing runner handoff.
 It recomputes the oracle from the archived rows and compares the archived report.

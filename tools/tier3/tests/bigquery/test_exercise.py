@@ -17,14 +17,16 @@ import copy
 import json
 from dataclasses import replace
 
+import google.auth.exceptions
 import pytest
+import requests
 from flink_tier3 import analyze
 from flink_tier3.bigquery.exercise import BigQueryExercise, require_handoff
 from flink_tier3.bigquery.handoff import BigQueryHandoff
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
 from flink_tier3.bigquery.oracle import assess
 from flink_tier3.bigquery.verdict import MEASUREMENT_EVENT
-from flink_tier3.common import INCONCLUSIVE, Failure
+from flink_tier3.common import INCONCLUSIVE, Failure, TransportError
 from flink_tier3.environment import Environment
 from flink_tier3.model import Phase
 from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, MIB
@@ -115,6 +117,13 @@ class World:
         self.supervisor = Supervisor(
             self.env, upgrade, bigquery=self.observer, quiesce=self.quiesce
         )
+        listing = self.supervisor.exercise.connector_jobs
+
+        def recorded(*, deadline):
+            self.listings.append((self.clock(), deadline))
+            return listing(deadline=deadline)
+
+        self.supervisor.exercise.connector_jobs = recorded
         job = self.kube.put(obj("Job", "supervisor", rt.SYSTEM))
         self.env.remember("supervisor", job)
         self.supervisor_pod = supervisor_pod(
@@ -148,6 +157,11 @@ class World:
         monkeypatch.setattr(self.kube, "logs", self.logs)
         monkeypatch.setattr(self.resources, "results", self.results)
         self.connector_listings = []
+        # Listings the failover took while waiting, and after its delete,
+        # with the clock and the deadline each one was asked under.
+        self.armed_listings, self.relisted = 0, False
+        self.listings = []
+        self.listing_error = None
         monkeypatch.setattr(
             self.resources, "unfinished_connector_jobs", self.connector_jobs
         )
@@ -463,6 +477,45 @@ class World:
         running when the oracle reads, which it must refuse.
         """
         assert since == self.start
+        if (
+            self.phase == "upgrade"
+            and self.failover_at is None
+            and not self.env.refresh().stop_requested
+        ):
+            # The failover's wait, each listing taking 0.4 s: nothing, then a
+            # load still PENDING beside a running copy, neither of which is a
+            # load in flight, then a commit's load runs.
+            self.clock.sleep(0.4)
+            self.armed_listings += 1
+            if self.fault == "listing-error" and self.armed_listings == 1:
+                raise self.listing_error()
+            if self.fault == "listing-refused" and self.armed_listings == 1:
+                raise Failure("A listed BigQuery job has no readable id")
+            if self.fault == "stop-while-waiting" and self.armed_listings == 2:
+                self.env.records.request_stop()
+            if self.armed_listings == 2:
+                return [
+                    {**LOAD, "state": "PENDING"},
+                    {**LOAD, "id": LOAD["id"] + "-copy", "kind": "copy"},
+                ]
+            return (
+                [dict(LOAD)]
+                if self.armed_listings > 2
+                and self.fault not in ("no-load-in-flight", "stop-while-waiting")
+                else []
+            )
+        if self.failover_at is not None and not self.relisted:
+            # The relisting just after the delete: the load is still running
+            # unless it finished in between, and another may have started.
+            self.clock.sleep(0.4)
+            self.relisted = True
+            if self.fault == "listing-error":
+                raise self.listing_error()
+            if self.fault == "load-finished-before-delete":
+                return []
+            if self.fault == "another-load-after-delete":
+                return [dict(LOAD), {**LOAD, "id": LOAD["id"][:-1] + "1"}]
+            return [dict(LOAD)]
         self.connector_listings.append(self.app() is None)
         if self.fault == "load-outlives" and self.app() is None:
             pending = self.connector_listings.count(True) <= 2
@@ -494,7 +547,9 @@ def test_bigquery_recovery_and_query_then_cleanup(
     record = world.run()
     assert record.success, record.reason
     assert record.recovery["stage"] == "complete"
-    assert set(record.recovery["outcomes"]) == {"upgrade", "failover", "query"}
+    assert set(record.recovery["outcomes"]) == {"upgrade", "failover", "query"} | (
+        {"failover_in_flight"} if mode == "FILE_LOADS" else set()
+    )
     # The verdict the production path produced, not one typed into a fixture:
     # a run that proves both recoveries, passes the oracle and reads every
     # family in both sampled windows is the usable measurement.
@@ -509,6 +564,50 @@ def test_bigquery_recovery_and_query_then_cleanup(
         )
         assert window["attempts"] >= 1
     if mode == "FILE_LOADS":
+        # The JobManager went only once a load was RUNNING, and the load was
+        # still running when the listing after the delete looked again.
+        assert world.armed_listings == 3
+        armed = world.listings[0][0]
+        waits = world.listings[:3]
+        # Gapless: one listing a second, each under the wait's own deadline.
+        assert [at - armed for at, _ in waits] == [0, 1, 2]
+        assert {d for _, d in waits} == {
+            armed + BIGQUERY_OBSERVATIONS["in_flight_seconds"]
+        }
+        failover_at = world.failover_at
+        assert world.listings[3] == (
+            failover_at,
+            failover_at + BIGQUERY_OBSERVATIONS["recovery_seconds"],
+        )
+        in_flight = record.recovery["outcomes"]["failover_in_flight"]
+        assert in_flight == {
+            "listed_at": rt.utc(armed + 2),
+            "running_before": [LOAD["id"]],
+            "listing_errors": 0,
+            "failover_at": rt.utc(failover_at),
+            "relisted_at": rt.utc(failover_at + 0.4),
+            "running_after": [LOAD["id"]],
+            "running_through": [LOAD["id"]],
+        }
+        assert failover_at == armed + 2.4
+        events = world.evidence()
+        assert [
+            v["payload"]
+            for v in events.values()
+            if isinstance(v, dict) and v.get("event") == "bigquery-failover-in-flight"
+        ] == [in_flight]
+        # The failover record, written before the delete, already holds what
+        # the wait saw.
+        [failover] = [
+            v["payload"]
+            for v in events.values()
+            if isinstance(v, dict) and v.get("event") == "recovery-failover"
+        ]
+        assert failover["outcomes"]["failover_in_flight"] == {
+            "listed_at": rt.utc(armed + 2),
+            "running_before": [LOAD["id"]],
+            "listing_errors": 0,
+        }
         # The oracle asked before each read, and cleanup before any delete.
         assert False in world.connector_listings and True in world.connector_listings
         assert record.bigquery["file_loads"]["staging"] == {
@@ -827,7 +926,7 @@ def test_input_may_start_after_the_admission_budget(prepared):
     environment, _, upgrade, _ = prepared
     environment.records.set_phase(Phase.READY)
     environment.records.set_phase(Phase.RUNNING)
-    exercise = BigQueryExercise(environment, upgrade)
+    exercise = BigQueryExercise(environment, upgrade, None)
     started = environment.schedule.started
     environment.clock.now = started + BIGQUERY_OBSERVATIONS["startup_seconds"]
     exercise.check_open()
@@ -853,7 +952,7 @@ def test_visibility_rejects_unusable_results_and_cancellation(prepared, fault):
     environment, _, upgrade, _ = prepared
     environment.records.set_phase(Phase.READY)
     environment.records.set_phase(Phase.RUNNING)
-    exercise = BigQueryExercise(environment, upgrade)
+    exercise = BigQueryExercise(environment, upgrade, None)
     exercise.stage = "visibility"
     observations = []
 
@@ -882,14 +981,14 @@ def test_visibility_rejects_unusable_results_and_cancellation(prepared, fault):
 def test_visibility_refuses_before_recovery_and_input_completion(prepared):
     environment, _, upgrade, _ = prepared
     with pytest.raises(Failure, match="both recoveries"):
-        BigQueryExercise(environment, upgrade).verify_rows(None)
+        BigQueryExercise(environment, upgrade, None).verify_rows(None)
 
 
 @pytest.mark.parametrize("mode", ["ALO"])
 def test_alo_duplicate_rows_are_reported_without_failing(prepared, mode):
     environment, _, upgrade, _ = prepared
     assert environment.approval.bigquery_plan.trial.mode == mode
-    exercise = BigQueryExercise(environment, upgrade)
+    exercise = BigQueryExercise(environment, upgrade, None)
     exercise.stage, exercise.initialized = "visibility", True
     environment.records.set_phase(Phase.READY)
     environment.records.set_phase(Phase.RUNNING)
@@ -912,7 +1011,7 @@ def test_alo_duplicate_rows_are_reported_without_failing(prepared, mode):
 @pytest.mark.parametrize("fault", ["future", "invalid-lineage"])
 def test_invalid_progress_is_not_recovery_evidence(prepared, fault):
     environment, _, upgrade, _ = prepared
-    exercise = BigQueryExercise(environment, upgrade)
+    exercise = BigQueryExercise(environment, upgrade, None)
     at = environment.clock() + (1 if fault == "future" else 0)
     lineage = (
         "bad" if fault == "invalid-lineage" else "11111111-1111-4111-8111-111111111111"
@@ -1138,3 +1237,125 @@ def test_stop_racing_resource_initialization_keeps_supervisor_cleanup(
     assert resources.tables == {}
     assert observer_env.refresh().phase == Phase.CLEANED
     assert not observer_env.refresh().success
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+@pytest.mark.parametrize(
+    "fault,after,through",
+    [
+        # The load finished between the listing and the delete.
+        ("load-finished-before-delete", [], []),
+        # Another load started after the delete: it was not running through it.
+        (
+            "another-load-after-delete",
+            sorted([LOAD["id"], LOAD["id"][:-1] + "1"]),
+            [LOAD["id"]],
+        ),
+    ],
+)
+def test_only_a_load_running_on_both_sides_of_the_delete_is_in_flight(
+    prepared, monkeypatch, mode, destinations, fault, after, through
+):
+    world = World(prepared, monkeypatch, fault)
+    record = world.run()
+    assert record.success, record.reason
+    in_flight = record.recovery["outcomes"]["failover_in_flight"]
+    assert in_flight["running_before"] == [LOAD["id"]]
+    assert (in_flight["running_after"], in_flight["running_through"]) == (
+        after,
+        through,
+    )
+
+
+def storage_timeout():
+    """What the storage adapter raises for a control read that timed out."""
+    try:
+        raise requests.exceptions.ReadTimeout("read timed out")
+    except requests.exceptions.ReadTimeout as error:
+        try:
+            raise Failure("GET storage request failed: ReadTimeout") from error
+        except Failure as wrapped:
+            return wrapped
+
+
+def refresh_unreachable():
+    """A control read whose token refresh found the metadata server down.
+
+    google-auth raises a RefreshError from its own TransportError, and the
+    storage adapter wraps that as a plain failure.
+    """
+    try:
+        try:
+            raise google.auth.exceptions.TransportError("metadata server down")
+        except google.auth.exceptions.TransportError as transport:
+            raise google.auth.exceptions.RefreshError("refresh failed") from transport
+    except google.auth.exceptions.RefreshError as error:
+        try:
+            raise Failure("GET storage request failed: RefreshError") from error
+        except Failure as wrapped:
+            return wrapped
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: TransportError("GET BigQuery request failed: ReadTimeout"),
+        storage_timeout,
+        refresh_unreachable,
+    ],
+    ids=["bigquery", "storage", "refresh"],
+)
+def test_transient_listing_errors_neither_stop_the_wait_nor_lose_the_record(
+    prepared, monkeypatch, mode, destinations, error
+):
+    world = World(prepared, monkeypatch, "listing-error")
+    world.listing_error = error
+    record = world.run()
+    assert record.success, record.reason
+    in_flight = record.recovery["outcomes"]["failover_in_flight"]
+    assert in_flight["listing_errors"] == 1
+    assert in_flight["running_before"] == [LOAD["id"]]
+    assert in_flight["running_after"] is in_flight["running_through"] is None
+    assert in_flight["relisting_error"] == str(error())
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+def test_a_listing_that_refuses_its_answer_stops_the_wait(
+    prepared, monkeypatch, mode, destinations
+):
+    """An invariant, unlike a transport error, is not a listing that saw nothing."""
+    world = World(prepared, monkeypatch, "listing-refused")
+    record = world.run()
+    assert not record.success
+    assert "no readable id" in record.reason
+    assert [name for name, _ in world.calls] == ["upgrade"]
+
+
+@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
+@pytest.mark.parametrize(
+    "fault,reason",
+    [
+        ("no-load-in-flight", "No load job of the run ran within the in-flight wait"),
+        ("stop-while-waiting", "stopped"),
+    ],
+)
+def test_a_file_loads_failover_waits_for_a_running_load_and_no_longer(
+    prepared, monkeypatch, mode, destinations, fault, reason
+):
+    """No load runs, or the run stops: the JobManager is never deleted."""
+    world = World(prepared, monkeypatch, fault)
+    record = world.run()
+    assert not record.success
+    assert reason in record.reason
+    assert [name for name, _ in world.calls] == ["upgrade"]
+    armed = world.listings[0][0]
+    if fault == "no-load-in-flight":
+        # One listing a second, without a gap, for the whole wait and no longer.
+        wait = BIGQUERY_OBSERVATIONS["in_flight_seconds"]
+        # One checkpoint interval and a margin, as the runbook states it.
+        assert wait == 130
+        assert [at - armed for at, _ in world.listings] == list(range(wait))
+    else:
+        # A stop is checked once a poll, not on every listing.
+        assert len(world.listings) == rt.POLL

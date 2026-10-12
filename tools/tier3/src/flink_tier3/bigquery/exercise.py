@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import uuid
 
-from ..common import Failure, utc
+import google.auth.exceptions
+import requests
+
+from ..common import Failure, transient, utc
 from ..exercise import RecoveryExercise
 from ..policy import (
     BIGQUERY,
@@ -45,6 +48,28 @@ def require_handoff(env, handoff):
         )
 
 
+def _said_nothing(error):
+    """Whether a failed listing says nothing about the run's jobs.
+
+    The listing reads the control record and the environment lock before it
+    asks BigQuery, and the storage adapter wraps a transport error there, or a
+    token refresh that failed in transport, as a plain failure; so the causes
+    are followed. Any other failure is an invariant and stays fatal.
+    """
+    if transient(error):
+        return True
+    cause = error.__cause__
+    while cause is not None:
+        if isinstance(
+            cause,
+            requests.exceptions.RequestException
+            | google.auth.exceptions.TransportError,
+        ):
+            return True
+        cause = cause.__cause__
+    return False
+
+
 class BigQueryExercise(RecoveryExercise):
     """Recover the finite input, then obtain a bounded query-visible result.
 
@@ -60,10 +85,13 @@ class BigQueryExercise(RecoveryExercise):
     progress_event = "bigquery-progress"
     expected_pods = 3
 
-    def __init__(self, env, upgrade):
+    def __init__(self, env, upgrade, connector_jobs):
         if env.approval.scenario != "bigquery-recovery":
             raise Failure("BigQuery exercise requires a BigQuery approval")
         self.trial = env.approval.bigquery_plan.trial
+        # The supervisor's listing of the run's connector jobs that are not
+        # DONE; a FILE_LOADS failover waits for one to be RUNNING.
+        self.connector_jobs = connector_jobs
         self.rest, self.vertices, self.measured_at = None, None, None
         self.records = self.trial.records
         super().__init__(env, upgrade)
@@ -129,8 +157,79 @@ class BigQueryExercise(RecoveryExercise):
         super().begin_upgrade(app, cp, progress, pods)
 
     def begin_failover(self, app, proof, pods):
-        if self.active_input("upgrade"):
+        if not self.active_input("upgrade"):
+            return
+        if self.trial.mode != "FILE_LOADS":
             super().begin_failover(app, proof, pods)
+            return
+        listed_at, running, errors = self._await_running_load()
+        # Written before the deletion, so the failover record holds it even
+        # when the recovery then fails.
+        record = {
+            "listed_at": utc(listed_at),
+            "running_before": running,
+            "listing_errors": errors,
+        }
+        self.outcomes["failover_in_flight"] = record
+        super().begin_failover(app, proof, pods)
+        record["failover_at"] = utc(self.boundary)
+        # A load listed RUNNING before the delete and again after it was
+        # running when the delete landed, since a job's state only moves
+        # forward; one that finished in between leaves the intersection empty.
+        try:
+            after = self._running_loads()
+        except Failure as error:
+            if not _said_nothing(error):
+                raise
+            after = None
+            record["relisting_error"] = str(error)
+        record.update(
+            relisted_at=utc(self.env.clock()),
+            running_after=after,
+            running_through=None
+            if after is None
+            else sorted(set(running) & set(after)),
+        )
+        self.env.records.evidence("bigquery-failover-in-flight", record)
+
+    def _running_loads(self):
+        return sorted(
+            job["id"]
+            for job in self.connector_jobs(deadline=self.deadline)
+            if job["kind"] == "load" and job["state"] == "RUNNING"
+        )
+
+    def _await_running_load(self):
+        """List the run's jobs without a gap until a load is RUNNING.
+
+        The wait replaces the upgrade's recovery deadline and blocks the
+        supervisor loop, which is why it is one checkpoint interval and a
+        margin: a stop is still checked once a poll, and a transient listing
+        error counts as a listing that saw nothing.
+        """
+        poll = self.timing["in_flight_poll_seconds"]
+        self.deadline = min(
+            self.env.clock() + self.timing["in_flight_seconds"],
+            self.env.schedule.cleanup_at,
+        )
+        errors, checked = 0, None
+        while True:
+            started = self.env.clock()
+            if started >= self.deadline:
+                raise Failure("No load job of the run ran within the in-flight wait")
+            if checked is None or started - checked >= POLL:
+                self.env.require_running("Recovery exercise has been stopped")
+                checked = started
+            try:
+                running = self._running_loads()
+            except Failure as error:
+                if not _said_nothing(error):
+                    raise
+                errors, running = errors + 1, []
+            if running:
+                return started, running, errors
+            now = self.env.clock()
+            self.env.sleep(max(0, min(started + poll, self.deadline) - now))
 
     def persist(self, stage, **details):
         if stage == "finishing":

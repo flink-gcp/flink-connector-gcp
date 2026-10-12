@@ -48,7 +48,7 @@ class Supervisor:
         self.log_since = {}
         self.pod_read_failures = {}
         self.exercise = (
-            BigQueryExercise(env, upgrade)
+            BigQueryExercise(env, upgrade, self.connector_jobs)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
             else PubSubExercise(env, upgrade, pubsub)
             if env.approval.scenario == "pubsub-recovery"
