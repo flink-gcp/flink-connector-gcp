@@ -15,7 +15,6 @@
 """The production guard: each Pub/Sub service request against its deadline."""
 
 import time
-from dataclasses import replace
 
 import pytest
 from flink_tier3.common import ApiError, Failure
@@ -288,16 +287,6 @@ def test_a_slow_begin_marker_counts_against_the_publication_deadline(
     assert chain.service.messages.calls == []
 
 
-def test_a_request_under_an_approval_that_no_longer_validates_is_refused(chain):
-    runner = chain.actors["runner"]
-    runner.initialize()
-    environment = chain.environment
-    environment.approval = replace(environment.approval, pubsub_trial={})
-    with pytest.raises(Failure, match="Pub/Sub trial"):
-        runner.prepare()
-    assert chain.service.resources.calls == []
-
-
 def test_a_held_deadline_is_restored_after_its_block(chain):
     guard = chain.guards["runner"]
     admission = guard.deadline
@@ -491,17 +480,6 @@ def test_the_evidence_of_a_request_already_sent_is_kept_past_the_deadline(ready)
     assert inflight(ready) is None
 
 
-def test_reclaiming_an_abandoned_runner_succeeds_under_conflicts(ready, monkeypatch):
-    supervisor = ready.actors["supervisor"]
-    supervisor.join()
-    lost = conflicting(ready, monkeypatch)
-    supervisor.stop()
-    supervisor.reclaim(lambda snapshot: True)
-    assert all(count == 19 for count in lost)
-    assert ready.environment.refresh().pubsub["stage"] == "cleaned"
-    assert not ready.service.resources.resources
-
-
 def test_a_cleanup_before_creation_intent_sends_nothing(chain):
     runner, supervisor = chain.actors["runner"], chain.actors["supervisor"]
     runner.initialize()
@@ -515,8 +493,8 @@ def test_settlement_outlives_the_admission_deadline_and_the_approval(ready):
     """Cleanup deletes what preparation created whenever it runs."""
     runner, supervisor = ready.actors["runner"], ready.actors["supervisor"]
     environment = ready.environment
-    # Past the admission deadline and the window in which the approval
-    # validates, so either check would refuse a request.
+    # Past the admission deadline and the approval's admission window, so
+    # either would refuse a request that held to it.
     environment.clock.now = rt.timestamp(environment.approval.cleanup_at) + 60
     runner.release()
     supervisor.release()

@@ -17,15 +17,15 @@ import flink_tier3 as rt
 
 from .bigquery.exercise import require_handoff
 from .bigquery.handoff import require_bigquery_clean
-from .policy import BIGQUERY_OBSERVATIONS, RECOVERY
+from .policy import BIGQUERY_OBSERVATIONS
 from .pubsub.admission import admit, require_admission
 from .pubsub.guard import admission_deadline
 from .pubsub.handoff import CohortUnstarted
 from .pubsub.lifecycle import require_pubsub_clean
 from .records import write_artifact
 
-# Scenarios whose finalization retry compares the whole receipt, and whose
-# success is the verdict their exercise decided when it completed.
+# Scenarios whose success is the verdict their exercise decided when it
+# completed.
 SERVICE_TRIALS = ("bigquery-recovery", "pubsub-recovery")
 
 
@@ -52,12 +52,6 @@ class Runner:
     def admission_open(self):
         self.env.admission_open()
         if (
-            self.env.approval.scenario == "generic-recovery"
-            and self.env.clock()
-            >= self.env.schedule.started + RECOVERY["startup_seconds"]
-        ):
-            raise rt.Failure("Recovery scenario startup deadline expired")
-        if (
             self.env.approval.scenario == "bigquery-recovery"
             and self.env.clock()
             >= self.env.schedule.started + BIGQUERY_OBSERVATIONS["startup_seconds"]
@@ -68,60 +62,19 @@ class Runner:
         ):
             raise rt.Failure("Pub/Sub admission deadline expired")
 
+    def supervisor_ended(self):
+        """Whether the supervisor Job is gone or has ended.
+
+        The Job replaces no Pod, so a supervisor the infrastructure took
+        away ends it, and the runner settles the run.
+        """
+        job = self.env.root("supervisor")
+        return not job or rt.job_finished(job)
+
     def supervisor_open(self):
-        """Refuse further admission once the supervisor Job has ended.
-
-        A supervisor signalled before supervision starts leaves the run open
-        rather than requesting a stop, so the Job ending is what says no
-        replacement is coming.
-        """
-        current = self.env.root("supervisor")
-        if not current or rt.job_finished(current):
+        """Refuse further admission once the supervisor Job has ended."""
+        if self.supervisor_ended():
             raise rt.Failure("Supervisor stopped before application admission")
-
-    def supervisor_lost(self):
-        """Whether no Pod supervises the run and none is going to.
-
-        A Job waiting to replace a disrupted Pod is not finished, but a
-        replacement may never be scheduled, and after supervision starts it
-        could not claim the run anyway. Without this the runner would leave
-        the workload unsupervised until its own settlement deadline.
-        """
-        if self.env.refresh().supervisor_pod is None:
-            return False  # nothing has claimed it yet; the Job still decides
-        # Pods before the record: a replacement that claims in between is
-        # listed already, even if still Pending, and so reads as live.
-        items = self.cleanup.inventory()
-        control = self.env.refresh()
-        holder = control.supervisor_pod
-        owned = self.cleanup.owned(items, ["supervisor"])
-        if any(
-            obj["kind"] == "Pod"
-            and obj["metadata"]["uid"] in owned
-            and obj["metadata"]["uid"] == holder
-            and obj.get("status", {}).get("phase") not in ("Succeeded", "Failed")
-            for obj in items
-        ):
-            return False
-        if not control.supervision_started:
-            # A replacement may still claim the run; it gets the readiness
-            # allowance the first Pod had, from the holder's last sign of life.
-            since = max(
-                (
-                    rt.timestamp(value)
-                    for value in (control.heartbeat, control.supervisor_claimed_at)
-                    if value
-                ),
-                default=None,
-            )
-            if since is None:
-                return False  # no sign of life to time from; the Job decides
-            if self.env.clock() < self.env.schedule.readiness_until(since):
-                return False
-        # Deciding is a write conditional on the holder seen here, so a
-        # replacement claiming meanwhile keeps the run, and none can claim it
-        # once this stop lands.
-        return self.env.records.stop_if_held_by(holder)
 
     def create_application(self, application):
         if rt.digest(application) != self.env.approval.application_sha256:
@@ -235,12 +188,8 @@ class Runner:
             self.supervisor_open()
             items, pods = self.cleanup.audit()
             owned = self.cleanup.owned(items, ["supervisor"])
-            control = self.env.refresh()
-            # The Pod that claimed the run, not merely some Pod of the Job: a
-            # replacement is not ready until it has claimed.
-            return control.heartbeat and any(
+            return self.env.refresh().heartbeat and any(
                 pod["metadata"]["uid"] in owned
-                and pod["metadata"]["uid"] == control.supervisor_pod
                 and pod.get("status", {}).get("phase") == "Running"
                 for pod in pods
             )
@@ -350,13 +299,7 @@ class Runner:
             control = self.env.refresh()
             if self.env.stopping:
                 self.env.records.request_stop()
-            job = self.env.root("supervisor")
-            finished = (
-                not job
-                or rt.job_finished(job)
-                or control.phase == rt.Phase.CLEANED
-                or self.supervisor_lost()
-            )
+            finished = self.supervisor_ended() or control.phase == rt.Phase.CLEANED
             # When neither handoff may admit another runner operation.
             closed = (
                 finished
@@ -418,82 +361,17 @@ class Runner:
             if not application:
                 raise rt.Failure("Missing immutable application intent")
             self.adopt_application(application)
-        # A success receipt fixed the verdict when it was written, and a
-        # finalization retry compares it with the one the record derives. A
-        # failure of this settlement's own writes is not the run's, so it must
-        # not lower the record; it raises at the end instead, which keeps
-        # finalization from running. A failure another writer recorded stays.
-        # Read after the releases, and never let a failed read skip them or
-        # the teardown below. An unread receipt keeps the earlier behaviour
-        # of recording this settlement's failures: before any receipt exists
-        # they are the run's own, and finalization reads the receipt again.
-        try:
-            stored = self.stored_receipt()
-        except (rt.Failure, OSError, ValueError) as error:
-            stored = None
-            self.env.emit("receipt-read-failed", {"cause": str(error)})
-        keep_verdict = (
-            isinstance(stored, dict)
-            and stored.get("nonce") == self.env.approval.nonce
-            and stored.get("success") is True
-        )
         # Reconcile actual state even after an earlier actor recorded cleanup.
         # A cleaned record alone is not a current idle observation.
         self.cleanup.run(
             "external settlement",
             control.success and not query_failed and not pubsub_failed,
-            keep_verdict=keep_verdict,
         )
-
-        job = self.env.root("supervisor")
         if (
             "supervisor" in self.env.roots
             and not self.env.refresh().final_log_attempted
         ):
-            # A cleaned record can precede process exit. Give the Job a bounded
-            # grace period before attempting its one final log export.
-            if job and not rt.job_finished(job):
-                try:
-
-                    def ended():
-                        current = self.env.root("supervisor")
-                        return not current or rt.job_finished(current)
-
-                    self.env.wait(
-                        ended,
-                        self.env.clock() + self.env.schedule.operator_grace,
-                    )
-                except rt.Failure:
-                    pass
-            job = self.env.root("supervisor")
-            exported = bool(job and rt.job_finished(job))
-            if exported:
-                try:
-                    items = self.cleanup.inventory()
-                    owned = self.cleanup.owned(items, ["supervisor"])
-                    pods = [
-                        obj
-                        for obj in items
-                        if obj["kind"] == "Pod" and obj["metadata"]["uid"] in owned
-                    ]
-                    exported = bool(pods)
-                    for pod in pods:
-                        data = self.env.kube.logs(pod)
-                        if len(data) >= rt.MIB:
-                            raise rt.Failure(
-                                "Final supervisor log exceeds its read ceiling"
-                            )
-                        self.env.records.evidence(
-                            "supervisor-final-log",
-                            {
-                                "uid": pod["metadata"]["uid"],
-                                "text": data.decode(errors="replace"),
-                            },
-                            "runner",
-                        )
-                except (rt.Failure, ValueError, OSError):
-                    exported = False
-            self.env.records.final_log(exported)
+            self.env.records.final_log(self.export_final_log())
         for key in ("supervisor", "config"):
             obj = self.env.root(key)
             if obj:
@@ -517,12 +395,58 @@ class Runner:
         if self.cleanup.remaining_state():
             raise rt.Failure("Run state remains after cleanup")
         self.env.emit("idle", snapshot)
-        self.env.records.settled(self.env.evidence_failed and not keep_verdict)
-        if keep_verdict and self.env.evidence_failed:
-            raise rt.Failure(
-                "Settlement evidence failed after a success receipt; the receipt "
-                "keeps its verdict, retry recovery"
+        self.env.records.settled(self.env.evidence_failure)
+
+    def export_final_log(self):
+        """Export the ended supervisor Pod's log once.
+
+        Returns the evidence failure to record, or None. A cleaned record can
+        precede process exit, so the Job gets a bounded grace period first.
+        Missing logs are an evidence failure, not a reason to keep paid
+        resources: the caller tears down either way.
+        """
+        try:
+            self.env.wait(
+                self.supervisor_ended,
+                self.env.clock() + self.env.schedule.operator_grace,
             )
+        except rt.Failure:
+            pass
+        job = self.env.root("supervisor")
+        if not job:
+            failure = "The supervisor Job is gone"
+        elif not rt.job_finished(job):
+            failure = "The supervisor Job had not ended"
+        else:
+            try:
+                items = self.cleanup.inventory()
+                owned = self.cleanup.owned(items, ["supervisor"])
+                pods = [
+                    obj
+                    for obj in items
+                    if obj["kind"] == "Pod" and obj["metadata"]["uid"] in owned
+                ]
+                failure = None if pods else "The supervisor Job has no Pod"
+                for pod in pods:
+                    data = self.env.kube.logs(pod)
+                    if len(data) >= rt.MIB:
+                        raise rt.Failure(
+                            "Final supervisor log exceeds its read ceiling"
+                        )
+                    self.env.records.evidence(
+                        "supervisor-final-log",
+                        {
+                            "uid": pod["metadata"]["uid"],
+                            "text": data.decode(errors="replace"),
+                        },
+                        "runner",
+                    )
+            except (rt.Failure, ValueError, OSError) as error:
+                failure = error
+        if failure is None:
+            return None
+        self.env.evidence_lost("supervisor-final-log", failure)
+        return self.env.evidence_failure
 
     def temporary_gone(self):
         items = self.cleanup.inventory()
@@ -543,28 +467,23 @@ class Runner:
                 and (
                     self.env.approval.scenario == "smoke"
                     or (
-                        self.env.approval.scenario == "generic-recovery"
-                        and (control.recovery or {}).get("stage") == "complete"
-                    )
-                    or (
                         self.env.approval.scenario in SERVICE_TRIALS
                         # The exercise decided this when it completed, from the
                         # recoveries, the oracle and the observation coverage.
                         # A completed recovery alone is not the claim here.
                         # `recovery` is durable JSON that nothing types on the
                         # way in, so a malformed record must read as not-usable
-                        # rather than raise: `finalize` and `restore_control`
-                        # run this while the environment lock is retained.
+                        # rather than raise while the lock is retained.
                         and isinstance(control.recovery, dict)
                         and control.recovery.get("verdict") == rt.USABLE
                     )
                 )
             ),
         }
-        if self.env.approval.scenario == "generic-recovery":
-            result.update(
-                scenario=self.env.approval.scenario, recovery=control.recovery
-            )
+        failure = control.evidence_failure or self.env.evidence_failure
+        if failure is not None:
+            # Why `success` is false although every other input may say usable.
+            result["evidence_failure"] = failure
         if self.env.approval.scenario == "pubsub-recovery":
             result.update(
                 scenario=self.env.approval.scenario,
@@ -584,8 +503,13 @@ class Runner:
         return result
 
     def finalize(self, plans):
+        """Write the final receipt, delete the control record and release the lock.
+
+        A retry after a failure past the receipt keeps the receipt it finds:
+        that one was written from the record before the record was deleted.
+        """
         rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
-        control = self.env.refresh()
+        control, generation = self.env.records.read()
         require_pubsub_clean(control)
         require_bigquery_clean(control)
         if (
@@ -597,126 +521,31 @@ class Runner:
         rt.verify_idle(self.env)
         if self.cleanup.remaining_state():
             raise rt.Failure("Run state reappeared")
-        result = self.receipt(control, plans)
         path = f"runs/{self.env.approval.run_id}/result.json"
-        previous, _ = self.env.store.read(path)
-        prior, expected = previous, result
-        if previous is not None and (
-            self.env.approval.scenario == "bigquery-recovery"
-            or (
-                self.env.approval.scenario == "pubsub-recovery"
-                and self.env.approval.version == 5
-            )
-        ):
-            # Refreshed empty plans have a new observation time on each retry.
-            prior, expected = dict(previous), dict(result)
-            for receipt in (prior, expected):
-                if isinstance(receipt.get("plans"), dict):
-                    receipt["plans"] = {
-                        key: value
-                        for key, value in receipt["plans"].items()
-                        if key != "at"
-                    }
-        if previous is None:
+        result, _ = self.env.store.read(path)
+        if result is None:
+            result = self.receipt(control, plans)
             write_artifact(
-                self.env.store,
-                self.env.approval.run_id,
-                "result.json",
-                result,
-                self.env.approval.scenario,
+                self.env.store, self.env.approval.run_id, "result.json", result
             )
-        elif (
-            previous.get("nonce") != result["nonce"]
-            or not previous.get("idle")
-            or (
-                (
-                    self.env.approval.scenario in SERVICE_TRIALS
-                    or control.pubsub is not None
-                    or previous.get("pubsub") is not None
-                    or control.bigquery is not None
-                    or previous.get("bigquery") is not None
-                )
-                and rt.json_bytes(prior) != rt.json_bytes(expected)
-            )
-        ):
+        elif result.get("nonce") != self.env.approval.nonce or not result.get("idle"):
             raise rt.Failure("Final receipt conflicts with approval")
-        if previous is not None:
-            result = previous
-        current, generation = self.env.records.read()
-        if (
-            self.env.approval.scenario in SERVICE_TRIALS
-            or control.pubsub is not None
-            or current.pubsub is not None
-            or control.bigquery is not None
-            or current.bigquery is not None
-        ) and (rt.json_bytes(current.to_dict()) != rt.json_bytes(control.to_dict())):
-            raise rt.Failure("Run control changed during service finalization")
+        # Conditional on the record the receipt was derived from.
         self.env.store.delete(self.env.records.path, generation)
         rt.EnvironmentLock(self.env.store).release(self.env.approval.lock_owner)
         return result["success"]
-
-    def stored_receipt(self):
-        """The final receipt of a service trial, or None.
-
-        Only the service trials restore a control record from their receipt
-        or keep its verdict through a later settlement.
-        """
-        if self.env.approval.scenario not in SERVICE_TRIALS:
-            return None
-        stored, _ = self.env.store.read(f"runs/{self.env.approval.run_id}/result.json")
-        return stored
 
     def restore_control(self):
         """Write the run control record recovery found missing.
 
         Finalization deletes the record after writing the final receipt and
-        before releasing the environment lock, so a crash between the two leaves
-        only the lock. For a service scenario the receipt carries what its own
-        derivation takes from the record, with an evidence failure folded into
-        its success flag, and a retry compares that derivation with the
-        receipt, so a record without the cleaned service portion can never
-        finalize. The snapshot is restored only when this
-        derivation reproduces the stored receipt exactly; anything else is not
-        this run's finalization and is refused without writing.
-
-        Without a receipt, or for a scenario whose retry compares only the
-        nonce and idle claim, a minimal cleaned record is written: no receipt
-        means finalization never started, so no service state was deleted.
+        before releasing the environment lock, and dispatch writes it after
+        taking the lock and before admitting anything, so either way nothing
+        in the cluster depends on it. A cleaned record lets recovery settle
+        and finalize again; a receipt already written is kept.
         """
-        approval = self.env.approval
-        record = rt.RunRecord(approval.nonce, phase=rt.Phase.CLEANED, idle=True)
-        stored = self.stored_receipt()
-        if stored is not None:
-            if not isinstance(stored, dict) or not isinstance(
-                stored.get("plans"), dict
-            ):
-                raise rt.Failure(
-                    "Final receipt is malformed; investigate before any repair"
-                )
-            record = rt.RunRecord(
-                approval.nonce,
-                phase=rt.Phase.CLEANED,
-                stop_requested=True,
-                success=stored.get("success") is True,
-                idle=True,
-                recovery=stored.get("recovery"),
-                bigquery=stored.get("bigquery"),
-                pubsub=stored.get("pubsub"),
-            )
-            try:
-                require_pubsub_clean(record)
-                require_bigquery_clean(record)
-            except rt.Failure as error:
-                raise rt.Failure(
-                    "Final receipt carries uncleaned service state; investigate "
-                    "before any repair"
-                ) from error
-            if rt.json_bytes(self.receipt(record, stored["plans"])) != rt.json_bytes(
-                stored
-            ):
-                raise rt.Failure(
-                    "Final receipt does not reproduce from a restored control "
-                    "snapshot; investigate before any repair"
-                )
+        record = rt.RunRecord(
+            self.env.approval.nonce, phase=rt.Phase.CLEANED, idle=True
+        )
         # Create-only: a record that reappeared since recovery read it wins.
         self.env.store.write(self.env.records.path, record.to_dict())

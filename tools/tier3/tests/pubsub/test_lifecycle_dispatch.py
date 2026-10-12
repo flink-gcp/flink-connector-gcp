@@ -22,12 +22,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3 import approval_bundle, repository
 from flink_tier3 import lifecycle as cli
+from flink_tier3 import repository
 from flink_tier3.common import Failure, digest
-from flink_tier3.model import validate_approval
-from flink_tier3.policy import PUBSUB, PUBSUB_CEILINGS, SMOKE
-from flink_tier3.pubsub import bundle as bundles
+from flink_tier3.model import APPROVAL_VERSION, validate_approval
+from flink_tier3.policy import CLEANUP_SECONDS, MIB, PUBSUB, SMOKE, WINDOWS
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_plan import FIXTURE_TRIALS
@@ -37,9 +36,7 @@ from .test_plan import trial as trial  # noqa: PLC0414
 DIGEST = "sha256:" + "d" * 64
 SHA = "e" * 40
 NOW = cli.rt.timestamp("2026-09-21T00:00:00Z")
-WINDOW = PUBSUB_CEILINGS["seconds"]
-EXPIRY = cli.rt.utc(NOW + WINDOW + 60)
-PHRASE = "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, 1000 RECORDS PER SUBSCRIPTION"
+WINDOW = WINDOWS["pubsub-recovery"]
 
 
 @pytest.fixture
@@ -72,22 +69,11 @@ def args(tmp_path, **overrides):
         "pubsub_trial": "example-wiring",
         "application_digest": DIGEST,
         "run_id": "ps-1429-0001",
-        "sha": SHA,
-        "expires_at": EXPIRY,
-        "approve": PHRASE,
         "kubeconfig": tmp_path / "kubeconfig",
         "directory": tmp_path / "lifecycle",
     }
     value.update(overrides)
     return SimpleNamespace(**value)
-
-
-def test_the_phrase_names_the_policy_and_the_trial_ceilings(trial):
-    assert cli.pubsub_phrase(trial) == PHRASE
-    trial.update(records_per_subscription=10)
-    assert cli.pubsub_phrase(trial) == (
-        "APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, 10 RECORDS PER SUBSCRIPTION"
-    )
 
 
 def test_the_trial_resolves_from_its_reviewed_file_and_the_live_digest(
@@ -122,38 +108,22 @@ def test_a_trial_that_does_not_resolve_is_refused(reviewed, tmp_path, change, ma
         cli.pubsub_inputs(args(tmp_path, **change))
 
 
-@pytest.mark.parametrize("slack", [0, 1, 599, 600])
-def test_the_window_starts_at_admission_and_ends_by_the_typed_expiry(slack):
-    started, end = cli.service_window(
-        NOW + 0.7, cli.rt.utc(NOW + WINDOW + slack), WINDOW, "Pub/Sub"
-    )
-    assert started == NOW
-    assert end == NOW + WINDOW
-
-
-@pytest.mark.parametrize("slack", [-1, 601])
-def test_an_expiry_that_would_not_bound_the_run_is_refused(slack):
-    with pytest.raises(Failure, match="Pub/Sub expiry must be 60 to 70 minutes"):
-        cli.service_window(NOW, cli.rt.utc(NOW + WINDOW + slack), WINDOW, "Pub/Sub")
+def test_the_window_starts_at_admission_and_lasts_the_scenarios_policy(
+    monkeypatch,
+):
+    monkeypatch.setattr(cli.time, "time", lambda: NOW + 0.7)
+    assert cli.window(WINDOW) == (NOW, NOW + 3600)
 
 
 @pytest.mark.parametrize(
     "change, env_change, match",
     [
-        ({"approve": cli.APPROVAL}, {}, "explicitly approve"),
-        ({"approve": cli.BIGQUERY_APPROVAL}, {}, "explicitly approve"),
-        # Another trial's numbers do not approve this one.
-        (
-            {"approve": PHRASE.replace("1000 RECORDS", "2000 RECORDS")},
-            {},
-            "explicitly approve",
-        ),
-        ({"sha": "f" * 40}, {}, "explicitly approve"),
-        ({}, {"GITHUB_REF": "refs/heads/feature"}, "explicitly approve"),
+        ({}, {"GITHUB_REF": "refs/heads/feature"}, "must run from main"),
+        ({"rig_sha": "main"}, {}, "exact rig commit"),
+        ({}, {"GITHUB_SHA": ""}, "exact rig commit"),
         ({"pubsub_trial": "absent"}, {}, "Unreadable Pub/Sub trial file"),
         ({"application_digest": "latest"}, {}, "sha256 --application-digest"),
         ({"run_id": "Not A Run"}, {}, "Invalid run ID"),
-        ({"expires_at": cli.rt.utc(NOW + WINDOW - 1)}, {}, "60 to 70 minutes"),
     ],
 )
 def test_a_dispatch_is_refused_before_it_touches_the_cluster_or_the_store(
@@ -188,7 +158,6 @@ def test_a_reused_run_id_is_refused_before_it_touches_the_cluster(
 def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
     """Everything outside the rig faked at its boundary, the rig itself real."""
     kube, store, reference, _ = env
-    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
     # The workflow sets this for the step; `idle=true` in it releases the lock.
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github-output"))
     connected = []
@@ -245,12 +214,12 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli.rt, "EnvironmentLock", lambda store: SimpleNamespace(acquire=acquire)
     )
-    scenarios = []
+    artifacts = []
     write = cli.rt.write_artifact
 
-    def artifact(store, run_id, name, value, scenario):
-        scenarios.append(scenario)
-        return write(store, run_id, name, value, scenario)
+    def artifact(store, run_id, name, value):
+        artifacts.append(name)
+        return write(store, run_id, name, value)
 
     monkeypatch.setattr(cli.rt, "write_artifact", artifact)
     fallback = []
@@ -261,14 +230,14 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
             settle=lambda request_stop=False: fallback.append(request_stop)
         ),
     )
-    bundled = []
-    original = bundles.prepare
+    bound = []
+    original = cli.bind
 
-    def prepare(approval, *, prepared_at):
-        bundled.append(copy.deepcopy(approval))
-        return original(approval, prepared_at=prepared_at)
+    def bind(approved, delivery, when):
+        bound.append((approved.to_dict(), when))
+        return original(approved, delivery, when)
 
-    monkeypatch.setattr(bundles, "prepare", prepare)
+    monkeypatch.setattr(cli, "bind", bind)
     rendered = []
     render = cli.pubsub_plan.prepare
 
@@ -286,11 +255,11 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
         checked=checked,
         snapshots=snapshots,
         receipts=receipts,
-        bundled=bundled,
+        bound=bound,
         locks=locks,
         fallback=fallback,
         events=events,
-        scenarios=scenarios,
+        artifacts=artifacts,
         snapshot=snapshot,
     )
 
@@ -315,15 +284,14 @@ class Recorded:
 
 
 def install(monkeypatch, fail=None, enter=None):
-    """A runner factory that checks the bundle it is handed, as the real one does."""
+    """A runner factory that records the environment and token it is handed."""
     seen = {}
 
     @contextmanager
-    def runner(env, bundle, *, runner_token, credentials=None):
+    def runner(env, *, runner_token, credentials=None):
         if enter:
             raise Failure(enter)
-        bundles.validate(bundle, env.approval.to_dict())
-        seen.update(env=env, bundle=bundle, token=runner_token)
+        seen.update(env=env, token=runner_token)
         seen["runner"] = Recorded(env, fail)
         yield seen["runner"]
 
@@ -331,7 +299,7 @@ def install(monkeypatch, fail=None, enter=None):
     return seen
 
 
-def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
+def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
     cluster, trial, tmp_path, monkeypatch
 ):
     seen = install(monkeypatch)
@@ -344,14 +312,18 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
     ]
     # Idle before the lock, and again once it is held.
     assert cluster.snapshots == [PUBSUB, PUBSUB]
-    # Dispatch's own bundle; the runner factory re-renders it again.
-    approval = cluster.bundled[0]
-    validate_approval(approval, NOW)
-    assert approval["version"] == 5
+    # Dispatch renders once and binds its approval into that delivery once;
+    # nothing renders it again.
+    assert len(cluster.rendered) == 1
+    [(approval, when)] = cluster.bound
+    assert when == NOW
+    validate_approval(approval)
+    assert approval["version"] == APPROVAL_VERSION
     assert approval["scenario"] == "pubsub-recovery"
+    # The window starts at admission and lasts the scenario's policy.
     assert approval["started_at"] == cli.rt.utc(NOW)
     assert approval["expires_at"] == cli.rt.utc(NOW + WINDOW)
-    assert approval["cleanup_at"] == cli.rt.utc(NOW + WINDOW - 900)
+    assert approval["cleanup_at"] == cli.rt.utc(NOW + WINDOW - CLEANUP_SECONDS)
     assert approval["pubsub_trial"] == trial
     assert approval["lock_owner"]["run_id"] == "ps-1429-0001"
     assert approval["actor"] == "octocat"
@@ -367,14 +339,19 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
     assert seen["env"].actor == "runner"
     assert len(seen["token"]) == 32
     assert seen["token"] not in json.dumps(approval)
-    bundle, runner = seen["bundle"], seen["runner"]
+    rendered, runner = cluster.rendered[0], seen["runner"]
+    delivery = rendered["delivery"]
+    assert json.loads(delivery["config"]["data"]["approval.json"]) == approval
+    assert delivery["supervisor"]["spec"]["activeDeadlineSeconds"] == (
+        cli.rt.Schedule.for_window(NOW, NOW + WINDOW).active_seconds(NOW)
+    )
     assert runner.calls == [
         (
             "start",
-            bundle["delivery"]["config"],
-            bundle["delivery"]["supervisor"],
-            bundle["application"],
-            bundle["delivery"]["probe"],
+            delivery["config"],
+            delivery["supervisor"],
+            rendered["application"],
+            delivery["probe"],
         ),
         ("settle", False),
     ]
@@ -382,7 +359,12 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
     assert cluster.fallback == []
     # Idle is rechecked once the lock is held.
     assert cluster.events == ["snapshot", "lock", "snapshot"]
-    assert cluster.scenarios == ["pubsub-recovery"] * 4
+    assert cluster.artifacts == [
+        "approval.json",
+        "application.json",
+        "images.json",
+        "upgrade-application.json",
+    ]
     assert runner.stopped is True
     # What the workflow's plan proof and finalization need: the owner it
     # releases and the idle signal that runs them.
@@ -399,8 +381,8 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
         )
     }
     assert documents["approval.json"] == approval
-    assert documents["application.json"] == bundle["application"]
-    assert documents["upgrade-application.json"] == bundle["recovery_application"]
+    assert documents["application.json"] == rendered["application"]
+    assert documents["upgrade-application.json"] == rendered["recovery_application"]
     assert documents["images.json"] is None or documents["images.json"] == {}
     control, _ = cluster.store.read("_control/runs/ps-1429-0001.json")
     assert control["nonce"] == approval["nonce"] and control["phase"] == "approved"
@@ -447,14 +429,20 @@ def test_a_runner_that_cannot_be_built_after_the_lock_is_settled_by_a_plain_one(
     assert (tmp_path / "github-output").read_text() == "idle=true\n"
 
 
-def test_a_bundle_that_refuses_does_so_before_the_lock(cluster, monkeypatch, tmp_path):
-    def refuse(revision):
-        raise Failure("Repository revision differs from approval")
+def test_a_delivery_that_refuses_does_so_before_the_lock(
+    cluster, monkeypatch, tmp_path
+):
+    render = cli.pubsub_plan.prepare
 
-    monkeypatch.setattr(approval_bundle, "check_revision", refuse)
-    with pytest.raises(Failure, match="revision differs"):
+    def oversized(**kwargs):
+        rendered = render(**kwargs)
+        rendered["delivery"]["config"]["data"]["padding"] = "x" * MIB
+        return rendered
+
+    monkeypatch.setattr(cli.pubsub_plan, "prepare", oversized)
+    with pytest.raises(Failure, match="ConfigMap exceeds"):
         cli.start(args(tmp_path), cluster.store)
-    assert cluster.bundled
+    assert cluster.bound and cluster.locks == []
 
 
 def test_the_approval_pins_the_manifests_the_proposal_rendered(
@@ -463,10 +451,8 @@ def test_the_approval_pins_the_manifests_the_proposal_rendered(
     """The recovery manifest, not the initial one, becomes the upgrade digest."""
     install(monkeypatch)
     cli.start(args(tmp_path), cluster.store)
-    # Dispatch's own bundle; the runner factory re-renders it again.
-    approval = cluster.bundled[0]
-    # The first render is dispatch's own; the bundle re-renders after it.
-    rendered = cluster.rendered[0]
+    [(approval, _)] = cluster.bound
+    [rendered] = cluster.rendered
     initial, recovery = rendered["application"], rendered["recovery_application"]
     # `example-wiring` rescales out, so the two manifests differ.
     assert digest(initial) != digest(recovery)
@@ -489,9 +475,7 @@ def test_the_approval_holds_a_deep_copy_of_the_trial(trial):
         proposal={
             "started_at": cli.rt.utc(NOW),
             "expires_at": cli.rt.utc(NOW + WINDOW),
-            "cleanup_at": cli.rt.utc(NOW + WINDOW - 900),
-            "runtime_sha256": "1" * 64,
-            "delivery_sha256": "2" * 64,
+            "cleanup_at": cli.rt.utc(NOW + WINDOW - CLEANUP_SECONDS),
             "application_sha256": "3" * 64,
             "recovery_application_sha256": "4" * 64,
         },

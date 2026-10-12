@@ -22,13 +22,11 @@ import time
 import uuid
 
 from .bigquery.handoff import require_bigquery_clean
-from .common import ApiError, Failure, Superseded, json_bytes, utc
-from .model import Phase, RunRecord, open_for_replacement
+from .common import ApiError, Failure, utc
+from .model import Phase, RunRecord
 from .policy import (
-    BIGQUERY_CEILINGS,
     ENVIRONMENT,
     GENERATION_RACES,
-    MIB,
     RACE_BACKOFF_CAP,
     RACE_BACKOFF_FIRST,
     RATE_LIMIT_BACKOFF,
@@ -68,12 +66,7 @@ def conditional_update(
             sleep(random.uniform(0, ceiling))
 
 
-# The documents a run retains directly under its prefix. A fixed roster
-# rather than a listing: the prefix also holds every receipt and query
-# artifact, and `objects` refuses past twenty thousand of them, which a
-# supervisor's receipts can reach well before the byte ceiling does. This
-# accounting runs when the final result is written, so a listing here would
-# fail the run at its last step.
+# The documents a run retains directly under its prefix, beside its receipts.
 RUN_ARTIFACTS = (
     "approval.json",
     "application.json",
@@ -83,29 +76,10 @@ RUN_ARTIFACTS = (
 )
 
 
-def write_artifact(store, run_id, name, value, scenario):
-    """Write one immutable run document, weighed against its own allowance.
-
-    The receipts, the query evidence and these documents partition one
-    approved evidence ceiling. The first two have counted themselves since
-    they existed; these were written unweighed, so nothing proved the run
-    stayed inside what it was approved to retain.
-    """
+def write_artifact(store, run_id, name, value):
+    """Write one immutable run document."""
     if name not in RUN_ARTIFACTS:
         raise ValueError("Unknown run artifact: " + name)
-    budget = (
-        BIGQUERY_CEILINGS["artifact_bytes"] if scenario == "bigquery-recovery" else None
-    )
-    if budget is not None:
-        retained = 0
-        for other in RUN_ARTIFACTS:
-            if other == name:
-                continue
-            written, _ = store.read(f"runs/{run_id}/{other}")
-            if written is not None:
-                retained += len(json_bytes(written))
-        if retained + len(json_bytes(value)) > budget:
-            raise Failure("Run artifact ceiling reached")
     return store.write(f"runs/{run_id}/{name}", value)
 
 
@@ -114,9 +88,6 @@ class Records:
         self.store, self.approval, self.clock = store, approval, clock
         self.path = "_control/runs/" + approval.run_id + ".json"
         self.cache = RunRecord(approval.nonce)
-        # The Pod UID this process claimed the run as. The runner and recovery
-        # never claim, so their writes are not fenced.
-        self.claimed_as = None
 
     def read(self):
         value, generation = self.store.read(self.path)
@@ -125,64 +96,12 @@ class Records:
         self.cache = RunRecord.from_dict(value)
         return self.cache, generation
 
-    def displaced(self, record):
-        """Whether another supervisor Pod has claimed the run from this one."""
-        return self.claimed_as is not None and record.supervisor_pod != self.claimed_as
-
-    def _update(self, edit):
+    def _change(self, edit):
         record = conditional_update(
             self.store, self.path, self.read, edit, lambda record: record.to_dict()
         )
         self.cache = record
         return record
-
-    def _change(self, edit):
-        def fenced(record):
-            # Inside the edit, so every retry re-checks the claim against the
-            # generation its write is conditional on.
-            if self.displaced(record):
-                raise Superseded("Another supervisor Pod holds this run")
-            edit(record)
-
-        return self._update(fenced)
-
-    def claim_supervisor(self, pod_uid):
-        """Make `pod_uid` the only supervisor Pod whose writes this run accepts.
-
-        The first Pod claims an unclaimed run whatever its state. A replacement
-        may displace the claim only while `open_for_replacement` holds, and
-        every later write of the displaced Pod is refused.
-        """
-        if not pod_uid:
-            raise Failure("Supervisor Pod has no UID to claim the run with")
-
-        def edit(record):
-            displacing = record.supervisor_pod not in (None, pod_uid)
-            if displacing and not open_for_replacement(record):
-                raise Failure("This run cannot be claimed by another supervisor Pod")
-            record.supervisor_pod = pod_uid
-            record.supervisor_claimed_at = utc(self.clock())
-
-        record = self._update(edit)
-        self.claimed_as = pod_uid
-        return record
-
-    def stop_if_held_by(self, pod_uid):
-        """Stop the run if `pod_uid` still holds it, in one compare-and-set."""
-
-        class Displaced(Exception):
-            pass
-
-        def edit(record):
-            if record.supervisor_pod != pod_uid:
-                raise Displaced
-            record.stop_requested = True
-
-        try:
-            self._change(edit)
-        except Displaced:
-            return False
-        return True
 
     @staticmethod
     def _remember(current, additions):
@@ -204,7 +123,7 @@ class Records:
         reason=None,
         success=None,
         state_clean=None,
-        evidence_failed=False,
+        evidence_failure=None,
     ):
         def edit(record):
             if phase == Phase.CLEANED:
@@ -214,7 +133,7 @@ class Records:
             record.set_phase(phase)
             if reason is not None:
                 record.reason = reason
-            record.evidence_failed |= evidence_failed
+            record.fail_evidence(evidence_failure)
             if success is not None:
                 record.success = (
                     success
@@ -253,14 +172,11 @@ class Records:
 
         return self._change(edit)
 
-    def heartbeat(self, *, started=False):
-        """Report the supervisor alive; `started` closes the takeover window."""
-
-        def edit(record):
-            record.heartbeat = utc(self.clock())
-            record.supervision_started |= started
-
-        return self._change(edit)
+    def heartbeat(self):
+        """Report the supervisor alive."""
+        return self._change(
+            lambda record: setattr(record, "heartbeat", utc(self.clock()))
+        )
 
     def intend(self, key, manifest=True):
         fields = {
@@ -292,35 +208,30 @@ class Records:
     def checkpoint(self):
         return self._change(lambda record: setattr(record, "checkpoint_observed", True))
 
-    def mark_evidence_failed(self):
-        return self._change(lambda record: setattr(record, "evidence_failed", True))
+    def mark_evidence_failed(self, failure):
+        return self._change(lambda record: record.fail_evidence(failure))
 
-    def final_log(self, success):
+    def final_log(self, failure):
+        """Record the final log attempt; `failure` is its cause, or None."""
+
         def edit(record):
             record.final_log_attempted = True
-            record.evidence_failed |= not success
+            record.fail_evidence(failure)
 
         return self._change(edit)
 
-    def settled(self, evidence_failed):
+    def settled(self, evidence_failure):
         def edit(record):
             require_bigquery_clean(record)
             require_pubsub_clean(record)
             record.idle = True
-            record.evidence_failed |= evidence_failed
+            record.fail_evidence(evidence_failure)
 
         return self._change(edit)
 
     def evidence(self, event, payload, actor="supervisor"):
         prefix = f"runs/{self.approval.run_id}/{actor}/"
-        if self.approval.scenario == "bigquery-recovery":
-            budget = BIGQUERY_CEILINGS["receipt_bytes_" + actor]
-        else:
-            budget = (88 if actor == "supervisor" else 10) * MIB
-        objects = self.store.objects(prefix)
         data = {"event": event, "at": utc(self.clock()), "payload": payload}
-        if sum(int(obj["size"]) for obj in objects) + len(json_bytes(data)) > budget:
-            raise Failure("Durable evidence ceiling reached")
         self.store.write(prefix + str(uuid.uuid4()) + ".json", data)
 
 

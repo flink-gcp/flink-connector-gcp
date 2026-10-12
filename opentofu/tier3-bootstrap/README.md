@@ -296,7 +296,7 @@ The existing infrastructure apply identity retains its administrative permission
 
 The runner's WIF bindings select this repository's immutable ID and the exact main workflow reference, event and ref.
 They reserve `workflow_dispatch` for `tier3-run.yaml` and `tier3-recover.yaml`, and `workflow_run` for `tier3-recover.yaml`.
-The recovery workflow must separately validate its triggering workflow and the saved run approval; its WIF binding does not authenticate that triggering run.
+The recovery workflow must separately require that its source holds the lock and has completed, and compare the saved run approval; its WIF binding does not authenticate that triggering run.
 The supervisor trust selects only `tier3-system/tier3-supervisor` through Workload Identity Federation for GKE.
 Neither identity reuses the installer, image publisher or smoke application account.
 

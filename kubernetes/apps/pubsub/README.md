@@ -92,7 +92,7 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 Run from the repository root, or set the CLI's global `--repository` argument before `render`.
 The example uses synthetic revision/image identities and dates; rendering performs no credential lookup, image availability check or cloud operation.
 The output contains `proposal`, `application`, `recovery_application` and `delivery` (ConfigMap and supervisor Job).
-The proposal records the supplied source revision, installed runtime source digest, exact application/supervisor hashes, the application and supervisor images, service settings and grants.
+The proposal records the supplied source revision, exact application/supervisor hashes, the application and supervisor images, service settings and grants.
 It does not prove that the installed package, checkout or application image came from the supplied revision.
 `approved` is always false and the ConfigMap's `approval.json` remains empty; neither output is an execution approval.
 
@@ -121,19 +121,17 @@ A cohort range alone does not prove that its messages were processed but not che
 The input file requires exactly the four fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
 `entry_point` is `datastream` or `table` and applies to both manifests, so a trial never changes the entry point between phases.
 Version 5 removed version 4's `traffic_limits`: no runtime ceiling meters the trial's messages, calls, requests or evidence bytes.
-An approval stored with a version 4 trial is still read, so recovery can settle a run that spans the change, but nothing renders or admits one.
 Those requests are nearly free, and the trial's cost is bounded by its input domain, its window and its Pod quota, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records.
 
 The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
-Its Pod cap is seven: three steady Flink Pods plus one Flink replacement allowance, and the Operator, supervisor and one control-Pod replacement allowance; PVCs are zero.
-Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal.
-Later admission must budget four Pods in `tier3-pubsub` and three in `tier3-system`, count termination overlap and refuse further concurrent replacements when those allowances are occupied.
+Admission's temporary quotas hold seven Pods: three steady Flink Pods plus one Flink replacement allowance in `tier3-pubsub`, and the Operator, supervisor and one Operator replacement allowance in `tier3-system`; PVCs are zero.
+Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal, which is what the allowances are for.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
 The proposal's `cost` is a planning estimate, USD 1.987 for every trial; the owner approves it before a dispatch, and nothing at run time compares spend against it.
 It charges all seven Pods for the whole hour at the conservative CPU, memory and ephemeral-storage rates, the four application slots at the Flink shape and the three control slots at the Operator's, with no Spot or commitment discount, and adds a USD 1.00 reserve.
 The reserve covers what the input domain and the window bound, each a fraction of it at the largest domain of 10,000 records per subscription and at the [recovery exercise](#recovery-exercise)'s pulls, at most five batches of 100 per 15-second poll until cleanup: Pub/Sub throughput at USD 40 per TiB with a 1 KB minimum per request, Cloud Storage operations at USD 0.005 per 1,000 and storage, Cloud Logging ingestion, and the logs and evidence leaving Google Cloud at USD 0.12 per GiB.
 The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
-A runnable approval also needs enforcement of the fixed state/log/evidence limits, live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
+A runnable approval also needs live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 A passed deadline, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
 The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence.
 
@@ -275,8 +273,8 @@ The durable controller below uses this entry point; the original `cleanup()` sti
 ### Durable preparation and cleanup
 
 [`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub/lifecycle.py) connects the resource helper to the existing generation-checked active run record.
-It is an internal caller contract for `pubsub-recovery`; the version 5 schema below binds trial inputs, and [dispatch](#approval-dispatch) builds that approval but does not admit execution.
-The caller validates the full application contract, authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and deadline guard; the [actor factories](#actor-construction-and-the-request-guard) check the manifests against the approval.
+It is an internal caller contract for `pubsub-recovery`; [dispatch](#approval-dispatch) builds and validates the approval, whose trial binds the inputs, but does not admit execution through it.
+The caller authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and deadline guard.
 The [IAM apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35504842276) succeeded; subsequent role/binding readback matched the three custom roles and two project bindings, and a local refreshed GCP plan was empty.
 These foundation observations do not establish per-resource data access or a recovery result.
 
@@ -311,11 +309,8 @@ Missing-manifest cases with remaining resources require separate investigation; 
 The controller marks only service cleanup complete; it does not set run success, remove Flink state, shut down the Operator, delete active control or release the environment lock.
 Shared Operator shutdown and final receipt/lock release refuse a present Pub/Sub record unless its stage is `cleaned` and the shared stop is set.
 Final settlement copies the cleaned Pub/Sub control portion, including its intent and retained observations, into `runs/<run-id>/result.json` before deleting active control.
-When either active control or a prior receipt carries Pub/Sub, reuse requires equality with the complete computed result, including the Pub/Sub snapshot, success verdict and plans; a version 5 retry excludes only the refreshed plans' observation time (`plans.at`).
-A receipt invalidated by a concurrent evidence failure remains a conflict on retry; it cannot restore a stale success verdict or release the lock.
-Before deleting active control, Pub/Sub finalization compares its complete current record with the snapshot used for the receipt, then deletes against that observed generation.
-A concurrent cleanup or evidence update retains the record and lock for retry; runs with no Pub/Sub state in either snapshot keep their existing behavior.
-When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) restores the deleted record from the receipt, which still carries the cleaned Pub/Sub portion, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
+Finalization deletes active control at the generation it derived the receipt from, so a concurrent cleanup or evidence update retains the record and lock for retry, and a retry keeps the receipt it finds.
+When control deletion succeeded and lock release did not, the [recovery workflow](../../../.github/workflows/tier3-recover.yaml) writes a minimal cleaned record and finalizes again, keeping the receipt that still carries the cleaned Pub/Sub portion, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
 The caller must keep exclusive control and writer quiescence through settlement; a stored cleanup marker does not detect a resource recreated afterward by another administrator.
 Synthetic tests compose production record and resource adapters with fake transports for concurrent claims, restart, stop drift, partial mutations, the control-record size limit and shared settlement gates.
 [Admission](#admission-and-effective-access) composes this controller with the actors and the access probes, and the supervisor's [recovery exercise](#recovery-exercise) follows it.
@@ -323,9 +318,8 @@ Synthetic tests compose production record and resource adapters with fake transp
 ### Actor construction and the request guard
 
 [`pubsub_actors`](../../../tools/tier3/src/flink_tier3/pubsub/actors.py) is the only production path that binds a Pub/Sub handoff to a runner or supervisor.
-Both check the actor's source pin, as the BigQuery actors do, and both require each pinned manifest's digest and that its `spec.job` runs exactly what the approval's trial derives through `pubsub_plan.manifest_jobs()`: its parallelism and the `--run-id`, `--phase`, `--records-per-subscription`, `--parallelism`, `--require-restored` and `--entry-point` arguments, in order.
-A digest pins a manifest, and only this check says the manifest runs the approved trial.
-`runner(env, bundle, runner_token=…)` gets both from re-rendering the bundle against the caller's approval, which `pubsub_plan.prepare()` checks through `require_trial_jobs()`; `supervisor(env, application, upgrade)` checks the manifests its delivery mounted explicitly, because nothing re-renders them.
+Neither checks the manifests again: dispatch rendered them through `pubsub_plan.prepare()`, which requires through `require_trial_jobs()` that each `spec.job` runs exactly what the trial derives, and the approval pins their digests, which the supervisor entrypoint checks against its mount.
+A digest pins a manifest, and only that rendering check says the manifest runs the approved trial.
 Each actor authenticates its own service account through [`PubSubSession`](../../../tools/tier3/src/flink_tier3/pubsub/auth.py) before it is returned, and a supervisor takes a fresh process token each time it is constructed.
 The supervisor's cleanup barrier, [`pubsub_quiesce.barrier`](../../../tools/tier3/src/flink_tier3/pubsub/quiesce.py), is built from the run rather than supplied, and waits until no object of any writer kind remains in `tier3-pubsub`, whoever owns it: the namespace's `pubsub` service account can create Pods and Deployments, and any Pod running as it holds the workload's data grants.
 It proves only that no such object remains after graceful deletion, not that a request a terminated Pod sent has finished at the service; the actors' unsettled-call markers cover only their own requests.
@@ -333,7 +327,7 @@ Outside a run the namespace is expected to hold no such object; dispatch does no
 `Runner.start` and `Supervisor.supervise` refuse `pubsub-recovery` without these actors, and the supervisor entrypoint builds its own through this factory.
 
 Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub/guard.py) is its `before_operation`, and it checks only Pub/Sub service requests.
-It refuses to start one less than 20 seconds, the session's request budget, before its deadline, or one that the approval would no longer validate.
+It refuses to start one less than 20 seconds, the session's request budget, before its deadline.
 It runs as the last step before the request is sent, after any control write of the call, such as its begin marker.
 The budget covers the request's authentication, its sending and the response's status and headers; reading a streamed body is bounded only by the transport's per-read timeout and the helpers' 1 MiB response cap, so a slowly arriving body can still end after the deadline.
 The deadline is the admission deadline, the earlier of 900 seconds after the window's start and `cleanup_at`, unless a caller holds another through the controller's `until()`: `publish` and `collect` hold `cleanup_at`, because later cohorts and collection belong to the exercise, a caller publishing during admission passes the admission deadline, and cleanup holds none.
@@ -342,8 +336,8 @@ No per-method operation bound and no aggregate request ceiling exists, as the [o
 
 ### Admission and effective access
 
-`Runner.start(config, job, application, probe)` admits a version 5 `pubsub-recovery` run only with a handoff that carries its `PubSubGuard` and settled-write check, as `pubsub_actors.runner()` builds.
-The manifests and the probe Pod it submits are the approval bundle's, which `pubsub_actors.runner()` re-rendered against the approval; that rendering checked both jobs against the trial and the probe Pod against the plan it tests and the program it runs, so admission does not check them again.
+`Runner.start(config, job, application, probe)` admits a `pubsub-recovery` run only with a handoff that carries its `PubSubGuard` and settled-write check, as `pubsub_actors.runner()` builds.
+The manifests and the probe Pod it submits are the ones dispatch rendered and bound to the approval; that rendering checked both jobs against the trial and the probe Pod against the plan it tests and the program it runs, so admission does not check them again.
 After the supervisor Job and the Operator are ready, and while the run is `READY`, [`pubsub_admission`](../../../tools/tier3/src/flink_tier3/pubsub/admission.py) runs these steps in order:
 
 1. Bind the runner and the resource intent in one control update.
@@ -360,7 +354,7 @@ A grant is not taken as proof of access.
 Each identity is tested on all six resources for the one permission the run's bindings decide there, publish on a topic and consume on a subscription, so every resource is a positive or a negative control for each identity.
 A permission test answers only for the identity that sends it, so the runner and the supervisor each probe themselves.
 The workload's service account is reachable only through the `pubsub` Kubernetes service account, so the runner creates a Pod named `<run>-access-probe` that runs as it, through a runner-only Role in `tier3-pubsub`.
-The Pod runs the lifecycle tools image with [`pubsub/probe.py`](../../../tools/tier3/src/flink_tier3/pubsub/probe.py) passed inline, because a Pod cannot mount the control ConfigMap from another namespace; CUE renders it, and the bundle's re-render pins it.
+The Pod runs the lifecycle tools image with [`pubsub/probe.py`](../../../tools/tier3/src/flink_tier3/pubsub/probe.py) passed inline, because a Pod cannot mount the control ConfigMap from another namespace; CUE renders it at dispatch.
 The runner keeps the Pod's log, at most 64 KiB, as `pubsub-workload-probe` evidence and requires the Pod to succeed: the program checks its own identity and every expectation, and exits non-zero on any refusal, so its exit status is the result.
 The program refreshes its own token before each request and then starts the request only while its 20-second timeout still fits before the deadline; it uses a plain HTTP session, so nothing replays a request answered 401 after that check.
 When a request no longer fits, the program logs a refusal and fails.
@@ -379,10 +373,9 @@ The actors' observations are recorded under the run control's `pubsub.access`, o
 The supervisor's entrypoint builds its actor through `pubsub_actors.supervisor()`.
 Once preparation completes it joins, probes its own access, including an empty pull of the output subscription, and waits for admission to finish.
 It then runs the [recovery exercise](#recovery-exercise), and cleanup deletes the run's resources after it.
-Once the run has Pub/Sub state, a supervisor stopped before supervision starts is not left to a replacement, joined or not: only a supervisor deletes Pub/Sub resources, and a joined one holds authority that no other process can release.
-It waits for the runner to settle and release, then cleans up, which must fit its grace period.
-A replacement that finds another process's binding stops the run, waits for the runner's release, and reclaims the former authority only after the former supervisor Pod has ended or is gone and the namespace barrier passes; until both hold, it waits, and the lock stays if they never do.
-A supervisor whose cleanup outlasts its grace period, or whose Pod is gone with no replacement claiming the run, leaves the lock for an operator.
+Only a supervisor deletes Pub/Sub resources, and the Job replaces no supervisor Pod.
+A supervisor stopped once the run has Pub/Sub state waits for the runner to settle and release, then cleans up, which must fit its grace period.
+A supervisor whose cleanup outlasts its grace period, or whose Pod is gone before cleanup, leaves the resources and the lock for an operator.
 
 When admission fails after resources exist, for example through settings or policy drift found by a read, a probe refused or still missing access at the deadline, or a supervisor that never joins, `start` raises with no call in flight, the runner's settlement releases it, and the supervisor, joined or not, deletes the six resources.
 Ownership drift, a replaced manifest or a resource whose labels or live topic binding no longer match, stops the run without completing deletion and keeps the lock, because cleanup cannot prove the resources are this run's.
@@ -571,7 +564,7 @@ The start and end marks are read from the runner's clock and the request time fr
 Each collected line whose payload is this run's relay output, with the nine fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase and whether the attempt restored state, with the output message ID, batch and collection time.
 Any other line, including another run's, is kept apart by batch and stays in the evidence, and the [verdict](#verdict)'s oracle refuses it.
 Every collected line is also kept in collection order, repeats included, as the oracle's input for the [verdict](#verdict).
-The observations live in the supervisor's process for the exercise; a replacement supervisor, which never collects, does not rebuild them.
+The observations live in the supervisor's process for the exercise.
 
 ## Actor ownership and cleanup handoff
 
@@ -580,12 +573,11 @@ The original runner constructs it from its `PubSubLifecycle` and a fresh 32-char
 Initialize through `PubSubHandoff.initialize()` without first calling the underlying resource controller's initializer.
 This handoff entry point writes resource intent and runner authority together in one generation-checked control update; a crash cannot commit resource intent without its actor binding.
 If the write did not commit, common cleanup sees no Pub/Sub state; if it committed but the acknowledgement was lost, the original process may repeat initialization with its same token while admission remains open.
-If that process died, a replacement uses the external reclamation proof below for the recorded actor before common cleanup can finish.
+If that process died, its binding stays unreleased, and common cleanup keeps the resources and the lock for an operator.
 Competing initializations and shared stop are rechecked after a generation conflict; neither a retry nor cleanup adopts a different runner token.
 `prepare()` records one runner invocation before creating resources and clears it once the stage is `prepared`.
 After preparation and transition to `READY`, the supervisor constructs its own instance with a distinct fresh token and calls `join()` before collection; joining during `RUNNING` is also permitted while admission is open.
 The submitting process may repeat its binding call idempotently while that admission window remains open, but another process must not reconstruct or transfer its recorded token.
-A replacement supervisor may use the explicit reclamation path below without adopting the former supervisor's data authority.
 Tokens identify process ownership; authenticated identities and exclusive resource control remain the caller's responsibility.
 Use the wrapper from the first initialization call onward: direct resource initialization bypasses atomic actor binding, and direct preparation or message calls bypass its invocation records.
 
@@ -606,13 +598,13 @@ It keeps its marker unless the handoff was given a settled-write check that answ
 The latch is the session's, not the call's, so one unsettled write keeps every later marker too.
 Storage uploads go through another client and are not tracked; a lost upload response can at most leave its object to land after settlement, never a service resource.
 Such a call then clears its own marker, so a refusal before any request, or drift found by a read, leaves the run cleanable through ordinary release; a clearing failure keeps the marker.
-A begin write can also land with its response lost; the call then fails before sending anything, so it reads the record and clears that marker too, rather than leaving the lock to a reclamation proof the call does not need.
-A write that left without a status, or was answered 5xx, may still complete at the service, and its marker stays for the external reclamation below.
+A begin write can also land with its response lost; the call then fails before sending anything, so it reads the record and clears that marker too, rather than leaving the lock to an operator's investigation the call does not need.
+A write that left without a status, or was answered 5xx, may still complete at the service, and its marker and the lock stay for an operator, as below.
 The caller must independently stop actors when shared failure/stop persistence is unavailable.
 If requesting shared stop also fails, that control error propagates with the original operation error as its Python exception context; callers that record only the outer message lose that original diagnostic.
 The marker does not expire, and a timeout does not prove the service operation has ended.
-An original process may retry a lost successful release acknowledgement with its existing token, but unresolved calls require external reclamation.
-Even one transient write failure can therefore stop both actors and require the external proof below before cleanup; the wrapper does not retry the failed service call.
+An original process may retry a lost successful release acknowledgement with its existing token, but an unresolved call keeps the lock for an operator.
+Even one transient write failure can therefore stop both actors and keep the lock for an operator; the wrapper does not retry the failed service call.
 
 `stop()` closes admission without declaring quiescence.
 Each bound actor calls `release()` to stop admission and permanently surrender its authority once it has no unresolved call.
@@ -622,19 +614,12 @@ A supervisor that never joined may call `release()` to stop admission without re
 When a handoff is present, the underlying resource controller also refuses service deletion before actor release, and shared Operator shutdown/final settlement enforce the same gate.
 Older resource records without a handoff keep their existing external-barrier contract.
 
-For an abandoned or unresolved actor, an authenticated supervisor uses `reclaim(quiesce)`.
-Use the replacement's own fresh process token, not either recorded actor token.
+An abandoned or unresolved actor has no in-protocol reclamation: the supervisor Job replaces no Pod, so no other process exists to reclaim it.
 The record is read as this rig's own code wrote it, and there is no in-protocol repair or reset for corrupt control.
 Retain its evidence for investigation and a separately reviewed recovery procedure.
-The controller first stops admission; the callback then receives a copy of both actor tokens and their current invocation markers.
-It must independently prove all bound processes, resource creators, workload writers and in-flight service operations quiescent and keep them fenced through settlement.
-Stop flags, expired deadlines, missing Pods or successful HTTP client shutdown do not supply this proof.
-The callback must return exactly `True`; the helper records this caller-supplied assertion but performs no process or service measurement of its own.
-A changed actor snapshot during that proof refuses reclamation before any service deletion.
-Once the proof is accepted, reclamation releases both actors, preserves each unresolved marker as `fenced_call`, and invokes the existing ownership-checked resource cleanup.
-The complete handoff and retained invocation identities survive into the final result receipt.
+The complete handoff and retained invocation markers survive into the final result receipt.
 
-Synthetic tests exercise concurrent claims, stop/release races, lost acknowledgements, partial preparation, conservative failure handling, reclamation refusal and receipt preservation.
+Synthetic tests exercise concurrent claims, stop/release races, lost acknowledgements, partial preparation, conservative failure handling and receipt preservation.
 The deployed trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran through these actors and this cleanup; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the outcome.
 
 ## Shared settlement integration
@@ -648,17 +633,17 @@ Otherwise it keeps its authority while it waits, serving cohort requests on each
 A stop that lands while a requested cohort is still being published refuses its next batch, which is such a failure and withholds success; a stop that lands before the runner has recorded a requested cohort's start, including one between its poll and that record, only closes serving, so the cohort stays unpublished without a failure, and the run's verdict is the supervisor's.
 Release closes shared admission, so the supervisor collects no further output after it.
 There is no circular wait with the supervisor's cleanup: that cleanup records the shared stop before it waits for the runner's release, and the runner releases on the next poll that sees the stop.
-A supervisor that never stops and whose Job ends also releases the runner, whose settlement then finds the Pub/Sub resources undeleted and keeps the lock, because only a supervisor deletes them.
+A supervisor whose Job ends before it cleaned also releases the runner, whose settlement then finds the Pub/Sub resources undeleted and keeps the lock, because only a supervisor deletes them.
 It retries an unsuccessful release during subsequent settlement polls and once after the wait.
 `pubsub-release-blocked` records each changed failure cause; a release failure latches local stop and prevents that runner's settlement from recording success even if a later acknowledgement succeeds.
 No retry repeats publication or reclaims an unresolved invocation.
 Failure to persist stop or evidence still requires the independent stop path described above.
 
 Common cleanup first stops admission and removes the owned Flink workload while the Operator is running.
-It then releases the supervisor, waits for all bound releases and an exactly-`True` external barrier, and rechecks the barrier inside resource cleanup before deletion; a replacement reclaims instead, as below.
+It then releases the supervisor, waits for all bound releases and an exactly-`True` external barrier, and rechecks the barrier inside resource cleanup before deletion.
 Only recorded service cleanup permits checkpoint/state deletion, Operator shutdown and shared completion.
 While service cleanup is unfinished, an unresolved call, missing supervisor attachment or failed service deletion keeps common cleanup from deleting temporary state or stopping the Operator.
-A replacement that finds another supervisor's binding reclaims through `reclaim()`, with `Cleanup.reclamation_proof` as its proof: the runner released, the former supervisor Pod ended or gone, and the namespace barrier passed; common cleanup never takes over an actor otherwise.
+Common cleanup never takes over another process's actor.
 
 Direct `Records.set_phase(CLEANED)`, `Records.settled()` and `verify_idle()` now enforce the same Pub/Sub clean-state gate as final receipt creation.
 Records without Pub/Sub state retain their prior behavior.
@@ -735,56 +720,48 @@ The [offline recomputation](#offline-recomputation) uses the same port over the 
 
 ### Internal approval contract
 
-`Approval.from_dict()` accepts version 5 with `scenario: pubsub-recovery` for internal composition tests and later delivery integration.
-Its `pubsub_trial` uses the [offline proposal schema](#offline-trial-proposal), version 5, from which the input plan derives the trial's input domain.
-The approval pins the run/nonce, source and runtime hashes, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
+[Dispatch](#approval-dispatch) builds a `pubsub-recovery` approval and validates it once, before it takes the lock.
+Its `pubsub_trial` is the reviewed trial file's, in the [offline proposal schema](#offline-trial-proposal), version 5, from which the input plan derives the trial's input domain.
+The approval pins the run/nonce, the rig commit, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
 It requires an integral one-hour window with fifteen minutes reserved for cleanup.
-These schema checks do not authenticate a caller, verify live provenance or establish a recovery verdict.
+Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
+These checks do not authenticate a caller, verify live provenance or establish a recovery verdict.
 
-The shared policy permits seven Pods and no PVCs: four equal Flink shapes in `tier3-pubsub` and three control shapes in `tier3-system`.
+Admission's temporary quotas admit four equal Flink shapes in `tier3-pubsub` and three control shapes in `tier3-system`, and no PVCs.
 The fourth application slot covers a replacement while its predecessor terminates; the third control slot covers an Operator replacement.
-The policy fixes state ceilings at 1 GiB and 10,000 objects, with allowances of 100 MiB each for shared logs and evidence; message evidence has no separate cap, and its size follows from the input domain and the exercise's pulls.
-Shared cleanup checks the Pod and state limits and restores the recorded idle quotas.
-Complete log/evidence accounting in the runnable path remains follow-up work.
-Existing scenarios retain their own policies and namespace inventories.
+The rig counts neither Pods nor state bytes beside those quotas; cleanup lists at most 10,000 state objects and restores the recorded idle quotas.
+Message evidence has no separate cap; its size follows from the input domain and the exercise's pulls.
 
-For a version 5 approval, `Approval.pubsub_plan` derives service names and grants from its identity, and `PubSubLifecycle` validates that approval before construction.
-Earlier internal helper fixtures without version 5 retain their caller-supplied contract; they are not serialized Pub/Sub approvals.
-Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, compares all receipt fields on retry except the refreshed plans' observation time (`plans.at`), and derives success only from the exercise's `usable` [verdict](#verdict).
-The original receipt is retained; the current plans must still prove the same nonce, all three foundation roots and an empty result.
-Earlier internal fixtures without version 5 retain the strict full-receipt comparison.
+`Approval.pubsub_plan` and `PubSubLifecycle` derive service names and grants from the approval's identity.
+Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, and derives success only from the exercise's `usable` [verdict](#verdict).
+A finalization retry keeps the original receipt; the current plans must still prove the same nonce, all three foundation roots and an empty result.
 
 The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch.
-Version 5 is admitted by the runner and joined by the supervisor, as [admission](#admission-and-effective-access) describes, the supervisor runs the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.
+The runner admits the trial and the supervisor joins it, as [admission](#admission-and-effective-access) describes, the supervisor runs the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.
 
 ## Approval dispatch
 
-The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery`, builds its version 5 approval and runs the trial.
-The scenario takes four inputs beyond the common ones.
+The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery`, builds its approval and runs the trial.
+The scenario takes two inputs beyond the common ones.
 
 | Input | Contract |
 | --- | --- |
 | `pubsub_trial` | A reviewed trial file under [`kubernetes/lifecycle/pubsub-trials/`](../../lifecycle/README.md#reviewed-pubsub-trials), named without `.toml`; an empty name is refused |
 | `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
-| `expires_at` | 60 to 70 minutes after admission; the latest the run may end |
-| `approval` | `APPROVE ONE PUBSUB TRIAL: 7 PODS, 60 MINUTES, R RECORDS PER SUBSCRIPTION`, where `R` is the trial file's `records_per_subscription` |
 
-A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the approved commit.
+A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the dispatched commit, which the workflow checks out fresh.
 The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
-The phrase carries the trial's record count because it can differ between trials, while the Pod count and the window are the shared policy's; a phrase typed for one record count therefore does not approve a trial with another.
+The owner approves the trial's estimate before dispatching it; dispatching is the approval.
 The four reviewed trials are the campaign [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs; the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
 
-The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, as the version 5 approval requires.
-The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
-Admission follows the dispatch by the job's setup, about 40 seconds in the smoke runs measured on 2026-09-25, and by any wait behind another run in the workflow's concurrency group, so an expiry typed exactly 60 minutes after dispatching is refused; about 65 minutes leaves room for the setup, but not for a queue longer than about five minutes.
+The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, so queueing before the job starts costs the run none of its startup budget.
 
-The checks that need neither the cluster nor the lock run first: the trial file and digest, the phrase, the exact approved rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID, an existing run's evidence and the window.
-Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and verifies the proposal, takes live image receipts, assembles and validates the version 5 approval and prepares the bundle with the approval embedded.
+The checks that need neither the cluster nor the lock run first: the trial file and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
+Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and verifies the proposal, takes live image receipts, assembles and validates the approval and binds the rendered delivery with the approval embedded.
 The proposal names its second manifest the recovery application; the approval pins that manifest as `upgrade_application_sha256`, the name every service scenario shares, and takes the supervisor image from the proposal's `images`, as a BigQuery approval does.
-The bundle re-renders from the approval alone and refuses a different application, recovery manifest, supervisor image, source or delivery digest, and an approved checkout with local changes or untracked CUE or TOML files under `kubernetes/`, so a trial file the approved commit lacks is refused too.
 
 Dispatch also confirms that it may create Pods in `tier3-pubsub`, which admission's access probe needs.
 It then acquires the environment lock, rechecks the idle foundation, stores the approval, both manifests and the image receipts as the run's documents, writes the control record and builds the runner through `pubsub_actors.runner()`, as a BigQuery dispatch does.
-The runner starts the run with the bundle's ConfigMap, supervisor Job, application and access probe, and settles it; a runner that cannot be built leaves the lock to a plain runner's settlement.
+The runner starts the run with the bound ConfigMap, supervisor Job, application and access probe, and settles it; a runner that cannot be built leaves the lock to a plain runner's settlement.
 The workflow job keeps the default 85-minute limit, because the window is one hour, as for smoke.
 Enabling the scenario does not approve a run.

@@ -21,7 +21,7 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// Offline inputs only; serialized approval still refuses Pub/Sub execution.
+// The reviewed trial's inputs, which dispatch and the offline renderer supply.
 pubsubTrial:      *"jm-replacement" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(pubsub_trial)
 pubsubRecords:    *1000 | (int & >=2 & <=10000)                                       @tag(pubsub_records,type=int)
 pubsubEntryPoint: *"datastream" | "table"                                             @tag(pubsub_entry_point)

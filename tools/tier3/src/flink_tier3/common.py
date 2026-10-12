@@ -43,24 +43,8 @@ class ReadCeilingExceeded(Failure):
     """A Kubernetes response larger than its reader allows."""
 
 
-class Superseded(RuntimeError):
-    """Another supervisor Pod holds this run, so this one must not act on it.
-
-    Deliberately not a `Failure`. Cleanup records a failed control write and
-    carries on deleting, which is right for a write that lost to storage and
-    wrong for one that lost to the holder: the workload and the service
-    resources it would delete are the holder's. Nothing that handles a `Failure` handles this.
-    """
-
-
 def job_finished(job):
-    """Whether a Kubernetes Job is over, rather than between Pod attempts.
-
-    A disrupted attempt with replacements left is counted in
-    ``status.failed`` while the controller starts another Pod, so that
-    counter is not an end. Only a success or a ``Complete``/``Failed``
-    condition is.
-    """
+    """Whether a Kubernetes Job is over: a success or a terminal condition."""
     status = job.get("status", {})
     return bool(
         status.get("succeeded", 0)

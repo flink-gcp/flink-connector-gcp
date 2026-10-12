@@ -23,21 +23,19 @@ from decimal import Decimal
 from enum import Enum
 from typing import ClassVar
 
-from .common import Failure, json_bytes, quantity, timestamp
+from .common import Failure, quantity, timestamp
 from .policy import (
     BIGQUERY,
-    BIGQUERY_CEILINGS,
-    CEILINGS,
+    CLEANUP_SECONDS,
     COST_RATES,
     GAR,
     POD_RESOURCES,
     PUBSUB,
-    PUBSUB_CEILINGS,
-    RECOVERY,
     RUN_ID,
     SHA,
     SMOKE,
     SYSTEM,
+    WINDOWS,
 )
 
 
@@ -72,7 +70,19 @@ def _hourly(shapes):
     )
 
 
-def validate_approval(approval, now=None):
+# The approval schema every scenario writes. Nothing gates on it: recovery
+# reads a held run's approval as written.
+APPROVAL_VERSION = 6
+SCENARIOS = tuple(WINDOWS)
+
+
+def validate_approval(approval):
+    """Check the approval dispatch assembled, once, before it takes the lock.
+
+    Nothing checks the schema again: admission checks only the window
+    (`check_window`), and recovery reads a held run's approval as written, so
+    a later policy change cannot strand that run's recovery.
+    """
     required = {
         "version",
         "run_id",
@@ -81,14 +91,11 @@ def validate_approval(approval, now=None):
         "started_at",
         "expires_at",
         "cleanup_at",
-        "ceilings",
         "namespaces",
         "images",
         "operator_uid",
         "baseline_uids",
         "lock_owner",
-        "runtime_sha256",
-        "delivery_sha256",
         "application_sha256",
     }
     if not isinstance(approval, dict) or not required <= approval.keys():
@@ -103,66 +110,32 @@ def validate_approval(approval, now=None):
     if approval["operator_uid"] not in approval["baseline_uids"]:
         raise Failure("Operator must belong to the observed foundation")
     scenario = approval.get("scenario", "smoke")
-    if scenario not in (
-        "smoke",
-        "generic-recovery",
-        "bigquery-recovery",
-        "pubsub-recovery",
-    ):
+    if scenario not in SCENARIOS:
         raise Failure("Unknown approved scenario")
     if not approval.keys() <= {item.name for item in fields(Approval)}:
         raise Failure("Approval carries fields outside its schema")
-    recovery = scenario == "generic-recovery"
-    bigquery = scenario == "bigquery-recovery"
-    pubsub = scenario == "pubsub-recovery"
-    versions = {
-        "smoke": 1,
-        "generic-recovery": 2,
-        "bigquery-recovery": 5,
-        "pubsub-recovery": 5,
-    }
-    if approval.get("version") != versions[scenario] or not RUN_ID.fullmatch(
-        approval.get("run_id", "")
-    ):
+    if not RUN_ID.fullmatch(approval.get("run_id", "")):
         raise Failure("Invalid run approval identity")
-    if recovery:
-        if approval.get("recovery_policy") != RECOVERY or not re.fullmatch(
-            r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
-        ):
-            raise Failure("Recovery approval must pin its policy and upgrade manifest")
-    elif bigquery or pubsub:
-        if approval.get("recovery_policy") or not re.fullmatch(
-            r"[0-9a-f]{64}", approval.get("upgrade_application_sha256", "")
-        ):
-            raise Failure("Service approval must pin its own upgrade manifest")
-    elif approval.get("recovery_policy") or approval.get("upgrade_application_sha256"):
-        raise Failure("Ordinary smoke approval cannot authorize recovery operations")
+    service = scenario != "smoke"
+    upgrade = approval.get("upgrade_application_sha256", "")
+    if service and not re.fullmatch(r"[0-9a-f]{64}", upgrade):
+        raise Failure("Service approval must pin its own upgrade manifest")
+    if not service and upgrade:
+        raise Failure("Smoke approval cannot authorize recovery operations")
     if not SHA.fullmatch(approval.get("sha", "")) or not re.fullmatch(
         r"[0-9a-f]{32}", approval.get("nonce", "")
     ):
         raise Failure("Approval must pin a revision and nonce")
-    if not bigquery and approval.get("bigquery_trial"):
-        raise Failure("Only BigQuery approvals may carry a BigQuery trial")
-    if not pubsub and approval.get("pubsub_trial"):
-        raise Failure("Only Pub/Sub approvals may carry a Pub/Sub trial")
-    if not (bigquery or pubsub) and approval.get("ceilings") != CEILINGS:
-        raise Failure("Approval does not match the fixed resource ceilings")
     start, end = timestamp(approval["started_at"]), timestamp(approval["expires_at"])
-    if bigquery:
-        _validate_bigquery(approval, start, end)
-    elif pubsub:
-        _validate_pubsub(approval, start, end)
-    elif (
-        not 900 < end - start <= 3600 or timestamp(approval["cleanup_at"]) != end - 900
+    if (
+        start != int(start)
+        or end - start != WINDOWS[scenario]
+        or timestamp(approval["cleanup_at"]) != end - CLEANUP_SECONDS
     ):
-        raise Failure(
-            "Approval must reserve 15 minutes of the one-hour window for cleanup"
-        )
-    if now is not None and (
-        now < start - 30 or now >= timestamp(approval["cleanup_at"])
-    ):
-        raise Failure("Approval is outside its admission window")
-    application = PUBSUB if pubsub else BIGQUERY if bigquery else SMOKE
+        raise Failure("Approval window differs from its scenario's policy")
+    application = {"pubsub-recovery": PUBSUB, "bigquery-recovery": BIGQUERY}.get(
+        scenario, SMOKE
+    )
     if set(approval["namespaces"]) != {application, SYSTEM}:
         raise Failure("Approval must name its application and control namespaces")
     for saved in approval["namespaces"].values():
@@ -176,10 +149,8 @@ def validate_approval(approval, now=None):
                 "Approval requires observed zero Pod/PVC quotas and namespace UIDs"
             )
     roles = {"operator": "operator", "supervisor": "lifecycle-tools"}
-    if pubsub:
-        roles["application"] = "pubsub-recovery"
-    elif bigquery:
-        roles["application"] = "bigquery-recovery"
+    if service:
+        roles["application"] = scenario
     else:
         roles["smoke"] = "smoke"
     if set(approval["images"]) != set(roles):
@@ -189,61 +160,16 @@ def validate_approval(approval, now=None):
             re.escape(GAR + package) + r"@sha256:[0-9a-f]{64}", approval["images"][key]
         ):
             raise Failure("Every runtime image must be an approved GAR digest")
-    pinned = ("runtime_sha256", "delivery_sha256", "application_sha256")
-    if any(
-        not re.fullmatch(r"[0-9a-f]{64}", approval.get(name, "")) for name in pinned
+    if not re.fullmatch(r"[0-9a-f]{64}", approval.get("application_sha256", "")):
+        raise Failure("Approval must pin its application bytes")
+
+
+def check_window(approval, now):
+    """Refuse an admission step outside the approval's admission window."""
+    if now < timestamp(approval.started_at) - 30 or now >= timestamp(
+        approval.cleanup_at
     ):
-        raise Failure("Approval must pin its runtime, delivery and application bytes")
-
-
-def _validate_pubsub(approval, start, end):
-    # This schema binds the trial's input domain; it neither estimates cost nor
-    # authorizes execution, which the dispatch's typed phrase does.
-    from .pubsub.plan import WINDOW_SECONDS, input_plan
-    from .pubsub.resources import ResourcePlan
-
-    if type(approval["version"]) is not int:
-        raise Failure("Pub/Sub approval version must be an integer")
-    ResourcePlan(approval["run_id"], approval["nonce"])
-    trial = approval.get("pubsub_trial")
-    # A stored approval may predate trial version 5; rendering, dispatch and
-    # both actors' manifest checks still require it.
-    input_plan(approval["run_id"], trial, legacy=True)
-    expected = PUBSUB_CEILINGS
-    if json_bytes(approval["ceilings"]) != json_bytes(expected):
-        raise Failure("Pub/Sub approval differs from its resource ceilings")
-    if (
-        start != int(start)
-        or end - start != WINDOW_SECONDS
-        or timestamp(approval["cleanup_at"]) != end - expected["cleanup_seconds"]
-    ):
-        raise Failure("Pub/Sub approval requires one hour with 15 minutes for cleanup")
-
-
-def _validate_bigquery(approval, start, end):
-    # Import at validation time: the offline proposal uses this module's
-    # resource cost calculation, and both paths must keep the same trial schema.
-    from .bigquery.plan import WINDOW_SECONDS, validate_trial
-
-    trial = approval.get("bigquery_trial")
-    if type(approval["version"]) is not int:
-        raise Failure("BigQuery approval version must be an integer")
-    try:
-        validate_trial(trial)
-    except (ValueError, TypeError) as error:
-        raise Failure("Invalid approved BigQuery trial: " + str(error)) from error
-    expected = BIGQUERY_CEILINGS
-    if json_bytes(approval["ceilings"]) != json_bytes(expected):
-        raise Failure("BigQuery approval differs from its resource ceilings")
-    if (
-        start != int(start)
-        or end != int(end)
-        or end - start != WINDOW_SECONDS
-        or timestamp(approval["cleanup_at"]) != end - expected["cleanup_seconds"]
-    ):
-        raise Failure(
-            "BigQuery approval requires 90 minutes with 15 minutes for cleanup"
-        )
+        raise Failure("Approval is outside its admission window")
 
 
 @dataclass(frozen=True)
@@ -265,7 +191,9 @@ class Schedule:
 
     @classmethod
     def for_window(cls, started, end):
-        return cls(started, end - 900, end, end - 180, end, end - 300, end - 180)
+        return cls(
+            started, end - CLEANUP_SECONDS, end, end - 180, end, end - 300, end - 180
+        )
 
     @classmethod
     def from_approval(cls, approval):
@@ -312,26 +240,26 @@ class Approval:
     started_at: str
     expires_at: str
     cleanup_at: str
-    ceilings: dict
     namespaces: dict
     images: dict
     operator_uid: str
     baseline_uids: list
     lock_owner: dict
-    runtime_sha256: str
-    delivery_sha256: str
     application_sha256: str
     actor: str = ""
     scenario: str = "smoke"
-    recovery_policy: dict = field(default_factory=dict)
     upgrade_application_sha256: str = ""
     bigquery_trial: dict = field(default_factory=dict)
     pubsub_trial: dict = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, value, now=None):
-        validate_approval(value, now)
-        return cls(**copy.deepcopy(value))
+    def from_dict(cls, value):
+        """Read an approval as written, without checking it against policy."""
+        try:
+            kept = {k: v for k, v in value.items() if k not in RETIRED_APPROVAL_FIELDS}
+            return cls(**copy.deepcopy(kept))
+        except (TypeError, AttributeError) as error:
+            raise Failure("Invalid run approval") from error
 
     @property
     def schedule(self):
@@ -347,28 +275,23 @@ class Approval:
 
     @property
     def bigquery_plan(self):
-        """Derive the exact service plan from validated trial inputs and expiry."""
+        """Derive the exact service plan from the trial inputs and expiry."""
         from .bigquery.plan import resource_plan
 
         if self.scenario != "bigquery-recovery":
             raise Failure("Approval does not describe a BigQuery trial")
-        validate_approval(self.to_dict())
         return resource_plan(
             self.run_id, self.nonce, self.expires_at, self.bigquery_trial
         )
 
     @property
     def pubsub_plan(self):
-        """Derive service identities from a validated internal Pub/Sub approval."""
+        """Derive service identities from a Pub/Sub approval."""
         from .pubsub.resources import ResourcePlan
 
-        self._validate_pubsub()
-        return ResourcePlan(self.run_id, self.nonce)
-
-    def _validate_pubsub(self):
         if self.scenario != "pubsub-recovery":
             raise Failure("Approval does not describe a Pub/Sub trial")
-        validate_approval(self.to_dict())
+        return ResourcePlan(self.run_id, self.nonce)
 
     def to_dict(self):
         value = asdict(self)
@@ -396,27 +319,10 @@ TRANSITIONS = {
 }
 
 
-def open_for_replacement(record):
-    """Whether a replacement supervisor Pod may take this run over.
-
-    The measured preemption lands in a Pod's first seconds, and the runner can
-    reach `RUNNING` while the Pod it took is still terminating, so the window
-    runs to the holder's first act of supervision rather than to admission.
-    After that the run's recovery stages and polling state belong to
-    the holder, and none of them can be resumed by another process. A run
-    already stopping has nothing for a replacement to carry on.
-    """
-    return (
-        record.phase in (Phase.APPROVED, Phase.READY, Phase.RUNNING)
-        and not record.stop_requested
-        and not record.evidence_failed
-        and not record.supervision_started
-    )
-
-
-# Fields the removed Cloud Tasks session added to every control record (#1723).
-# A record written before then still carries them, empty for any other scenario,
-# and recovery of a run that spans the change must be able to read it.
+# Fields removed from the control record. The Cloud Tasks session (#1723) added
+# the first seven to every record, empty for any other scenario. A record written
+# before a removal still carries them, and recovery of a run that spans the
+# change must be able to read it.
 RETIRED_RECORD_FIELDS = frozenset(
     {
         "queue_intent",
@@ -426,7 +332,16 @@ RETIRED_RECORD_FIELDS = frozenset(
         "operations",
         "exports",
         "evidence_bytes",
+        # The supervisor claim a replacement Pod could take over (#1725).
+        "supervisor_pod",
+        "supervisor_claimed_at",
+        "supervision_started",
     }
+)
+
+# Fields an approval written before #1725 carries and nothing reads now.
+RETIRED_APPROVAL_FIELDS = frozenset(
+    {"ceilings", "runtime_sha256", "delivery_sha256", "recovery_policy"}
 )
 
 
@@ -448,13 +363,12 @@ class RunRecord:
     success: bool = False
     state_clean: bool = False
     evidence_failed: bool = False
+    # The first evidence failure's operation and cause, when one occurred.
+    evidence_failure: dict | None = None
     idle: bool = False
     reason: str = ""
     final_log_attempted: bool = False
     recovery: dict | None = None
-    supervisor_pod: str | None = None
-    supervisor_claimed_at: str | None = None
-    supervision_started: bool = False
     bigquery: dict | None = None
     pubsub: dict | None = None
 
@@ -468,6 +382,14 @@ class RunRecord:
 
     def to_dict(self):
         return {**asdict(self), "phase": self.phase.value}
+
+    def fail_evidence(self, failure):
+        """Set the evidence flag with its cause; the first recorded cause stays."""
+        if failure is None:
+            return
+        self.evidence_failed = True
+        if self.evidence_failure is None:
+            self.evidence_failure = copy.deepcopy(failure)
 
     def set_phase(self, phase):
         if phase != self.phase and phase not in TRANSITIONS[self.phase]:

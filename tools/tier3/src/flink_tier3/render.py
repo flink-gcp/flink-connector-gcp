@@ -21,6 +21,7 @@ from pathlib import Path
 from .bigquery.plan import TRIALS, prepare
 from .bigquery.plan import trial as bigquery_trial
 from .common import Failure
+from .model import SCENARIOS
 from .pubsub import plan as pubsub_plan
 from .workflow import render
 
@@ -33,12 +34,7 @@ def main(argv=None):
     parser.add_argument("--active-seconds", type=int, required=True)
     parser.add_argument(
         "--scenario",
-        choices=(
-            "smoke",
-            "generic-recovery",
-            "bigquery-recovery",
-            "pubsub-recovery",
-        ),
+        choices=SCENARIOS,
         default="smoke",
     )
     parser.add_argument(

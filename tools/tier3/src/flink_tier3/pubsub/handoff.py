@@ -19,7 +19,7 @@ import math
 import re
 import uuid
 
-from ..common import Failure, json_bytes
+from ..common import Failure
 from ..model import Phase
 from ..policy import HTTP_TIMEOUT
 from .messages import COHORTS, MAX_BATCH, PUBLISH_BATCH, Messages, cohort_ranges
@@ -60,10 +60,10 @@ class PubSubHandoff:
     """Internal process ownership; tokens do not authenticate or fence processes.
 
     Each original process keeps its own token; never reconstruct another process
-    from a recorded token or call the underlying helpers directly. A replacement
-    supervisor can reclaim only through an external quiescence proof. Neither
-    stop, timeout nor Pod disappearance supplies that proof. Every service
-    request still passes the resource controller's caller-owned deadline guard.
+    from a recorded token or call the underlying helpers directly. A call whose
+    outcome is unknown keeps its marker, and with it the environment lock, for
+    manual investigation. Every service request still passes the resource controller's
+    caller-owned deadline guard.
 
     A publication or a pull updates the control record twice on its normal
     path: its begin marker, which also checks that message traffic is still
@@ -89,12 +89,7 @@ class PubSubHandoff:
 
     @staticmethod
     def _new_actor(token):
-        return {
-            "token": token,
-            "released": False,
-            "inflight": None,
-            "fenced_call": None,
-        }
+        return {"token": token, "released": False, "inflight": None}
 
     def _role(self, role=None):
         if self.env.actor not in ("runner", "supervisor") or (
@@ -216,7 +211,7 @@ class PubSubHandoff:
         except (Failure, ValueError, OSError):
             # Even a transport timeout can leave service work in flight, so
             # the marker stays unless the session saw every write answered;
-            # only an external barrier can reclaim an unsettled call.
+            # an unsettled call keeps the lock for manual investigation.
             self.env.stopping = True
             self.stop()
             if self.settled is not None and self.settled() is True:
@@ -233,7 +228,7 @@ class PubSubHandoff:
 
         A begin write can land with its response lost. Nothing was sent, so
         the marker names no request in flight, and keeping it would hold the
-        lock for a reclamation proof the call does not need. A refusal
+        lock for an investigation the call does not need. A refusal
         recorded nothing, and this read finds no marker of its own.
         """
         try:
@@ -275,8 +270,8 @@ class PubSubHandoff:
             def write(self, name, value, generation):
                 try:
                     return handoff.env.store.write(name, value, generation=generation)
-                except (Failure, ValueError, OSError):
-                    handoff._evidence_failed()
+                except (Failure, ValueError, OSError) as error:
+                    handoff._evidence_failed(error)
                     raise
 
         return Messages(
@@ -288,19 +283,20 @@ class PubSubHandoff:
             before_operation=self.controller.before_operation,
         )
 
-    def _evidence_failed(self):
-        self.env.evidence_failed = True
+    def _evidence_failed(self, error):
+        self.env.evidence_lost("pubsub-message-evidence", error)
+        failure = self.env.evidence_failure
 
         def failed(record):
-            record.evidence_failed = True
+            record.fail_evidence(failure)
 
         try:
             self.controller._change(failed)
-        except (Failure, ValueError, OSError) as error:
+        except (Failure, ValueError, OSError) as unrecorded:
             raise Failure(
                 "Pub/Sub evidence failure could not be recorded; "
                 "stop actors independently before restarting"
-            ) from error
+            ) from unrecorded
 
     def prepare(self):
         self._role("runner")
@@ -503,54 +499,9 @@ class PubSubHandoff:
         record, _ = self.controller._read()
         return copy.deepcopy(self._actors(record))
 
-    def supervisor_binding(self, actors=None):
-        """Who holds the supervisor binding: nobody, this process, or another."""
-        bound = (actors or self.actors())["supervisor"]
-        if bound is None:
-            return "none"
-        return "mine" if bound["token"] == self.token else "other"
-
     def cleanup(self, quiesce):
         """Require cooperative actor releases and the external workload barrier."""
         self._role("supervisor")
         if not callable(quiesce):
             raise Failure("Pub/Sub cleanup requires an external quiescence barrier")
         return self.controller.cleanup(quiesce)
-
-    def reclaim(self, quiesce):
-        """Reclaim abandoned actors only after an external proof for their snapshot.
-
-        The callback receives a copy of the actor binding and invocation markers.
-        It must prove every bound process, creator, workload writer and in-flight
-        service operation quiescent, and keep them fenced through settlement.
-        A True return is caller-supplied proof, not a measurement by this helper.
-        """
-        self._role("supervisor")
-        if not callable(quiesce):
-            raise Failure("Pub/Sub reclamation requires an external quiescence barrier")
-
-        def barrier():
-            _, state = self.controller._read()
-            snapshot = copy.deepcopy(state["handoff"])
-            if quiesce(copy.deepcopy(snapshot)) is not True:
-                raise Failure("Pub/Sub actor quiescence is unproven")
-
-            def fence(record):
-                value = self.controller._state(record)["handoff"]
-                if not record.stop_requested or json_bytes(value) != json_bytes(
-                    snapshot
-                ):
-                    raise Failure(
-                        "Pub/Sub actor control changed during quiescence proof"
-                    )
-                for actor in value["actors"].values():
-                    if actor is not None:
-                        if actor["inflight"] is not None:
-                            actor["fenced_call"] = actor["inflight"]
-                        actor["inflight"] = None
-                        actor["released"] = True
-
-            self.controller._change(fence)
-            return True
-
-        return self.controller.cleanup(barrier)

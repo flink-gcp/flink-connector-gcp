@@ -20,22 +20,22 @@ import re
 from dataclasses import asdict
 from decimal import Decimal
 
-from ..bundle import delivery_digest, source_digest
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc
 from ..model import Schedule, _hourly
 from ..policy import (
-    BIGQUERY_CEILINGS,
     BIGQUERY_OBSERVATIONS,
+    CLEANUP_SECONDS,
     GAR,
     POD_RESOURCES,
     RUN_ID,
     SHA,
+    WINDOWS,
 )
 from ..workflow import render
 from .oracle import ROW_BYTES, Trial
 from .resources import ResourcePlan
 
-WINDOW_SECONDS = BIGQUERY_CEILINGS["seconds"]
+WINDOW_SECONDS = WINDOWS["bigquery-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 QUERY_SLOTS = 12
 BYTES_PER_QUERY = 4 * 1024**3
@@ -219,10 +219,8 @@ def prepare(
         "version": 1,
         "approved": False,
         "revision": revision,
-        "runtime_sha256": source_digest(),
-        "delivery_sha256": delivery_digest(),
         "started_at": utc(start),
-        "cleanup_at": utc(end - BIGQUERY_CEILINGS["cleanup_seconds"]),
+        "cleanup_at": utc(end - CLEANUP_SECONDS),
         "expires_at": utc(end),
         "resources": asdict(resources),
         "application_sha256": digest(initial),
@@ -236,9 +234,7 @@ def prepare(
         },
         "limits": {
             "seconds": WINDOW_SECONDS,
-            "cleanup_seconds": BIGQUERY_CEILINGS["cleanup_seconds"],
-            "pods": BIGQUERY_CEILINGS["pods"],
-            "pvcs": BIGQUERY_CEILINGS["pvcs"],
+            "cleanup_seconds": CLEANUP_SECONDS,
             "input_bytes": records * ROW_BYTES[identity.mode],
             "query_bytes": QUERY_SLOTS * BYTES_PER_QUERY,
         },

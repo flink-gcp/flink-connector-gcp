@@ -27,18 +27,15 @@ from .bundle import delivered_sources
 ROOTS = ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
 
 
-def github_run(run_id, attempt=None):
+def github_run(run_id):
     if not str(run_id).isdigit():
         raise rt.Failure("Invalid GitHub execution ID")
     path = f"repos/{rt.REPOSITORY}/actions/runs/{run_id}"
-    if attempt is not None:
-        if not str(attempt).isdigit() or int(attempt) < 1:
-            raise rt.Failure("Invalid GitHub execution attempt")
-        path += f"/attempts/{attempt}"
     return json.loads(rt.command(["gh", "api", path]))
 
 
-def verify_source(owner, completed=False):
+def verify_source(owner):
+    """The lock holder about to acquire is this repository's own execution."""
     actual = github_run(owner["github_run_id"])
     allowed = {
         "run": (".github/workflows/tier3-run.yaml", "workflow_dispatch"),
@@ -51,17 +48,11 @@ def verify_source(owner, completed=False):
         or actual["path"] != path
         or actual["event"] != event
         or actual["head_sha"] != owner["sha"]
-        or int(actual["run_attempt"]) < int(owner["attempt"])
-        or (not completed and int(actual["run_attempt"]) != int(owner["attempt"]))
+        or int(actual["run_attempt"]) != int(owner["attempt"])
     ):
         raise rt.Failure("Lock holder does not match its originating GitHub execution")
     if owner["kind"] != "plan" and actual["head_branch"] != "main":
         raise rt.Failure("Workload/apply execution must originate on main")
-    if completed and actual["status"] != "completed":
-        raise rt.Failure(
-            "Originating execution is still active; recovery cannot race it"
-        )
-    return actual
 
 
 def execution(kind, nonce):
@@ -184,7 +175,7 @@ def snapshot(kube, application=rt.SMOKE):
     if image != expected_image:
         raise rt.Failure("Installed Operator image differs from the reviewed pin")
     rt.verify_pod(template, "operator", expected_image)
-    inventory = kube.inventory(application)
+    inventory = kube.inventory()
     for item in inventory:
         if item["kind"] == "ReplicaSet" and (
             item.get("spec", {}).get("replicas", 0) != 0

@@ -42,55 +42,25 @@ cpu = "0.10"
 memory = "0.02"
 ephemeral-storage = "0.001"
 
-[ceilings]
-seconds = 3600
-cleanup_seconds = 900
-# At most five Pods observed at once: the four that run, and one replacement
-# slot. This count is flat over the inventory, less the supervisor attempts
-# the Job retains once terminal; the per-namespace quota, not this number,
-# decides where that slot may be spent.
-pods = 5
-pvcs = 0
-state_bytes = 1073741824
-state_objects = 10000
-log_bytes = 104857600
-evidence_bytes = 104857600
+# Each scenario's run, from admission to the end of its cleanup reserve. The
+# ResourceQuotas, not a count here, bound what a run may hold.
+[windows]
+smoke = 3600
+bigquery-recovery = 5400
+pubsub-recovery = 3600
+
+# The last seconds of every window, reserved for cleanup.
+[cleanup]
+seconds = 900
+
+# The most state objects one listing returns before cleanup refuses.
+[state]
+objects = 10000
 
 [pod_resources.smoke]
 cpu = "1"
 memory = "2Gi"
 ephemeral-storage = "1Gi"
-
-# One Operator, supervisor, JobManager and two TaskManagers.
-[bigquery_ceilings]
-seconds = 5400
-cleanup_seconds = 900
-# Three application Pods and two control Pods run, and `tier3-system` admits
-# one replacement while the Pod it replaces terminates.
-pods = 6
-pvcs = 0
-state_bytes = 1073741824
-state_objects = 10000
-log_bytes = 104857600
-evidence_bytes = 104857600
-# The four allowances below partition `evidence_bytes`, so what the run may
-# retain is visible as a sum rather than as literals spread across modules.
-receipt_bytes_supervisor = 83886080
-receipt_bytes_runner = 8388608
-query_bytes = 10485760
-artifact_bytes = 2097152
-
-# Pub/Sub internal approval policy: three running Flink Pods plus one
-# terminating replacement; two control Pods plus an Operator replacement.
-[pubsub_ceilings]
-seconds = 3600
-cleanup_seconds = 900
-pods = 7
-pvcs = 0
-state_bytes = 1073741824
-state_objects = 10000
-log_bytes = 104857600
-evidence_bytes = 104857600
 
 [pod_resources.operator]
 cpu = "1"
@@ -105,9 +75,3 @@ cpu = "1"
 memory = "2Gi"
 ephemeral-storage = "128Mi"
 
-[recovery]
-records = 12000
-records_per_second = 10
-repetitions = 1
-startup_seconds = 600
-recovery_seconds = 300

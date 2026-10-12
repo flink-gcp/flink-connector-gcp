@@ -25,7 +25,7 @@ import urllib3
 from kubernetes import client as kubernetes_client
 
 from .common import ApiError, Failure, ReadCeilingExceeded, TransportError, encoded
-from .policy import HTTP_TIMEOUT, MIB, NAMESPACES, SMOKE, inventory_namespaces
+from .policy import HTTP_TIMEOUT, MIB, NAMESPACES
 
 COLLECTIONS = {
     "Pod": ("/api/v1", "pods"),
@@ -178,10 +178,10 @@ class Kubernetes:
             if not token:
                 return result
 
-    def inventory(self, application=SMOKE):
+    def inventory(self):
         return [
             item
-            for namespace in inventory_namespaces(application)
+            for namespace in NAMESPACES
             for kind in INVENTORY
             for item in self.items(kind, namespace)
         ]

@@ -12,11 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Identity and delivery of the installed Tier-3 package's source and policy."""
+"""The installed Tier-3 package's source and policy, and the subset delivered to the supervisor."""
 
 import ast
-import hashlib
-import json
 from importlib.resources import files
 from importlib.util import resolve_name
 
@@ -32,7 +30,6 @@ ENTRYPOINTS = ("__main__", "__init__", "cli")
 DISPATCHED = {
     "supervisor": "runtime",
     "bigquery": "bigquery.oracle",
-    "bigquery-bundle": "bigquery.bundle",
     "vm-analyze": "cloudtasks.vmanalyze",
 }
 # The Pod's command is fixed by the manifest. Only its module seeds the walk;
@@ -99,8 +96,8 @@ def _imported(source, module="__init__", modules=None):
 def delivered_sources(directory=None):
     """The modules the supervisor entrypoint can import, and its policy data.
 
-    The set is closed under imports, so walking it from a delivery reproduces
-    exactly the set the runner computed from a complete installation.
+    The set is closed under imports, so a delivery carries every module the
+    supervisor can import, and walking it again finds nothing missing.
     """
     available = package_sources(directory)
     modules = {
@@ -145,23 +142,3 @@ def delivered_sources(directory=None):
     if missing:
         raise Failure("Delivered package is missing " + ", ".join(missing))
     return {name: available[name] for name in sorted(names)}
-
-
-def _digest(files):
-    hashes = {
-        "flink_tier3/" + name: hashlib.sha256(content.encode()).hexdigest()
-        for name, content in files.items()
-    }
-    return hashlib.sha256(
-        json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def source_digest(directory=None):
-    """The complete installed package, which the runner verifies against."""
-    return _digest(package_sources(directory))
-
-
-def delivery_digest(directory=None):
-    """The subset the supervisor mounts, which is all it can verify itself."""
-    return _digest(delivered_sources(directory))

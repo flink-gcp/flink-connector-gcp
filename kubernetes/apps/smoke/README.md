@@ -76,7 +76,7 @@ The common run policy selects AMD64 Spot nodes and adds the run label and expiry
 The main containers request and limit 1 GiB of ephemeral storage; no PVC is used.
 Checkpoints run every 30 seconds, with at most one in flight and two retained checkpoints; Kubernetes HA stores its metadata in GCS.
 The application restart strategy permits three retries with a ten-second delay.
-The separately selected [generic recovery lifecycle](../../lifecycle/README.md#generic-recovery-exercise) renders its own initial/upgrade inputs with 12,000 records at ten per second, leaving time for both planned disruptions inside the same execution window.
+The `generic-recovery` lifecycle scenario that [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran rendered its own initial/upgrade inputs with 12,000 records at ten per second; the scenario was removed after that run, and the `upgrade` phase and `--require-restored` remain for a delivery that needs them.
 The committed ordinary deliveries above retain their 18,000-record input.
 
 The GCP root defines `flink-gcp-tier3-smoke` in `us-central1` as a STANDARD bucket with uniform access and public access prevention.

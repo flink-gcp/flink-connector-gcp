@@ -15,7 +15,6 @@
 """Pub/Sub admission composed end to end over synthetic Kubernetes and Pub/Sub."""
 
 import copy
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -36,8 +35,8 @@ from flink_tier3.supervisor import Supervisor
 from ..bigquery.test_runtime_approval import mount
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, supervisor_pod
+from .test_actors import approval as approval  # noqa: PLC0414
 from .test_actors import prepared as prepared  # noqa: PLC0414
-from .test_bundle import approval as approval  # noqa: PLC0414
 from .test_handoff import Service
 from .test_messages import Response
 from .test_plan import inputs as inputs  # noqa: PLC0414
@@ -113,9 +112,9 @@ def actor(environment, http, token):
 
 @pytest.fixture
 def admitting(prepared, monkeypatch):
-    environment, bundle = prepared
+    environment, rendered = prepared
     kube, events, service = environment.kube, [], Service()
-    application = bundle["application"]
+    application = rendered["application"]
     observer = Environment(
         kube,
         environment.store,
@@ -129,11 +128,12 @@ def admitting(prepared, monkeypatch):
     runner = Runner(environment, pubsub=sender)
     supervisor = Supervisor(
         observer,
-        bundle["recovery_application"],
+        rendered["recovery_application"],
         pubsub=receiver,
         quiesce=barrier(observer),
     )
     probe_log = {"text": PROBE_LOG}
+    supervisor_pods = []
     create = kube.create
 
     def created(manifest, dry_run=False):
@@ -144,7 +144,7 @@ def admitting(prepared, monkeypatch):
             pod = supervisor_pod(
                 (kube, None, environment.approval.to_dict(), None), result
             )
-            observer.records.claim_supervisor(pod["metadata"]["uid"])
+            supervisor_pods.append(pod["metadata"]["uid"])
             observer.records.heartbeat()
         elif manifest["kind"] == "Pod":
             events.append(("probe", "created"))
@@ -179,10 +179,13 @@ def admitting(prepared, monkeypatch):
             participated.append(True)
             supervisor.participate()
             events.append(("supervisor", "participated"))
+            # That process has joined and probed; its supervision continues
+            # from there, as `supervise` does after its one participation.
+            supervisor.participate = lambda: None
 
     monkeypatch.setattr(environment, "sleep", sleep)
     config = obj("ConfigMap", "source", SYSTEM)
-    config["data"] = bundle["delivery"]["config"]["data"]
+    config["data"] = rendered["delivery"]["config"]["data"]
     return SimpleNamespace(
         environment=environment,
         observer=observer,
@@ -193,11 +196,12 @@ def admitting(prepared, monkeypatch):
         service=service,
         events=events,
         probe_log=probe_log,
+        supervisor_pods=supervisor_pods,
         args=(
             config,
             obj("Job", "supervisor", SYSTEM),
             application,
-            copy.deepcopy(bundle["delivery"]["probe"]),
+            copy.deepcopy(rendered["delivery"]["probe"]),
         ),
     )
 
@@ -382,8 +386,8 @@ def test_drift_found_by_the_final_readback_stops_before_any_input(admitting):
 def test_an_unguarded_or_unsettled_handoff_is_refused_before_any_write(
     admitting, tamper
 ):
-    """The manifests are the approval bundle's, which the runner's
-    construction re-rendered and checked; the handoff is the runner's own."""
+    """The manifests are the ones dispatch rendered, checked and approved;
+    the handoff is the runner's own."""
     a = admitting
     if tamper == "unguarded":
         a.sender.controller.before_operation = lambda *args: None
@@ -416,7 +420,9 @@ def test_admission_closes_at_its_deadline(admitting):
 
 
 def supervisor_uid(a):
-    return a.observer.refresh().supervisor_pod
+    """The supervisor Pod the runner's Job started."""
+    [uid] = a.supervisor_pods
+    return uid
 
 
 def runner_releases_while_supervisor_waits(a, monkeypatch, *, settle_first=True):
@@ -463,7 +469,7 @@ def test_a_supervised_run_whose_application_never_runs_stops_and_cleans(
 def test_a_joined_supervisor_stopped_during_admission_cleans_itself(
     admitting, monkeypatch
 ):
-    """Its authority cannot be released by a replacement, so it is not left to one."""
+    """Its authority is its own to release, so it is not left to another process."""
     a = admitting
     a.sender.initialize()
     a.sender.prepare()
@@ -476,95 +482,21 @@ def test_a_joined_supervisor_stopped_during_admission_cleans_itself(
     assert not a.service.resources.resources
 
 
-def replacement(a):
-    # Its own process: none of the fixture's hooks on the runner's sleep.
-    observer = Environment(
-        a.environment.kube,
-        a.environment.store,
-        a.environment.approval.to_dict(),
-        a.environment.clock,
-        a.environment.clock.sleep,
-        actor="supervisor",
-    )
-    handoff = actor(observer, Identity(a.service, "supervisor", a.events), "d" * 32)
-    return Supervisor(
-        observer,
-        json.loads(a.args[0]["data"]["upgrade-application.json"]),
-        pubsub=handoff,
-        quiesce=barrier(observer),
-    )
-
-
-@pytest.mark.parametrize(
-    "case, reclaims",
-    [
-        ("Failed", True),
-        ("absent", True),
-        ("Running", False),
-        ("unreleased", False),
-        # A writer still in the namespace is waited for, not refused.
-        ("writer-leaves", True),
-    ],
-)
-def test_a_replacement_reclaims_a_joined_supervisor_only_once_it_ended(
-    admitting, monkeypatch, case, reclaims
-):
-    a = admitting
-    prepare_for_supervisor(a)
-    a.supervisor.participate()
-    kube = a.environment.kube
-    job = kube.put(obj("Job", "lifecycle", SYSTEM))
-    pod = kube.put(
-        supervisor_pod((kube, None, a.environment.approval.to_dict(), None), job)
-    )
-    if case == "absent":
-        kube.data.pop(("Pod", SYSTEM, pod["metadata"]["name"]))
-    else:
-        pod["status"] = {"phase": "Running" if case == "Running" else "Failed"}
-        kube.put(pod)
-    successor = replacement(a)
-    successor.cleanup.former_supervisor = pod["metadata"]["uid"]
-    with pytest.raises(Failure, match="replaced after joining"):
-        successor.participate()
-    assert a.environment.refresh().stop_requested
-    if case != "unreleased":
-        a.sender.release()
-    if case == "writer-leaves":
-        writer = kube.put(obj("Pod", "stray-writer", PUBSUB))
-        original = successor.env.sleep
-
-        def sleep(seconds):
-            original(seconds)
-            if kube.get("Pod", PUBSUB, "stray-writer"):
-                kube.data.pop(("Pod", PUBSUB, writer["metadata"]["name"]))
-
-        monkeypatch.setattr(successor.env, "sleep", sleep)
-    if not reclaims:
-        with pytest.raises(Failure, match="Bounded wait expired"):
-            successor.cleanup.finish_pubsub(a.environment.clock() + 60)
-        assert a.service.resources.resources
-        return
-    successor.cleanup.finish_pubsub(a.environment.clock() + 60)
-    state = a.environment.refresh().pubsub
-    assert state["stage"] == "cleaned" and not a.service.resources.resources
-    assert state["handoff"]["actors"]["supervisor"]["released"]
-
-
 def test_a_valid_pubsub_delivery_reaches_the_entrypoint_s_cluster_step(
     prepared, tmp_path
 ):
     """The delivery carries the recovery manifest the supervisor factory checks."""
-    environment, bundle = prepared
+    environment, rendered = prepared
     mount(
         tmp_path,
         environment,
-        bundle["application"],
-        bundle["recovery_application"],
+        rendered["application"],
+        rendered["recovery_application"],
     )
     _, approved, application, upgrade = runtime.verify_delivery(tmp_path)
     assert approved.scenario == "pubsub-recovery"
-    assert application == bundle["application"]
-    assert upgrade == bundle["recovery_application"]
+    assert application == rendered["application"]
+    assert upgrade == rendered["recovery_application"]
     with pytest.raises(FileNotFoundError, match="serviceaccount"):
         runtime.supervisor_main(tmp_path)
 
@@ -579,13 +511,13 @@ def test_a_valid_pubsub_delivery_reaches_the_entrypoint_s_cluster_step(
 def test_the_entrypoint_refuses_a_pubsub_delivery_without_its_recovery(
     prepared, tmp_path, case, match
 ):
-    environment, bundle = prepared
+    environment, rendered = prepared
     upgrade = (
         None
         if case == "missing-upgrade"
-        else {**bundle["recovery_application"], "x": 1}
+        else {**rendered["recovery_application"], "x": 1}
     )
-    mount(tmp_path, environment, bundle["application"], upgrade)
+    mount(tmp_path, environment, rendered["application"], upgrade)
     with pytest.raises(Failure, match=match):
         runtime.supervisor_main(tmp_path)
 
@@ -814,13 +746,10 @@ def test_a_released_actor_cannot_probe_and_access_is_recorded_once_prepared(
     assert "access" not in a.environment.refresh().pubsub
 
 
-def test_participation_stops_on_a_stop_and_does_not_probe_twice(admitting):
+def test_participation_stops_on_a_stop(admitting):
     a = admitting
     prepare_for_supervisor(a)
     a.supervisor.participate()
-    tests = len(kinds(a.events, "test"))
-    a.supervisor.participate()
-    assert len(kinds(a.events, "test")) == tests
     a.environment.records.request_stop()
     with pytest.raises(Failure, match="Cancellation"):
         a.supervisor.participate()
@@ -853,72 +782,6 @@ def test_a_stopped_supervisor_waits_for_the_runner_before_deleting(
     monkeypatch.setattr(a.observer, "sleep", sleep)
     a.supervisor.conclude("terminated", False)
     assert order[0] == ("released",)
-
-
-def supervised_by(a, job, pod):
-    """Record the Job as the run's supervisor root, its Pod as the holder."""
-    a.environment.remember("supervisor", job)
-    a.observer.records.claim_supervisor(pod["metadata"]["uid"])
-
-
-@pytest.mark.parametrize(
-    "former, released, reclaimed",
-    [
-        ("Failed", True, True),
-        ("Pending", True, False),
-        ("Failed", False, False),
-    ],
-)
-def test_a_replacement_supervisor_reclaims_through_its_own_supervision(
-    admitting, monkeypatch, former, released, reclaimed
-):
-    """Driven through `supervise`, which records the holder it displaces."""
-    a = admitting
-    kube = a.environment.kube
-    job = kube.put(obj("Job", "lifecycle", SYSTEM))
-    original = kube.put(
-        supervisor_pod((kube, None, a.environment.approval.to_dict(), None), job)
-    )
-    supervised_by(a, job, original)
-    prepare_for_supervisor(a)
-    a.supervisor.participate()
-    original["status"] = {"phase": former}
-    kube.put(original)
-    successor = replacement(a)
-    pod = obj("Pod", "supervisor-pod-2", SYSTEM, job["metadata"]["uid"])
-    pod["spec"] = copy.deepcopy(original["spec"])
-    pod["status"] = {"phase": "Running"}
-    kube.put(pod)
-    if released:
-        runner_released_on_first_wait(a, successor, monkeypatch)
-    if reclaimed:
-        successor.supervise(pod["metadata"]["uid"])
-        reason = a.environment.refresh().reason
-        assert "replaced after joining" in reason
-    else:
-        # A former Pod that may still run, or a runner that never released,
-        # keeps the run and its lock rather than reclaiming.
-        with pytest.raises(Failure, match="Bounded wait expired"):
-            successor.supervise(pod["metadata"]["uid"])
-    state = a.environment.refresh().pubsub
-    assert successor.cleanup.former_supervisor == original["metadata"]["uid"]
-    if reclaimed:
-        assert state["stage"] == "cleaned" and not a.service.resources.resources
-        assert state["handoff"]["actors"]["supervisor"]["released"]
-    else:
-        assert state["stage"] != "cleaned" and a.service.resources.resources
-
-
-def runner_released_on_first_wait(a, successor, monkeypatch):
-    original, done = successor.env.sleep, []
-
-    def sleep(seconds):
-        original(seconds)
-        if not done:
-            done.append(True)
-            a.sender.release()
-
-    monkeypatch.setattr(successor.env, "sleep", sleep)
 
 
 def test_a_local_stop_ends_the_wait_for_access(admitting, monkeypatch):

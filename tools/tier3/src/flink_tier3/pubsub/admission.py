@@ -27,8 +27,7 @@ def require_admission(runner):
     """Refuse admission without the production handoff.
 
     It must be guarded and able to tell a settled failure. The manifests the
-    runner submits are the approval bundle's, which `pubsub_actors.runner`
-    re-rendered against the approval and the rendering checked.
+    runner submits are the ones dispatch rendered, checked and approved.
     """
     handoff = runner.pubsub
     if (

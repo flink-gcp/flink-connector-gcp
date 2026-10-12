@@ -19,8 +19,8 @@ import pytest
 from flink_tier3.cleanup import Cleanup, verify_idle
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
-from flink_tier3.model import Approval, Phase, open_for_replacement
-from flink_tier3.policy import PUBSUB, PUBSUB_CEILINGS, PUBSUB_STATE, RECOVERY
+from flink_tier3.model import Approval, Phase, check_window, validate_approval
+from flink_tier3.policy import PUBSUB
 from flink_tier3.pubsub import plan
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle
@@ -54,10 +54,9 @@ def prepared(env, trial):
         },
     }
     value.update(
-        version=5,
+        version=6,
         scenario="pubsub-recovery",
         pubsub_trial=copy.deepcopy(trial),
-        ceilings=dict(PUBSUB_CEILINGS),
         application_sha256=digest(application),
         upgrade_application_sha256="f" * 64,
     )
@@ -76,7 +75,8 @@ def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
     value["pubsub_trial"].update(
         trial=kind, records_per_subscription=records, entry_point=entry_point
     )
-    approval = Approval.from_dict(value, environment.clock())
+    validate_approval(value)
+    approval = Approval.from_dict(value)
     assert Approval.from_dict(approval.to_dict()) == approval
     assert approval.pubsub_trial["entry_point"] == entry_point
     value["pubsub_trial"]["records_per_subscription"] = 4
@@ -92,85 +92,16 @@ def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("version", 4),
-        ("version", 5.0),
-        ("pubsub_trial", {}),
         ("upgrade_application_sha256", ""),
-        ("recovery_policy", RECOVERY),
-        ("bigquery_trial", {"version": 1}),
         ("cells", [{}]),
-        ("runtime_sha256", "main"),
         ("application_sha256", ""),
-        ("ceilings", rt.CEILINGS),
     ],
 )
 def test_incompatible_approval_refused(prepared, key, value):
     data = prepared[0].approval.to_dict()
     data[key] = value
     with pytest.raises(Failure):
-        Approval.from_dict(data)
-
-
-@pytest.mark.parametrize(
-    "key,value",
-    [
-        ("trial", "combined"),
-        ("version", 2),
-        ("entry_point", "sql"),
-        ("records_per_subscription", True),
-        # Three cohorts, each nonempty.
-        ("records_per_subscription", 2),
-        ("records_per_subscription", 10001),
-        ("version", 4),
-        # Version 5 removed the runtime traffic limits.
-        ("traffic_limits", {}),
-        ("total_request_limit", 100000),
-        ("additional_cost_usd", "10.00"),
-        ("unreviewed", 1),
-    ],
-)
-def test_invalid_trial_refused(prepared, key, value):
-    data = prepared[0].approval.to_dict()
-    data["pubsub_trial"][key] = value
-    with pytest.raises(Failure):
-        Approval.from_dict(data)
-
-
-def test_an_approval_stored_before_trial_version_5_is_still_read(prepared):
-    """Recovery reads it to settle a run that spans the change."""
-    data = prepared[0].approval.to_dict()
-    data["pubsub_trial"].update(version=4, traffic_limits={"publish_calls": 20000})
-    approval = Approval.from_dict(data)
-    assert approval.pubsub_plan.manifest()["run_id"] == approval.run_id
-    # Rendering, dispatch and the actors' manifest checks still refuse it.
-    with pytest.raises(Failure, match="version 5 schema"):
-        plan.validate_trial(approval.pubsub_trial)
-    with pytest.raises(Failure, match="version 5 schema"):
-        plan.manifest_jobs(approval.run_id, approval.pubsub_trial)
-    # Only version 4's exact fields are read.
-    data["pubsub_trial"].pop("traffic_limits")
-    with pytest.raises(Failure, match="version 5 schema"):
-        Approval.from_dict(data)
-
-
-@pytest.mark.parametrize(
-    "key,value",
-    [
-        ("pods", 6),
-        ("pods", 7.0),
-        ("pvcs", False),
-        ("state_bytes", 1),
-        ("state_objects", 1),
-        ("log_bytes", 1),
-        ("evidence_bytes", 1),
-        ("additional_cost_usd", "9.99"),
-    ],
-)
-def test_fixed_ceiling_types_and_values(prepared, key, value):
-    data = prepared[0].approval.to_dict()
-    data["ceilings"][key] = value
-    with pytest.raises(Failure, match="resource ceilings"):
-        Approval.from_dict(data)
+        validate_approval(data)
 
 
 @pytest.mark.parametrize(
@@ -184,15 +115,14 @@ def test_fixed_ceiling_types_and_values(prepared, key, value):
 def test_window_is_exact(prepared, key, delta):
     data = prepared[0].approval.to_dict()
     data[key] = rt.utc(rt.timestamp(data[key]) + delta)
-    with pytest.raises(Failure, match="one hour"):
-        Approval.from_dict(data)
+    with pytest.raises(Failure, match="window differs"):
+        validate_approval(data)
 
 
 @pytest.mark.parametrize("target", ["namespace", "image", "extra-image", "expired"])
 def test_approval_identity_and_admission_window(prepared, target):
     environment, _ = prepared
     data = environment.approval.to_dict()
-    now = environment.clock()
     if target == "namespace":
         data["namespaces"][rt.SMOKE] = data["namespaces"].pop(PUBSUB)
     elif target == "image":
@@ -200,19 +130,18 @@ def test_approval_identity_and_admission_window(prepared, target):
     elif target == "extra-image":
         data["images"]["smoke"] = rt.GAR + "smoke@sha256:" + "e" * 64
     else:
-        now = environment.schedule.cleanup_at
+        validate_approval(data)
+        with pytest.raises(Failure, match="admission window"):
+            check_window(environment.approval, environment.schedule.cleanup_at)
+        return
     with pytest.raises(Failure):
-        Approval.from_dict(data, now)
+        validate_approval(data)
 
 
-def test_smoke_roundtrip_cannot_carry_pubsub_trial(env, trial):
-    value = env[2]
-    approval = Approval.from_dict(value)
+def test_smoke_roundtrip_omits_the_pubsub_trial(env):
+    approval = Approval.from_dict(env[2])
     assert "pubsub_trial" not in approval.to_dict()
     assert Approval.from_dict(approval.to_dict()) == approval
-    value["pubsub_trial"] = trial
-    with pytest.raises(Failure, match="Only Pub/Sub"):
-        Approval.from_dict(value)
 
 
 def test_the_handoff_takes_its_input_domain_from_the_approval(prepared):
@@ -242,7 +171,6 @@ def test_application_replacement_and_control_quotas(prepared):
             assert rt.quantity(hard[category + ".memory"]) == count * 2 * 1024**3
             assert rt.quantity(hard[category + ".ephemeral-storage"]) == ephemeral
         cleanup.quota(namespace, None)
-    assert cleanup.ceilings["pods"] == 7
     verify_idle(environment)
 
 
@@ -285,9 +213,9 @@ def settled(prepared, service_intent):
     return environment, runner
 
 
-@pytest.mark.parametrize(
-    "change", ["none", "trial", "scenario", "success", "plans", "service"]
-)
+# A retry keeps the receipt it finds, checking only that it is this run's and
+# idle: it was written from the record before the record was deleted.
+@pytest.mark.parametrize("change", ["none", "nonce", "idle"])
 @pytest.mark.parametrize("service_intent", [False, True])
 def test_receipt_retry_with_refreshed_plans(
     prepared, monkeypatch, change, service_intent
@@ -314,16 +242,10 @@ def test_receipt_retry_with_refreshed_plans(
     assert receipt["scenario"] == "pubsub-recovery"
     assert receipt["pubsub_trial"] == environment.approval.pubsub_trial
     assert receipt["success"] is False
-    if change == "trial":
-        receipt["pubsub_trial"]["trial"] = "jm-replacement"
-    elif change == "scenario":
-        receipt.pop("scenario")
-    elif change == "success":
-        receipt["success"] = True
-    elif change == "plans":
-        receipt["plans"]["roots"] = ["unapproved"]
-    elif change == "service":
-        receipt.setdefault("pubsub", {})["stage"] = "foreign"
+    if change == "nonce":
+        receipt["nonce"] = "0" * 32
+    elif change == "idle":
+        receipt["idle"] = False
     environment.store.write(path, receipt, generation)
     monkeypatch.setattr(environment.store, "delete", original_delete)
     plans = {**plans, "at": "2026-09-21T01:07:00Z"}
@@ -395,14 +317,9 @@ def seven_pods(prepared):
     return environment, runner.cleanup
 
 
-def test_audit_accepts_both_replacements_and_rejects_eighth_pod(seven_pods):
-    environment, cleanup = seven_pods
+def test_audit_accepts_both_replacements(seven_pods):
+    _environment, cleanup = seven_pods
     assert len(cleanup.audit()[1]) == 7
-    workload_pod(
-        environment, "extra-tm", "application", environment.root("application")
-    )
-    with pytest.raises(Failure, match="Pod/PVC count"):
-        cleanup.audit()
 
 
 @pytest.mark.parametrize("change", ["image", "resources", "unowned"])
@@ -422,28 +339,15 @@ def test_audit_refuses_unapproved_pod(seven_pods, change):
         cleanup.audit()
 
 
-def test_state_byte_ceiling_uses_pubsub_bucket(seven_pods, monkeypatch):
-    environment, cleanup = seven_pods
-    original = environment.store.objects
-
-    def oversized(prefix, bucket=rt.EVIDENCE, maximum=10000):
-        if bucket == PUBSUB_STATE:
-            return [
-                {"name": prefix + "large", "size": str(1024**3 + 1), "generation": "1"}
-            ]
-        return original(prefix, bucket, maximum)
-
-    monkeypatch.setattr(environment.store, "objects", oversized)
-    with pytest.raises(Failure, match="State byte ceiling"):
-        cleanup.audit()
-
-
 def test_concurrent_control_change_retains_control_and_lock(prepared):
     environment, _ = prepared
     runner = Runner(environment)
     runner.cleanup.run("stopped before creation")
-    environment.store.before_write = environment.records.mark_evidence_failed
-    with pytest.raises(Failure, match="Run control changed"):
+    # The receipt write is the first write finalization makes.
+    environment.store.before_write = lambda: environment.records.mark_evidence_failed(
+        {"operation": "synthetic", "cause": "concurrent"}
+    )
+    with pytest.raises(rt.ApiError) as error:
         runner.finalize(
             {
                 "nonce": environment.approval.nonce,
@@ -451,6 +355,8 @@ def test_concurrent_control_change_retains_control_and_lock(prepared):
                 "empty": True,
             }
         )
+    # The record is deleted only at the generation the receipt was derived from.
+    assert error.value.status == 412
     assert environment.store.read(environment.records.path)[0] is not None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
@@ -481,32 +387,24 @@ def lose_lock_release(environment, runner, monkeypatch):
 
 
 @pytest.mark.parametrize("service_intent", [False, True])
-def test_recovery_restores_the_control_snapshot_the_receipt_carries(
+def test_recovery_restores_a_cleaned_record_and_keeps_the_receipt(
     prepared, monkeypatch, service_intent
 ):
     environment, runner = settled(prepared, service_intent)
-    environment.records._change(
-        lambda record: setattr(record, "recovery", {"stage": "complete"})
-    )
-    control, plans = lose_lock_release(environment, runner, monkeypatch)
+    _control, plans = lose_lock_release(environment, runner, monkeypatch)
+    path = f"runs/{environment.approval.run_id}/result.json"
+    receipt = environment.store.read(path)[0]
     recovery = Runner(environment)
     recovery.restore_control()
     restored = environment.refresh()
-    assert restored.pubsub == control["pubsub"]
-    assert restored.recovery == control["recovery"] == {"stage": "complete"}
-    assert restored.success is control["success"] is False
-    assert restored.phase == Phase.CLEANED and restored.stop_requested
-    # Stopped and cleaned: nothing reopens the restored run for a takeover.
-    assert not open_for_replacement(restored)
+    assert restored.phase == Phase.CLEANED and restored.idle
     recovery.settle(request_stop=True)
     assert (
         Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"}) is False
     )
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
-    receipt, _ = environment.store.read(
-        f"runs/{environment.approval.run_id}/result.json"
-    )
+    assert environment.store.read(path)[0] == receipt
     assert receipt["plans"]["at"] == "2026-09-21T01:00:00Z"
 
 
@@ -523,7 +421,7 @@ def test_recovery_evidence_failure_over_a_pubsub_receipt_still_finalizes(
     environment.store.fail_evidence = False
     assert environment.refresh().evidence_failed
     # Finalization runs in a new process, without this one's local failure.
-    environment.evidence_failed = False
+    environment.evidence_failure = None
     assert (
         Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"}) is False
     )
@@ -531,34 +429,25 @@ def test_recovery_evidence_failure_over_a_pubsub_receipt_still_finalizes(
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
 
 
-@pytest.mark.parametrize(
-    "change", ["nonce", "idle", "plans", "trial", "success", "stage", "recovery"]
-)
-def test_recovery_refuses_a_receipt_that_does_not_reproduce(
+@pytest.mark.parametrize("change", ["nonce", "idle"])
+def test_recovery_refuses_a_receipt_from_another_run_or_not_idle(
     prepared, monkeypatch, change
 ):
     environment, runner = settled(prepared, True)
-    lose_lock_release(environment, runner, monkeypatch)
+    _control, plans = lose_lock_release(environment, runner, monkeypatch)
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt, generation = environment.store.read(path)
     if change == "nonce":
         receipt["nonce"] = "0" * 32
-    elif change == "idle":
+    else:
         receipt["idle"] = False
-    elif change == "plans":
-        receipt["plans"] = None
-    elif change == "trial":
-        receipt["pubsub_trial"]["trial"] = "jm-replacement"
-    elif change == "success":
-        receipt["success"] = True
-    elif change == "stage":
-        receipt["pubsub"]["stage"] = "cleaning"
-    elif change == "recovery":
-        receipt.pop("recovery")
     environment.store.write(path, receipt, generation)
-    with pytest.raises(Failure, match="investigate before any repair"):
-        Runner(environment).restore_control()
-    assert environment.store.objects("_control/runs/") == []
+    recovery = Runner(environment)
+    recovery.restore_control()
+    recovery.settle(request_stop=True)
+    with pytest.raises(Failure, match="Final receipt conflicts"):
+        Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"})
+    assert environment.store.read(environment.records.path)[0] is not None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
 

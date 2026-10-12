@@ -28,6 +28,7 @@ import yaml
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import metrics, repository
 from flink_tier3.common import ReadCeilingExceeded
+from flink_tier3.policy import CLEANUP_SECONDS, STATE_OBJECTS
 from google.cloud import storage
 
 rt = cli.rt
@@ -196,20 +197,9 @@ class Kube:
     def get(self, kind, namespace, name):
         return copy.deepcopy(self.data.get((kind, namespace, name)))
 
-    def inventory(self, application=None):
-        from flink_tier3.policy import inventory_namespaces
-
+    def inventory(self):
         return copy.deepcopy(
-            [
-                value
-                for value in self.data.values()
-                if value["kind"] != "ResourceQuota"
-                and (
-                    application is None
-                    or value["metadata"]["namespace"]
-                    in inventory_namespaces(application)
-                )
-            ]
+            [value for value in self.data.values() if value["kind"] != "ResourceQuota"]
         )
 
     def items(self, kind, namespace):
@@ -328,18 +318,15 @@ class Kube:
 def env():
     clock, store, kube = Clock(), Store(), Kube()
     approval = {
-        "version": 1,
+        "version": 6,
         "run_id": "test-1310",
         "nonce": "a" * 32,
         "sha": "b" * 40,
         "started_at": rt.utc(clock()),
         "expires_at": rt.utc(clock() + 3600),
         "cleanup_at": rt.utc(clock() + 2700),
-        "ceilings": copy.deepcopy(rt.CEILINGS),
         "namespaces": {},
         "baseline_uids": [],
-        "runtime_sha256": "c" * 64,
-        "delivery_sha256": "f" * 64,
         "application_sha256": "d" * 64,
         "images": {
             key: rt.GAR + package + "@sha256:" + "e" * 64
@@ -404,27 +391,70 @@ def app(env):
 
 
 @pytest.mark.parametrize("value", ["../bad", "UPPER", "a/b", "a" * 41, "bad-"])
-def test_rejects_run_names_before_mutation(env, value):
-    env[2]["run_id"] = value
-    with pytest.raises(rt.Failure, match="identity"):
-        lifecycle(env)
-    assert env[0].calls == []
+def test_dispatch_rejects_run_names(env, value):
+    env[2]["run_id"] = env[2]["lock_owner"]["run_id"] = value
+    with pytest.raises(rt.Failure, match="Invalid run approval identity"):
+        rt.validate_approval(env[2])
+
+
+def test_dispatch_rejects_a_window_of_another_length(env):
+    """Moving the expiry and the cleanup start together leaves only the length."""
+    approval = env[2]
+    approval["expires_at"] = rt.utc(rt.timestamp(approval["expires_at"]) - 60)
+    approval["cleanup_at"] = rt.utc(rt.timestamp(approval["cleanup_at"]) - 60)
+    with pytest.raises(rt.Failure, match="window differs"):
+        rt.validate_approval(approval)
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        lambda a: a["ceilings"].update(pods=6),
         lambda a: a.update(expires_at="2028-01-01T00:00:00+00:00"),
         lambda a: a["namespaces"][rt.SMOKE]["hard"].update(pods="1"),
         lambda a: a["images"].update(smoke="evil@sha256:" + "a" * 64),
     ],
 )
-def test_rejects_unapproved_limits_and_targets(env, change):
+def test_dispatch_rejects_unapproved_windows_and_targets(env, change):
     change(env[2])
     with pytest.raises(rt.Failure):
-        lifecycle(env)
-    assert env[0].calls == []
+        rt.validate_approval(env[2])
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # Fewer characters than the limit, more bytes: Kubernetes counts bytes.
+        {"source": "\u00e9" * (rt.MIB // 2 + 1)},
+        # Under the limit until the approval is embedded.
+        {"source": "x" * (rt.MIB - 64)},
+    ],
+)
+def test_binding_counts_configmap_bytes_after_embedding_the_approval(env, data):
+    approved = rt.Approval.from_dict(env[2])
+    delivery = {"config": {"data": dict(data)}, "supervisor": {"spec": {}}}
+    with pytest.raises(rt.Failure, match="data size limit"):
+        cli.bind(approved, delivery, env[3]())
+    bound = cli.bind(
+        approved, {"config": {"data": {}}, "supervisor": {"spec": {}}}, env[3]()
+    )
+    assert json.loads(bound["config"]["data"]["approval.json"]) == approved.to_dict()
+    assert bound["supervisor"]["spec"]["activeDeadlineSeconds"] == 3420
+
+
+def test_a_held_approval_is_read_as_written(env):
+    """Recovery must not strand a run whose approval policy has since changed."""
+    env[2].update(
+        version=1,
+        expires_at=rt.utc(rt.timestamp(env[2]["expires_at"]) + 600),
+        ceilings={"pods": 5},
+        runtime_sha256="c" * 64,
+        delivery_sha256="f" * 64,
+    )
+    with pytest.raises(rt.Failure):
+        rt.validate_approval(env[2])
+    runner = lifecycle(env, cli.runner_api.Runner)
+    assert runner.env.approval.version == 1
+    assert runner.env.approval.expires_at == env[2]["expires_at"]
 
 
 def test_lock_has_no_age_based_takeover(env):
@@ -724,12 +754,10 @@ def test_failed_receipt_write_retains_lock_after_paid_workloads_stop(env):
         lambda r: r.update(event="pull_request"),
         lambda r: r.update(head_branch="branch"),
         lambda r: r.update(head_sha="0" * 40),
-        lambda r: r.update(status="in_progress"),
+        lambda r: r.update(run_attempt=2),
     ],
 )
-def test_recovery_checks_origin_not_only_recovery_workflow_identity(
-    env, monkeypatch, change
-):
+def test_a_lock_holder_must_be_its_own_originating_execution(env, monkeypatch, change):
     owner = env[2]["lock_owner"]
     source = {
         "repository": {"full_name": rt.REPOSITORY},
@@ -743,7 +771,7 @@ def test_recovery_checks_origin_not_only_recovery_workflow_identity(
     change(source)
     monkeypatch.setattr(cli.wf, "github_run", lambda _id: source)
     with pytest.raises(rt.Failure):
-        cli.wf.verify_source(owner, completed=True)
+        cli.wf.verify_source(owner)
 
 
 def test_expiry_stops_before_opening_quotas(env):
@@ -752,6 +780,23 @@ def test_expiry_stops_before_opening_quotas(env):
     with pytest.raises(rt.Failure, match="admission window"):
         runner.create_application(app(env))
     assert env[0].calls == []
+
+
+@pytest.mark.parametrize(
+    ("offset", "admitted"),
+    [(-31, False), (-30, True), (0, True)],
+)
+def test_admission_opens_thirty_seconds_before_the_approved_start(
+    env, offset, admitted
+):
+    """The window opens 30 seconds early and closes at the cleanup start."""
+    approved = rt.Approval.from_dict(env[2])
+    now = rt.timestamp(approved.started_at) + offset
+    if admitted:
+        rt.check_window(approved, now)
+    else:
+        with pytest.raises(rt.Failure, match="admission window"):
+            rt.check_window(approved, now)
 
 
 def test_rejected_supervisor_creation_can_return_to_idle(env, monkeypatch):
@@ -772,10 +817,9 @@ def test_rejected_supervisor_creation_can_return_to_idle(env, monkeypatch):
     assert runner.env.refresh().to_dict()["idle"]
 
 
-@pytest.mark.parametrize("limit", ["bytes", "objects"])
-def test_state_limit_triggers_stop_and_generation_checked_cleanup(
-    env, monkeypatch, limit
-):
+def test_state_cleanup_deletes_only_this_runs_prefix_by_generation(env):
+    """The listing bound is the one state check left; nothing stops a run on
+    its state's size, which the deadline and the bucket's expiry bound."""
     supervisor, pod = prepared_supervisor(env)
     runner = lifecycle(env, cli.runner_api.Runner)
     runner.env.records.set_phase(rt.Phase.READY)
@@ -785,34 +829,17 @@ def test_state_limit_triggers_stop_and_generation_checked_cleanup(
     runner.create_application(app(env))
     application = runner.env.root("application")
     runner.env.records.set_phase(rt.Phase.RUNNING)
-    count = rt.CEILINGS["state_objects"] + 1 if limit == "objects" else 1
-    for index in range(count):
+    for index in range(3):
         env[1].write(
             f"runs/test-1310/state-{index}", {"checkpoint": 1}, bucket=rt.STATE
         )
     env[1].write("runs/unrelated/state", {}, bucket=rt.STATE)
-    objects = env[1].objects
-
-    def inventory(prefix, bucket=rt.EVIDENCE, maximum=20000):
-        result = objects(prefix, bucket, maximum)
-        if limit == "bytes" and bucket == rt.STATE and result:
-            result[0]["size"] = str(rt.CEILINGS["state_bytes"] + 1)
-        return result
-
-    monkeypatch.setattr(env[1], "objects", inventory)
-    started = env[3]()
     supervisor.supervise(pod["metadata"]["uid"])
     control = supervisor.env.refresh()
     assert control.phase == rt.Phase.CLEANED and not control.success
     assert control.state_clean
-    assert (
-        "State byte ceiling" in control.reason
-        if limit == "bytes"
-        else "Object inventory exceeds" in control.reason
-    )
-    assert env[3]() == started, "The first observation must stop the run"
-    assert not objects("runs/test-1310/", rt.STATE)
-    assert objects("runs/unrelated/", rt.STATE)
+    assert not env[1].objects("runs/test-1310/", rt.STATE)
+    assert env[1].objects("runs/unrelated/", rt.STATE)
     assert ("delete", "FlinkDeployment", application["metadata"]["uid"]) in env[0].calls
     assert env[0].get("Deployment", rt.SYSTEM, rt.OPERATOR)["spec"]["replicas"] == 0
     for ns in (rt.SMOKE, rt.SYSTEM):
@@ -821,6 +848,20 @@ def test_state_limit_triggers_stop_and_generation_checked_cleanup(
             == env[2]["namespaces"][ns]["hard"]
         )
     assert env[1].read(rt.ENVIRONMENT)[0] == env[2]["lock_owner"]
+
+
+def test_state_beyond_the_listing_bound_fails_cleanup_without_keeping_resources(
+    env,
+):
+    runner = lifecycle(env, cli.runner_api.Runner)
+    for index in range(STATE_OBJECTS + 2):
+        env[1].write(
+            f"runs/test-1310/state-{index}", {"checkpoint": 1}, bucket=rt.STATE
+        )
+    runner.cleanup.run("bounded listing")
+    control = runner.env.refresh()
+    assert control.phase == rt.Phase.CLEANED and not control.state_clean
+    assert env[0].get("Deployment", rt.SYSTEM, rt.OPERATOR)["spec"]["replicas"] == 0
 
 
 def test_inventory_observations_survive_parent_disappearance(env):
@@ -849,7 +890,7 @@ def test_estimated_cost_and_the_rates_age(env):
         expires_at=rt.utc(env[3].now + 3600),
         cleanup_at=rt.utc(env[3].now + 2700),
     )
-    rt.validate_approval(later, env[3]())
+    rt.validate_approval(later)
 
 
 def test_admission_quotas_cover_the_pods_each_namespace_will_hold(env):
@@ -868,9 +909,6 @@ def test_admission_quotas_cover_the_pods_each_namespace_will_hold(env):
         rt.SYSTEM: ("supervisor", "operator", "operator"),
         rt.SMOKE: ("smoke", "smoke"),
     }
-    # The per-namespace quotas and the flat Pod ceiling are one allowance seen
-    # from two sides; drifting apart would admit a Pod the audit then stops.
-    assert sum(len(roles) for roles in held.values()) == rt.CEILINGS["pods"]
     for namespace, roles in held.items():
         hard = env[0].get("ResourceQuota", namespace, "tier3-idle")["spec"]["hard"]
         assert hard["pods"] == str(len(roles)), namespace
@@ -1040,12 +1078,7 @@ def test_the_audit_accepts_autopilots_term_as_an_alternative_on_its_own():
 
 
 def rig_args(**overrides):
-    value = {
-        "approve": "phrase",
-        "sha": "a" * 40,
-        "rig_sha": None,
-        "run_id": "rig-1487",
-    }
+    value = {"rig_sha": None, "run_id": "rig-1487"}
     value.update(overrides)
     return SimpleNamespace(**value)
 
@@ -1058,28 +1091,23 @@ class EmptyStore:
 def test_dispatch_runs_the_main_commit_unless_a_rig_commit_is_named(monkeypatch):
     monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-    cli.refuse_before_admission(rig_args(), EmptyStore(), "phrase")
-    with pytest.raises(rt.Failure, match="exact rig commit"):
-        cli.refuse_before_admission(rig_args(sha="b" * 40), EmptyStore(), "phrase")
-    # A named rig commit must be the approved one, not main's.
-    cli.refuse_before_admission(
-        rig_args(sha="b" * 40, rig_sha="b" * 40), EmptyStore(), "phrase"
+    assert cli.refuse_before_admission(rig_args(), EmptyStore()) == "a" * 40
+    # The workflow verified that a named rig commit heads a branch.
+    assert (
+        cli.refuse_before_admission(rig_args(rig_sha="b" * 40), EmptyStore())
+        == "b" * 40
     )
     with pytest.raises(rt.Failure, match="exact rig commit"):
-        cli.refuse_before_admission(
-            rig_args(sha="a" * 40, rig_sha="b" * 40), EmptyStore(), "phrase"
-        )
+        cli.refuse_before_admission(rig_args(rig_sha="B" * 40), EmptyStore())
     monkeypatch.setenv("GITHUB_REF", "refs/heads/feature")
-    with pytest.raises(rt.Failure, match="exact rig commit"):
-        cli.refuse_before_admission(
-            rig_args(sha="b" * 40, rig_sha="b" * 40), EmptyStore(), "phrase"
-        )
+    with pytest.raises(rt.Failure, match="from main"):
+        cli.refuse_before_admission(rig_args(rig_sha="b" * 40), EmptyStore())
 
 
 def test_the_lock_owner_names_a_rig_commit_the_approval_then_binds(env):
     workflow = {"kind": "run", "nonce": "a" * 32, "sha": "b" * 40}
-    assert "rig_sha" not in cli.rig_owner(workflow, rig_args(sha="b" * 40))
-    owner = cli.rig_owner(workflow, rig_args(sha="c" * 40))
+    assert "rig_sha" not in cli.rig_owner(workflow, "rig-1487", "b" * 40)
+    owner = cli.rig_owner(workflow, "rig-1487", "c" * 40)
     assert owner["sha"] == "b" * 40 and owner["rig_sha"] == "c" * 40
     approval = copy.deepcopy(env[2])
     approval["sha"] = "c" * 40
@@ -1339,15 +1367,13 @@ def supervisor_pod(env, job):
     return pod
 
 
-def claim_as_supervisor(env, pod):
+def heartbeat_as_supervisor(env, _pod):
     """What the supervisor Pod writes before the runner reads it as ready.
 
-    Its own `Records`, as the Pod's process has: claiming on the runner's
-    records would fence the runner's writes on the Pod's claim.
+    Its own `Records`, as the Pod's process has.
     """
     _kube, store, approval, clock = env
     records = rt.Records(store, rt.Approval.from_dict(approval), clock)
-    records.claim_supervisor(pod["metadata"]["uid"])
     records.heartbeat()
     return records
 
@@ -1495,24 +1521,18 @@ def test_workflows_hold_the_lock_around_infrastructure_and_preserve_main_boundar
         ]
         assert verify and verify[0] < checkout, "Verify the rig before checking it out"
         assert '[[ "$RIG_SHA" =~ ^[0-9a-f]{40}$ ]]' in steps[verify[0]]["run"]
-        assert '[ "$RIG_SHA" != "$REVIEWED_SHA" ]' in steps[verify[0]]["run"]
 
 
-def test_completed_later_attempt_can_recover_an_older_retained_lock(env, monkeypatch):
-    owner = env[2]["lock_owner"]
-    source = {
-        "repository": {"full_name": rt.REPOSITORY},
-        "path": ".github/workflows/tier3-run.yaml",
-        "event": "workflow_dispatch",
-        "head_branch": "main",
-        "head_sha": owner["sha"],
-        "run_attempt": 2,
-        "status": "completed",
-    }
-    monkeypatch.setattr(cli.wf, "github_run", lambda _id: source)
-    cli.wf.verify_source(owner, completed=True)
-    with pytest.raises(rt.Failure):
-        cli.wf.verify_source(owner)
+def test_recovery_refuses_a_source_still_running_before_any_write(env, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(cli.wf, "github_run", lambda _id: {"status": "in_progress"})
+    args = SimpleNamespace(source_id=env[2]["lock_owner"]["github_run_id"])
+    serial = env[1].serial
+    with pytest.raises(rt.Failure, match="still active"):
+        cli.recover(args, env[1])
+    assert env[0].calls == []
+    assert env[1].serial == serial
 
 
 def test_reusing_a_run_id_fails_before_acquiring_a_lock(env, monkeypatch):
@@ -1521,7 +1541,7 @@ def test_reusing_a_run_id_fails_before_acquiring_a_lock(env, monkeypatch):
     monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.setenv("GITHUB_SHA", env[2]["sha"])
     env[1].write("runs/test-1310/approval.json", {"old": True})
-    args = SimpleNamespace(approve=cli.APPROVAL, sha=env[2]["sha"], run_id="test-1310")
+    args = SimpleNamespace(run_id="test-1310")
     with pytest.raises(rt.Failure, match="already has immutable"):
         cli.start(args, env[1])
     assert env[0].calls == []
@@ -1629,32 +1649,6 @@ def test_recorded_uid_cannot_be_transferred_to_identical_replacement(env):
     assert runner.env.roots["supervisor"]["uid"] == "supervisor-uid"
 
 
-@pytest.mark.parametrize("historical_status", ["completed", "in_progress"])
-def test_recovery_retry_checks_the_previous_attempt_ended(
-    env, monkeypatch, historical_status
-):
-    monkeypatch.setenv("GITHUB_RUN_ID", "456")
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
-    env[1].write(
-        "_control/recovery.json",
-        {"github_run_id": "456", "attempt": "1", "nonce": env[2]["nonce"]},
-    )
-    calls = []
-
-    def lookup(run_id, attempt=None):
-        calls.append((run_id, attempt))
-        return {"status": historical_status if attempt == "1" else "in_progress"}
-
-    monkeypatch.setattr(cli.wf, "github_run", lookup)
-    if historical_status == "completed":
-        cli.claim_recovery(env[1], env[2]["lock_owner"])
-        assert env[1].read("_control/recovery.json")[0]["attempt"] == "2"
-    else:
-        with pytest.raises(rt.Failure, match="active"):
-            cli.claim_recovery(env[1], env[2]["lock_owner"])
-    assert calls == [("456", None), ("456", "1")]
-
-
 def progress(
     run_id="test-1310",
     phase="initial",
@@ -1752,8 +1746,7 @@ def test_a_later_read_may_carry_a_startup_burst_and_a_full_one_still_stops(
     )
     supervisor.telemetry([], [pod])
     supervisor.telemetry([], [pod])
-    assert supervisor.log_bytes == 70365
-    with pytest.raises(rt.Failure, match="Log collection ceiling"):
+    with pytest.raises(rt.Failure, match="Log read would truncate"):
         supervisor.telemetry([], [pod])
     assert limits[0] is None and limits[1] is not None and limits[2] is not None
     assert any(
@@ -1927,9 +1920,8 @@ def test_a_pod_replaced_mid_poll_keeps_collecting_the_pods_behind_it(env, monkey
     monkeypatch.setattr(env[0], "logs", logs)
     env[0].data.pop(("Pod", rt.SYSTEM, pod["metadata"]["name"]))
     supervisor.telemetry([], [pod, other])
-    # The retired read is charged to nobody and leaves no resume window; the
-    # healthy Pod behind it is still collected.
-    assert supervisor.log_bytes == len(b"final log\n")
+    # The retired read leaves no resume window; the healthy Pod behind it is
+    # still collected.
     assert list(supervisor.log_since) == [other["metadata"]["uid"]]
 
 
@@ -2142,22 +2134,19 @@ def test_a_log_read_that_failed_for_another_reason_is_still_fatal(env, monkeypat
     assert not supervisor_records(env, "retired-pod-log-unavailable")
 
 
-def test_the_pod_ceiling_admits_the_replacement_slot_and_refuses_one_more(env):
-    """Five Pods is the four that run plus one replacement, and no more."""
+def test_the_audit_leaves_the_pod_count_to_the_quota(env):
+    """The ResourceQuota bounds the count; the audit checks what each Pod is."""
     runner, pod = prepared_supervisor(env)
-    for n in range(2, 6):
+    for n in range(2, 8):
         second_pod(env, pod, f"supervisor-pod-{n}")
     _items, pods = runner.cleanup.audit()
-    assert len(pods) == 5
-    second_pod(env, pod, "supervisor-pod-6")
-    with pytest.raises(rt.Failure, match="count ceiling"):
-        runner.cleanup.audit()
+    assert len(pods) == 7
 
 
 def test_initial_log_over_its_ceiling_is_not_silently_accepted(env, monkeypatch):
     supervisor, pod = prepared_supervisor(env)
     monkeypatch.setattr(env[0], "logs", lambda *_args: b"x" * rt.MIB)
-    with pytest.raises(rt.Failure, match="Log collection ceiling"):
+    with pytest.raises(rt.Failure, match="Log read would truncate"):
         supervisor.telemetry([], [pod])
     assert pod["metadata"]["uid"] not in supervisor.log_since
 
@@ -2444,7 +2433,7 @@ def test_google_token_refresh_does_not_forward_redirect():
 def test_approval_is_an_independent_frozen_snapshot(env):
     from dataclasses import FrozenInstanceError
 
-    value = rt.Approval.from_dict(env[2], env[3]())
+    value = rt.Approval.from_dict(env[2])
     with pytest.raises(FrozenInstanceError):
         value.run_id = "replacement"
     env[2]["namespaces"][rt.SMOKE]["uid"] = "replacement"
@@ -2468,14 +2457,10 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     assert match, timeout
     trial_minutes, smoke_minutes = (int(m) for m in match.groups())
     assert schedule.serial_budget <= smoke_minutes * 60
-    from flink_tier3.policy import BIGQUERY_CEILINGS
-
-    trial = rt.Schedule.for_window(env[3](), env[3]() + BIGQUERY_CEILINGS["seconds"])
+    trial = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS["bigquery-recovery"])
     assert trial.serial_budget <= trial_minutes * 60
-    from flink_tier3.policy import PUBSUB_CEILINGS
-
     # Pub/Sub takes the default timeout: its window is the smoke run's hour.
-    pubsub = rt.Schedule.for_window(env[3](), env[3]() + PUBSUB_CEILINGS["seconds"])
+    pubsub = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS["pubsub-recovery"])
     assert pubsub.serial_budget <= smoke_minutes * 60
     assert schedule.cleanup_at == schedule.expires_at - 900
     assert schedule.active_seconds(env[3]()) == 3420
@@ -2494,14 +2479,16 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     assert inputs["scenario"]["options"] == list(cli.SCENARIOS)
     assert inputs["trial"]["options"] == ["none", *bigquery_plan.TRIALS]
     assert inputs["trial"]["default"] == "none"
-    # The Pub/Sub phrase carries the reviewed trial's record count, so the form
-    # can only name its place; the ceilings around it are the policy's.
-    pubsub = cli.pubsub_phrase({"records_per_subscription": "R"})
-    assert inputs["approval"]["description"] == (
-        f"Type {cli.APPROVAL}, or "
-        f"{cli.BIGQUERY_APPROVAL}, or {pubsub} with the pubsub_trial file's "
-        "record count; spend is approved beforehand from the estimate"
-    )
+    # Dispatching is the approval: no phrase, expiry or second copy of the
+    # commit is typed.
+    assert set(inputs) == {
+        "scenario",
+        "run_id",
+        "application_digest",
+        "rig_sha",
+        "trial",
+        "pubsub_trial",
+    }
     assert (
         f"under {cli.PUBSUB_TRIALS}, without .toml"
         in (inputs["pubsub_trial"]["description"])
@@ -2509,8 +2496,9 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     assert inputs["pubsub_trial"]["default"] == ""
 
 
-def test_a_record_written_before_the_session_removal_is_still_read():
-    """Every scenario's record carried the session fields, empty, until #1723."""
+def test_a_record_written_before_a_field_removal_is_still_read():
+    """Every scenario's record carried the session fields, empty, until #1723,
+    and the supervisor claim until #1725."""
     written = {
         **rt.RunRecord("nonce", phase=rt.Phase.RUNNING).to_dict(),
         "queue_intent": False,
@@ -2520,6 +2508,9 @@ def test_a_record_written_before_the_session_removal_is_still_read():
         "operations": {},
         "exports": {},
         "evidence_bytes": 0,
+        "supervisor_pod": "pod-uid",
+        "supervisor_claimed_at": "2026-10-11T00:00:00Z",
+        "supervision_started": True,
     }
     assert rt.RunRecord.from_dict(written) == rt.RunRecord(
         "nonce", phase=rt.Phase.RUNNING
@@ -2703,7 +2694,7 @@ def test_runner_admits_after_supervisor_readiness_and_settles_once(
         actual = create(value, dry_run)
         if not dry_run and value["kind"] == "Job":
             env[0].put(pod)
-            claim_as_supervisor(env, pod)
+            heartbeat_as_supervisor(env, pod)
         if not dry_run and value["kind"] == "FlinkDeployment" and lost_response:
             raise rt.Failure("Lost application response")
         return actual
@@ -2814,7 +2805,7 @@ def ready_admission(env, monkeypatch, *, operator_ready=True):
         result = create(value, dry_run)
         if value["kind"] == "Job" and not dry_run:
             env[0].put(pod)
-            claim_as_supervisor(env, pod)
+            heartbeat_as_supervisor(env, pod)
         return result
 
     def requested(method, path, *args, **kwargs):
@@ -2863,9 +2854,11 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
     def stop():
         nonlocal interrupted
         interrupted = True
-        # A failure of the supervisor's own, not a signal: a signal leaves the
-        # run to the Job's replacement instead of stopping its admission.
-        supervisor.env.evidence_failed = True
+        # A failure of the supervisor's own stops its admission.
+        supervisor.env.evidence_failure = {
+            "operation": "observe",
+            "cause": "Failure: local",
+        }
         with pytest.raises(rt.Failure, match="Admission unfinished"):
             supervisor.supervise(pod["metadata"]["uid"])
         assert supervisor.env.refresh().phase == rt.Phase.READY
@@ -2952,17 +2945,14 @@ def test_supervisor_waits_for_uid_publication_before_application_audit(
     assert ("delete", "FlinkDeployment", application["metadata"]["uid"]) in env[0].calls
 
 
-def test_reviewed_policy_preserves_the_fixed_approval_contract():
-    assert rt.CEILINGS == {
-        "seconds": 3600,
-        "cleanup_seconds": 900,
-        "pods": 5,
-        "pvcs": 0,
-        "state_bytes": 1073741824,
-        "state_objects": 10000,
-        "log_bytes": 104857600,
-        "evidence_bytes": 104857600,
+def test_reviewed_policy_preserves_the_fixed_windows_and_shapes():
+    assert rt.WINDOWS == {
+        "smoke": 3600,
+        "bigquery-recovery": 5400,
+        "pubsub-recovery": 3600,
     }
+    assert CLEANUP_SECONDS == 900
+    assert STATE_OBJECTS == 10000
     assert rt.COST_RATES == {
         "cpu": Decimal("0.10"),
         "memory": Decimal("0.02"),
@@ -2973,12 +2963,10 @@ def test_reviewed_policy_preserves_the_fixed_approval_contract():
         "operator": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
         "supervisor": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "128Mi"},
     }
-    assert cli.APPROVAL == "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES"
 
 
-def test_supervisor_source_identity_covers_every_delivered_module_and_policy(tmp_path):
+def test_the_delivery_carries_every_module_the_supervisor_imports(tmp_path):
     import shutil
-    import sys
 
     source = Path(rt.__file__).parent
     shutil.copytree(
@@ -2986,12 +2974,8 @@ def test_supervisor_source_identity_covers_every_delivered_module_and_policy(tmp
         tmp_path / "flink_tier3",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
-    original = rt.delivery_digest(tmp_path / "flink_tier3")
-    cli.wf.save(tmp_path / "approval.json", {"delivery_sha256": original})
     package = tmp_path / "flink_tier3"
     delivered = rt.delivered_sources(package)
-    # The loop is driven by the function under test, so a bug that shrinks
-    # the delivery would otherwise shrink this test's coverage with it.
     assert {
         "runtime.py",
         "supervisor.py",
@@ -3010,48 +2994,17 @@ def test_supervisor_source_identity_covers_every_delivered_module_and_policy(tmp
         "environment.py",
         "policy.toml",
     } <= set(delivered)
-    paths = [package / name for name in sorted(delivered)]
-    for path in paths:
-        contents = path.read_bytes()
-        path.write_bytes(contents + b"\n# Changed after approval.\n")
-        assert rt.delivery_digest(package) != original, path
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "flink_tier3",
-                "supervisor",
-                "--directory",
-                str(tmp_path),
-            ],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "Supervisor source differs from approval" in result.stderr, (
-            path,
-            result.stderr,
-        )
-        path.write_bytes(contents)
-    assert rt.delivery_digest(package) == original
-    # The digest follows what the entrypoint can import, so a module no
-    # delivered module imports is neither covered nor delivered — and becomes
-    # both the moment a delivered module imports it, because that module moved.
+    # The delivery follows what the entrypoint can import: a module no
+    # delivered module imports is not delivered, and becomes delivered the
+    # moment a delivered module imports it.
     (package / "unreviewed.py").write_text("# Extra module.\n")
-    assert rt.delivery_digest(package) == original
     assert "unreviewed.py" not in rt.delivered_sources(package)
     runtime = package / "runtime.py"
-    reviewed = runtime.read_bytes()
-    runtime.write_bytes(reviewed + b"\nfrom . import unreviewed  # noqa: F401\n")
-    assert rt.delivery_digest(package) != original
+    runtime.write_bytes(
+        runtime.read_bytes() + b"\nfrom . import unreviewed  # noqa: F401\n"
+    )
     assert "unreviewed.py" in rt.delivered_sources(package)
-    runtime.write_bytes(reviewed)
-    # An undelivered module cannot change what the supervisor runs.
-    analyze = package / "analyze.py"
-    analyze.write_bytes(analyze.read_bytes() + b"\n# Changed after approval.\n")
-    assert rt.delivery_digest(package) == original
+    assert "analyze.py" not in delivered
 
 
 @pytest.mark.parametrize("changed_data", [False, True])
@@ -3156,13 +3109,15 @@ def test_cli_completed_recovery_reaches_idle_and_retains_lock_for_plans(
     assert (tmp_path / "recovered.json").exists()
     assert (tmp_path / "output").read_text() == "idle=true\n"
     assert env[1].read(rt.ENVIRONMENT)[0] == owner
-    assert env[1].read("_control/recovery.json")[0]["github_run_id"] == "456"
+    # The per-source concurrency group is the recovery claim; nothing else
+    # is written to claim the source.
+    assert env[1].read("_control/recovery.json")[0] is None
     assert bool(snapshots) == (not has_approval)
 
 
 @pytest.mark.parametrize("receipt", [False, True])
-def test_recovery_writes_the_minimal_record_outside_service_trials(env, receipt):
-    """A smoke retry compares only nonce and idle, so no receipt is restored."""
+def test_recovery_writes_a_minimal_cleaned_record(env, receipt):
+    """A retry keeps any receipt it finds, so nothing is restored from one."""
     runner = lifecycle(env, cli.runner_api.Runner)
     _, generation = env[1].read(runner.env.records.path)
     env[1].delete(runner.env.records.path, generation)
@@ -3255,10 +3210,8 @@ def test_cli_start_settles_once_after_the_last_admission_call(
 
     monkeypatch.setattr(env[0], "create", created)
     args = SimpleNamespace(
-        approve=cli.APPROVAL,
-        sha=owner["sha"],
+        rig_sha=None,
         run_id=env[2]["run_id"],
-        expires_at=env[2]["expires_at"],
         directory=tmp_path,
         kubeconfig=tmp_path / "kubeconfig",
     )
@@ -3333,6 +3286,12 @@ def test_supervisor_uid_evidence_failure_never_publishes_ready_heartbeat(
     assert record.stop_requested
     assert record.heartbeat is None
     assert record.evidence_failed
+    # #1683: the record says which write failed and why.
+    assert record.evidence_failure["operation"] == "observe"
+    assert (
+        "Transient supervisor UID evidence failure"
+        in (record.evidence_failure["cause"])
+    )
     assert not env[0].calls
     assert record.phase == rt.Phase.READY
     # bq1312-alo-50-a2's supervisor stopped admission and left no reason.
@@ -3351,7 +3310,9 @@ def test_supervisor_uid_evidence_failure_never_publishes_ready_heartbeat(
 def test_evidence_failure_wins_the_creation_intent_cas_race(env):
     runner = lifecycle(env, cli.runner_api.Runner)
     other = lifecycle(env)
-    env[1].before_write = other.env.records.mark_evidence_failed
+    env[1].before_write = lambda: other.env.records.mark_evidence_failed(
+        {"operation": "observe", "cause": "Failure: lost"}
+    )
     with pytest.raises(rt.Failure, match="admission has been stopped"):
         runner.create_application(app(env))
     assert env[1].conflicts == 1
@@ -3363,7 +3324,6 @@ def test_evidence_failure_wins_the_creation_intent_cas_race(env):
 # The start arguments `tier3-run.yaml` builds for each scenario.
 WORKFLOW_INPUTS = {
     "smoke": [],
-    "generic-recovery": [],
     "bigquery-recovery": [
         "--trial",
         "alo-10",
@@ -3386,12 +3346,6 @@ def start_argv(tmp_path, scenario, extra):
         "start",
         "--run-id",
         "cli-1481",
-        "--sha",
-        "b" * 40,
-        "--expires-at",
-        "2026-09-23T16:20:00Z",
-        "--approve",
-        "phrase",
         "--scenario",
         scenario,
         *extra,
@@ -3453,53 +3407,6 @@ def test_cli_start_accepts_the_inputs_the_workflow_passes(
     monkeypatch.setattr(sys, "argv", ["flink-tier3-lifecycle", *argv])
     with pytest.raises(Reached):
         cli.main()
-
-
-@pytest.mark.parametrize(
-    "scenario, extra",
-    [
-        ("bigquery-recovery", ["--trial", "alo-10"]),
-        ("bigquery-recovery", ["--application-digest", "sha256:" + "d" * 64]),
-        ("smoke", ["--application-digest", "sha256:" + "d" * 64]),
-        ("generic-recovery", ["--trial", "alo-10"]),
-        ("pubsub-recovery", ["--pubsub-trial", "example-wiring"]),
-        (
-            "pubsub-recovery",
-            [*WORKFLOW_INPUTS["pubsub-recovery"], "--trial", "alo-10"],
-        ),
-        (
-            "bigquery-recovery",
-            [*WORKFLOW_INPUTS["bigquery-recovery"], "--pubsub-trial", "x"],
-        ),
-        ("smoke", ["--pubsub-trial", "example-wiring"]),
-        (
-            "pubsub-recovery",
-            ["--pubsub-trial", "", "--application-digest", "sha256:" + "d" * 64],
-        ),
-        # Supplied but empty: still another scenario's input, or still missing.
-        ("smoke", ["--application-digest", ""]),
-        (
-            "bigquery-recovery",
-            ["--trial", "", "--application-digest", "sha256:" + "d" * 64],
-        ),
-    ],
-)
-def test_cli_start_refuses_another_scenarios_inputs_before_cloud_access(
-    monkeypatch, tmp_path, capsys, scenario, extra
-):
-    import sys
-
-    def cloud_access():
-        raise AssertionError("Argument rejection must precede cloud access")
-
-    monkeypatch.setattr(rt, "Storage", cloud_access)
-    monkeypatch.setattr(
-        sys, "argv", ["flink-tier3-lifecycle", *start_argv(tmp_path, scenario, extra)]
-    )
-    with pytest.raises(SystemExit) as error:
-        cli.main()
-    assert error.value.code == 2
-    assert f"{scenario} requires" in capsys.readouterr().err
 
 
 def test_cli_lock_acquire_requires_kind_before_cloud_access(
@@ -3772,63 +3679,44 @@ def test_cleaned_pubsub_record_allows_normal_settlement(env):
     assert env[1].read("runs/test-1310/result.json")[0]["pubsub"] == saved
 
 
-@pytest.mark.parametrize("previous", [None, {"stage": "cleaned", "resources": []}])
-def test_prior_receipt_without_matching_pubsub_observations_retains_control(
-    env, previous
-):
+@pytest.mark.parametrize("success", [False, True])
+def test_a_finalization_retry_keeps_the_receipt_it_finds(env, success):
+    """A failure past the receipt leaves it; the retry neither rewrites nor
+    second-guesses it, whatever the record restored for recovery says."""
     runner = lifecycle(env, cli.runner_api.Runner)
-
-    def cleaned(record):
-        record.pubsub = {"stage": "cleaned", "resources": [{"name": "owned-topic"}]}
-        record.stop_requested = True
-
-    runner.env.records._change(cleaned)
+    seed_record(env, phase="cleaned", idle=True)
+    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
     receipt = {
         "nonce": env[2]["nonce"],
         "sha": env[2]["sha"],
         "idle": True,
-        "success": False,
-        "plans": {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True},
+        "success": success,
+        "plans": plans,
+        "pubsub": {"stage": "cleaned", "resources": []},
     }
-    if previous is not None:
-        receipt["pubsub"] = previous
     path = "runs/test-1310/result.json"
-    generation = env[1].write(path, receipt)
-    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-    with pytest.raises(rt.Failure, match="Final receipt conflicts"):
-        runner.finalize(plans)
-    assert env[1].read(rt.ENVIRONMENT)[0] is not None
-    assert env[1].read(runner.env.records.path)[0] is not None
-    receipt["pubsub"] = runner.env.refresh().pubsub
-    env[1].write(path, receipt, generation)
-    assert runner.finalize(plans) is False
+    env[1].write(path, receipt)
+    assert runner.finalize(plans) is success
+    assert env[1].read(path)[0] == receipt
     assert env[1].read(rt.ENVIRONMENT)[0] is None
     assert env[1].read(runner.env.records.path)[0] is None
-    assert env[1].read(path)[0] == receipt
 
 
-def test_prior_pubsub_receipt_with_missing_control_snapshot_retains_lock(env):
+def test_a_receipt_of_another_run_refuses_finalization(env):
     runner = lifecycle(env, cli.runner_api.Runner)
+    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
     env[1].write(
         "runs/test-1310/result.json",
-        {
-            "nonce": env[2]["nonce"],
-            "idle": True,
-            "success": False,
-            "pubsub": {"stage": "cleaned", "resources": []},
-            "sha": env[2]["sha"],
-            "plans": {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True},
-        },
+        {"nonce": "f" * 32, "idle": True, "success": True, "plans": plans},
     )
     with pytest.raises(rt.Failure, match="Final receipt conflicts"):
-        runner.finalize(
-            {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-        )
+        runner.finalize(plans)
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     assert env[1].read(runner.env.records.path)[0] is not None
 
 
-def test_pubsub_finalization_retains_control_changed_during_receipt_write(env):
+def test_finalization_keeps_a_record_changed_after_its_receipt_was_derived(env):
+    """The record is deleted only at the generation the receipt came from."""
     runner = lifecycle(env, cli.runner_api.Runner)
 
     def cleaned(record):
@@ -3837,43 +3725,16 @@ def test_pubsub_finalization_retains_control_changed_during_receipt_write(env):
 
     runner.env.records._change(cleaned)
     env[1].before_write = lambda: runner.env.records._change(
-        lambda record: record.pubsub.update(stage="cleaning")
+        lambda record: setattr(record, "reason", "late write")
     )
     plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-    with pytest.raises(
-        rt.Failure, match="Run control changed during service finalization"
-    ):
+    with pytest.raises(rt.ApiError) as refused:
         runner.finalize(plans)
-    assert runner.env.refresh().pubsub["stage"] == "cleaning"
+    assert refused.value.status == 412
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
-    runner.env.records._change(cleaned)
+    assert runner.env.refresh().reason == "late write"
     assert runner.finalize(plans) is False
     assert env[1].read(rt.ENVIRONMENT)[0] is None
-
-
-def test_pubsub_retry_refuses_success_receipt_invalidated_by_evidence_failure(env):
-    runner = lifecycle(env, cli.runner_api.Runner)
-
-    def cleaned(record):
-        record.pubsub = {"stage": "cleaned", "resources": []}
-        record.stop_requested = True
-        record.success = True
-
-    runner.env.records._change(cleaned)
-    env[1].before_write = lambda: runner.env.records._change(
-        lambda record: setattr(record, "evidence_failed", True)
-    )
-    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-    with pytest.raises(
-        rt.Failure, match="Run control changed during service finalization"
-    ):
-        runner.finalize(plans)
-    assert env[1].read("runs/test-1310/result.json")[0]["success"] is True
-    assert runner.env.refresh().evidence_failed
-    with pytest.raises(rt.Failure, match="Final receipt conflicts"):
-        runner.finalize(plans)
-    assert env[1].read(rt.ENVIRONMENT)[0] is not None
-    assert runner.env.refresh().evidence_failed
 
 
 @pytest.mark.parametrize(

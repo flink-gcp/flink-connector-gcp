@@ -25,7 +25,6 @@ from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle, require_pubsub_clean
 from flink_tier3.records import Records
 
-from .. import test_lifecycle as settlement
 from .test_lifecycle import Environment
 from .test_messages import Http, Response, output
 from .test_resources import FakeIamHttp
@@ -56,7 +55,7 @@ def setup(request):
     now = [1800000000]
     env.clock = lambda: now[0]
     env.schedule = SimpleNamespace(cleanup_at=now[0] + 200, expires_at=now[0] + 300)
-    env.stopping = env.evidence_failed = False
+    env.stopping, env.evidence_failure = False, None
     http, guards = Service(), []
     tokens = {"runner": "b" * 32, "supervisor": "c" * 32}
 
@@ -167,7 +166,10 @@ def test_each_admission_condition_alone_closes_message_traffic(setup, closed):
     if closed == "recorded-evidence":
         env.records._change(lambda r: setattr(r, "evidence_failed", True))
     elif closed == "local-evidence":
-        runner.env.evidence_failed = supervisor.env.evidence_failed = True
+        runner.env.evidence_failure = supervisor.env.evidence_failure = {
+            "operation": "observe",
+            "cause": "Failure: local",
+        }
     else:
         env.records._change(lambda r: r.pubsub.update(stage="cleaning"))
     assert not env.refresh().stop_requested
@@ -215,6 +217,12 @@ def test_evidence_failure_stops_current_and_restarted_actors(setup, failure):
         supervisor.collect("one", max_messages=1)
     assert supervisor.env.evidence_failed
     assert env.refresh().evidence_failed
+    # The cause reaches the control record with the flag, for the receipt.
+    failure = env.refresh().evidence_failure
+    assert failure["operation"] == "pubsub-message-evidence"
+    assert failure["actor"] == "supervisor"
+    assert failure["cause"] == "Failure: response upload failed"
+    assert supervisor.env.evidence_failure == failure
     env.store.write = original
     # The failed call keeps its marker, because nothing settled it; the runner
     # is refused by the stop that failure wrote.
@@ -244,6 +252,8 @@ def test_failed_failure_record_keeps_local_latch_and_reports_restart_barrier(set
     with pytest.raises(Failure, match="stop actors independently before restarting"):
         supervisor.collect("one", max_messages=1)
     assert supervisor.env.evidence_failed and not env.refresh().evidence_failed
+    assert env.refresh().evidence_failure is None
+    assert supervisor.env.evidence_failure["operation"] == "pubsub-message-evidence"
     with pytest.raises(Failure, match="unresolved"):
         supervisor.collect("two", max_messages=1)
     assert len(http.messages.calls) == 1
@@ -461,7 +471,7 @@ def test_old_finish_retry_does_not_clear_a_newer_unresolved_call(setup):
 
 
 @pytest.mark.parametrize("failure", ["transport", "evidence"])
-def test_failed_call_needs_reclamation_and_preserves_its_identity(setup, failure):
+def test_failed_call_keeps_its_marker_and_blocks_cleanup(setup, failure):
     make, env, http, _, _ = setup
     if failure == "transport":
         http.messages.responses.append(requests.Timeout())
@@ -476,19 +486,13 @@ def test_failed_call_needs_reclamation_and_preserves_its_identity(setup, failure
     with pytest.raises(Failure, match="released"):
         make("supervisor").cleanup(lambda: True)
     assert not deletions(http)
-    env.store.fail_evidence = False
-    observed = []
-
-    def prove(snapshot):
-        observed.append(snapshot)
-        return True
-
-    make("supervisor", "d" * 32).reclaim(prove)
-    assert observed[0]["actors"]["runner"]["inflight"] == marker
-    assert actors(env)["runner"]["fenced_call"] == marker
-    assert all(a["released"] and a["inflight"] is None for a in actors(env).values())
-    assert not http.resources.resources
-    require_pubsub_clean(env.refresh())
+    # Nothing reclaims the call: its marker, and with it the lock, stays for
+    # an operator.
+    assert actors(env)["runner"]["inflight"] == marker
+    if failure == "evidence":
+        recorded = env.refresh().evidence_failure
+        assert recorded["operation"] == "pubsub-message-evidence"
+        assert recorded["cause"] == "Failure: Evidence unavailable"
 
 
 def test_service_cleanup_cannot_bypass_unreleased_handoff(setup):
@@ -515,30 +519,8 @@ def test_cooperative_cleanup_requires_both_actors_and_external_barrier(setup):
     assert env.refresh().pubsub["stage"] == "cleaned"
 
 
-@pytest.mark.parametrize("proof", [False, None, 1])
-def test_reclamation_requires_exact_true_before_any_service_delete(setup, proof):
-    make, _, http, _, _ = setup
-    with pytest.raises(Failure, match="unproven"):
-        make("supervisor", "d" * 32).reclaim(lambda snapshot: proof)
-    assert not deletions(http)
-
-
-def test_reclamation_refuses_actor_change_during_proof(setup):
-    make, env, http, _, _ = setup
-
-    def prove(snapshot):
-        make().release()
-        return True
-
-    with pytest.raises(Failure, match="changed during"):
-        make("supervisor").reclaim(prove)
-    assert actors(env)["runner"]["released"]
-    assert not actors(env)["supervisor"]["released"]
-    assert not deletions(http)
-
-
 @pytest.mark.parametrize("setup", [False], indirect=True)
-def test_ambiguous_preparation_can_only_be_reclaimed_after_external_proof(setup):
+def test_ambiguous_preparation_keeps_its_marker_and_resources(setup):
     make, env, http, _, _ = setup
 
     def lost(method, name):
@@ -551,43 +533,11 @@ def test_ambiguous_preparation_can_only_be_reclaimed_after_external_proof(setup)
     marker = copy.deepcopy(actors(env)["runner"]["inflight"])
     assert marker["operation"] == "prepare" and len(http.resources.resources) == 1
     http.resources.after = lambda *args: None
-    make("supervisor", "d" * 32).reclaim(lambda snapshot: True)
-    assert not http.resources.resources
-    assert actors(env)["runner"]["fenced_call"] == marker
+    with pytest.raises(Failure, match="released"):
+        make("supervisor").cleanup(lambda: True)
+    assert len(http.resources.resources) == 1 and not deletions(http)
+    assert actors(env)["runner"]["inflight"] == marker
     assert actors(env)["supervisor"] is None
-
-
-final_env = settlement.env
-
-
-def test_final_receipt_preserves_reclaimed_call_identity(setup, final_env):
-    make, env, http, _, _ = setup
-    http.messages.responses.append(requests.Timeout())
-    with pytest.raises(TransportError):
-        make().publish(0, 0, 1)
-    marker = copy.deepcopy(actors(env)["runner"]["inflight"])
-    make("supervisor", "d" * 32).reclaim(lambda snapshot: True)
-    saved = env.refresh().pubsub
-    runner = settlement.lifecycle(final_env, settlement.cli.runner_api.Runner)
-    runner.cleanup.scale_operator(1)
-
-    def attach(record):
-        record.pubsub = copy.deepcopy(saved)
-        record.stop_requested = True
-
-    runner.env.records._change(attach)
-    runner.cleanup.scale_operator(0)
-    runner.finalize(
-        {
-            "nonce": final_env[2]["nonce"],
-            "roots": settlement.cli.wf.ROOTS,
-            "empty": True,
-        }
-    )
-    receipt = final_env[1].read("runs/test-1310/result.json")[0]
-    assert receipt["pubsub"] == saved
-    assert receipt["pubsub"]["handoff"]["actors"]["runner"]["fenced_call"] == marker
-    assert final_env[1].read(runner.env.records.path)[0] is None
 
 
 def test_exhausted_finish_acknowledgements_leave_call_unresolved(setup):
@@ -654,18 +604,6 @@ def test_unclaimed_supervisor_cannot_join_after_runner_release(setup):
     assert actors(env)["supervisor"] is None and not http.resources.resources
 
 
-def test_no_actor_can_resume_after_external_reclamation(setup):
-    make, _, http, _, _ = setup
-    make("supervisor", "d" * 32).reclaim(lambda snapshot: True)
-    for role in ("runner", "supervisor"):
-        with pytest.raises(Failure, match="released"):
-            if role == "runner":
-                make().publish(0, 0, 1)
-            else:
-                make("supervisor").collect("one", max_messages=1)
-    assert not http.messages.calls
-
-
 @pytest.mark.parametrize("setup", [False], indirect=True)
 def test_binding_cannot_adopt_prepared_resources(setup):
     make, env, _, _, _ = setup
@@ -675,18 +613,6 @@ def test_binding_cannot_adopt_prepared_resources(setup):
         make().initialize()
     # A pre-existing prepared resource set cannot be adopted by this protocol.
     assert "handoff" not in env.refresh().pubsub
-
-
-def test_reclamation_proof_does_not_mutate_the_compared_snapshot(setup):
-    make, env, _, _, _ = setup
-    tokens = {role: actor["token"] for role, actor in actors(env).items()}
-
-    def prove(snapshot):
-        snapshot["actors"].clear()
-        return True
-
-    make("supervisor", "d" * 32).reclaim(prove)
-    assert {role: actor["token"] for role, actor in actors(env).items()} == tokens
 
 
 @pytest.mark.parametrize("setup", [False], indirect=True)
@@ -699,7 +625,10 @@ def test_local_stop_or_deadline_refuses_preparation_without_call_marker(setup, c
     elif change == "stop":
         runner.env.stopping = True
     else:
-        runner.env.evidence_failed = True
+        runner.env.evidence_failure = {
+            "operation": "observe",
+            "cause": "Failure: local",
+        }
     with pytest.raises(Failure, match="expired or stopped"):
         runner.initialize()
     with pytest.raises(Failure, match="expired or stopped"):

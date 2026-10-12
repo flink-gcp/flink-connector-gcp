@@ -94,8 +94,7 @@ class OutputCollector:
 
     Every pull is a call the handoff marks, and leaves the message helper's
     evidence. The parsed observations are kept in this process for
-    the exercise; they are not the evidence, and a replacement supervisor,
-    which never collects, does not rebuild them. Batch IDs carry a random
+    the exercise; they are not the evidence. Batch IDs carry a random
     prefix per collector, because the evidence they name is create-only, so
     two collectors collide only if their prefixes do.
     """

@@ -31,8 +31,8 @@ from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, 
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
-from ..test_lifecycle import claim_as_supervisor, obj, rt, supervisor_pod
 from ..test_lifecycle import env as env  # noqa: PLC0414
+from ..test_lifecycle import heartbeat_as_supervisor, obj, rt, supervisor_pod
 from .test_lifecycle import Resources
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
@@ -746,7 +746,7 @@ def test_runner_provisions_before_application_admission(prepared, monkeypatch, f
                 ),
                 result,
             )
-            claim_as_supervisor(
+            heartbeat_as_supervisor(
                 (
                     kube,
                     environment.store,
@@ -820,25 +820,6 @@ def test_runner_refuses_binding_drift_before_mutation(prepared, fault):
     assert resources.calls == []
     assert environment.kube.calls == []
     assert environment.store.data == before
-
-
-@pytest.mark.parametrize("actor,limit", [("runner", 8), ("supervisor", 80)])
-def test_query_reservation_reduces_actor_receipt_budget(
-    prepared, monkeypatch, actor, limit
-):
-    environment, *_ = prepared
-    monkeypatch.setattr(
-        environment.store, "objects", lambda _prefix: [{"size": limit * MIB}]
-    )
-    with pytest.raises(Failure, match="evidence ceiling"):
-        environment.records.evidence("test", {}, actor)
-
-
-def test_wrong_upgrade_hash_refused_at_construction(prepared):
-    environment, _, upgrade, _ = prepared
-    upgrade["spec"]["job"]["args"][3] = "wrong"
-    with pytest.raises(Failure, match="approved upgrade"):
-        BigQueryExercise(environment, upgrade)
 
 
 def test_input_may_start_after_the_admission_budget(prepared):
@@ -991,7 +972,6 @@ def test_failed_admission_keeps_supervisor_for_released_cleanup(
                     actual,
                 )
             )
-            observer_env.records.claim_supervisor(pods[-1]["metadata"]["uid"])
             observer_env.records.heartbeat()
         if (
             value["kind"] == "FlinkDeployment"

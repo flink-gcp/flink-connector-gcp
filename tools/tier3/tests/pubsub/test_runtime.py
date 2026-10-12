@@ -23,8 +23,8 @@ import requests
 from flink_tier3.cleanup import Cleanup, verify_idle
 from flink_tier3.common import Failure, TransportError, digest
 from flink_tier3.environment import Environment
-from flink_tier3.model import Approval, Phase
-from flink_tier3.policy import BIGQUERY, PUBSUB, PUBSUB_STATE, inventory_namespaces
+from flink_tier3.model import Approval, Phase, validate_approval
+from flink_tier3.policy import PUBSUB, PUBSUB_STATE
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle, require_pubsub_clean
 from flink_tier3.runner import Runner
@@ -67,7 +67,7 @@ def compose(env, stage, *, records=1000):
         },
     }
     # Internal composition only: the serialized value is deliberately not a
-    # valid runnable approval. A separate test asserts that admission refuses it.
+    # valid runnable approval. A separate test asserts that dispatch refuses it.
     approval = replace(
         approved_smoke,
         scenario="pubsub-recovery",
@@ -262,7 +262,6 @@ def test_unresolved_publication_blocks_common_cleanup_without_auto_reclamation(r
     with pytest.raises(Failure, match="Bounded wait"):
         cleanup.finish_pubsub(a.clock() + 30)
     assert actors(a.sender.env)["runner"]["inflight"] == marker
-    assert actors(a.sender.env)["runner"]["fenced_call"] is None
     assert (
         not deletions(a.service) and checkpoint_exists(a) and operator_replicas(a) == 1
     )
@@ -310,12 +309,12 @@ def test_abort_before_supervisor_join_can_release_and_clean_empty_intent(runtime
 
 
 def test_replacement_supervisor_cannot_implicitly_release_original_actor(runtime):
-    """Without a proof that the former Pod ended, the replacement only waits."""
+    """Another supervisor process's token cannot release the bound one."""
     a = runtime
     a.sender.release()
     replacement = a.make("supervisor", "d" * 32)
     cleanup = Cleanup(replacement.env, pubsub=replacement, quiesce=lambda: True)
-    with pytest.raises(Failure, match="Bounded wait expired"):
+    with pytest.raises(Failure, match="process identity changed"):
         cleanup.finish_pubsub(a.clock() + 30)
     assert not deletions(a.service)
     assert not actors(a.sender.env)["supervisor"]["released"]
@@ -369,11 +368,8 @@ def test_namespace_routing_and_unguarded_actors_do_not_admit(runtime):
     assert runner.cleanup.state_prefixes() == [
         ("runs/" + a.approval.run_id + "/", PUBSUB_STATE)
     ]
-    assert PUBSUB in inventory_namespaces(PUBSUB)
-    for previous in (rt.SMOKE, "tier3-cloudtasks", BIGQUERY):
-        assert PUBSUB not in inventory_namespaces(previous)
-    with pytest.raises(Failure, match="Invalid run approval identity"):
-        Approval.from_dict(a.approval.to_dict())
+    with pytest.raises(Failure, match="must pin its own upgrade manifest"):
+        validate_approval(a.approval.to_dict())
     calls = list(a.kube.calls)
     # The internal fixture's handoff has no production guard.
     with pytest.raises(Failure, match="authenticated, guarded handoff"):
@@ -420,13 +416,12 @@ def test_unresolved_supervisor_pull_is_not_released_by_common_cleanup(runtime):
             "failed pull"
         )
     assert actors(a.sender.env)["supervisor"]["inflight"] == marker
-    assert actors(a.sender.env)["supervisor"]["fenced_call"] is None
     assert (
         not deletions(a.service) and checkpoint_exists(a) and operator_replicas(a) == 1
     )
 
 
-def test_pubsub_kubernetes_inventory_keeps_legacy_scenarios_unchanged():
+def test_pubsub_kubernetes_inventory_lists_the_pubsub_namespace():
     from flink_tier3.kubernetes import Kubernetes
 
     calls = []
@@ -438,11 +433,8 @@ def test_pubsub_kubernetes_inventory_keeps_legacy_scenarios_unchanged():
 
     client = Kubernetes("https://kubernetes.invalid", Http())
     assert client.path("Pod", PUBSUB).endswith("/namespaces/tier3-pubsub/pods")
-    assert client.inventory(PUBSUB) == []
+    assert client.inventory() == []
     assert any("/namespaces/tier3-pubsub/" in url for _, url in calls)
-    calls.clear()
-    assert client.inventory(BIGQUERY) == []
-    assert not any("/namespaces/tier3-pubsub/" in url for _, url in calls)
 
 
 @pytest.mark.parametrize("runtime", ["uninitialized"], indirect=True)
@@ -473,24 +465,21 @@ def test_initialization_crash_has_no_partial_binding_and_can_settle(runtime, bou
     assert len(attempts) == 1
     replacement = a.make("supervisor", "d" * 32)
     state = replacement.env.refresh().pubsub
-    if boundary == "before":
-        assert state is None
-    else:
+    cleanup = Cleanup(replacement.env, pubsub=replacement, quiesce=lambda: True)
+    if boundary == "after":
+        # The crashed runner's binding is never released, so cleanup keeps
+        # the state, the Operator and the lock for an operator.
         assert state["handoff"]["actors"]["runner"]["token"] == "b" * 32
         assert state["handoff"]["actors"]["supervisor"] is None
-        with pytest.raises(Failure, match="quiescence is unproven"):
-            replacement.reclaim(lambda _snapshot: False)
+        with pytest.raises(Failure, match="Bounded wait expired"):
+            cleanup.run("crash")
+        assert not actors(replacement.env)["runner"]["released"]
         assert checkpoint_exists(a) and operator_replicas(a) == 1
-        proofs = []
-
-        def fenced(snapshot):
-            proofs.append(snapshot)
-            return True
-
-        replacement.reclaim(fenced)
-        assert proofs[0]["actors"]["runner"]["token"] == "b" * 32
-        assert actors(replacement.env)["runner"]["released"]
-    Cleanup(replacement.env, pubsub=replacement, quiesce=lambda: True).run("crash")
+        assert not replacement.env.refresh().idle
+        assert not a.service.resources.calls and not a.service.messages.calls
+        return
+    assert state is None
+    cleanup.run("crash")
     assert replacement.env.refresh().phase == Phase.CLEANED
     assert not checkpoint_exists(a) and operator_replicas(a) == 0
     assert verify_idle(replacement.env)

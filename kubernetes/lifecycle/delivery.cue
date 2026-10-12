@@ -21,13 +21,13 @@ import (
 	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 )
 
-runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                       @tag(run_id)
-nonce:            string & =~"^[0-9a-f]{32}$"                                             @tag(nonce)
-expires:          time.Time                                                               @tag(expires_at)
-approval:         *"{}" | string                                                          @tag(approval)
-activeSeconds:    int & >0                                                                @tag(active_seconds,type=int)
-scenario:         *"smoke" | "generic-recovery" | "bigquery-recovery" | "pubsub-recovery" @tag(scenario)
-applicationImage: *"" | string                                                            @tag(application_image)
+runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"  @tag(run_id)
+nonce:            string & =~"^[0-9a-f]{32}$"                        @tag(nonce)
+expires:          time.Time                                          @tag(expires_at)
+approval:         *"{}" | string                                     @tag(approval)
+activeSeconds:    int & >0                                           @tag(active_seconds,type=int)
+scenario:         *"smoke" | "bigquery-recovery" | "pubsub-recovery" @tag(scenario)
+applicationImage: *"" | string                                       @tag(application_image)
 // Shared offline proposal document for BigQuery and Pub/Sub.
 proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
@@ -40,8 +40,8 @@ packageSources: {
 	[=~"^[a-z0-9_]+(/[a-z0-9_]+)*[.](py|toml)$"]: string
 }
 
-// A smoke run is bounded by one 60-minute approval, a BigQuery trial by its 90-minute one.
-if scenario == "smoke" || scenario == "generic-recovery" || scenario == "pubsub-recovery" {activeSeconds: <=3420}
+// A smoke run and a Pub/Sub trial have a 60-minute window, a BigQuery trial a 90-minute one.
+if scenario == "smoke" || scenario == "pubsub-recovery" {activeSeconds: <=3420}
 if scenario == "bigquery-recovery" {activeSeconds: <=5220}
 
 upgradeApplication: _
@@ -68,7 +68,7 @@ delivery: resources: {
 			}
 			"approval.json": approval
 			// application.json is declared by the selected scenario file.
-			if scenario == "generic-recovery" || scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
+			if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
 		}
 	}
 	supervisor: {
@@ -78,17 +78,10 @@ delivery: resources: {
 		spec: {
 			parallelism: 1
 			completions: 1
-			// The infrastructure can take the supervisor Pod away; kube-dns has
-			// preempted it within its first half minute. A disrupted Pod is
-			// replaced, twice at most and only once it is terminal; any other
-			// failure ends the Job. The control record's claim fences the Pod
-			// a replacement displaces.
-			backoffLimit: 2
-			podFailurePolicy: rules: [
-				{action: "Count", onPodConditions: [{type: "DisruptionTarget", status: "True"}]},
-				{action: "FailJob", onExitCodes: {containerName: "supervisor", operator: "NotIn", values: [0]}},
-			]
-			podReplacementPolicy:  "Failed"
+			// No Pod is replaced: a supervisor the infrastructure takes away
+			// ends the Job, the runner settles the run and the owner
+			// redispatches it.
+			backoffLimit:          0
 			activeDeadlineSeconds: activeSeconds
 			template: {
 				metadata: sharedMetadata & {
@@ -133,7 +126,7 @@ delivery: resources: {
 						{key: "approval.json", path: "approval.json"},
 						{key: "application.json", path: "application.json"},
 						if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "proposal.json", path: "proposal.json"}},
-						if scenario == "generic-recovery" || scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
+						if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
 					]}}]
 				}
 			}

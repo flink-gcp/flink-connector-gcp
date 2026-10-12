@@ -17,7 +17,6 @@
 from contextlib import contextmanager
 
 from ..common import Failure
-from ..model import validate_approval
 from ..policy import HTTP_TIMEOUT
 from .access import admission_until
 
@@ -35,10 +34,9 @@ class PubSubGuard:
     """The production ``before_operation`` for one Pub/Sub actor.
 
     A Pub/Sub request is refused when it would start within the session's
-    request budget of the current deadline, or when the approval no longer
-    validates. That budget ends at the response's headers; a streamed body is
-    bounded only by the transport's per-read timeout and the helpers' 1 MiB
-    response cap, not by the deadline. The deadline is the admission
+    request budget of the current deadline. That budget ends at the
+    response's headers; a streamed body is bounded only by the transport's
+    per-read timeout and the helpers' 1 MiB response cap, not by the deadline. The deadline is the admission
     deadline unless a caller holds another with ``until``; message traffic
     belongs to the exercise and holds ``cleanup_at``, and cleanup holds none,
     because it must stay usable after both. Control and storage operations
@@ -68,4 +66,3 @@ class PubSubGuard:
         now = self.env.clock()
         if now + HTTP_TIMEOUT > self.deadline:
             raise Failure("Pub/Sub request is too close to its deadline")
-        validate_approval(self.env.approval.to_dict(), now)

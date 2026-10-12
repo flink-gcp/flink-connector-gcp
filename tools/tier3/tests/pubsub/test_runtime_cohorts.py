@@ -368,7 +368,9 @@ def ended(a):
 
 
 def evidence_failed(a):
-    a.observer.env.records.mark_evidence_failed()
+    a.observer.env.records.mark_evidence_failed(
+        {"operation": "synthetic", "cause": "evidence lost"}
+    )
 
 
 def left_running(a):

@@ -20,14 +20,11 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3 import approval_bundle
 from flink_tier3 import lifecycle as cli
-from flink_tier3.bigquery import bundle as bundles
 from flink_tier3.bigquery import plan
-from flink_tier3.bundle import delivery_digest, source_digest
-from flink_tier3.common import Failure
-from flink_tier3.model import Approval, validate_approval
-from flink_tier3.policy import BIGQUERY, BIGQUERY_CEILINGS, SMOKE
+from flink_tier3.common import Failure, digest
+from flink_tier3.model import APPROVAL_VERSION, Approval, validate_approval
+from flink_tier3.policy import BIGQUERY, MIB, SMOKE, WINDOWS
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414
@@ -37,11 +34,9 @@ from .test_runtime_approval import prepared as prepared  # noqa: PLC0414
 
 DIGEST = "sha256:" + "d" * 64
 SHA = "e" * 40
-# Inside both pricing reviews, so the approval model admits it; frozen so the
-# suite does not start failing the day those reviews age out.
+# Frozen, so every window and deadline below is a literal comparison.
 NOW = cli.rt.timestamp("2026-09-21T00:00:00Z")
-WINDOW = BIGQUERY_CEILINGS["seconds"]
-EXPIRY = cli.rt.utc(NOW + WINDOW + 60)
+WINDOW = WINDOWS["bigquery-recovery"]
 # The real collaborators, before any fixture replaces them.
 RUNNER_FOR = cli.runner_for
 ENVIRONMENT_LOCK = cli.rt.EnvironmentLock
@@ -76,17 +71,11 @@ def args(tmp_path, **overrides):
         "trial": "eo-10",
         "application_digest": DIGEST,
         "run_id": "bq-1424-0001",
-        "sha": SHA,
-        "expires_at": EXPIRY,
         "kubeconfig": tmp_path / "kubeconfig",
         "directory": tmp_path,
     }
     value.update(overrides)
     return SimpleNamespace(**value)
-
-
-def test_the_phrase_names_the_run_and_no_amount():
-    assert cli.BIGQUERY_APPROVAL == "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES"
 
 
 def test_the_trial_resolves_from_its_name_and_the_live_digest(reviewed, tmp_path):
@@ -110,38 +99,21 @@ def test_a_trial_that_does_not_resolve_is_refused(reviewed, tmp_path, change, ma
         cli.trial_inputs(args(tmp_path, **change))
 
 
-@pytest.mark.parametrize("slack", [0, 1, 599, 600])
-def test_the_window_starts_at_admission_and_ends_by_the_typed_expiry(slack):
-    started, end = cli.service_window(
-        NOW + 0.7, cli.rt.utc(NOW + WINDOW + slack), WINDOW, "BigQuery"
-    )
+def test_the_window_starts_at_admission_and_lasts_the_scenario_window(monkeypatch):
+    monkeypatch.setattr(cli.time, "time", lambda: NOW + 0.7)
+    started, end = cli.window(WINDOW)
     # Whole seconds, and never after the moment it was admitted.
     assert started == NOW
-    assert end == NOW + WINDOW
-
-
-@pytest.mark.parametrize("slack", [-1, 601])
-def test_an_expiry_that_would_not_bound_the_run_is_refused(slack):
-    """Earlier than the run's own end outlasts the approval; much later misleads."""
-    with pytest.raises(Failure, match="90 to 100 minutes"):
-        cli.service_window(NOW, cli.rt.utc(NOW + WINDOW + slack), WINDOW, "BigQuery")
+    assert end == NOW + WINDOW == NOW + 5400
 
 
 @pytest.mark.parametrize(
     "change, env_change, match",
     [
-        ({"approve": cli.APPROVAL}, {}, "explicitly approve"),
-        # The old phrase carried an amount; it no longer approves anything.
-        (
-            {"approve": "APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES, USD 3.00"},
-            {},
-            "explicitly approve",
-        ),
-        ({"sha": "f" * 40}, {}, "explicitly approve"),
-        ({}, {"GITHUB_REF": "refs/heads/feature"}, "explicitly approve"),
+        ({}, {"GITHUB_REF": "refs/heads/feature"}, "run from main"),
+        ({"rig_sha": "f" * 39}, {}, "exact rig commit"),
         ({"trial": "none"}, {}, "one of alo-10"),
         ({"run_id": "Not A Run"}, {}, "Invalid run ID"),
-        ({"expires_at": cli.rt.utc(NOW + WINDOW - 1)}, {}, "90 to 100 minutes"),
     ],
 )
 def test_a_dispatch_is_refused_before_it_touches_the_cluster_or_the_store(
@@ -151,7 +123,7 @@ def test_a_dispatch_is_refused_before_it_touches_the_cluster_or_the_store(
     for key, value in env_change.items():
         monkeypatch.setenv(key, value)
     before = copy.deepcopy(store.data)
-    value = args(tmp_path, approve=cli.BIGQUERY_APPROVAL)
+    value = args(tmp_path)
     for key, item in change.items():
         setattr(value, key, item)
     with pytest.raises(Failure, match=match):
@@ -168,7 +140,7 @@ def test_a_reused_run_id_is_refused_before_it_touches_the_cluster(
     _, store, *_ = env
     store.write("runs/bq-1424-0001/approval.json", {"old": True})
     with pytest.raises(Failure, match="already has immutable"):
-        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), store)
+        cli.start(args(tmp_path), store)
     assert dispatching == []
 
 
@@ -191,8 +163,6 @@ class Recorded:
 def cluster(env, reviewed, renderer, dispatching, monkeypatch):
     """Everything outside the rig faked at its boundary, the rig itself real."""
     kube, store, reference, _ = env
-    monkeypatch.setattr(plan, "source_digest", source_digest)
-    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
     monkeypatch.setattr(cli, "external", lambda kubeconfig, idle=False: kube)
     monkeypatch.setattr(
         cli.bootstrap,
@@ -234,17 +204,14 @@ def cluster(env, reviewed, renderer, dispatching, monkeypatch):
 
 
 def install(monkeypatch, fail=None, enter=None):
-    """A runner factory that checks the bundle it is handed, as the real one does."""
+    """A runner factory that records the application it is handed."""
     seen = {}
 
     @contextmanager
-    def runner(env, bundle, *, runner_token, credentials=None):
+    def runner(env, application, *, runner_token, credentials=None):
         if enter:
             raise Failure(enter)
-        # The bundle dispatch hands over must be the one this approval admits:
-        # the real factory re-renders and compares it byte for byte.
-        bundles.validate(bundle, env.approval.to_dict())
-        seen.update(env=env, bundle=bundle, token=runner_token)
+        seen.update(env=env, application=application, token=runner_token)
         seen["runner"] = Recorded(env, fail)
         yield seen["runner"]
 
@@ -252,31 +219,37 @@ def install(monkeypatch, fail=None, enter=None):
     return seen
 
 
-def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
-    cluster, reviewed, tmp_path, monkeypatch
+def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
+    cluster, reviewed, renderer, tmp_path, monkeypatch
 ):
     seen = install(monkeypatch)
-    cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
+    cli.start(args(tmp_path), cluster.store)
     approval = seen["env"].approval
-    validate_approval(approval.to_dict(), NOW)
+    validate_approval(approval.to_dict())
+    assert approval.version == APPROVAL_VERSION
+    assert approval.sha == SHA
     assert seen["env"].actor == "runner"
+    # The window starts at admission and lasts the scenario's policy window.
     assert approval.started_at == cli.rt.utc(NOW)
     assert approval.expires_at == cli.rt.utc(NOW + WINDOW)
     assert approval.images["application"] == cli.rt.GAR + "bigquery-recovery@" + DIGEST
     # The token is minted in this process and handed to nothing but the runner.
     assert len(seen["token"]) == 32
     assert seen["token"] not in json.dumps(approval.to_dict())
-    assert seen["token"] not in json.dumps(seen["bundle"])
-    bundle, runner = seen["bundle"], seen["runner"]
-    assert runner.calls == [
-        (
-            "start",
-            bundle["delivery"]["config"],
-            bundle["delivery"]["supervisor"],
-            bundle["application"],
-        ),
-        ("settle", False),
-    ]
+    runner, application = seen["runner"], seen["application"]
+    (_, config, supervisor, started), settled = runner.calls
+    assert settled == ("settle", False)
+    assert started is application
+    assert seen["token"] not in json.dumps([config, supervisor, application])
+    # Rendered once and bound once: the approval and the Job deadline taken at
+    # admission are the only fields the binding adds.
+    assert len(renderer) == 1
+    assert json.loads(config["data"]["approval.json"]) == approval.to_dict()
+    assert supervisor["spec"]["activeDeadlineSeconds"] == (
+        approval.schedule.active_seconds(NOW)
+    )
+    assert json.loads(config["data"]["application.json"]) == application
+    assert digest(application) == approval.application_sha256
     assert cluster.locks == [approval.lock_owner]
     assert cluster.fallback == []
     documents = {
@@ -291,13 +264,16 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_bundle_its_approval_fixes(
     # The stored document is the dict dispatch validated; the ConfigMap embeds
     # its normalized form. They must be the same approval, not the same bytes.
     assert Approval.from_dict(documents["approval.json"]) == approval
-    assert documents["application.json"] == bundle["application"]
-    assert documents["upgrade-application.json"] == bundle["upgrade_application"]
-    assert documents["images.json"] == {}
-    assert json.loads(bundle["delivery"]["config"]["data"]["approval.json"]) == (
-        approval.to_dict()
+    assert documents["application.json"] == application
+    assert (
+        digest(documents["upgrade-application.json"])
+        == approval.upgrade_application_sha256
     )
-    assert approval.delivery_sha256 == delivery_digest()
+    assert (
+        json.loads(config["data"]["upgrade-application.json"])
+        == (documents["upgrade-application.json"])
+    )
+    assert documents["images.json"] == {}
 
 
 def test_a_failed_start_still_settles_with_a_stop(
@@ -305,7 +281,7 @@ def test_a_failed_start_still_settles_with_a_stop(
 ):
     seen = install(monkeypatch, fail="admission broke")
     with pytest.raises(Failure, match="admission broke"):
-        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
+        cli.start(args(tmp_path), cluster.store)
     assert seen["runner"].calls[-1] == ("settle", True)
     assert cluster.fallback == []
 
@@ -318,7 +294,7 @@ def test_a_runner_that_cannot_be_built_after_the_lock_is_settled_by_a_plain_one(
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     install(monkeypatch, enter="authentication refused")
     with pytest.raises(Failure, match="authentication refused"):
-        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
+        cli.start(args(tmp_path), cluster.store)
     assert len(cluster.locks) == 1
     assert cluster.fallback == [True]
     # Idle is what gates the workflow's plan proof and finalization, the only
@@ -347,7 +323,7 @@ def test_the_plain_fallback_leaves_a_run_the_workflow_finalizes(
     )
     install(monkeypatch, enter="authentication refused")
     with pytest.raises(Failure, match="authentication refused"):
-        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
+        cli.start(args(tmp_path), cluster.store)
     approval = json.loads((tmp_path / "approval.json").read_text())
     assert cluster.store.read(cli.rt.ENVIRONMENT)[0] == approval["lock_owner"]
     plans = {"nonce": approval["nonce"], "roots": list(cli.wf.ROOTS), "empty": True}
@@ -355,25 +331,28 @@ def test_the_plain_fallback_leaves_a_run_the_workflow_finalizes(
     assert not [key for key in cluster.store.data if key[1].startswith("_control/")]
 
 
-def test_a_bundle_that_refuses_does_so_before_the_lock(
+def test_a_delivery_that_refuses_does_so_before_the_lock(
     cluster, reviewed, tmp_path, monkeypatch
 ):
-    """Revision, render and ConfigMap size are all checked without holding anything."""
+    """Render and ConfigMap size are both checked without holding anything."""
     install(monkeypatch)
     before = copy.deepcopy(cluster.store.data)
+    render = plan.render
 
-    def refuse(revision):
-        raise Failure("Repository revision differs from approval")
+    def oversized(*args, **kwargs):
+        initial, upgrade, delivery = render(*args, **kwargs)
+        delivery["config"]["data"]["padding"] = "x" * MIB
+        return initial, upgrade, delivery
 
-    monkeypatch.setattr(approval_bundle, "check_revision", refuse)
-    with pytest.raises(Failure, match="revision differs"):
-        cli.start(args(tmp_path, approve=cli.BIGQUERY_APPROVAL), cluster.store)
+    monkeypatch.setattr(plan, "render", oversized)
+    with pytest.raises(Failure, match="data size limit"):
+        cli.start(args(tmp_path), cluster.store)
     assert cluster.locks == []
     assert cluster.store.data == before
 
 
 def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
-    """Assembled from a verified proposal, it must pass the v4 contract as is."""
+    """Assembled from a verified proposal, it must pass the dispatch check as is."""
     environment, _, _, proposal = prepared
     reference = environment.approval.to_dict()
     approval = cli.bigquery_approval(
@@ -385,8 +364,6 @@ def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
             proposal,
             application_sha256=reference["application_sha256"],
             upgrade_application_sha256=reference["upgrade_application_sha256"],
-            runtime_sha256=reference["runtime_sha256"],
-            delivery_sha256=reference["delivery_sha256"],
         ),
         namespaces=reference["namespaces"],
         operator_uid=reference["operator_uid"],
@@ -395,8 +372,8 @@ def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
         owner=reference["lock_owner"],
         actor="octocat",
     )
-    validate_approval(approval, environment.clock())
-    assert approval["version"] == 5
+    validate_approval(approval)
+    assert approval["version"] == APPROVAL_VERSION
     assert approval["scenario"] == "bigquery-recovery"
     # A copy, so a later edit to the trial the dispatch holds cannot reach it.
     assert approval["bigquery_trial"] == reference["bigquery_trial"]

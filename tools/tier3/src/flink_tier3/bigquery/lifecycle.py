@@ -22,7 +22,7 @@ from dataclasses import asdict
 
 from ..common import ApiError, Failure, digest, json_bytes
 from ..model import Phase
-from ..policy import BIGQUERY_CEILINGS, BIGQUERY_STATE
+from ..policy import BIGQUERY_STATE, STATE_OBJECTS
 from .oracle import integer
 
 MAX_CONTROL_BYTES = 256 * 1024
@@ -402,7 +402,7 @@ class BigQueryLifecycle:
             staged = self.env.store.objects(
                 self.plan.staging_prefix(),
                 BIGQUERY_STATE,
-                BIGQUERY_CEILINGS["state_objects"],
+                STATE_OBJECTS,
             )
         except (Failure, OSError, ValueError) as error:
             return {"unreadable": str(error)}

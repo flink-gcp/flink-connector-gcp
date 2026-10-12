@@ -35,16 +35,15 @@ GAR = _policy["environment"]["gar"]
 REPOSITORY = _policy["environment"]["repository"]
 PRICING_REVIEWED = _policy["environment"]["pricing_reviewed"]
 COST_RATES = {key: Decimal(value) for key, value in _policy["cost_rates"].items()}
-CEILINGS = _policy["ceilings"]
+WINDOWS = _policy["windows"]
+CLEANUP_SECONDS = _policy["cleanup"]["seconds"]
+STATE_OBJECTS = _policy["state"]["objects"]
 POD_RESOURCES = _policy["pod_resources"]
-RECOVERY = _policy["recovery"]
 # The namespace OpenTofu keeps for a later Cloud Tasks scenario (#1362). No run
 # admits a workload there; every run's inventory still lists it.
 CLOUDTASKS = _policy["environment"]["cloudtasks"]
 BIGQUERY = _policy["environment"]["bigquery"]
 BIGQUERY_STATE = _policy["environment"]["bigquery_state"]
-BIGQUERY_CEILINGS = _policy["bigquery_ceilings"]
-PUBSUB_CEILINGS = _policy["pubsub_ceilings"]
 PUBSUB = _policy["environment"]["pubsub"]
 PUBSUB_STATE = _policy["environment"]["pubsub_state"]
 
@@ -81,15 +80,6 @@ PUBSUB_ADMISSION = {
 NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, SYSTEM)
 
 
-def inventory_namespaces(application):
-    """Preserve legacy approval baselines when adding a staged application."""
-    if application == PUBSUB:
-        return NAMESPACES
-    if application == BIGQUERY:
-        return (SMOKE, CLOUDTASKS, BIGQUERY, SYSTEM)
-    return (SMOKE, CLOUDTASKS, SYSTEM)
-
-
 RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\Z")
 
 
@@ -103,6 +93,11 @@ NONCE = "flink-gcp.io/approval"
 
 
 MIB = 1024 * 1024
+
+
+# The query evidence one BigQuery run may export, divided equally among its
+# query slots.
+QUERY_EVIDENCE_BYTES = 10 * MIB
 
 
 POLL = 15

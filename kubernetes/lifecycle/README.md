@@ -19,7 +19,7 @@ limitations under the License.
 ```text
 lifecycle/
   delivery.cue       # Shared inputs, ConfigMap and supervisor Job
-  smoke.cue          # Smoke and generic recovery applications
+  smoke.cue          # Smoke application
   bigquery.cue       # BigQuery trial inputs and applications
   pubsub.cue         # Pub/Sub trial inputs, applications and access probe
 ```
@@ -27,21 +27,19 @@ lifecycle/
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
 The runner selects the scenario through its existing input.
 
-The `Tier-3 run` workflow admits one generic smoke application and returns the environment to its tracked idle state.
-Its `scenario` input selects ordinary completion (`smoke`, the default) or the fixed `generic-recovery` exercise below.
+The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
+Its `scenario` input selects the generic smoke application's ordinary completion (`smoke`, the default), a BigQuery recovery trial or a Pub/Sub recovery trial.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
 BigQuery and Pub/Sub each have a service subpackage, and the single-host Cloud Tasks rig of [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) has its own; shared lifecycle and infrastructure modules remain at the package root.
 The delivered source inventory uses relative paths, including subdirectories.
 ConfigMap keys replace `/` with `.`, and volume projection restores the directories before the supervisor imports them.
-Source relocation changes the approval's source pins; existing approvals and measurement records keep their historical hashes, and a new-layout run requires a new approval.
 The installed `flink-tier3` CLI is the entry point; [workspace instructions](../../tools/README.md) cover building a wheel and selecting a repository checkout.
 [delivery.cue](delivery.cue) receives Python modules and `policy.toml` as JSON on standard input and projects them through one immutable ConfigMap.
 The Pod runs `python3 -m flink_tier3 supervisor` from that projected directory.
 The delivery carries the modules that entrypoint can reach, closed under their own imports, plus the package data they name — not the whole installed package, because otherwise every module any scenario adds is carried by all of them and they share the data ceiling below.
-The approval's `runtime_sha256` still covers the complete package and is verified by the runner at dispatch; its `delivery_sha256` covers exactly the delivered set, and is the pin the supervisor can check against its own mount.
-Because the set is closed under imports, the runner computes that delivery pin from its complete installation and the supervisor reproduces it from the mount, so a truncated delivery fails the comparison instead of running.
-Adding a module the entrypoint reaches includes it in both the delivery and its pin automatically; a module nothing delivered imports is in neither, and enters both as soon as a delivered module imports it.
+Because the set is closed under imports, a delivery missing a module it needs fails to render instead of running.
+Adding a module the entrypoint reaches includes it in the delivery automatically; a module nothing delivered imports is not delivered, and enters the delivery as soon as a delivered module imports it.
 The rendered-payload test runs the projected directory, which catches a module missing at import time; a module reached only by a deferred import inside a function is delivered by the walk but not exercised there.
 The Pod's command is fixed by this manifest, and `bundle.POD_COMMANDS` names it, because the CLI resolves a command to its module through a computed import that no walk can follow.
 Every command but `supervisor` and the offline analyses reads the repository from `repository.ROOT`, which the CLI sets from `--repository`; the CLI does not import the modules those commands use, and the cluster client and root plans live in `lifecycle`, their only caller, so nothing delivered reaches `bootstrap`, `lifecycle` or `schemas`.
@@ -52,7 +50,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 
 | File | Responsibility |
 | --- | --- |
-| `flink_tier3/policy.toml` | Reviewed environment names, conservative cost rates, fixed ceilings and Pod resources |
+| `flink_tier3/policy.toml` | Reviewed environment names, conservative cost rates, each scenario's window and Pod resources |
 | `flink_tier3/google.py` | Google credentials, standard authorized session and generation-checked GCS operations |
 | `flink_tier3/kubernetes.py` | Kubernetes SDK calls, API collection mapping, UID/version conditions and log limits |
 | `flink_tier3/model.py` | Approval, schedule and typed control-record transitions |
@@ -60,7 +58,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
-| `flink_tier3/exercise.py` | One savepoint upgrade, one JM Pod deletion and phase-specific recovery evidence |
+| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery and Pub/Sub exercises share: recorded operation intents, the owned savepoint upgrade and Pod deletion, and scheduling evidence |
 | `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery and Pub/Sub runs |
 | `flink_tier3/cloudtasks/` | The single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
@@ -68,8 +66,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after the quiescence barrier |
 | `flink_tier3/bigquery/handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
 | `flink_tier3/bigquery/exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
-| `flink_tier3/approval_bundle.py` | The approved-checkout check, approval embedding and ConfigMap size limit that every approval-bound service delivery shares |
-| `flink_tier3/bigquery/bundle.py` | Offline approval-bound delivery generation and complete re-render verification; no authentication or admission |
+| `flink_tier3/lifecycle.py` | The Actions frontend: dispatch, which binds a rendered delivery's approval, Job deadline and ConfigMap size limit, then recovery, plans and finalization |
 | `flink_tier3/bigquery/resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
 | `flink_tier3/bigquery/actors.py`, `bigquery/auth.py` | The authenticated BigQuery runner and supervisor the production entrypoints run, and their OAuth session |
 | `flink_tier3/bigquery/quiesce.py` | The supervisor's quiescence barrier: re-lists writer-capable objects in the application namespace and refuses while any of this run's remains |
@@ -77,45 +74,36 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery/analyze.py` | Offline recomputation of a deployed BigQuery run's verdict from its exported evidence |
 | `flink_tier3/pubsub/resources.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
 | `flink_tier3/pubsub/plan.py` | Offline, unapproved Pub/Sub trial, reviewed trial files, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
-| `flink_tier3/pubsub/bundle.py` | Approval-bound Pub/Sub delivery and complete re-render verification; no authentication or admission |
 | `flink_tier3/pubsub/lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub/messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
-| `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls, each admitted by its begin marker, and releases attached to common settlement/supervisor cleanup; explicit external reclamation, which cleanup uses for a replaced supervisor |
+| `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls, each admitted by its begin marker, and releases attached to common settlement/supervisor cleanup |
 | `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, the guard that holds each Pub/Sub request to its deadline, and the namespace-wide cleanup barrier |
 | `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.
-The workload remains the [source-backed generic smoke application](../apps/smoke/README.md).
-The separately approved [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran this application through one savepoint upgrade and one JobManager failover on 2026-09-17, in [run 35169364218](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35169364218); its [closing comment](https://github.com/flink-gcp/flink-connector-gcp/issues/1311#issuecomment-5715015774) records the final receipt's success and idle.
+The smoke workload remains the [source-backed generic smoke application](../apps/smoke/README.md).
+The `generic-recovery` scenario that took it through one savepoint upgrade and one JobManager failover was removed once the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) had run it, on 2026-09-17 in [run 35169364218](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35169364218); the BigQuery and Pub/Sub exercises build on the recovery exercise it introduced.
 Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
 
-A maintainer separately approves the current reviewed `main` SHA, scenario, a unique run ID, the absolute UTC expiry, the ceilings below and the run's cost estimate; spend is approved from that estimate before dispatch, and nothing at run time compares spend against it.
-The estimate is `estimated_cost` over the window for smoke and generic recovery, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
-Only a dispatch on `main` with that exact SHA can assume the runner identity and admit work.
-The run workflow can check out another rig commit through `rig_sha`, which must equal the approved `reviewed_sha` and head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
-Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
-The Job replaces a disrupted supervisor Pod, and the replacement carries the run if supervision had not started; the admission handshake below describes the claim that makes that safe.
-The workflow input must contain `APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES` verbatim.
-Expiry must be 55–60 minutes ahead when admission starts; queue delay can make an otherwise valid dispatch fail before changing quotas.
-The last 15 minutes are reserved for cleanup, leaving at most 45 minutes for startup and the 30-minute smoke job.
+The owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
+The estimate is `estimated_cost` over the window for smoke, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
+Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
+The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
+The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery trial 90 minutes after it.
+The last 15 minutes of each window are reserved for cleanup.
 
-After obtaining that separate execution approval, use the Actions UI or this command with the approved values:
+Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
+The Job replaces no Pod: a preempted supervisor ends the Job, the runner settles the run, and the owner redispatches it under a new run ID.
+
+After approving the estimate, use the Actions UI or this command:
 
 ```sh
 gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
-  -f run_id=APPROVED_RUN_ID \
-  -f reviewed_sha=APPROVED_MAIN_SHA \
-  -f expires_at=APPROVED_UTC_EXPIRY \
-  -f 'approval=APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES'
+  -f run_id=APPROVED_RUN_ID
 ```
-
-For the recovery exercise, also pass `-f scenario=generic-recovery`.
-This authorizes one savepoint upgrade and one deletion of the owned JobManager Pod within that run; another trial requires a new approval and run ID.
-Ordinary smoke approvals retain version 1, while recovery approvals use version 2 and pin the recovery policy and both application manifests.
-Recovery tooling can settle either version; it never resumes the exercise or repeats an injected disruption.
 
 The cluster rig has no Cloud Tasks scenario.
 Its measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM; the `tier3-cloudtasks` namespace and its workload identity remain for a later recovery scenario ([#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362)), and every run's inventory still lists that namespace.
@@ -123,7 +111,7 @@ Its measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-ta
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
 Before admitting anything, the runner verifies the dedicated kubeconfig, explicit `gke_flink-gcp_us-central1_flink-tier3` context, GKE-discovered DNS endpoint, both namespace UIDs, original quota UIDs and zero admission, idle workload inventory, and the installed Operator image/resources.
-It checks each pinned GAR digest exists and remains at least 24 hours away from seven-day deletion eligibility at the approved expiry.
+It checks each pinned GAR digest exists and remains at least 24 hours away from seven-day deletion eligibility at the run's expiry.
 These checks run before temporary quota changes or Operator scale-up.
 
 ## Resource and cost approval
@@ -145,20 +133,19 @@ A preempted Pod holds its quota until it finishes terminating, so without that s
 The Spot namespaces get no such slot on purpose, for a reason of cost rather than of detection: a slot for a replacement TaskManager would raise every application quota by a Pod the run rarely needs.
 What a replacement costs the measurement is scenario-specific; for a smoke run an owned replacement that restores the same lineage can finish successfully.
 
-| Budget | Ceiling or stop condition |
+| Budget | Bound |
 | --- | --- |
-| Duration | Absolute expiry within 60 minutes; begin cleanup 15 minutes before it |
-| Pods | Five total: two in each namespace, and one slot a replacement occupies while the Pod it replaces terminates; a supervisor attempt the Job retains once terminal holds no capacity and is not counted |
-| PVCs | Zero throughout admission and cleanup |
-| State | Stop on observed usage above 1 GiB or 10,000 objects in the run prefix |
-| Logs | Stop at 100 MiB collected; stop if any 1 MiB read would truncate |
-| Durable evidence | 100 MiB per run; supervisor 88 MiB, runner 10 MiB, 2 MiB reserved for approval/manifests/final receipts |
+| Duration | 60 minutes from admission; cleanup begins 15 minutes before the end |
+| Pods | The temporary ResourceQuotas: two in each namespace, and one slot in `tier3-system` for the Operator's replacement |
+| PVCs | Zero, by the same quotas |
+| State | Cleanup lists at most 10,000 objects under the run prefix and refuses a larger one |
+| Logs | Stop if any 1 MiB read would truncate |
 | Cost estimate | USD 0.81 for a full hour, approved before dispatch |
 
-ResourceQuotas enforce aggregate Pod, CPU, memory, ephemeral storage, PVC, Job, CronJob and StatefulSet admission limits.
-Every observation also checks actual container counts, image digests, effective requests/limits and ownership.
-State and telemetry are polling stop thresholds, not service-side write quotas; writes between observations can exceed a threshold before cleanup begins.
-Evidence export uses conditional creates and a separate budget for each writer; it stops admission when an export fails or its budget is exhausted.
+ResourceQuotas enforce aggregate Pod, CPU, memory, ephemeral storage, PVC, Job, CronJob and StatefulSet admission limits, so the rig does not count Pods or PVCs a second time.
+Every observation checks each Pod's containers, image digests, effective requests/limits and ownership.
+Nothing stops a run on the size of its state or of the evidence it exports: the window bounds how long either grows, the state bucket's one-day expiry bounds what a failed cleanup leaves, and the evidence bucket's 30-day expiry bounds what a run retains.
+Evidence export uses conditional creates; a failed export stops admission and records its operation and cause, as [Cleanup and recovery](#cleanup-and-recovery) describes.
 
 The conservative cost model charges all 4 CPUs at USD 0.10 per CPU-hour, all 8 GiB memory at USD 0.02 per GiB-hour, and all 3.125 GiB ephemeral storage at USD 0.001 per GiB-hour, even for Spot Pods.
 Including USD 0.25 for the bounded storage, requests and telemetry gives USD 0.813125 for a full hour.
@@ -174,19 +161,14 @@ The runner writes a conditional-generation environment lock, immutable approval/
 The ConfigMap creation intent retains a hash of its data alongside the submitted metadata, so each heartbeat CAS does not copy the entire source bundle.
 Lost-response adoption verifies that hash before recording the ConfigMap UID.
 Once a root UID is recorded, cleanup uses that identity without re-adopting the resource against its original submitted fields; server-side template changes therefore cannot block shutdown.
-The approval pins the source hash, application hash, run nonce, workflow execution, namespace/Operator/quota UIDs, baseline object UIDs and original quotas.
+The approval pins the rig commit, the application hash, run nonce, workflow execution, namespace/Operator/quota UIDs, baseline object UIDs and original quotas.
 The runner opens enough system quota for one supervisor, then creates its Job once, without retrying the create, with an active deadline calculated from three minutes before expiry.
-The supervisor waits for its recorded Job UID, verifies its Pod belongs to that Job, claims the run in the control record with its Pod UID, and reports its heartbeat while waiting for the runner to complete admission.
-The runner requires that heartbeat and a running, UID-owned supervisor Pod holding the claim before opening full quotas, scaling the Operator to one, waiting for Operator readiness and creating the fixed FlinkDeployment.
+The supervisor waits for its recorded Job UID, verifies its Pod belongs to that Job, and reports its heartbeat while waiting for the runner to complete admission.
+The runner requires that heartbeat and a running, UID-owned supervisor Pod before opening full quotas, scaling the Operator to one, waiting for Operator readiness and creating the fixed FlinkDeployment.
 It persists the application UID and changes the control phase to `running` only after admission completes.
 While the phase is `approved` or `ready`, the supervisor reports its heartbeat without auditing an application whose creation or UID publication may still be in flight.
-If supervision fails in that phase, it requests stop and exits; the runner settles after its last admission call returns.
-A signal is the exception: it means the infrastructure is taking the Pod, so a supervisor signalled before supervision starts records a `supervisor-replaceable` event, leaves the run open, even in `running`, and exits; a run with provisioned BigQuery resources, which only the supervisor can clean, is still stopped and cleaned.
-The Job replaces a Pod with the `DisruptionTarget` condition twice at most, only once that Pod is terminal, and fails on any other non-zero exit; the runner stops admitting once the Job has ended.
-The replacement claims the run, which is allowed until a stop, an evidence failure or cleanup is recorded, or until the heartbeat that sees admission complete records that supervision has started; later it is refused, exits, and the runner settles the ended Job.
-The runner does not wait on a replacement that is never scheduled: once no live Pod holds the claim it settles the run, at once after supervision has started and otherwise when the later of the claim and the last heartbeat is older than the ten-minute readiness allowance; it decides by requesting a stop only if the Pod it saw still holds the claim.
-Every control write a supervisor makes is refused once another Pod holds the claim, and that refusal ends the Pod without a stop request or any cleanup; its log ends with `Another supervisor Pod holds this run`, and a replacement refused the claim ends with `This run cannot be claimed by another supervisor Pod`.
-A supervisor that would clean up a run still open for replacement first requests a stop, and exits without cleaning if that write fails.
+If supervision fails in that phase, including on a signal, it requests stop and exits; the runner settles after its last admission call returns.
+The Job's `backoffLimit` is zero, so a supervisor Pod that fails or is taken away ends the Job, and the runner stops admitting once the Job has ended.
 A lost runner before that handoff requires completed-execution recovery, so admission-stage shutdown depends on that recovery path.
 Once `running` is published, admission makes no further Kubernetes writes and the supervisor can clean independently of the runner.
 Each quota/scale admission retry rechecks stop and phase as well as identity and lock ownership.
@@ -194,7 +176,7 @@ The Operator's Scale API can omit `spec.replicas` when it is zero; lifecycle rea
 The scale patch retains UID and resource-version conditions, and cleanup skips the write when the Operator is already at zero.
 
 For ordinary smoke, the supervisor observes the application and writes Kubernetes only toward idle.
-The recovery scenario also permits the two recorded operations described below.
+The BigQuery and Pub/Sub recovery exercises also permit the recorded operations their runbooks describe.
 Both supervisor and recovery use `Cleanup`; concurrent cleanup repeats the same UID-checked deletes and original quota/replica values.
 Generation conflicts merge roots and observations without replacing recorded identities, and phase transitions never return from cleanup to admission.
 The supervisor uses the projected Kubernetes service-account token against the in-cluster API and Google metadata credentials for GCS.
@@ -203,7 +185,7 @@ The Google SDK requests both `cloud-platform` and `userinfo.email` OAuth scopes,
 The email scope lets GKE identify the impersonated service account by the email bound in Kubernetes RBAC; without it, the numeric account ID can produce a `403` even when kubectl preflight succeeds.
 The supervisor records a heartbeat, inventory, Pod logs and Flink checkpoint observations.
 Every log read retains up to 1 MiB: the first the startup history, later ones what arrived since the previous observation, which can still be a whole startup when the first read came before the container printed it.
-Reaching either read ceiling fails the run instead of discarding possible smoke lineage evidence.
+A read that reaches that ceiling fails the run instead of discarding possible lineage evidence.
 Every measurement Pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: false`.
 Autopilot's autoscaler repacks Pods off an under-used node, and the end of one Cloud Tasks measurement cell left exactly that; measured on 2026-09-20, two JobManagers were replaced two and five minutes after the previous cell's Pods went away, restarting jobs that were otherwise healthy and invalidating both cells.
 The annotation is the supported way to say a Pod must not be moved for consolidation; it does not stop a `system-cluster-critical` preemption or a Spot reclamation, which no workload setting can.
@@ -214,59 +196,8 @@ Deciding that needs a second read of the Pod, so a transient status on that read
 That tolerance is what lets a preempted Pod be replaced mid-run, and it is also why an application Pod deleted from outside the run is not detected by the log read alone.
 Ordinary smoke success requires the job to finish, smoke progress to establish its lineage, and at least one completed checkpoint to have been observed through the UID-owned REST service.
 Progress from another run/phase or a changed lineage fails the run, including an unexpected fresh start following disruption.
-Failure, cancellation, resource/evidence limits or the test deadline enters cleanup.
+Failure, cancellation, an evidence failure, a log read reaching its ceiling or the test deadline enters cleanup.
 In ordinary smoke, a transient checkpoint-proxy error also starts cleanup, including a JobManager restart while its Service has no endpoints.
-
-## Generic recovery exercise
-
-The reviewed policy fixes 12,000 deterministic sequence records at ten records per second, one savepoint upgrade and one JM Pod deletion, with no automatic repetition.
-These inputs require about 20 minutes of uninterrupted processing.
-The resource, storage and telemetry ceilings above apply; this is a correctness exercise, not a performance sample.
-
-| Stage | Required evidence and deadline |
-| --- | --- |
-| Initial execution | Within ten minutes of admission start, observe nonzero initial progress and a completed checkpoint triggered after that progress |
-| Savepoint upgrade | Change only `--phase` and `--require-restored` on the same FlinkDeployment; within five minutes, observe its reconciled generation, a new upgrade savepoint and restoration from that path |
-| JobManager failover | After upgrade recovery and a later completed checkpoint, delete the owned JM Pod with its UID as a precondition; within five minutes, observe a different JM UID restoring the same job from that checkpoint or a newer checkpoint |
-| Completion | After both recoveries, observe all 12,000 records, the final sequence value 11,999 and `FINISHED`, before the cleanup deadline |
-
-Every recovery must retain the initial lineage, emit `restored=true`, advance beyond the pre-disruption processed count and complete a checkpoint triggered after the resumed progress.
-The oracle uses Kubernetes log timestamps, current JM identity, job ID and Flink's restored checkpoint ID, path and timestamp.
-Savepoint upgrades can start a new job ID; JM failover must retain the upgraded job ID.
-Checkpoint counts alone, a snapshot barrier alone, or replaying logs from a previous phase cannot satisfy these predicates.
-The savepoint and checkpoint paths must stay within this run's state prefix.
-
-The recovery manifests keep `upgradeMode=savepoint` and `allowNonRestoredState=false`, and disable last-state fallback.
-They also set `kubernetes.operator.snapshot.resource.enabled=false`: Operator 1.15.0 otherwise creates a separate FlinkStateSnapshot by default.
-This bounded exercise uses that version's supported status-based savepoint reporting and keeps the existing application cleanup graph.
-Both manifests are rendered through CUE, hashed into approval and delivered in the immutable supervisor ConfigMap.
-The runtime validates that their only difference is the two job arguments before accessing the cluster.
-
-The supervisor records each operation's intent and immutable evidence before issuing its API call.
-It rechecks cancellation, evidence status, the shared lock and the phase deadline before the write.
-The upgrade patch carries application UID and resourceVersion tests and cannot recreate a deleted application; JM deletion targets only the observed Pod UID and uses ordinary termination.
-A lost response is accepted only after a read verifies the requested outcome; an uncertain outcome stops the trial without repeating the operation.
-An upgrade precondition rejection also stops the trial without retry; its receipt distinguishes that rejection from an uncertain response.
-Cleanup can race these calls: a deleted or changed application rejects the old patch, and a replacement Pod cannot receive an old UID's delete.
-
-During either five-minute recovery window, checkpoint-proxy transport failures and HTTP 404/502/503/504 are recorded and retried by the observation loop.
-Authentication failures and ownership changes still fail immediately.
-An old Pod disappearing during log collection is recorded; the run must still obtain the required recovery evidence from surviving/replacement Pods.
-During the savepoint upgrade, temporary cancellation/suspension is expected.
-Operator 1.15.0 also reports the old job as `FINISHED` after stopping it with a savepoint, and assigns the upgraded job's ID before that state clears; during the upgrade `FINISHED` is therefore accepted under either job ID, and an upgraded job that really finished is stopped by the upgrade's deadline because it never proves recovery.
-It does not satisfy final completion, and terminal failure or Operator rollback still stops the trial.
-No wait extends the absolute cleanup deadline.
-
-TaskManager Pod placement remains Spot; the JobManager and the supervisor remain on normal capacity.
-The supervisor retains run-owned Kubernetes Events, Pod conditions and scheduling observations.
-Observed eviction/preemption, container restart or replacement outside a planned recovery window makes the trial inconclusive and starts cleanup.
-Exclude already-terminating Pods when recording the stable post-failover Pod set.
-After the complete input has been observed, allow that set to shrink as idle Pods terminate before the Operator reports `FINISHED`; a new Pod UID still counts as an unplanned replacement.
-An interrupted or insufficiently observed trial is never reported as steady-state performance evidence.
-
-Before approving dispatch, verify the three applied infrastructure roots and their empty refreshed plans, the idle Helm release, workload KSA/GSA binding and state-bucket grant, and live image retention through expiry plus 24 hours.
-Do not merge infrastructure changes while the run holds the shared lock.
-The [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran this procedure, under its then four-Pod approval, on 2026-09-17; a later change to this procedure supplies no GKE execution result by itself.
 
 ## SDK transport
 
@@ -304,9 +235,16 @@ The Operator's normal finalizer is responsible for removing it.
 Leftover unowned metadata blocks the final idle check and lock release, requiring an administrator to investigate its provenance before any separately approved repair.
 
 Once owned workload objects are absent, cleanup deletes only generation-checked state objects under the exact run prefix, scales the Operator to zero, verifies its Pods have stopped, and restores the exact original quotas.
-Evidence or state export failures mark the run failed while allowing paid workload shutdown to continue; after a success receipt, a recovery's own failures block finalization instead, as [Stranded environment lock](#stranded-environment-lock) describes.
+Evidence or state export failures mark the run failed while allowing paid workload shutdown to continue.
 The supervisor exits with its Job/Pod retained so the external runner can wait for Job completion, attempt the final log export, and delete the temporary Job and source ConfigMap.
 The final log attempt is recorded after Job completion and is not a prerequisite for shutdown; missing logs or a failed export keep the evidence outcome failed across retries.
+The supervisor prints nothing on its normal path, so an empty `supervisor-final-log` is expected; its standard output carries only a failed run's traceback and one `evidence-failed` line per evidence failure.
+
+Whatever sets the evidence failure also records why: the control record's `evidence_failure` keeps the first failure's operation, actor, time and cause, and the final receipt copies it beside a `success` of `false`.
+The operation names the write that failed: `evidence:<event>` for an exported observation, `observe`, `remember-probe`, `request-stop`, `begin-cleanup` or `record-cleaned` for a cleanup write, `pubsub-message-evidence` for a Pub/Sub message upload, and `supervisor-final-log` for the runner's export.
+Each actor's first failure is also exported as an `evidence-failed` event, unless that failure was itself an exported observation's; the event is best effort because the evidence write may be what failed, and every failure is printed on the actor's standard output.
+A cleaned-record write that fails leaves the cause only in that event and on the supervisor's standard output.
+Read the receipt's `evidence_failure` first, then the `evidence-failed` events under the actor's receipts.
 The finalizer requires no workload Pods, PVCs or Flink objects, no non-baseline resources except zero-replica Operator ReplicaSets, and quotas observed back at their original values.
 After temporary objects disappear, recovery waits up to three minutes for Operator and quota status to reflect their restored specifications; identity changes, unexpected objects and API failures still fail immediately.
 It then changes to the read-only plan identity, checks all three refreshed infrastructure plans under the same retained lock, and changes back to the runner identity to write the immutable result and release control records.
@@ -318,11 +256,11 @@ Completed CI recovery releases a retained plan lock after idle and fresh-plan ch
 Every CI completion starts the recovery checkout, tool setup and runner authentication before checking lock ownership, including executions that immediately return without work.
 This adds Actions startup work and an authentication exchange per completion; the catch-all trigger favors recovery coverage over filtering successful executions.
 An automatic completion event for an execution that does not own the lock is a no-op.
-Recovery concurrency is grouped by source execution, so unrelated CI completions cannot replace a pending lock-holder recovery.
-Recovery verifies the repository, original workflow path/event, main SHA, execution attempt and completed status against the GitHub API, then compares the saved lock and approval.
+Recovery concurrency is grouped by source execution, so unrelated CI completions cannot replace a pending lock-holder recovery, and a second recovery of the same source waits for the first.
+Recovery requires that the source holds the lock and that the GitHub API reports its execution completed, then compares the saved lock and approval.
+It reads the approval as written, without checking it against the current policy, so a policy change merged while a run holds the lock does not strand that run's recovery.
 Recovery requests cooperative stop and waits for Job completion when possible, then reconciles cleanup against actual state even if the record already says `cleaned`.
-It can clean concurrently with a supervisor; the recovery exercise's two additional operations are guarded by the stop state and object UID/version as described above.
-It needs no Pod claim, container termination proof or quarantine delay.
+It can clean concurrently with a supervisor; a recovery exercise's operations are guarded by the stop state and object UID/version.
 Before quota or scale writes, cleanup reads the resource version and then rechecks the exact environment-lock owner.
 A concurrent update retries from a fresh identity/version snapshot, so an old actor cannot use a newer run's foundation version under its old lock.
 The runner attempts the final supervisor log after Job completion; a disappeared Pod or missing final log marks evidence incomplete instead of blocking shutdown.
@@ -352,27 +290,15 @@ The failure names the timed-out operation and retains the lock for recovery.
 
 ### Stranded environment lock
 
-Finalization writes the receipt `runs/<run-id>/result.json`, deletes the run control record, and only then releases the environment lock.
+Finalization writes the receipt `runs/<run-id>/result.json`, deletes the run control record at the generation it derived the receipt from, and only then releases the environment lock.
 A failure between the deletion and the release leaves the lock held with no control record, and the run workflow fails.
-The recovery that the run's completion starts writes a replacement record before settling and finalizing again, and the retry keeps the original receipt; the dispatch above repeats it for the same execution ID.
-
-For a BigQuery or Pub/Sub trial with a receipt, recovery restores the deleted snapshot from it: the cleaned service portion, the recovery observations and the success verdict, with stop requested and the phase cleaned as finalization last saw them.
-It writes that record only when the service portion passes the cleanup gates finalization requires and finalization's own receipt derivation reproduces the stored receipt byte for byte, which binds the nonce, scenario and trial to the approval and the success flag to the recorded verdict.
-Every other case receives a record carrying only the nonce and a cleaned phase, because other scenarios' retries compare only the nonce and the idle claim.
+The recovery that the run's completion starts writes a minimal cleaned record before settling and finalizing again, and the retry keeps the receipt it finds; the dispatch above repeats it for the same execution ID.
 A missing record without a receipt was never created, since only finalization deletes one and writes the receipt first, and no admission precedes that creation.
 The write creates a new object, so a record that reappeared since recovery read it is never replaced.
 
-Recovery settles again before finalizing, whether it restored the record or found it.
-Over a success receipt whose nonce matches the approval, that settlement's own failures cannot lower the recorded verdict, since the retry compares the receipt with the verdict the record derives.
-A failed evidence or control write of its own fails recovery instead, naming the success receipt; the record keeps its `success` and `evidence_failed` values, the lock stays held, and dispatching recovery again is the repair.
-A state cleanup failure that leaves nothing behind does not fail recovery, while remaining state or a failed idle check still does until it clears.
-A settlement that cannot read the receipt records `receipt-read-failed`, still tears down, and records its own failures as before, so a failed write in that same recovery can still lower the verdict.
-An evidence failure recorded on the record by another writer is different: it invalidated the receipt, and the retry keeps refusing with "Final receipt conflicts with approval".
-
-A refusal names the receipt and investigation; it writes no record and retains the lock.
-Three repairs make the stranded lock worse rather than clearing it.
-Deleting the run control record to force a restoration launders a receipt that a recorded evidence failure invalidated: restoration rebuilds the record from the receipt, whose success flag predates that failure.
-Editing `result.json` changes the only copy of the deleted snapshot: restoration trusts the receipt as finalization wrote it and cannot tell an edited receipt from the original.
+A retry checks only that the receipt names this run's nonce and an idle environment; it does not rederive the receipt from the restored record, which no longer holds what the receipt was derived from.
+A record changed after its receipt was derived fails the conditional deletion and keeps the lock, and the retry then keeps the receipt.
+A recovery's own settlement failure after the receipt was written no longer fails that recovery: it is recorded and exported as the recovery's evidence, and the receipt keeps the verdict it was written with.
 Deleting the environment lock by hand strands any run record recovery already wrote, because recovery then stops at "Environment has no retained lock" while that record refuses every later acquisition.
 
 ## Shared infrastructure ownership
@@ -401,15 +327,15 @@ The wheel test installs the built artifact outside the source tree and checks CL
 
 Evidence is under `gs://flink-gcp-tier3-evidence/runs/RUN_ID/`:
 `approval.json`, `application.json`, `images.json`, per-observation supervisor/runner receipts, and `result.json` after verified idle and empty plans.
-Recovery runs additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events.
-Their final receipt requires both recovery proofs and full input completion as well as successful cleanup.
+BigQuery and Pub/Sub trials additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events.
+Their final receipt requires the usable verdict their exercise decided as well as successful cleanup.
 Run evidence becomes deletion-eligible after 30 days; mutable `_control/` records have no automatic expiry.
 An unsuccessful run can still have an idle result: check both `success` and `idle`, together with the three plan receipts.
 After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
 Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
 `just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` writes `report.json` and `report.md` into an `analysis` directory beside the run, without contacting any service.
 It reports a deployed BigQuery run's verdict, recomputed from its exported `recovery-complete` record rather than read from its receipt, with the reasons behind it; a verdict the record's own stored inputs do not support, an evidence set without the run's account of itself and a receipt disagreeing with the evidence beside it are excluded under the same statuses, while a run that simply did not complete is inconclusive rather than excluded.
-The analyzer's rules are part of the package `runtime_sha256` covers, so the approval still pins the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set that `delivery_sha256` pins.
+The analyzer's rules are part of the commit the approval's `sha` names, so the approval still pins the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set.
 Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs such as the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) can show.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
@@ -421,20 +347,19 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 ```
 
 This prints JSON resources for inspection; its synthetic inputs do not authorize admission.
-Add `--scenario generic-recovery` to render the recovery payload and both manifests.
 The lifecycle delivery requires package sources from this command or the runner; raw CUE rendering without those inputs is incomplete.
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
-The version 5 approval, including its six-Pod ceiling and dedicated state bucket, is described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
-A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`), the published application digest, an expiry 90 to 100 minutes ahead and a fixed phrase, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
-A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), with an expiry 60 to 70 minutes after admission and a phrase that carries the trial's record count, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
+The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
+A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
+A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 
 ## Reviewed Pub/Sub trials
 
 A `pubsub-recovery` dispatch names one file under `kubernetes/lifecycle/pubsub-trials/`, without `.toml`, through the run workflow's `pubsub_trial` input.
 Each file holds the [offline trial schema](../apps/pubsub/README.md#offline-trial-proposal) as TOML beside the Apache licence header that apache-rat requires.
-The approved commit must contain the file: dispatch refuses an untracked TOML file under `kubernetes/`.
+The dispatched commit must contain the file: the workflow checks that commit out fresh, so no untracked file is there to name.
 
 The directory holds the four trials [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs once each: `jm-replacement`, `tm-replacement`, `rescale-out` and `rescale-in`, on the DataStream entry point with 1,000 records per subscription.
 They use the version 5 schema, which carries no traffic limits; each run is dispatched only after the owner approves its [estimate](../apps/pubsub/README.md#offline-trial-proposal).

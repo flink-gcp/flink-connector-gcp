@@ -23,12 +23,7 @@ from pathlib import Path
 
 import pytest
 from flink_tier3 import bundle
-from flink_tier3.bundle import (
-    delivered_sources,
-    delivery_digest,
-    package_sources,
-    source_digest,
-)
+from flink_tier3.bundle import delivered_sources, package_sources
 from flink_tier3.common import Failure
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -83,7 +78,6 @@ def test_wheel_installs_cli_policy_and_complete_source_bundle(tmp_path):
         ["analyze"],
         ["vm-analyze"],
         ["bigquery"],
-        ["bigquery-bundle"],
     ):
         result = run(str(command), *arguments, "--help", cwd=tmp_path, env=environment)
         assert (
@@ -97,12 +91,12 @@ def test_wheel_installs_cli_policy_and_complete_source_bundle(tmp_path):
 import json
 from pathlib import Path
 import flink_tier3
-from flink_tier3.bundle import package_sources, source_digest
+from flink_tier3.bundle import package_sources
 from flink_tier3.cloudtasks.protocol import load
-from flink_tier3.policy import CEILINGS
+from flink_tier3.policy import WINDOWS
 print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
-                  "sources": package_sources(), "digest": source_digest(),
-                  "pods": CEILINGS["pods"], "protocol_cells": len(load()["cells"])}))
+                  "sources": package_sources(),
+                  "smoke": WINDOWS["smoke"], "protocol_cells": len(load()["cells"])}))
 """,
         cwd=tmp_path,
         env=environment,
@@ -110,8 +104,7 @@ print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
     payload = json.loads(observed.stdout)
     assert Path(payload["file"]).is_relative_to(installed)
     assert payload["sources"] == package_sources()
-    assert payload["digest"] == source_digest()
-    assert payload["pods"] == 5
+    assert payload["smoke"] == 3600
     assert payload["protocol_cells"] == 420
 
 
@@ -249,11 +242,9 @@ def minimal_package(directory):
     return directory / "runtime.py"
 
 
-def test_source_identity_preserves_file_bytes(tmp_path):
+def test_package_sources_preserve_file_bytes(tmp_path):
     source = minimal_package(tmp_path)
-    original = source_digest(tmp_path)
     source.write_bytes(b"# Reviewed source.\r\n")
-    assert source_digest(tmp_path) != original
     assert package_sources(tmp_path)["runtime.py"].encode() == source.read_bytes()
 
 
@@ -269,15 +260,13 @@ def test_delivery_is_closed_under_imports_and_refuses_a_truncated_package(tmp_pa
         "runtime.py",
         "policy.toml",
     }
-    # Walking a delivery reproduces itself, which is what lets the supervisor
-    # verify its mount against a digest the runner computed before the run.
+    # Walking a delivery reproduces itself: the mount is closed under imports.
     delivery = tmp_path / "delivered"
     delivery.mkdir()
     for name, content in delivered_sources(tmp_path).items():
         (delivery / name).parent.mkdir(parents=True, exist_ok=True)
         (delivery / name).write_text(content)
     assert delivered_sources(delivery) == delivered_sources(tmp_path)
-    assert delivery_digest(delivery) == delivery_digest(tmp_path)
     (delivery / "policy.toml").unlink()
     with pytest.raises(Failure, match="missing policy.toml"):
         delivered_sources(delivery)
@@ -290,8 +279,7 @@ def test_delivery_follows_a_module_to_the_package_data_it_names(tmp_path):
     assert "rules.toml" not in delivered_sources(tmp_path)
     runtime = tmp_path / "runtime.py"
     runtime.write_bytes(runtime.read_bytes() + b"from . import reader  # noqa: F401\n")
-    # Both actors would agree on a delivery whose data stayed behind, so the
-    # digest cannot catch this one; following the literal is what does.
+    # Following the literal is what carries the data the module names.
     assert "rules.toml" in delivered_sources(tmp_path)
     assert "reader.py" in delivered_sources(tmp_path)
 
@@ -382,30 +370,6 @@ def test_nested_delivery_follows_packages_imports_deferred_actors_and_data(tmp_p
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
     assert delivered_sources(mount) == delivered
-    assert delivery_digest(mount) == delivery_digest(tmp_path)
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "bigquery/__init__.py",
-        "bigquery/actors.py",
-        "bigquery/settings.py",
-        "bigquery/helpers.py",
-        "bigquery/dynamic.py",
-        "bigquery/rules.toml",
-        "pubsub/__init__.py",
-        "pubsub/state.py",
-        "pubsub/access.py",
-    ],
-)
-def test_nested_actor_and_policy_changes_change_both_source_pins(tmp_path, name):
-    nested_package(tmp_path)
-    original = source_digest(tmp_path), delivery_digest(tmp_path)
-    path = tmp_path / name
-    path.write_bytes(path.read_bytes() + b"# Changed source.\n")
-    assert source_digest(tmp_path) != original[0]
-    assert delivery_digest(tmp_path) != original[1]
 
 
 @pytest.mark.parametrize(

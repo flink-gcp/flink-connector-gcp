@@ -20,12 +20,13 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// Offline BigQuery application inputs; these do not extend lifecycle admission.
+// The trial's inputs, which dispatch and the offline renderer supply.
 bigqueryMode:         *"EO" | "ALO" | "FILE_LOADS" @tag(bigquery_mode)
 bigqueryDestinations: *10 | 50                     @tag(bigquery_destinations,type=int)
 
 // Both BigQuery phases come from the same input identity and fixed package.
-// approval.json remains empty in offline proposals; runtime validation refuses it.
+// approval.json stays empty in a proposal; dispatch embeds the approval when it
+// binds the delivery.
 if scenario == "bigquery-recovery" {
 	_applications: [for trialPhase in ["initial", "upgrade"] {
 		(runPolicy & {

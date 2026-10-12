@@ -15,14 +15,13 @@
 """Bind real actor/controller/session objects to externally supplied approvals."""
 
 import copy
-from dataclasses import replace
 
 import pytest
-from flink_tier3.bigquery import actors, auth
-from flink_tier3.bigquery import bundle as bundles
+from flink_tier3.bigquery import actors, auth, plan
 from flink_tier3.common import Failure, timestamp
 from flink_tier3.environment import Environment
-from flink_tier3.policy import BIGQUERY, ENVIRONMENT, MIB
+from flink_tier3.model import APPROVAL_VERSION, validate_approval
+from flink_tier3.policy import BIGQUERY, ENVIRONMENT, MIB, SMOKE
 from flink_tier3.records import Records
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
@@ -31,7 +30,6 @@ from google.oauth2.credentials import Credentials
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_auth import identity
 from .test_auth import wire as wire  # noqa: PLC0414
-from .test_bundle import approval as approval  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 from .test_plan import trial as trial  # noqa: PLC0414
@@ -40,22 +38,47 @@ TOKEN = "e" * 32
 
 
 @pytest.fixture
-def prepared(approval, env):
+def approval(env, inputs, renderer):
+    """The BigQuery approval dispatch assembles from the rendered proposal."""
+    value = copy.deepcopy(env[2])
+    inputs.update(run_id=value["run_id"], nonce=value["nonce"])
+    proposed = plan.prepare(**inputs)["proposal"]
+    value.update(
+        version=APPROVAL_VERSION,
+        scenario="bigquery-recovery",
+        started_at=proposed["started_at"],
+        expires_at=proposed["expires_at"],
+        cleanup_at=proposed["cleanup_at"],
+        application_sha256=proposed["application_sha256"],
+        upgrade_application_sha256=proposed["upgrade_application_sha256"],
+        bigquery_trial=copy.deepcopy(inputs["trial"]),
+    )
+    value["namespaces"][BIGQUERY] = value["namespaces"].pop(SMOKE)
+    value["images"].pop("smoke")
+    value["images"].update(proposed["images"])
+    validate_approval(value)
+    return value
+
+
+@pytest.fixture
+def prepared(approval, env, inputs):
     kube, store, _, clock = env
     approval["namespaces"][BIGQUERY]["uid"] = BIGQUERY + "-uid"
     clock.now = timestamp(approval["started_at"])
     environment = Environment(kube, store, approval, clock, clock.sleep, actor="runner")
-    bundle = bundles.prepare(approval, prepared_at=approval["started_at"])
-    return environment, bundle
+    return environment, plan.prepare(**inputs)
 
 
-def test_runner_bundle_and_supervisor_manifests_bind_distinct_authenticated_actors(
+def test_runner_and_supervisor_manifests_bind_distinct_authenticated_actors(
     prepared, wire
 ):
-    env, bundle = prepared
+    env, rendered = prepared
     wire.responses = [identity()]
     with actors.runner(
-        env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+        env,
+        rendered["application"],
+        runner_token=TOKEN,
+        credentials=Credentials("runner"),
     ) as runner:
         assert isinstance(runner, Runner)
         assert runner.bigquery.binding["evidence_bytes"] == 10 * MIB
@@ -75,8 +98,8 @@ def test_runner_bundle_and_supervisor_manifests_bind_distinct_authenticated_acto
     wire.responses = [identity("supervisor")]
     with actors.supervisor(
         other,
-        bundle["application"],
-        bundle["upgrade_application"],
+        rendered["application"],
+        rendered["upgrade_application"],
         credentials=Credentials("supervisor"),
     ) as supervisor:
         assert isinstance(supervisor, Supervisor)
@@ -96,33 +119,12 @@ def test_runner_bundle_and_supervisor_manifests_bind_distinct_authenticated_acto
     assert wire.closed
 
 
-@pytest.mark.parametrize("field", ["application", "approval", "delivery"])
-def test_runner_rejects_tampered_bundle_before_authentication(prepared, wire, field):
-    env, bundle = prepared
-    bundle[field]["unexpected"] = True
-    with (
-        pytest.raises(Failure),
-        actors.runner(
-            env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
-        ),
-    ):
-        pytest.fail("Admitted altered bundle")
-    assert not wire.calls
-    assert env.refresh().bigquery is None
-
-
-@pytest.mark.parametrize(
-    "change", ["source", "upgrade", "application", "role", "owner"]
-)
+@pytest.mark.parametrize("change", ["application", "role", "owner"])
 def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, change):
-    env, bundle = prepared
+    env, rendered = prepared
     env.actor = "supervisor"
-    app, upgrade = bundle["application"], bundle["upgrade_application"]
-    if change == "source":
-        env.approval = replace(env.approval, delivery_sha256="0" * 64)
-    elif change == "upgrade":
-        upgrade["changed"] = True
-    elif change == "application":
+    app, upgrade = rendered["application"], rendered["upgrade_application"]
+    if change == "application":
         app["changed"] = True
     elif change == "role":
         env.actor = "runner"
@@ -143,16 +145,20 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
 
 
 def test_supervisor_cannot_be_constructed_inside_the_cleanup_window(prepared, wire):
-    """Cleanup runs in a context opened earlier; a restart cannot reopen one."""
-    env, bundle = prepared
+    """Cleanup runs in a context opened earlier; a restart cannot reopen one.
+
+    Authentication's deadline is the cleanup boundary, so it has no time left
+    and refuses before any credential call.
+    """
+    env, rendered = prepared
     env.actor = "supervisor"
     env.clock.now = env.schedule.cleanup_at
     with (
-        pytest.raises(Failure, match="admission window"),
+        pytest.raises(Failure, match="positive finite timeout"),
         actors.supervisor(
             env,
-            bundle["application"],
-            bundle["upgrade_application"],
+            rendered["application"],
+            rendered["upgrade_application"],
             credentials=Credentials("supervisor"),
         ),
     ):
@@ -160,35 +166,16 @@ def test_supervisor_cannot_be_constructed_inside_the_cleanup_window(prepared, wi
     assert not wire.calls
 
 
-def test_supervisor_source_check_is_the_pin_it_can_reproduce(prepared, wire):
-    """The supervisor runs from a mounted subset of the installed package.
-
-    Its digest is the delivery pin, so checking `runtime_sha256` there would
-    refuse every supervisor: the mount is a strict subset of what that digest
-    covers. The runner keeps `runtime_sha256`, and the bundle it verifies
-    compares both pins anyway.
-    """
-    env, bundle = prepared
-    env.actor = "supervisor"
-    env.approval = replace(env.approval, runtime_sha256="0" * 64)
-    wire.responses = [identity("supervisor")]
-    with actors.supervisor(
-        env,
-        bundle["application"],
-        bundle["upgrade_application"],
-        credentials=Credentials("supervisor"),
-    ) as supervisor:
-        assert isinstance(supervisor, Supervisor)
-        assert len(wire.calls) == 1
-
-
 def test_wrong_google_identity_prevents_runner_construction(prepared, wire):
-    env, bundle = prepared
+    env, rendered = prepared
     wire.responses = [identity("supervisor")]
     with (
         pytest.raises(Failure, match="identity differs"),
         actors.runner(
-            env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+            env,
+            rendered["application"],
+            runner_token=TOKEN,
+            credentials=Credentials("runner"),
         ),
     ):
         pytest.fail("Admitted wrong Google identity")
@@ -197,13 +184,16 @@ def test_wrong_google_identity_prevents_runner_construction(prepared, wire):
 
 
 def test_authentication_crossing_startup_deadline_prevents_admission(prepared, wire):
-    env, bundle = prepared
+    env, rendered = prepared
     wire.responses = [identity()]
     wire.hook = lambda _: setattr(env.clock, "now", env.schedule.started + 600)
     with (
         pytest.raises(Failure, match="construction deadline"),
         actors.runner(
-            env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+            env,
+            rendered["application"],
+            runner_token=TOKEN,
+            credentials=Credentials("runner"),
         ),
     ):
         pytest.fail("Admitted after startup")
@@ -213,13 +203,16 @@ def test_authentication_crossing_startup_deadline_prevents_admission(prepared, w
 
 def test_spent_startup_budget_refuses_before_any_credential_call(prepared, wire):
     """Admission is checked first, so an expired startup budget costs no token."""
-    env, bundle = prepared
+    env, rendered = prepared
     wire.responses = [identity()]
     env.clock.now = env.schedule.started + 600
     with (
         pytest.raises(Failure, match="startup deadline expired"),
         actors.runner(
-            env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+            env,
+            rendered["application"],
+            runner_token=TOKEN,
+            credentials=Credentials("runner"),
         ),
     ):
         pytest.fail("Admitted an expired construction")
@@ -229,12 +222,15 @@ def test_spent_startup_budget_refuses_before_any_credential_call(prepared, wire)
 
 
 def test_context_exception_closes_session_without_automatic_cleanup(prepared, wire):
-    env, bundle = prepared
+    env, rendered = prepared
     wire.responses = [identity()]
     with (
         pytest.raises(RuntimeError, match="caller failure"),
         actors.runner(
-            env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+            env,
+            rendered["application"],
+            runner_token=TOKEN,
+            credentials=Credentials("runner"),
         ),
     ):
         raise RuntimeError("caller failure")
@@ -243,7 +239,7 @@ def test_context_exception_closes_session_without_automatic_cleanup(prepared, wi
 
 
 def test_ownership_lost_during_authentication_prevents_actor_return(prepared, wire):
-    env, bundle = prepared
+    env, rendered = prepared
     wire.responses = [identity()]
 
     def replace_owner(_):
@@ -254,7 +250,10 @@ def test_ownership_lost_during_authentication_prevents_actor_return(prepared, wi
     with (
         pytest.raises(Failure, match="owner"),
         actors.runner(
-            env, bundle, runner_token=TOKEN, credentials=Credentials("runner")
+            env,
+            rendered["application"],
+            runner_token=TOKEN,
+            credentials=Credentials("runner"),
         ),
     ):
         pytest.fail("Admitted after ownership loss")

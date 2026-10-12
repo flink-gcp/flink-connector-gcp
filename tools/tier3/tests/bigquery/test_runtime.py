@@ -172,7 +172,9 @@ def test_runner_stops_without_polling_when_execution_is_closed(env, trigger):
     elif trigger == "completed":
         finish_job(environment)
     else:
-        environment.records.mark_evidence_failed()
+        environment.records.mark_evidence_failed(
+            {"operation": "test", "cause": "synthetic"}
+        )
 
     def advance(seconds):
         env[3].sleep(seconds)
@@ -349,7 +351,7 @@ def test_incomplete_bigquery_blocks_all_shared_completion_paths(env, mutation):
     for call in (
         lambda: runner.cleanup.scale_operator(0),
         lambda: runner.env.records.set_phase(rt.Phase.CLEANED),
-        lambda: runner.env.records.settled(False),
+        lambda: runner.env.records.settled(None),
         lambda: rt.verify_idle(runner.env),
         lambda: runner.finalize(plans(env)),
     ):
@@ -360,7 +362,7 @@ def test_incomplete_bigquery_blocks_all_shared_completion_paths(env, mutation):
     assert env[1].read("runs/test-1310/result.json")[0] is None
 
 
-def test_finalize_retains_exact_bigquery_control_and_rejects_stale_receipt(env):
+def test_finalize_retains_bigquery_control_that_changed_after_the_receipt(env):
     runner = lifecycle(env, Runner)
     pending(runner.env)
     cleaned(runner.env)
@@ -368,14 +370,15 @@ def test_finalize_retains_exact_bigquery_control_and_rejects_stale_receipt(env):
     env[1].before_write = lambda: runner.env.records._change(
         lambda r: r.bigquery["queries"].update(final={"slot": 1})
     )
-    with pytest.raises(rt.Failure, match="control changed"):
+    # The control deletion is conditional on the generation the receipt read.
+    with pytest.raises(rt.ApiError) as error:
         runner.finalize(plans(env))
+    assert error.value.status == 412
     receipt = env[1].read("runs/test-1310/result.json")[0]
     assert receipt["bigquery"] == saved
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
-    with pytest.raises(rt.Failure, match="receipt conflicts"):
-        runner.finalize(plans(env))
-    runner.env.records._change(lambda r: setattr(r, "bigquery", saved))
+    assert env[1].read(runner.env.records.path)[0]["bigquery"] != saved
+    # A retry keeps the receipt it finds rather than derive another.
     assert runner.finalize(plans(env)) is False
     assert env[1].read(rt.ENVIRONMENT)[0] is None
     assert env[1].read(runner.env.records.path)[0] is None
@@ -427,7 +430,7 @@ def test_completion_rechecks_bigquery_after_a_control_conflict(env, operation):
     )
     with pytest.raises(rt.Failure, match="BigQuery resource cleanup"):
         if operation == "settled":
-            runner.env.records.settled(False)
+            runner.env.records.settled(None)
         else:
             runner.env.records.set_phase(rt.Phase.CLEANED)
     assert not runner.env.refresh().idle

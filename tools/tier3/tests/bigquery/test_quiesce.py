@@ -23,7 +23,7 @@ from flink_tier3.quiesce import UNREAD_RETRIES, WRITER_KINDS
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj
-from .test_bundle import approval as approval  # noqa: PLC0414
+from .test_actors import approval as approval  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 from .test_plan import trial as trial  # noqa: PLC0414

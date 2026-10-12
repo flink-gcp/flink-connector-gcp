@@ -54,17 +54,12 @@ class PubSubLifecycle:
         if not callable(before_operation):
             raise Failure("Pub/Sub lifecycle requires an operation guard")
         self.env, self.http, self.before_operation = env, http, before_operation
-        approval = env.approval
-        self.plan = (
-            approval.pubsub_plan
-            if getattr(approval, "version", None) == 5
-            else ResourcePlan(approval.run_id, approval.nonce)
-        )
+        self.plan = ResourcePlan(env.approval.run_id, env.approval.nonce)
         # Written once at initialization as evidence for the receipt; nothing
         # compares it again, because only this rig's own code writes the record.
         self.intent = {
             "manifest": self.plan.manifest(),
-            "application_sha256": approval.application_sha256,
+            "application_sha256": env.approval.application_sha256,
         }
 
     def until(self, deadline):

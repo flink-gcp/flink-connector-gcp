@@ -40,7 +40,6 @@ def main(argv=None):
         "analyze",
         "vm-analyze",
         "bigquery",
-        "bigquery-bundle",
     ):
         commands.add_parser(command, add_help=False)
     args, remaining = parser.parse_known_args(argv)

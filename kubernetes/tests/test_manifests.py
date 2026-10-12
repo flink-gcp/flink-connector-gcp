@@ -26,20 +26,19 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from flink_tier3 import approval_bundle, repository
-from flink_tier3.bigquery import bundle as bigquery_bundle
+from flink_tier3 import repository
 from flink_tier3.bigquery import plan as bigquery_plan
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.common import Failure, digest, timestamp, verify_pod
-from flink_tier3.model import validate_approval
-from flink_tier3.policy import BIGQUERY_CEILINGS, GAR, POD_RESOURCES
-from flink_tier3.pubsub import bundle as pubsub_bundle
+from flink_tier3.lifecycle import bind
+from flink_tier3.model import Approval, validate_approval
+from flink_tier3.policy import GAR, POD_RESOURCES
 from flink_tier3.pubsub import plan as pubsub_plan
 
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
 ENV = {**os.environ, "GOMAXPROCS": "2"}
-SCENARIOS = ("smoke", "generic-recovery")
+SCENARIOS = ("smoke",)
 CLOUDTASKS_IMAGE = (
     "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-measurement"
 )
@@ -742,31 +741,13 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     assert "flink_tier3_analyze.py" not in config["data"]
     assert "flink_tier3_cloudtasks.protocol_1246.toml" not in config["data"]
     assert job["metadata"]["namespace"] == "tier3-system"
-    # Only a disrupted Pod is replaced, and only once it is terminal, so a
-    # replacement never runs beside the Pod it replaces; every other failure
-    # ends the Job as backoffLimit 0 did.
-    assert job["spec"]["backoffLimit"] == 2
-    assert job["spec"]["podReplacementPolicy"] == "Failed"
-    # The API server rejects a rule naming a container the template lacks.
+    # No Pod is replaced: a disrupted supervisor ends the Job, and the runner
+    # settles the run.
+    assert job["spec"]["backoffLimit"] == 0
+    assert "podFailurePolicy" not in job["spec"]
     assert [c["name"] for c in job["spec"]["template"]["spec"]["containers"]] == [
         "supervisor"
     ]
-    assert job["spec"]["podFailurePolicy"] == {
-        "rules": [
-            {
-                "action": "Count",
-                "onPodConditions": [{"type": "DisruptionTarget", "status": "True"}],
-            },
-            {
-                "action": "FailJob",
-                "onExitCodes": {
-                    "containerName": "supervisor",
-                    "operator": "NotIn",
-                    "values": [0],
-                },
-            },
-        ]
-    }
     assert job["spec"]["activeDeadlineSeconds"] == 3300
     pod = job["spec"]["template"]["spec"]
     mounted = {}
@@ -782,8 +763,6 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
     expected = {"approval.json", "application.json"} | {
         "flink_tier3/" + name for name in delivered_sources()
     }
-    if scenario == "generic-recovery":
-        expected.add("upgrade-application.json")
     assert mounted.keys() == expected
     for name, path in mounted.items():
         if name not in (
@@ -836,12 +815,6 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
             pod["containers"][0]["resources"][category] == POD_RESOURCES["supervisor"]
         ), category
     app = json.loads(config["data"]["application.json"])
-    if scenario == "generic-recovery":
-        from flink_tier3.exercise import validate_manifests
-        from flink_tier3.policy import RECOVERY
-
-        validate_manifests(app, json.loads(config["data"]["upgrade-application.json"]))
-        assert app["spec"]["job"]["args"][5] == str(RECOVERY["records"])
     assert app["metadata"]["namespace"] == "tier3-smoke"
     assert_pod_policy(app["spec"])
 
@@ -941,7 +914,6 @@ def test_lifecycle_application_cannot_relax_shared_run_policy(module, override):
     [
         ("smoke", 3420, True),
         ("smoke", 3421, False),
-        ("generic-recovery", 3421, False),
     ],
 )
 def test_lifecycle_active_seconds_ceiling_depends_on_scenario(
@@ -1770,7 +1742,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
     assert json.loads(bundle["delivery"]["config"]["data"]["proposal.json"]) == proposal
 
     approval = {
-        "version": 5,
+        "version": 6,
         "scenario": "bigquery-recovery",
         "run_id": "proposal-1312",
         "nonce": "a" * 32,
@@ -1778,7 +1750,6 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "ceilings": dict(BIGQUERY_CEILINGS),
         "namespaces": {
             namespace: {
                 "uid": namespace + "-uid",
@@ -1789,8 +1760,6 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         },
         "operator_uid": "operator-uid",
         "baseline_uids": ["operator-uid"],
-        "runtime_sha256": proposal["runtime_sha256"],
-        "delivery_sha256": proposal["delivery_sha256"],
         "application_sha256": proposal["application_sha256"],
         "upgrade_application_sha256": proposal["upgrade_application_sha256"],
         "images": {
@@ -1810,19 +1779,19 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
             "destinations": destinations,
         },
     }
-    # The synthetic CUE module is not a Git checkout; revision checks have separate tests.
-    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
-    prepared = bigquery_bundle.prepare(approval, prepared_at="2026-09-21T00:10:00Z")
-    assert bigquery_bundle.validate(prepared, approval) == prepared
-    assert prepared["application"] == bundle["application"]
-    assert prepared["upgrade_application"] == bundle["upgrade_application"]
+    validate_approval(approval)
     expected_delivery = json.loads(json.dumps(bundle["delivery"]))
-    expected_delivery["config"]["data"]["approval.json"] = prepared["delivery"][
-        "config"
-    ]["data"]["approval.json"]
+    delivery = bind(
+        Approval.from_dict(approval),
+        bundle["delivery"],
+        timestamp("2026-09-21T00:10:00Z"),
+    )
+    expected_delivery["config"]["data"]["approval.json"] = delivery["config"]["data"][
+        "approval.json"
+    ]
     expected_delivery["supervisor"]["spec"]["activeDeadlineSeconds"] = 4620
-    assert prepared["delivery"] == expected_delivery
-    data = prepared["delivery"]["config"]["data"]
+    assert delivery == expected_delivery
+    data = delivery["config"]["data"]
     assert (
         json.loads(data["approval.json"])["bigquery_trial"]
         == approval["bigquery_trial"]
@@ -1901,8 +1870,10 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
 @pytest.mark.parametrize(
     "trial,entry_point", [("rescale-out", "datastream"), ("rescale-in", "table")]
 )
-def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_point):
-    """The dispatch's assembled approval re-renders to the delivery it was built from."""
+def test_pubsub_approval_binds_the_real_cue_delivery(
+    module, monkeypatch, trial, entry_point
+):
+    """The dispatch's assembled approval binds the delivery it was built from."""
     from flink_tier3 import lifecycle
 
     root = module.parent
@@ -1956,20 +1927,19 @@ def test_pubsub_approval_bundle_from_real_cue(module, monkeypatch, trial, entry_
         },
         actor="octocat",
     )
-    validate_approval(approval, lifecycle.rt.timestamp("2026-09-21T00:10:00Z"))
-    # The synthetic CUE module is not a Git checkout; revision checks have separate tests.
-    monkeypatch.setattr(approval_bundle, "check_revision", lambda revision: None)
-    prepared = pubsub_bundle.prepare(approval, prepared_at="2026-09-21T00:10:00Z")
-    assert pubsub_bundle.validate(prepared, approval) == prepared
-    assert prepared["application"] == bundle["application"]
-    assert prepared["recovery_application"] == bundle["recovery_application"]
+    validate_approval(approval)
     expected_delivery = json.loads(json.dumps(bundle["delivery"]))
-    expected_delivery["config"]["data"]["approval.json"] = prepared["delivery"][
-        "config"
-    ]["data"]["approval.json"]
+    delivery = bind(
+        Approval.from_dict(approval),
+        bundle["delivery"],
+        timestamp("2026-09-21T00:10:00Z"),
+    )
+    expected_delivery["config"]["data"]["approval.json"] = delivery["config"]["data"][
+        "approval.json"
+    ]
     expected_delivery["supervisor"]["spec"]["activeDeadlineSeconds"] = 2820
-    assert prepared["delivery"] == expected_delivery
-    data = prepared["delivery"]["config"]["data"]
+    assert delivery == expected_delivery
+    data = delivery["config"]["data"]
     assert json.loads(data["approval.json"])["pubsub_trial"] == pubsub_trial
     assert json.loads(data["proposal.json"]) == bundle["proposal"]
     assert {
@@ -2054,7 +2024,7 @@ def test_pubsub_proposal_from_real_cue(
     assert ranges[-1]["start"] + ranges[-1]["count"] == records
     assert min(cohort["count"] for cohort in ranges) > 0
     assert proposal["cleanup_at"] == "2026-09-21T00:45:00Z"
-    assert proposal["limits"]["pods"] == 7
+    assert proposal["limits"] == {"seconds": 3600, "cleanup_seconds": 900}
     data = bundle["delivery"]["config"]["data"]
     assert json.loads(data["proposal.json"]) == proposal
     assert json.loads(data["application.json"]) == initial

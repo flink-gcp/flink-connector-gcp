@@ -199,8 +199,8 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 sche
 
 ## Bounded execution
 
-The [lifecycle runbook](lifecycle/README.md) defines the explicit dispatch approval, five-Pod resource budget, shared infrastructure lock, supervisor, cleanup and recovery.
-Its implementation is locally validated, and the separately approved [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) validated its generic recovery path on the cluster on 2026-09-17.
+The [lifecycle runbook](lifecycle/README.md) defines dispatch, the quota-bounded resource budget, the shared infrastructure lock, the supervisor, cleanup and recovery.
+Its implementation is locally validated, and deployed runs have exercised it on the cluster, from the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) on 2026-09-17 to the BigQuery and Pub/Sub trials.
 
 ## Ownership and remaining stages
 

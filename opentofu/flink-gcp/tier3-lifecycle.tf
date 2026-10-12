@@ -78,8 +78,10 @@ locals {
   ])
 }
 
-# Recovery verifies the originating workflow and saved run approval before
-# making changes; this trust only identifies the recovery workflow itself.
+# Recovery requires that its source holds the lock, whose acquisition verified
+# the originating workflow, and has completed, and compares the saved run
+# approval before making changes; this trust only identifies the recovery
+# workflow itself.
 resource "google_service_account_iam_member" "tier3_runner_wif" {
   for_each           = local.tier3_runner_workflows
   service_account_id = google_service_account.tier3_runner.name

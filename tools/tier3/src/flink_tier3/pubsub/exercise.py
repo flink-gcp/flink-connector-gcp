@@ -78,7 +78,6 @@ class PubSubExercise(RecoveryExercise):
     """
 
     namespace = PUBSUB
-    records_coverage = True
     state_bucket = PUBSUB_STATE
     timing = PUBSUB_EXERCISE
 

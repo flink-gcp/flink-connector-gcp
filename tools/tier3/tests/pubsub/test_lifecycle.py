@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+from flink_tier3 import environment
 from flink_tier3.common import Failure, TransportError, digest, json_bytes
 from flink_tier3.model import Phase, RunRecord
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle, require_pubsub_clean
@@ -40,9 +41,15 @@ class Environment:
             pubsub_trial={"records_per_subscription": 1000},
         )
         self.actor = "runner"
+        self.clock = lambda: 1800000000
+        self.evidence_failure = None
         self.store = Store()
-        self.records = Records(self.store, self.approval, lambda: 1800000000)
+        self.records = Records(self.store, self.approval, self.clock)
         self.store.write(self.records.path, RunRecord(self.approval.nonce).to_dict())
+
+    # The production latch, so a handoff's evidence failure keeps its cause.
+    evidence_failed = environment.Environment.evidence_failed
+    evidence_lost = environment.Environment.evidence_lost
 
     def refresh(self):
         return self.records.read()[0]
