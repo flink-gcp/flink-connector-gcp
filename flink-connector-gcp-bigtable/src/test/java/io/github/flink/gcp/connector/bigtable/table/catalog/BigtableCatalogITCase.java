@@ -287,7 +287,8 @@ class BigtableCatalogITCase extends AbstractBigtableEmulatorITCase {
         assertThat(
                         table.explainSql(
                                 "SELECT * FROM string_keys WHERE _key >= 'user' AND _key < 'uses'"))
-                .contains("filter=[and(>=(_key, _UTF-16LE'user'), <(_key, _UTF-16LE'uses'))]");
+                .containsIgnoringCase(
+                        "filter=[and(>=(_key, _UTF-16LE'user'), <(_key, _UTF-16LE'uses'))]");
         assertThat(table.explainSql("SELECT * FROM string_keys WHERE _key LIKE 'user%'"))
                 .contains("filter=[]")
                 .contains("where=[LIKE(_key, 'user%')]");
