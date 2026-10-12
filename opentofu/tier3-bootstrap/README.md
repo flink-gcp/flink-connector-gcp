@@ -59,7 +59,7 @@ Paid workload admission uses the [bounded lifecycle](../../kubernetes/lifecycle/
 
 [Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) uses the existing cluster with the dedicated `tier3-cloudtasks` namespace.
 Its `cloudtasks-benchmark` KSA selects the existing `cloudtasks-benchmark@flink-gcp.iam.gserviceaccount.com` GSA.
-The [GCP root](../flink-gcp/cloudtasks-benchmark.tf) already owns that GSA, its Cloud Tasks editor grant, the isolated checkpoint/artifact bucket and this exact KSA's impersonation trust.
+The [GCP root](../flink-gcp/cloudtasks-benchmark.tf) already owns that GSA, its Cloud Tasks recovery workload role, the isolated checkpoint/artifact bucket and this exact KSA's impersonation trust.
 The job Role permits native Flink Pod, ConfigMap and Deployment management within this namespace.
 It does not grant the job access to the supervisor namespace.
 The runner and supervisor receive the same application lifecycle Role used for smoke, now also in `tier3-cloudtasks`.

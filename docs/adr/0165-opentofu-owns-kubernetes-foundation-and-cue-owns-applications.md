@@ -1362,3 +1362,28 @@ What the trial can show is a failover issued while a load runs, and, read from t
 
 Declined: timing the deletion from the committer's `currentCommitDurationMillis` or `activeCommitDestinations` gauges, because a gauge read through the REST service is a sample taken at most once a poll, and a commit in progress does not say whether a load is running server-side; the job listing asks the service that runs the load.
 Declined: a dedicated `in-flight` trial input, because every FILE_LOADS trial's failover is meant to exercise the re-attachment the connector exists to provide, and a second schedule would be one more path to keep working.
+
+### Cloud Tasks recovery foundation
+
+The cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) writes through the staged Cloud Tasks sink to a queue its lifecycle creates paused for the run ([#1768](https://github.com/flink-gcp/flink-connector-gcp/issues/1768)).
+Three custom roles carry the queue access, each holding only what its identity calls.
+The runner creates the queue, pauses it and reads it back, so that only a paused queue with the retention the staged sink requires is admitted.
+The supervisor reads the queue, lists its tasks for the oracle, which compares task names and so needs no full task view, and deletes it at cleanup.
+The workload creates tasks and reads the queue, because the sink's committer reads `tombstoneTtl` back before its first create.
+The runner and supervisor also take the benchmark bucket's run-prefix state access the BigQuery bucket grants, `.inprogress/` staging included, because the shared cleanup lists and deletes a run's state as either actor.
+
+The workload's role replaces `roles/cloudtasks.editor`.
+No predefined role holds exactly those two permissions: `roles/cloudtasks.enqueuer` cannot read a queue, and every role that can also do more.
+The editor role in particular resumes, purges and deletes queues and runs tasks, and running a task dispatches it even from a paused queue, which is what the trial's zero-dispatch premise rules out.
+
+The bindings are project-wide, and the lifecycle acts only on the queue its run's intent names.
+Narrowing them to `ct1362-` queue names was declined because Cloud Tasks is absent from the services whose resource names IAM conditions can test.
+Granting the workload on each run's queue, as the [Pub/Sub lifecycle](#pubsub-lifecycle-iam-preparation) grants on each run's topics and subscriptions, was declined too.
+It would confine the workload's task creation to its own queue, but it needs the runner to hold `cloudtasks.queues.setIamPolicy` project-wide, which no condition can narrow either, the guarded policy writes and readback the Pub/Sub runtime carries, and an effective-access probe that waits out IAM propagation, documented as typically two minutes and possibly seven or longer, before every admission.
+The standing grant needs none of that, and it keeps the earlier Cloud Tasks lifecycle's choice of no IAM writes; what it gives the workload beyond its run's queue is task creation in, and reads of, the project's other queues, which outside a trial are only the integration tests' temporary ones.
+The roles take new IDs, because the IDs of the two roles #1723 deleted stay unavailable until IAM purges them.
+
+The CUE side adds the `cloudtasks-recovery` scenario: an application package for the initial and upgrade phases, the namespace policy for `tier3-cloudtasks`, and the shared 90-minute window of the BigQuery trial.
+The package refuses more than 30 minutes of input, the length the BigQuery trial runs in the same window, because the records and the rate are separate inputs that each stay within the application's bounds while together outlasting the window.
+The queue name is `ct1362-` followed by the run ID, so the delivery takes no queue input.
+The rig scenario that admits the delivery, creates the queue and judges the trial follows in [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769).

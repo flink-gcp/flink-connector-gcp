@@ -22,7 +22,7 @@ import (
 run: {
 	id:        string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$" @tag(run_id)
 	expiresAt: time.Time                                         @tag(expires_at)
-	namespace: *"tier3-smoke" | "tier3-bigquery" | "tier3-pubsub"
+	namespace: *"tier3-smoke" | "tier3-bigquery" | "tier3-pubsub" | "tier3-cloudtasks"
 	image:     string @tag(image)
 }
 
@@ -87,6 +87,12 @@ delivery: resources: [string]: {
 				flinkVersion:   "v2_2"
 				serviceAccount: "bigquery"
 				image:          =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/bigquery-recovery@sha256:[0-9a-f]{64}$"
+				job: parallelism: 2
+			}
+			if run.namespace == "tier3-cloudtasks" {
+				flinkVersion:   "v2_2"
+				serviceAccount: "cloudtasks-benchmark"
+				image:          =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/cloudtasks-recovery@sha256:[0-9a-f]{64}$"
 				job: parallelism: 2
 			}
 			podTemplate: flinkPodPolicy

@@ -40,7 +40,7 @@ CUE = shutil.which("cue")
 ENV = {**os.environ, "GOMAXPROCS": "2"}
 SCENARIOS = ("smoke",)
 CLOUDTASKS_IMAGE = (
-    "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-measurement"
+    "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-recovery"
 )
 SYNTHETIC_DIGEST = "sha256:" + "a" * 64
 
@@ -827,6 +827,7 @@ def test_lifecycle_job_embeds_reviewed_source_and_excludes_spot(
         "nonce=wrong",
         "expires_at=wrong",
         "scenario=unknown",
+        # A near miss of cloudtasks-recovery.
         "scenario=cloudtasks",
     ],
 )
@@ -914,13 +915,21 @@ def test_lifecycle_application_cannot_relax_shared_run_policy(module, override):
     [
         ("smoke", 3420, True),
         ("smoke", 3421, False),
+        ("cloudtasks-recovery", 5220, True),
+        ("cloudtasks-recovery", 5221, False),
     ],
 )
 def test_lifecycle_active_seconds_ceiling_depends_on_scenario(
     module, scenario, active_seconds, admitted
 ):
+    images = {"cloudtasks-recovery": f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"}
+    overrides = {"application_image": images[scenario]} if scenario in images else {}
     result = lifecycle_export(
-        module, "delivery.resources", scenario, active_seconds=str(active_seconds)
+        module,
+        "delivery.resources",
+        scenario,
+        active_seconds=str(active_seconds),
+        **overrides,
     )
     assert (result.returncode == 0) is admitted, result.stderr
     if admitted:
@@ -928,6 +937,7 @@ def test_lifecycle_active_seconds_ceiling_depends_on_scenario(
         assert job["spec"]["activeDeadlineSeconds"] == active_seconds
     else:
         assert not result.stdout.strip()
+        assert f"invalid value {active_seconds} (out of bound" in result.stderr
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
@@ -1354,6 +1364,307 @@ def test_bigquery_namespace_policy_without_application_package(module, override)
     invalid = cue(module, "cmd", "render", path)
     assert invalid.returncode != 0, invalid.stdout
     assert not invalid.stdout.strip()
+
+
+def cloudtasks_leaf(module, **changes):
+    inputs = {
+        "id": "ct-contract",
+        "expiresAt": "2026-10-13T08:00:00Z",
+        "namespace": "tier3-cloudtasks",
+        "image": f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
+        "phase": "initial",
+        **changes,
+    }
+    path = leaf(module, "runs/cloudtasks", {"run": inputs})
+    shutil.copyfile(
+        KUBERNETES / "tests/fixtures/cloudtasks.cue", module / path / "delivery.cue"
+    )
+    return path
+
+
+def cloudtasks_args(run_id, phase, records=180000, rate=100):
+    return [
+        "--run-id",
+        run_id,
+        "--queue",
+        "ct1362-" + run_id,
+        "--phase",
+        phase,
+        "--records",
+        str(records),
+        "--records-per-second",
+        str(rate),
+        "--require-restored",
+        str(phase == "upgrade").lower(),
+    ]
+
+
+def cloudtasks_configuration(run_id):
+    storage = f"gs://flink-gcp-cloudtasks-benchmark/runs/{run_id}"
+    return {
+        "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false",
+        "kubernetes.operator.snapshot.resource.enabled": "false",
+        "job.autoscaler.enabled": "false",
+        "taskmanager.numberOfTaskSlots": "1",
+        "state.backend.type": "hashmap",
+        "execution.checkpointing.storage": "filesystem",
+        "execution.checkpointing.interval": "30 s",
+        "execution.checkpointing.timeout": "120 s",
+        "execution.checkpointing.max-concurrent-checkpoints": "1",
+        "execution.checkpointing.num-retained": "2",
+        "execution.checkpointing.dir": f"{storage}/checkpoints",
+        "execution.checkpointing.savepoint-dir": f"{storage}/savepoints",
+        "high-availability.type": "kubernetes",
+        "high-availability.storageDir": f"{storage}/ha",
+        "restart-strategy.type": "fixed-delay",
+        "restart-strategy.fixed-delay.attempts": "3",
+        "restart-strategy.fixed-delay.delay": "10 s",
+    }
+
+
+def assert_cloudtasks_application(app, run_id, expires_at, phase, records, rate):
+    """The whole delivered contract of one phase but its approval annotations."""
+    assert app["metadata"]["name"] == run_id
+    assert app["metadata"]["namespace"] == "tier3-cloudtasks"
+    assert app["metadata"]["labels"]["flink-gcp.io/run-id"] == run_id
+    assert app["metadata"]["annotations"]["flink-gcp.io/expires-at"] == expires_at
+    spec = app["spec"]
+    assert spec["flinkVersion"] == "v2_2"
+    assert spec["serviceAccount"] == "cloudtasks-benchmark"
+    assert spec["mode"] == "native"
+    assert spec["image"] == f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"
+    assert spec["job"] == {
+        "jarURI": "local:///opt/flink/usrlib/cloudtasks-recovery.jar",
+        "entryClass": "io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksRecoveryJob",
+        "parallelism": 2,
+        "state": "running",
+        "upgradeMode": "savepoint",
+        "allowNonRestoredState": False,
+        "args": cloudtasks_args(run_id, phase, records, rate),
+    }
+    assert spec["flinkConfiguration"] == cloudtasks_configuration(run_id)
+    for manager, replicas in (("jobManager", 1), ("taskManager", 2)):
+        assert spec[manager]["replicas"] == replicas
+        assert spec[manager]["resource"] == {"cpu": 1, "memory": "2Gi"}
+        assert "volumes" not in spec[manager]["podTemplate"]["spec"]
+        [container] = spec[manager]["podTemplate"]["spec"]["containers"]
+        assert container["name"] == "flink-main-container"
+        assert (
+            container["resources"]["requests"]
+            == container["resources"]["limits"]
+            == {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
+        )
+    assert_pod_policy(spec)
+
+
+def test_cloudtasks_initial_and_upgrade_preserve_the_trial(module):
+    applications = []
+    for phase in ("initial", "upgrade"):
+        rendered = cue(module, "cmd", "render", cloudtasks_leaf(module, phase=phase))
+        assert rendered.returncode == 0, rendered.stderr
+        [app] = list(yaml.safe_load_all(rendered.stdout))
+        assert_cloudtasks_application(
+            app, "ct-contract", "2026-10-13T08:00:00Z", phase, 180000, 100
+        )
+        applications.append(app)
+    # Updating the same deployment changes only the phase and restored-state requirement.
+    for app in applications:
+        app["spec"]["job"].pop("args")
+    assert applications[0] == applications[1]
+
+
+@pytest.mark.parametrize(
+    "records,rate", [(2, 1), (1800, 1), (180000, 100), (90000, 50)]
+)
+def test_cloudtasks_input_boundaries_render(module, records, rate):
+    path = cloudtasks_leaf(module, records=records, recordsPerSecond=rate)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    assert app["spec"]["job"]["args"] == cloudtasks_args(
+        "ct-contract", "initial", records, rate
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"phase": "resume"},
+        {"records": 1},
+        {"records": "100"},
+        # Each within the application's bounds, but longer than 30 minutes of input.
+        {"records": 180001},
+        {"records": 1801, "recordsPerSecond": 1},
+        {"records": 360000, "recordsPerSecond": 100},
+        # The default count at a lower rate, omitted or given.
+        {"recordsPerSecond": 50},
+        {"records": 180000, "recordsPerSecond": 50},
+        {"recordsPerSecond": 0},
+        {"recordsPerSecond": 101},
+        # The smoke policy admits this image, account and topology; only the package's
+        # namespace refuses it.
+        {"namespace": "tier3-smoke"},
+        {"id": "../another"},
+        {"image": f"{CLOUDTASKS_IMAGE}:latest"},
+        {
+            "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery@"
+            + SYNTHETIC_DIGEST
+        },
+    ],
+)
+def test_cloudtasks_rejects_invalid_trial_inputs(module, changes):
+    result = cue(module, "cmd", "render", cloudtasks_leaf(module, **changes))
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"serviceAccount": "bigquery"},
+        {"job": {"upgradeMode": "stateless"}},
+        {
+            "job": {
+                "entryClass": "io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksMeasurementJob"
+            }
+        },
+        {
+            "job": {
+                "args": cloudtasks_args("ct-contract", "initial")[:3] + ["ct1362-other"]
+            }
+        },
+        {"taskManager": {"replicas": 1}},
+        {"flinkConfiguration": {"taskmanager.numberOfTaskSlots": "2"}},
+        {"flinkConfiguration": {"job.autoscaler.enabled": "true"}},
+        {
+            "flinkConfiguration": {
+                "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "true"
+            }
+        },
+        {
+            "flinkConfiguration": {
+                "kubernetes.operator.snapshot.resource.enabled": "true"
+            }
+        },
+        {"flinkConfiguration": {"execution.checkpointing.dir": "gs://other/state"}},
+        {
+            "taskManager": {
+                "podTemplate": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "flink-main-container",
+                                "resources": {"limits": {"memory": "4Gi"}},
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "jobManager": {
+                "podTemplate": {
+                    "spec": {"nodeSelector": {"cloud.google.com/gke-spot": "true"}}
+                }
+            }
+        },
+    ],
+)
+def test_cloudtasks_delivery_cannot_change_fixed_topology(module, override):
+    path = cloudtasks_leaf(module)
+    (module / path / "override.cue").write_text(
+        "package tier3\n"
+        + json.dumps({"delivery": {"resources": {"app": {"spec": override}}}})
+    )
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"flinkVersion": "v1_20"},
+        {"serviceAccount": "bigquery"},
+        {"job": {"parallelism": 1}},
+        {
+            "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@"
+            + SYNTHETIC_DIGEST
+        },
+    ],
+)
+def test_cloudtasks_namespace_policy_without_application_package(module, override):
+    # A plain resource prevents package constraints from masking run policy.
+    document = workload()
+    document["run"]["namespace"] = "tier3-cloudtasks"
+    spec = document["delivery"]["resources"]["job"]["spec"]
+    spec.update(
+        flinkVersion="v2_2",
+        serviceAccount="cloudtasks-benchmark",
+        image=f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
+    )
+    spec["job"]["parallelism"] = 2
+    path = leaf(module, "runs/plain-cloudtasks", document)
+    valid = cue(module, "cmd", "render", path)
+    assert valid.returncode == 0, valid.stderr
+    [app] = list(yaml.safe_load_all(valid.stdout))
+    assert app["metadata"]["namespace"] == "tier3-cloudtasks"
+    spec.update(override)
+    leaf(module, "runs/plain-cloudtasks", document)
+    invalid = cue(module, "cmd", "render", path)
+    assert invalid.returncode != 0, invalid.stdout
+    assert not invalid.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "inputs,records,rate",
+    [
+        ({}, 180000, 100),
+        (
+            {"cloudtasks_records": "90000", "cloudtasks_records_per_second": "50"},
+            90000,
+            50,
+        ),
+    ],
+)
+def test_cloudtasks_proposal_delivery_binds_both_phases(module, inputs, records, rate):
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication, delivery.resources]",
+        "cloudtasks-recovery",
+        run_id="proposal-1362",
+        active_seconds="5220",
+        application_image=f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
+        **inputs,
+    )
+    assert result.returncode == 0, result.stderr
+    initial, upgrade, delivery = json.loads(result.stdout)
+    for app, phase in ((initial, "initial"), (upgrade, "upgrade")):
+        assert_cloudtasks_application(
+            app, "proposal-1362", "2026-09-20T00:00:00Z", phase, records, rate
+        )
+        annotations = app["metadata"]["annotations"]
+        assert annotations["flink-gcp.io/approval"] == "a" * 32
+        assert annotations["flink-gcp.io/scenario"] == "cloudtasks-recovery"
+    config = delivery["config"]
+    assert config["immutable"] is True
+    assert json.loads(config["data"]["approval.json"]) == {}
+    assert json.loads(config["data"]["proposal.json"]) == {}
+    assert json.loads(config["data"]["application.json"]) == initial
+    assert json.loads(config["data"]["upgrade-application.json"]) == upgrade
+    supervisor = delivery["supervisor"]
+    assert supervisor["spec"]["activeDeadlineSeconds"] == 5220
+    projection = supervisor["spec"]["template"]["spec"]["volumes"][0]["configMap"][
+        "items"
+    ]
+    mounted = {item["path"]: config["data"][item["key"]] for item in projection}
+    assert len(mounted) == len(projection)
+    assert mounted.keys() == {
+        "approval.json",
+        "application.json",
+        "upgrade-application.json",
+        "proposal.json",
+    } | {"flink_tier3/" + name for name in delivered_sources()}
 
 
 PUBSUB_IMAGE = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery"
