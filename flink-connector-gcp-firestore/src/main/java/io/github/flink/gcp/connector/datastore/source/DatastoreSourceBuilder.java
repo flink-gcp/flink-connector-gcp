@@ -205,8 +205,9 @@ public class DatastoreSourceBuilder<T> {
      *
      * <p>When unset, the source estimates the count from the kind's size in the database's
      * statistics, one split per 64 MiB, and takes at least 12 and at least the source's
-     * parallelism, and at most 50,000. The statistics are updated about once a day and are absent
-     * for a kind that is new, so the estimate then falls back to that lower bound.
+     * parallelism, and at most 50,000. The service computes the statistics periodically rather than
+     * as entities are written, so a new kind has none, and the estimate then falls back to that
+     * lower bound.
      *
      * <p>It is an upper bound: the client library's splitter samples the kind's keys through the
      * {@code __scatter__} property and cuts fewer ranges when the kind is small. A count above the

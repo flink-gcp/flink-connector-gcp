@@ -41,6 +41,8 @@ import io.github.flink.gcp.connector.datastore.source.batch.DatastoreBatchSource
 import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.github.flink.gcp.connector.datastore.table.source.DatastoreDynamicSource;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -233,16 +235,44 @@ class DatastoreDynamicTableSourceFactoryTest {
                 .hasStackTraceContaining("pageSize");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"__Stat_Kind__", "__Stat_Ns_Kind__", "__Stat_Total__"})
+    void aScanReadsAStatisticsKind(String kind) {
+        // The source reads, pages and resumes a statistics kind like any other (ADR-0184); the
+        // sink still refuses one, which DatastoreDynamicTableFactoryTest holds.
+        assertThat(
+                        config(
+                                        runtimeSource(
+                                                FactoryMocks.createTableSource(
+                                                        KEYED, options("kind", kind))))
+                                .getQuery())
+                .isEqualTo(SplittableQueries.ofKind(kind));
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "__kind__",
+                "__namespace__",
+                "__property__",
+                "__reserved__",
+                "__Status__",
+                "__Statistics__",
+                "__stat_Kind__"
+            })
+    void aScanRefusesEveryOtherReservedKind(String kind) {
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(KEYED, options("kind", kind)))
+                .hasStackTraceContaining("Option 'kind' is invalid:")
+                .hasStackTraceContaining("which begin '__Stat_'");
+    }
+
     @Test
     void theSharedChecksRefuseOnTheScanPathToo() {
         assertThatThrownBy(() -> FactoryMocks.createTableSource(KEYED, options("kind", " ")))
                 .hasStackTraceContaining("Option 'kind' is invalid:");
-        assertThatThrownBy(
-                        () ->
-                                FactoryMocks.createTableSource(
-                                        KEYED, options("kind", "__Stat_Kind__")))
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(KEYED, options("kind", "__kind__")))
                 .hasStackTraceContaining("Option 'kind' is invalid:")
-                .hasStackTraceContaining("neither writes nor reads one");
+                .hasStackTraceContaining("a scan reads only the statistics kinds");
         assertThatThrownBy(() -> FactoryMocks.createTableSource(KEYED, options("namespace", "a/b")))
                 .hasStackTraceContaining("Option 'namespace' is invalid:");
         assertThatThrownBy(

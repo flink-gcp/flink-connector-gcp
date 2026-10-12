@@ -372,9 +372,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Key column**: STRING ← key name, BIGINT ← key id; the other form, and a key with a parent,
   fail the read under either policy. A kind with mixed key forms or child entities is read by a
   key-less table via the metadata.
-- **Reserved kinds stay refused for the scan too**: the source itself refuses the metadata kinds
-  (#1690, ADR-0177 revision), and a statistics kind stays refused until the gated suite (#1546)
-  has measured a read of one against the service.
+- **Reserved kinds stay refused for the scan too, except statistics kinds**: the source itself
+  refuses the metadata kinds (#1690, ADR-0177 revision); a kind beginning `__Stat_` is read by the
+  scan and the lookup since #1719 measured both against the service (ADR-0184 revision), and the
+  sink still refuses every reserved kind.
 
 ## Datastore-mode Table API lookup (`docs/adr/0184`, lookup section)
 

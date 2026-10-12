@@ -23,8 +23,9 @@ limitations under the License.
   [#1652] (query-result metadata for the table scan), [#1690] (metadata kinds refused) and
   [#1689] (a configured read time is truncated to the microsecond), and 2026-10-11 by [#1707]
   (the service's answers; a projection of properties read as one split) and [#1717] (the
-  metadata kinds' refusal kept, on a corrected reason)
-- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707], [#1717]
+  metadata kinds' refusal kept, on a corrected reason), and 2026-10-12 by [#1719] (the
+  statistics measured against a database that has them)
+- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707], [#1717], [#1719]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -109,6 +110,8 @@ The service answers with the cursors the reader keeps, measured on the raw `RunQ
 The statistics kinds (`__Stat_*__`) are not refused: they are stored entities, the source's own split estimate reads them, and nothing measured shows a read of one failing.
 Lifting the refusal later is compatible.
 
+Refined under [#1719] (2026-10-12): a read of a statistics kind was measured against the service, as [the statistics section](#the-statistics-measured-against-the-service-1719-2026-10-12) records, and it pages and resumes like any other kind, so the reason above holds on evidence rather than on the absence of a failure.
+
 Declined:
 
 - **One split replayed from its beginning after a failure** ([#1690]'s second option). A restore after a checkpoint taken mid-split would emit again every row the checkpoint had already passed, and the result is generated anew from the database's current state, which the emulator does not even pin to the read time, so the replay need not return the same rows.
@@ -143,6 +146,17 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 - **Metadata kinds.** `__kind__`, `__namespace__` and `__property__` all answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest. `__kind__` honoured the read time and was scoped to the namespace. The decision on the metadata kinds above weighs these answers. A probe for [#1548] on 2026-10-11 found `__namespace__` and `__property__` honouring the read time too (ADR-0168).
 - **Statistics** stay unmeasured: a database created within the run has none.
 
+### The statistics measured against the service ([#1719], 2026-10-12)
+
+A database the gated suite creates has no statistics, so [#1719] measured them on 2026-10-12, by hand, against a temporary Datastore-mode database created on 2026-10-11 with 3,000 entities of one kind in the default namespace and 500 of another in the namespace `tenant`, and deleted afterwards.
+Its first statistics were timestamped about six hours after it was created, and none newer appeared within the following day; Google's page does not say how often the service computes them.
+The planner's two reads, the latest `__Stat_Total__` (`__Stat_Ns_Total__` in the namespace) ordered by `timestamp` descending, then `__Stat_Kind__` (`__Stat_Ns_Kind__`) filtered on `kind_name` and that `timestamp`, were both served by the built-in indexes in both namespaces, so an estimated split count needs no composite index.
+Through the source with no `splitCount`, the default-namespace kind, 837,000 bytes of `entity_bytes`, asked for the lower bound of 12 ranges and the splitter cut 12, and the namespaced kind, 144,000 bytes, asked for 12 and was cut into 5; each was read whole once.
+Every statistics kind that held entities answered with a cursor on every result and an end cursor, and a query resumed from its end cursor returned the rest; through the source, `__Stat_Kind__`, `__Stat_PropertyName_Kind__` and the namespace's `__Stat_Ns_Kind__` read whole at one entity a page, and a job failed after a checkpoint taken part-way through `__Stat_PropertyName_Kind__` resumed its split at the checkpointed cursor and read every entity once.
+A statistics kind has no statistics of its own, so its estimate took the lower bound, and the splitter cut each one into a single range.
+All 28 statistics entities, of the 12 statistics kinds that held any across the two namespaces, were keyed by a name.
+A `Lookup` by key found `__Stat_Kind__`'s entity named for a kind, `__Stat_Total__`'s `total_entity_usage` and the namespace's `__Stat_Ns_Kind__` entry, honoured a property mask, and reported a key naming no kind as missing, so the table lookup can join one too.
+
 ## Consequences
 
 - A planning call reaches the service over HTTP as well as gRPC, so a network policy that admits only one of them to the JobManager breaks a split read. The readers are gRPC only.
@@ -150,7 +164,7 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 - A projection of properties is read by one subtask whatever the parallelism, because its key ranges need a composite index the query alone does not (measured above).
 - A query the source does not split is read by one subtask, whatever the parallelism; the plan's log line names the reason.
 - Planning costs a probe read, two statistics reads when the split count is estimated, the splitter's sampling, and for a GQL query a parse that reads its first batch when it ends in its own `LIMIT` or `OFFSET`.
-- The emulator exercises neither the sampling nor the statistics; the gated suite measures the service's split counts, while the statistics estimate stays covered by unit tests only, and the read-time window was measured once by hand (ADR-0185).
+- The emulator exercises neither the sampling nor the statistics; the gated suite measures the service's split counts, while the statistics estimate is covered by unit tests, and it ([#1719]) and the read-time window (ADR-0185) were each measured once by hand.
 - A restart before the first completed checkpoint reads at a new read time unless `readTime` is configured, as for the Native-mode source.
 - A query that orders by, or filters with an inequality on, a list-valued property can return an entity more than once across pages and restores, each repeat counting toward its `limit`: the service removes the duplicates such a property produces only within one request ([limitations of cursors](https://cloud.google.com/datastore/docs/concepts/queries#limitations_of_cursors)). The source passes repeats on and the docs say so (owner's decision, 2026-10-03); removing them would mean checkpointing every key a split has emitted.
 - A projection result without a key, which the API allows and the emulator has not returned, fails the read with a message naming it, because the deserializer contract is an `Entity`, which always has a key (owner's decision, 2026-10-03). Widening the contract to a keyless type was declined for a case not observed; the gated suite ([#1546]) measures it.
@@ -176,4 +190,5 @@ Refusing such a time in the builder was declined for ADR-0173's reason: the inst
 [#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1717]: https://github.com/flink-gcp/flink-connector-gcp/issues/1717
+[#1719]: https://github.com/flink-gcp/flink-connector-gcp/issues/1719
 [#1548]: https://github.com/flink-gcp/flink-connector-gcp/issues/1548

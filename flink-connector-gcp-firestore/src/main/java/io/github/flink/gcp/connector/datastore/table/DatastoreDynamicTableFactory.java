@@ -57,6 +57,9 @@ public final class DatastoreDynamicTableFactory
     /** The {@code connector} value that selects this factory. */
     public static final String IDENTIFIER = "datastore";
 
+    /** The prefix of every Datastore statistics kind, such as {@code __Stat_Kind__}. */
+    private static final String STATISTICS_KIND_PREFIX = "__Stat_";
+
     @Override
     public String factoryIdentifier() {
         return IDENTIFIER;
@@ -109,7 +112,7 @@ public final class DatastoreDynamicTableFactory
         ReadableConfig config = validatedOptions(context);
         DatabaseDestination database = database(config);
         String namespace = namespace(config);
-        String kind = kind(config);
+        String kind = kind(config, false);
         DatastoreTableSchema schema = schema(context, config);
         WriteMode writeMode = config.get(DatastoreConnectorOptions.SINK_WRITE_MODE);
         validateWriteMode(context, schema, writeMode);
@@ -136,7 +139,7 @@ public final class DatastoreDynamicTableFactory
         ReadableConfig config = validatedOptions(context);
         DatabaseDestination database = database(config);
         String namespace = namespace(config);
-        String kind = kind(config);
+        String kind = kind(config, true);
         return new DatastoreDynamicSource(
                 schema(context, config),
                 database,
@@ -275,7 +278,10 @@ public final class DatastoreDynamicTableFactory
                         throw new IllegalArgumentException(
                                 "it is blank; leave it out for the default namespace.");
                     }
-                    checkNotReserved(value, "namespace");
+                    checkNotReserved(
+                            value,
+                            "namespace",
+                            "the table connector neither writes nor reads one.");
                     Key.newBuilder("project", "kind", "name").setNamespace(value).build();
                 });
         return namespace;
@@ -284,13 +290,15 @@ public final class DatastoreDynamicTableFactory
     /**
      * The kind, which may not be blank, one Datastore reserves, or longer than it stores. A write
      * to any of them would fail every record, and the scan applies the same checks, so one DDL is
-     * accepted or refused alike in either direction. A reserved kind is Datastore's own statistics
-     * or metadata: the source the scan reads through refuses a metadata kind itself, and no read of
-     * a statistics kind has been measured against the service, so the scan refuses them all. The
-     * client library checks only that a kind is not empty, so these are the service's rules, stated
-     * once in {@link DatastoreTableSchema}.
+     * accepted or refused alike in either direction, with one exception. A reserved kind is
+     * Datastore's own statistics or metadata: the source the scan reads through refuses a metadata
+     * kind itself, but reads, pages and resumes a statistics kind like any other, so the scan, and
+     * the lookup it serves, accepts a kind beginning {@code __Stat_} and refuses every other
+     * reserved one ({@code docs/adr/0184} records the measurement). The client library checks only
+     * that a kind is not empty, so these are the service's rules, stated once in {@link
+     * DatastoreTableSchema}.
      */
-    private static String kind(ReadableConfig config) {
+    private static String kind(ReadableConfig config, boolean scan) {
         String kind = config.get(DatastoreConnectorOptions.KIND);
         OptionSetters.accept(
                 DatastoreConnectorOptions.KIND.key(),
@@ -299,7 +307,15 @@ public final class DatastoreDynamicTableFactory
                     if (value.isBlank()) {
                         throw new IllegalArgumentException("it is blank.");
                     }
-                    checkNotReserved(value, "kind");
+                    if (!(scan && value.startsWith(STATISTICS_KIND_PREFIX))) {
+                        checkNotReserved(
+                                value,
+                                "kind",
+                                "the table connector writes none, and of these a scan reads only"
+                                        + " the statistics kinds, which begin '"
+                                        + STATISTICS_KIND_PREFIX
+                                        + "'.");
+                    }
                     if (DatastoreTableSchema.isTooLong(value)) {
                         throw new IllegalArgumentException(
                                 "it is longer than "
@@ -310,7 +326,7 @@ public final class DatastoreDynamicTableFactory
         return kind;
     }
 
-    private static void checkNotReserved(String value, String what) {
+    private static void checkNotReserved(String value, String what, String consequence) {
         if (DatastoreTableSchema.isReserved(value)) {
             throw new IllegalArgumentException(
                     "'"
@@ -318,7 +334,8 @@ public final class DatastoreDynamicTableFactory
                             + "' has the form '__…__', with at least one character between the"
                             + " underscores, which Datastore reserves for a "
                             + what
-                            + " of its own; the table connector neither writes nor reads one.");
+                            + " of its own; "
+                            + consequence);
         }
     }
 
