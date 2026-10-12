@@ -22,6 +22,7 @@ import time
 import uuid
 
 from .bigquery.handoff import require_bigquery_clean
+from .cloudtasks.lifecycle import require_cloudtasks_clean
 from .common import ApiError, Failure, utc
 from .model import Phase, RunRecord
 from .policy import (
@@ -32,6 +33,13 @@ from .policy import (
     RATE_LIMIT_BACKOFF,
 )
 from .pubsub.lifecycle import require_pubsub_clean
+
+
+def require_services_clean(record):
+    """Retain shared resources and the lock until every service cleanup is recorded."""
+    require_bigquery_clean(record)
+    require_pubsub_clean(record)
+    require_cloudtasks_clean(record)
 
 
 def conditional_update(
@@ -127,8 +135,7 @@ class Records:
     ):
         def edit(record):
             if phase == Phase.CLEANED:
-                require_bigquery_clean(record)
-                require_pubsub_clean(record)
+                require_services_clean(record)
             previous = record.phase
             record.set_phase(phase)
             if reason is not None:
@@ -222,8 +229,7 @@ class Records:
 
     def settled(self, evidence_failure):
         def edit(record):
-            require_bigquery_clean(record)
-            require_pubsub_clean(record)
+            require_services_clean(record)
             record.idle = True
             record.fail_evidence(evidence_failure)
 

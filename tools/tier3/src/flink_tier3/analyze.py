@@ -16,10 +16,11 @@
 
 The analyzer reads a local mirror of ``gs://flink-gcp-tier3-evidence/runs/``
 (one run directory or a directory of them) and recomputes each deployed
-BigQuery and Pub/Sub recovery run's assessment from its exported evidence. It
-never contacts a cluster or a bucket, keeps every ratio a ``Fraction`` until
-rendering, and writes byte-identical reports for identical input. Single-host
-Cloud Tasks campaigns have their own analyzer, ``cloudtasks.vmanalyze``.
+BigQuery, Pub/Sub and Cloud Tasks recovery run's assessment from its exported
+evidence. It never contacts a cluster or a bucket, keeps every ratio a
+``Fraction`` until rendering, and writes byte-identical reports for identical
+input. Single-host Cloud Tasks campaigns have their own analyzer,
+``cloudtasks.vmanalyze``.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from .bigquery import analyze as bigquery_analyze
+from .cloudtasks import analyze as cloudtasks_analyze
 from .common import Failure
 from .pubsub import analyze as pubsub_analyze
 from .recovery_analysis import counts as run_counts
@@ -61,6 +63,7 @@ def render_markdown(report):
         f"The analyzer read {len(report['runs'])} run directories.\n"
         + bigquery_analyze.render(report.get("bigquery") or [])
         + pubsub_analyze.render(report.get("pubsub") or [])
+        + cloudtasks_analyze.render(report.get("cloudtasks") or [])
     )
 
 
@@ -82,6 +85,7 @@ def analyze(evidence):
         # Each is empty unless the directory holds a deployed run of its kind.
         "bigquery": bigquery_analyze.assess_runs(runs),
         "pubsub": pubsub_analyze.assess_runs(runs),
+        "cloudtasks": cloudtasks_analyze.assess_runs(runs),
     }
 
 
@@ -106,6 +110,11 @@ def summary_line(report, out):
         + (
             f"; pubsub runs: {pubsub}"
             if (pubsub := run_counts(report.get("pubsub") or []))
+            else ""
+        )
+        + (
+            f"; cloudtasks runs: {cloudtasks}"
+            if (cloudtasks := run_counts(report.get("cloudtasks") or []))
             else ""
         )
         + f"; reports in {out}"

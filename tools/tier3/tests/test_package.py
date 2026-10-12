@@ -391,7 +391,7 @@ def test_nested_delivery_refuses_missing_required_modules(tmp_path, name):
         delivered_sources(tmp_path)
 
 
-@pytest.mark.parametrize("service", ["bigquery", "pubsub"])
+@pytest.mark.parametrize("service", ["bigquery", "pubsub", "cloudtasks"])
 def test_supervisor_delivery_refuses_a_missing_service_actor(tmp_path, service):
     for name, content in delivered_sources().items():
         path = tmp_path / name

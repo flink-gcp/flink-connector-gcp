@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 import flink_tier3.bigquery.actors as bigquery_actors
+import flink_tier3.cloudtasks.actors as cloudtasks_actors
 import flink_tier3.pubsub.actors as pubsub_actors
 
 from .common import Failure, digest
@@ -107,6 +108,11 @@ def supervisor_main(directory):
     if approved.scenario == "pubsub-recovery":
         # The factory builds the barrier; the session serves the whole run.
         with pubsub_actors.supervisor(env, upgrade) as supervisor:
+            supervisor.supervise(os.environ["POD_UID"])
+        return
+    if approved.scenario == "cloudtasks-recovery":
+        # The supervisor lists the queue's tasks once the input finishes.
+        with cloudtasks_actors.supervisor(env, application, upgrade) as supervisor:
             supervisor.supervise(os.environ["POD_UID"])
         return
     Supervisor(env, upgrade).supervise(os.environ["POD_UID"])

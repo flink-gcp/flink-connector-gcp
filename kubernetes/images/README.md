@@ -168,6 +168,21 @@ The digests are the ones the `sha-ef183e0c…` tag resolves to, and `operator` a
 Dispatch refuses an image unless the trial's window ends a day before eligibility, so a `fl-10` attempt from this publication must be admitted so that its 90-minute window ends before 2026-10-15T16:22:01Z.
 The same run published Cloud Tasks and Pub/Sub application images from that commit, which nothing adopts.
 
+### Cloud Tasks recovery trial publication
+
+The [Cloud Tasks recovery trial publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/38243294462) built main commit `dbfc852734913ff698cb719665ea318e94891d93` on 2026-10-12 UTC, right after the recovery application merged, for the trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); its `cloudtasks-recovery` image is the first of that package.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78` | 2026-10-09T16:22:01Z | 2026-10-16T16:22:01Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-10-09T16:22:28Z | 2026-10-16T16:22:28Z |
+| `cloudtasks-recovery` | `sha256:cc66ba8465ce7295fc1f91e1ac95ccf078236b863d8f09a6c2187c3638d667c9` | 2026-10-12T11:43:49Z | 2026-10-19T11:43:49Z |
+
+The digests are the ones the `sha-dbfc8527…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run.
+The `operator` and `flink` copies kept the creation times of the [FILE_LOADS trial publication](#bigquery-file_loads-trial-publication), because the registry still held those digests.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so the trial must be admitted so that its 90-minute window ends before 2026-10-15T16:22:01Z, unless the `operator` version is deleted by hand and republished as the [BigQuery trial publication](#bigquery-trial-publication) describes.
+The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts; [pins.cue](pins.cue) keeps the FILE_LOADS publication's lifecycle-tools pin, whose retention also ends on 2026-10-16.
+
 For a shell or Docker build argument, read a pin with:
 
 ```sh

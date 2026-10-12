@@ -70,6 +70,7 @@ limitations under the License.
 - Updated: 2026-10-12 (tamper classification, actor authentication and BigQuery resource identity checks removed)
 - Updated: 2026-10-12 (BigQuery FILE_LOADS failover while a load job runs)
 - Updated: 2026-10-12 (Pub/Sub output drain ends at an empty pull; redelivery observed across both replacements)
+- Updated: 2026-10-12 (Cloud Tasks recovery foundation and trial scenario)
 - Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723), [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722), [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725), [#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726), [#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685), [#1683](https://github.com/flink-gcp/flink-connector-gcp/issues/1683), [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md), [Pub/Sub trial findings](evidence/0165-pubsub-trial-findings-1361.md), [BigQuery FILE_LOADS in-flight failover findings](evidence/0165-bigquery-fileloads-inflight-findings-1685.md), [Pub/Sub redelivery findings](evidence/0165-pubsub-redelivery-findings-1720.md)
 - Modules: opentofu, kubernetes, CI
@@ -1386,4 +1387,24 @@ The roles take new IDs, because the IDs of the two roles #1723 deleted stay unav
 The CUE side adds the `cloudtasks-recovery` scenario: an application package for the initial and upgrade phases, the namespace policy for `tier3-cloudtasks`, and the shared 90-minute window of the BigQuery trial.
 The package refuses more than 30 minutes of input, the length the BigQuery trial runs in the same window, because the records and the rate are separate inputs that each stay within the application's bounds while together outlasting the window.
 The queue name is `ct1362-` followed by the run ID, so the delivery takes no queue input.
-The rig scenario that admits the delivery, creates the queue and judges the trial follows in [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769).
+The rig scenario that admits the delivery, creates the queue and judges the trial is the next section.
+
+### Cloud Tasks recovery trial
+
+The `cloudtasks-recovery` scenario ([#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769)) runs the trial on the shared lifecycle as the BigQuery scenario does, with the parts Cloud Tasks does not need left out; its [runbook](../../kubernetes/apps/cloudtasks/README.md#recovery-trial) gives the procedure and the timings.
+It has one trial, so dispatch takes only the application digest; the approval still carries the trial, because the offline analyzer reads archived evidence with the revision that produced it.
+
+The queue follows a BigQuery table's lifecycle: an intent before any call, a creation intent and a call marker in one record write before the create, and deletion by the supervisor only, of an intended queue, after the runner's release and once the namespace holds no Pod.
+A name already in use refuses the run without a creation intent, and so does a create answering that the queue exists although the name read free just before, since that queue, or a deleted name's tombstone, is not this run's; cleanup leaves either alone.
+The barrier is the whole namespace, as for Pub/Sub, because the workload's task-creation grant is project-wide and any Pod running as the namespace's service account holds it.
+
+A create that did not return keeps its marker, and neither the release nor cleanup proceeds, because that create could land after cleanup found the name absent; recovering such a run is an operator's decision, as it is for a BigQuery table.
+A create refused before it was sent, one the service refused, and one that returned clear the marker, the last even when the pause or the readback then fails, since the queue then exists for cleanup to delete; a marker write retried after its response was lost finds its own outcome rather than a changed identity.
+
+The runner releases when it settles, without stopping the run, and retries the release on every poll until it lands.
+BigQuery's runner serves queries until the run closes and releases only then, and its release also stops the run; the Cloud Tasks runner makes no queue call after admission, so it releases at once, and a release that stopped the run would end the exercise the runner is waiting on.
+BigQuery's runner token is not carried over: it keeps the supervisor from adopting a binding written by a process other than the submitting runner, and here the release is the only write the supervisor waits on, written only by the controller the dispatching runner builds, since the recovery workflow's plain runner builds none.
+
+The oracle reads the listing, not a counter: the supervisor lists the paused queue's tasks and exports each page as evidence before it decides, so the offline analyzer recomputes the report from the same pages.
+A failing listing is repeated only while another attempt as long as the last still fits the listing window, transient listing errors are retried, and a listing call still failing when the window closes, however it fails, leaves the last whole attempt in place, while a non-transient error before then ends the run, the window closing a minute before the cleanup start at the latest so that the record can still be written, so a listing that keeps failing is recorded as the trial's finding, with what was missing, repeated, foreign or dispatched, rather than lost to the deadline.
+No query budget or slot accounting is carried over: a listing costs operations priced in the estimate, not billed bytes.

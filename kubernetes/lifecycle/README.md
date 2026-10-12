@@ -28,10 +28,10 @@ The scenario files share `package tier3` with `delivery.cue` and load together a
 The runner selects the scenario through its existing input.
 
 The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
-Its `scenario` input selects the generic smoke application's ordinary completion (`smoke`, the default), a BigQuery recovery trial or a Pub/Sub recovery trial.
+Its `scenario` input selects the generic smoke application's ordinary completion (`smoke`, the default), or a BigQuery, Pub/Sub or Cloud Tasks recovery trial.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
-BigQuery and Pub/Sub each have a service subpackage, and the single-host Cloud Tasks rig of [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) has its own; shared lifecycle and infrastructure modules remain at the package root.
+BigQuery, Pub/Sub and Cloud Tasks each have a service subpackage, and the Cloud Tasks one also holds the single-host rig of [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md); shared lifecycle and infrastructure modules remain at the package root.
 The delivered source inventory uses relative paths, including subdirectories.
 ConfigMap keys replace `/` with `.`, and volume projection restores the directories before the supervisor imports them.
 The installed `flink-tier3` CLI is the entry point; [workspace instructions](../../tools/README.md) cover building a wheel and selecting a repository checkout.
@@ -58,9 +58,9 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
-| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery and Pub/Sub exercises share: recorded operation intents, the owned savepoint upgrade and Pod deletion, and scheduling evidence |
-| `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery and Pub/Sub runs |
-| `flink_tier3/cloudtasks/` | The single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
+| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub and Cloud Tasks exercises share: recorded operation intents, the owned savepoint upgrade and Pod deletion, and scheduling evidence |
+| `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery, Pub/Sub and Cloud Tasks runs |
+| `flink_tier3/cloudtasks/` | The recovery trial of #1362 (trial, plan, queue, lifecycle, actors, exercise, oracle, verdict and analysis), and the single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
 | `flink_tier3/bigquery/plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
 | `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after the quiescence barrier |
@@ -89,10 +89,10 @@ Merging this implementation does not authorize a dispatch.
 ## Execution approval
 
 The owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
-The estimate is `estimated_cost` over the window for smoke, `bigquery_plan.estimate` for a BigQuery trial and `pubsub_plan.estimate` for a Pub/Sub trial, which their rendered proposals carry.
+The estimate is `estimated_cost` over the window for smoke, and `bigquery_plan.estimate`, `pubsub_plan.estimate` or `cloudtasks_plan.estimate` for a service trial, which their rendered proposals carry.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
-The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery trial 90 minutes after it.
+The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery or Cloud Tasks trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
 
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
@@ -107,7 +107,7 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
 
 The cluster rig's Cloud Tasks measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM.
 The [`cloudtasks-recovery`](cloudtasks.cue) delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) renders its initial and upgrade phases in `tier3-cloudtasks` from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given, refuses more than 30 minutes of input, and names the run's queue `ct1362-<run-id>`.
-Dispatch does not offer it yet: [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769) adds the rig scenario that creates the queue, admits the delivery and judges the trial.
+Dispatch renders it at the one trial's input, and the [recovery trial runbook](../apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
 Every run's inventory lists `tier3-cloudtasks`.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
@@ -178,7 +178,7 @@ The Operator's Scale API can omit `spec.replicas` when it is zero; lifecycle rea
 The scale patch retains UID and resource-version conditions, and cleanup skips the write when the Operator is already at zero.
 
 For ordinary smoke, the supervisor observes the application and writes Kubernetes only toward idle.
-The BigQuery and Pub/Sub recovery exercises also permit the recorded operations their runbooks describe.
+The BigQuery, Pub/Sub and Cloud Tasks recovery exercises also permit the recorded operations their runbooks describe.
 Both supervisor and recovery use `Cleanup`; concurrent cleanup repeats the same UID-checked deletes and original quota/replica values.
 Generation conflicts merge roots and observations without replacing recorded identities, and phase transitions never return from cleanup to admission.
 The supervisor uses the projected Kubernetes service-account token against the in-cluster API and Google metadata credentials for GCS.
@@ -329,7 +329,7 @@ The wheel test installs the built artifact outside the source tree and checks CL
 
 Evidence is under `gs://flink-gcp-tier3-evidence/runs/RUN_ID/`:
 `approval.json`, `application.json`, `images.json`, per-observation supervisor/runner receipts, and `result.json` after verified idle and empty plans.
-BigQuery and Pub/Sub trials additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events.
+BigQuery, Pub/Sub and Cloud Tasks trials additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events; a Cloud Tasks trial also retains its task listing pages.
 Their final receipt requires the usable verdict their exercise decided as well as successful cleanup.
 Run evidence becomes deletion-eligible after 30 days; mutable `_control/` records have no automatic expiry.
 An unsuccessful run can still have an idle result: check both `success` and `idle`, together with the three plan receipts.
@@ -353,9 +353,11 @@ The lifecycle delivery requires package sources from this command or the runner;
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
+The offline `cloudtasks-recovery` proposal is described in the [Cloud Tasks trial runbook](../apps/cloudtasks/README.md#trial-and-estimate).
 The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
 A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
+A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
 
 ## Reviewed Pub/Sub trials
 

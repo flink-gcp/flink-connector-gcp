@@ -27,6 +27,7 @@ from .common import Failure, quantity, timestamp
 from .policy import (
     BIGQUERY,
     CLEANUP_SECONDS,
+    CLOUDTASKS,
     COST_RATES,
     GAR,
     POD_RESOURCES,
@@ -133,9 +134,11 @@ def validate_approval(approval):
         or timestamp(approval["cleanup_at"]) != end - CLEANUP_SECONDS
     ):
         raise Failure("Approval window differs from its scenario's policy")
-    application = {"pubsub-recovery": PUBSUB, "bigquery-recovery": BIGQUERY}.get(
-        scenario, SMOKE
-    )
+    application = {
+        "pubsub-recovery": PUBSUB,
+        "bigquery-recovery": BIGQUERY,
+        "cloudtasks-recovery": CLOUDTASKS,
+    }.get(scenario, SMOKE)
     if set(approval["namespaces"]) != {application, SYSTEM}:
         raise Failure("Approval must name its application and control namespaces")
     for saved in approval["namespaces"].values():
@@ -251,6 +254,7 @@ class Approval:
     upgrade_application_sha256: str = ""
     bigquery_trial: dict = field(default_factory=dict)
     pubsub_trial: dict = field(default_factory=dict)
+    cloudtasks_trial: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value):
@@ -271,6 +275,8 @@ class Approval:
             return PUBSUB
         if self.scenario == "bigquery-recovery":
             return BIGQUERY
+        if self.scenario == "cloudtasks-recovery":
+            return CLOUDTASKS
         return SMOKE
 
     @property
@@ -293,12 +299,23 @@ class Approval:
             raise Failure("Approval does not describe a Pub/Sub trial")
         return ResourcePlan(self.run_id, self.nonce)
 
+    @property
+    def cloudtasks_plan(self):
+        """Derive the trial's input and queue from a Cloud Tasks approval."""
+        from .cloudtasks.trial import Trial
+
+        if self.scenario != "cloudtasks-recovery":
+            raise Failure("Approval does not describe a Cloud Tasks trial")
+        return Trial(self.run_id, **self.cloudtasks_trial)
+
     def to_dict(self):
         value = asdict(self)
         if self.scenario != "pubsub-recovery":
             value.pop("pubsub_trial")
         if self.scenario != "bigquery-recovery":
             value.pop("bigquery_trial")
+        if self.scenario != "cloudtasks-recovery":
+            value.pop("cloudtasks_trial")
         return value
 
 
@@ -371,6 +388,7 @@ class RunRecord:
     recovery: dict | None = None
     bigquery: dict | None = None
     pubsub: dict | None = None
+    cloudtasks: dict | None = None
 
     @classmethod
     def from_dict(cls, value):

@@ -22,6 +22,7 @@ import uuid
 
 from .bigquery.exercise import BigQueryExercise, require_handoff
 from .cleanup import Cleanup
+from .cloudtasks.exercise import CloudTasksExercise
 from .common import ApiError, Failure, transient, utc
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
@@ -40,11 +41,18 @@ class Supervisor:
         *,
         bigquery=None,
         pubsub=None,
+        cloudtasks=None,
         quiesce=None,
     ):
         self.env = env
-        self.bigquery, self.pubsub = bigquery, pubsub
-        self.cleanup = Cleanup(env, bigquery=bigquery, pubsub=pubsub, quiesce=quiesce)
+        self.bigquery, self.pubsub, self.cloudtasks = bigquery, pubsub, cloudtasks
+        self.cleanup = Cleanup(
+            env,
+            bigquery=bigquery,
+            pubsub=pubsub,
+            cloudtasks=cloudtasks,
+            quiesce=quiesce,
+        )
         self.log_since = {}
         self.pod_read_failures = {}
         self.exercise = (
@@ -54,6 +62,10 @@ class Supervisor:
             if env.approval.scenario == "pubsub-recovery"
             and upgrade is not None
             and pubsub is not None
+            else CloudTasksExercise(env, upgrade, cloudtasks)
+            if env.approval.scenario == "cloudtasks-recovery"
+            and upgrade is not None
+            and cloudtasks is not None
             else None
         )
 
@@ -265,6 +277,13 @@ class Supervisor:
                     "BigQuery recovery supervision requires its exercise and handoff"
                 )
             require_handoff(self.env, self.bigquery)
+        if self.env.approval.scenario == "cloudtasks-recovery" and (
+            self.exercise is None
+        ):
+            raise Failure(
+                "Cloud Tasks recovery supervision requires its queue controller "
+                "and its approved upgrade manifest"
+            )
         self.env.refresh()
         job = self.env.root("supervisor")
         if not job:
@@ -353,6 +372,8 @@ class Supervisor:
                     if self.exercise.observe(app, rest, pods):
                         if isinstance(self.exercise, BigQueryExercise):
                             self.exercise.verify_rows(self)
+                        if isinstance(self.exercise, CloudTasksExercise):
+                            self.exercise.verify_tasks()
                         success, reason = True, "recovery exercise finished"
                         break
                     self.env.sleep(POLL)
@@ -400,6 +421,13 @@ class Supervisor:
                 # Only this side deletes Pub/Sub resources, so it waits for the
                 # runner to settle and release rather than leaving them.
                 self.env.wait(self.runner_released, self.env.schedule.cleanup_at)
+            elif (
+                self.env.approval.scenario == "cloudtasks-recovery"
+                and current.cloudtasks
+            ):
+                # Only this side deletes the queue, so it waits for the runner
+                # to settle and release rather than leaving it.
+                self.env.wait(self.cloudtasks.released, self.env.schedule.cleanup_at)
             elif (
                 self.env.approval.scenario != "bigquery-recovery"
                 or current.bigquery is None

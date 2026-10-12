@@ -30,6 +30,7 @@ repository = 'flink-gcp/flink-connector-gcp'
 # approves before a dispatch, not an admission deadline (ADR-0165).
 pricing_reviewed = '2026-09-14T00:00:00Z'
 cloudtasks = 'tier3-cloudtasks'
+cloudtasks_state = 'flink-gcp-cloudtasks-benchmark'
 bigquery = 'tier3-bigquery'
 bigquery_state = 'flink-gcp-tier3-bigquery'
 pubsub = 'tier3-pubsub'
@@ -48,6 +49,7 @@ ephemeral-storage = "0.001"
 smoke = 3600
 bigquery-recovery = 5400
 pubsub-recovery = 3600
+cloudtasks-recovery = 5400
 
 # The last seconds of every window, reserved for cleanup.
 [cleanup]
