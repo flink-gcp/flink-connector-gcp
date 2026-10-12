@@ -596,7 +596,7 @@ def received(lines):
     )
 
 
-def test_the_collector_pulls_through_the_handoff_until_a_short_batch(run):
+def test_the_collector_pulls_through_the_handoff_until_an_empty_batch(run):
     a = run
     run_id = a.approval.run_id
     lines = [
@@ -608,21 +608,25 @@ def test_the_collector_pulls_through_the_handoff_until_a_short_batch(run):
         [
             received(lines[:4]),
             Response({}),
-            Response({}),
             received(lines[4:]),
+            Response({}),
             Response({}),
         ]
     )
-    assert collector.drain(5) == 4  # the first batch is short: four of 100
-    assert collector.drain(5) == 0
-    assert collector.drain(1) == 3
+    # Both batches are short, four and three of 100; only the empty one ends
+    # the round, so one drain collects the whole backlog (#1720).
+    assert collector.drain(5) == 7
+    assert collector.batches == 3 and not a.service.messages.responses
     assert collector.complete(FIRST)
     assert not collector.complete(LAST)
     assert collector.processed(0, 0, RECORDS) == {0, 1, 2}
     assert collector.processed(1, 0, RECORDS, where=lambda o: o["restored"]) == set()
     batches = [f["batch"] for f in collector.foreign]
-    assert len(batches) == 1 and batches[0].endswith("-000003")
+    assert len(batches) == 1 and batches[0].endswith("-000002")
     assert len(collector.observations) == RECORDS
+    a.service.messages.responses.append(Response({}))
+    assert collector.drain(5) == 0
+    assert collector.batches == 4
     with pytest.raises(ValueError):
         collector.drain(0)
 

@@ -159,6 +159,10 @@ PUBSUB_EXERCISE = {
     # inputs and a checkpoint completed after it.
     "after_seconds": 420,
     "measure_seconds": 60,
-    # Output pulls per poll at most; a short batch ends a poll's drain sooner.
-    "drain_pulls": 5,
+    # Output pulls per poll at most; an empty batch ends a poll's drain
+    # sooner. Immediate pulls averaged 48-61 messages in #1361's trials, so
+    # a 1,000-record trial's cohort, 666 output lines, takes about 14, and
+    # one poll can collect it before the next 120-second checkpoint; much
+    # smaller batches still spread it over several polls.
+    "drain_pulls": 20,
 }
