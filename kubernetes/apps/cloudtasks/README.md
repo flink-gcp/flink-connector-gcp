@@ -253,6 +253,7 @@ The fake has no queue to read, and the connector skips the retention readback fo
 The `cloudtasks-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-cloudtasks` and judges whether every input record became exactly one task.
 It is the trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-trial) records its design.
 Its grants and its CUE delivery are described in the [OpenTofu runbook](../../../opentofu/README.md#cloud-tasks-cluster-resources) and the [lifecycle runbook](../../lifecycle/README.md).
+The one [preregistered](https://github.com/flink-gcp/flink-connector-gcp/issues/1362#issuecomment-6127161854) trial reached `usable` on its first attempt, `ct-1362-a1`, on 2026-10-12, as its [findings](../../../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record.
 
 ### Trial and estimate
 
