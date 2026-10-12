@@ -519,9 +519,10 @@ class BigtableTablePlanTest {
                         + ") "
                         + WITH_CLAUSE);
 
-        // An entry access is an ITEM call, not a nested field, so nothing is pushed for it.
+        // An entry access is an ITEM call, not a nested field, so nothing is pushed for it. Flink
+        // 2.4 offers the predicate to the source and prints the declined result as filter=[].
         assertThat(tEnv.explainSql("SELECT rowkey FROM bt WHERE m['a'] = x'78'"))
-                .doesNotContain("filter=[")
+                .doesNotContainPattern("filter=\\[[^\\]]")
                 .contains("Calc(select=[rowkey], where=[");
         // The family-existence prefilter, which a cell-less MAP family reading NULL makes exact;
         // like every cell prefilter it also stays as the residual.
