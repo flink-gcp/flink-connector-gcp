@@ -376,6 +376,17 @@ class DatastoreDynamicTableFactoryTest {
                 .hasStackTraceContaining("Option 'kind' is invalid:");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"__Stat_Kind__", "__kind__", "__reserved__"})
+    void theSinkRefusesEveryReservedKindAStatisticsOneIncluded(String kind) {
+        // A scan reads a statistics kind (DatastoreDynamicTableSourceFactoryTest); a write to any
+        // reserved kind fails, so the sink refuses them all.
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(KEYED, options("kind", kind)))
+                .hasStackTraceContaining("Option 'kind' is invalid:")
+                .hasStackTraceContaining(
+                        "reserves for a kind of its own; the table connector writes none");
+    }
+
     @Test
     void aKindLongerThanDatastoreStoresIsRefused() {
         assertThatThrownBy(

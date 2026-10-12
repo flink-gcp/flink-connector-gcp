@@ -54,11 +54,11 @@ Only `emulator-endpoint` reaches an emulator, one started with `--database-mode=
 
 A table names one kind with `kind`, in the namespace `namespace` names or in the default namespace without it.
 Each row is one entity, and each column other than the PRIMARY KEY is one property of the entity, named exactly as the column is.
-A kind or a namespace that every write would be refused for is refused when the statement is planned, for a scan as well as the sink: one of the form `__…__` with at least one character between the underscores, such as `__Stat_Kind__`, which the emulator refuses as reserved; a kind longer than 1,500 bytes; and a namespace outside the client library's grammar of at most 100 letters, digits, `.`, `_` and `-`.
+A kind or a namespace that every write would be refused for is refused when the statement is planned, for a scan as well as the sink, except that a scan reads a statistics kind: one of the form `__…__` with at least one character between the underscores, such as `__kind__`, which the emulator refuses as reserved; a kind longer than 1,500 bytes; and a namespace outside the client library's grammar of at most 100 letters, digits, `.`, `_` and `-`.
 So are a column or `ROW` field with such a name or one longer than 1,500 bytes, wherever it is declared, and a `project` outside the client library's grammar for a project id.
-A reserved kind holds Datastore's own statistics or metadata, and the scan refuses it too.
+A reserved kind holds Datastore's own statistics or metadata.
 The metadata kinds `__namespace__`, `__kind__` and `__property__` are refused by the DataStream source the scan reads through as well ([Reading in Datastore mode]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode)).
-The source does read a statistics kind such as `__Stat_Kind__`, but the emulator keeps no statistics, so the scan refuses one until the gated suite ([#1546]({{< param BookRepo >}}/issues/1546)) has measured a read of one against the service.
+A statistics kind, whose name begins `__Stat_`, such as `__Stat_Kind__`, is read by the scan and the lookup as the DataStream source reads it ([Reading in Datastore mode]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode)); declare the properties to read, named as Google's [statistics](https://cloud.google.com/datastore/docs/concepts/stats) page lists them, and a STRING key: every statistics entity measured, 28 of 12 statistics kinds across two namespaces, was keyed by a name, such as the kind an entry describes or `total_entity_usage`, and a scan with a STRING key fails on an entity keyed by an id.
 A blank `kind` or `namespace` is refused too; leave `namespace` out for the default namespace.
 Datastore's documentation reserves every kind beginning with `__`, which the emulator does not enforce, so such a kind is left to the service.
 
